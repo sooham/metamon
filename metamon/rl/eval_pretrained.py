@@ -176,7 +176,6 @@ class PretrainedModel:
             log=log,
             agent_type=self.agent_type,
         )
-        print(experiment)
         experiment.start()
         if checkpoint > 0:
             experiment.load_checkpoint(checkpoint, resume_training_state=False)
