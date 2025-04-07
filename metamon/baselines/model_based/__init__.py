@@ -1,1 +1,1 @@
-from . import nn_baseline
+from . import bcrnn_baselines

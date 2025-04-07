@@ -443,4 +443,3 @@ if __name__ == "__main__":
 
     end = time.time()
     print(f"{counter / (end - start) : .2f} Steps Per Second")
-    print(env.win_loss_history)

@@ -32,5 +32,4 @@ def register_baseline(gens: list[int] = GENS, formats: list[str] = FORMATS):
 
 from .base import Baseline
 from . import heuristic
-from . import pokellmon
 from . import model_based

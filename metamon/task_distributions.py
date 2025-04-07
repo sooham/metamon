@@ -58,7 +58,6 @@ def select_random_team(gen: int, format: str, split: str) -> str:
         raise ValueError(
             f"Cannot locate valid team directory for format [gen{gen}{format}]"
         )
-    print(path)
     choice = random.choice(os.listdir(path))
     path_to_choice = os.path.join(path, choice)
     return path_to_choice
