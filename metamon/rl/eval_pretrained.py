@@ -18,7 +18,7 @@ from metamon.task_distributions import (
 )
 from metamon.baselines.heuristic.basic import *
 from metamon.baselines.heuristic.kaizo import EmeraldKaizo
-from metamon.baselines.model_based.nn_baseline import BaseIL, WinsOnlyIL, SmallIL
+from metamon.baselines.model_based.bcrnn_baselines import BaseRNN, WinsOnlyRNN, MiniRNN
 
 
 def make_placeholder_env():
@@ -84,7 +84,7 @@ HEURISTIC_COMPOSITE_BASELINES = [
 ]
 
 
-IL = [BaseIL]
+IL = [BaseRNN]
 
 WANDB_PROJECT = os.environ.get("METAMON_WANDB_PROJECT")
 WANDB_ENTITY = os.environ.get("METAMON_WANDB_ENTITY")

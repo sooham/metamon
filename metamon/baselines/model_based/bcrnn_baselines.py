@@ -4,7 +4,6 @@ from abc import ABC, abstractmethod
 
 import torch
 from torch.distributions import Categorical
-from einops import repeat
 
 from metamon.baselines import Baseline, register_baseline, heuristic
 from metamon.interface import action_idx_to_battle_order, UniversalState
@@ -12,7 +11,7 @@ from metamon.data.tokenizer import get_tokenizer
 from metamon.il.model import MetamonILModel
 
 
-class ModelBasedBaseline(Baseline, ABC):
+class BCRNNBaseline(Baseline, ABC):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.model = self.load_model()
@@ -89,7 +88,7 @@ def load_pretrained_model_to_cpu(model_filename):
     return model
 
 
-class PretrainedOnCPU(ModelBasedBaseline, ABC):
+class PretrainedOnCPU(BCRNNBaseline, ABC):
     @property
     @abstractmethod
     def model_path(self) -> str:
@@ -100,21 +99,21 @@ class PretrainedOnCPU(ModelBasedBaseline, ABC):
 
 
 @register_baseline()
-class BaseIL(PretrainedOnCPU):
+class BaseRNN(PretrainedOnCPU):
     @property
     def model_path(self):
         return "replays_v2_full_trial1_BEST.pt"
 
 
 @register_baseline()
-class WinsOnlyIL(PretrainedOnCPU):
+class WinsOnlyRNN(PretrainedOnCPU):
     @property
     def model_path(self):
         return "replays_v2_wins_only_trial1_BEST.pt"
 
 
 @register_baseline()
-class SmallIL(PretrainedOnCPU):
+class MiniRNN(PretrainedOnCPU):
     @property
     def model_path(self):
         return "replays_v2_small_trial1_BEST.pt"
