@@ -5,46 +5,36 @@
 
 <br>
 
+<!-- GitHub does not support HTML buttons, so we use links styled as buttons -->
 
 <div align="center">
-    <a href="https://metamon.tech" target="_blank">
-        <button style="
-            background-color: #87CEEB; /* Sky Blue */
-            border: 2px solid black; /* Black border */
-            color: white;
-            padding: 15px 32px;
-            text-align: center;
-            text-decoration: none;
-            display: inline-block;
-            font-size: 16px;
-            margin: 4px 2px;
-            cursor: pointer;
-            border-radius: 12px;
-        ">
-            Website
-        </button>
-    </a>
-    <a href="https://arxiv.org/abs/2504.04395" target="_blank">
-        <button style="
-            background-color: #f44336; /* Red */
-            border: 2px solid black; /* Black border */
-            color: white;
-            padding: 15px 32px;
-            text-align: center;
-            text-decoration: none;
-            display: inline-block;
-            font-size: 16px;
-            margin: 4px 2px;
-            cursor: pointer;
-            border-radius: 12px;
-        ">
-            Paper
-        </button>
-    </a>
+    <a href="https://metamon.tech" target="_blank" style="
+        display: inline-block;
+        background-color: #87CEEB; /* Sky Blue */
+        color: white;
+        padding: 10px 20px;
+        text-align: center;
+        text-decoration: none;
+        font-size: 16px;
+        margin: 4px 2px;
+        border-radius: 12px;
+        border: 2px solid black; /* Black border */
+    ">Website</a>
+    <a href="https://arxiv.org/abs/2504.04395" target="_blank" style="
+        display: inline-block;
+        background-color: #f44336; /* Red */
+        color: white;
+        padding: 10px 20px;
+        text-align: center;
+        text-decoration: none;
+        font-size: 16px;
+        margin: 4px 2px;
+        border-radius: 12px;
+        border: 2px solid black; /* Black border */
+    ">Paper</a>
 </div>
 
 <br>
-
 
 
 
