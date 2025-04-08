@@ -12,7 +12,7 @@ warnings.filterwarnings("ignore", message=".*env.current_task.*", category=UserW
 import amago
 from amago.cli_utils import *
 
-from metamon.env import MetaShowdown, TokenizedEnv, PSLadder, LocalLadder
+from metamon.env import MetaShowdown, TokenizedEnv, LocalLadder
 from metamon.rl.metamon_to_amago import (
     PSLadderAMAGOWrapper,
     MetamonAMAGOWrapper,
@@ -44,21 +44,16 @@ def make_ladder_env(
     username: str,
     avatar: str,
     n_challenges: int,
-    local: bool = False,
-    password: str = None,
+    team_split: str,
     wait_for_input: bool = False,
 ):
-    Ladder = PSLadder if not local else LocalLadder
-    kwargs = {
-        "gen": gen,
-        "format": format,
-        "username": username[-18:],
-        "avatar": avatar,
-    }
-    if not local:
-        assert password is not None, "provide --ps_password to use the ladder"
-        kwargs["password"] = password
-    env = Ladder(**kwargs)
+    env = LocalLadder(
+        gen=gen,
+        format=format,
+        username=username[-18:],
+        avatar=avatar,
+        team_split=team_split,
+    )
     if wait_for_input:
         input("Hit any key to start challenging")
     env.start_laddering(n_challenges=n_challenges)
@@ -425,9 +420,6 @@ if __name__ == "__main__":
         "--username", default="Metamon", help="Username for the Showdown server."
     )
     parser.add_argument(
-        "--ps_password", default=None, help="Password for the Showdown server."
-    )
-    parser.add_argument(
         "--n_challenges", type=int, default=10, help="Number of battles to run."
     )
     parser.add_argument(
@@ -445,10 +437,9 @@ if __name__ == "__main__":
         choices=[
             "heuristic",
             "il",
-            "ladder",
             "local-ladder",
         ],
-        help="Type of evaluation to perform. 'heuristic' will run the agent against the heuristic baselines, 'il' will run the agent against the IL baselines, 'ladder' will run the agent on the public Showdown ladder, and 'local-ladder' will run the agent against the local Showdown ladder. If you set two agents to play on the local-ladder, they will be battling each other!",
+        help="Type of evaluation to perform. 'heuristic' will run the agent against the heuristic baselines, 'il' will run the agent against the IL baselines, 'local-ladder' will run the agent on your self-hosted Showdown ladder. If you set two agents to play on the local-ladder, they will be battling each other!",
     )
     parser.add_argument(
         "--save_trajs_to",
@@ -510,11 +501,10 @@ if __name__ == "__main__":
                         gen=gen,
                         format=format,
                         username=args.username,
-                        password=args.ps_password,
-                        local="local" in args.eval_type,
                         wait_for_input=args.wait_for_input,
                         avatar=args.avatar,
                         n_challenges=args.n_challenges + 1,
+                        team_split=args.team_split,
                     )
                     agent.env_mode = "sync"
                 else:

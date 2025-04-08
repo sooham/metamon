@@ -271,9 +271,9 @@ class MetaShowdown(gym.Env):
         if terminated:
             info["win_loss_history"] = self.win_loss_history
             info["win_rate"] = sum(self.win_loss_history) / len(self.win_loss_history)
-            info[
-                "metamon_task_name"
-            ] = f"{self.current_task.battle_format}_vs_{self.current_task.opponent_type.__name__}"
+            info["metamon_task_name"] = (
+                f"{self.current_task.battle_format}_vs_{self.current_task.opponent_type.__name__}"
+            )
             info["valid_action_count"] = self.inner_env.valid_action_counter
             info["invalid_action_count"] = self.inner_env.invalid_action_counter
         return self.add_meta_info(next_state), reward, terminated, False, info
@@ -286,44 +286,6 @@ def check_avatar(avatar: str):
         raise ValueError(
             f"Avatar {avatar} is not valid. See https://play.pokemonshowdown.com/sprites/trainers/ for a list of options."
         )
-
-
-class PSLadder(_ShowdownEnv):
-    def __init__(
-        self,
-        username: str,
-        password: str,
-        gen: int,
-        format: str,
-        avatar: Optional[str] = None,
-        reward_function: Optional[Type[RewardFunction]] = None,
-        team_split: str = "competitive",
-    ):
-        if avatar is not None:
-            check_avatar(avatar)
-        super().__init__(
-            reward_function=reward_function or DefaultShapedReward(),
-            opponent=None,
-            battle_format=f"gen{gen}{format.lower()}",
-            server_configuration=ShowdownServerConfiguration,
-            account_configuration=AccountConfiguration(
-                username=username, password=password
-            ),
-            team=UniformRandomTeambuilder(gen=gen, format=format, split=team_split),
-            start_challenging=False,
-            start_timer_on_battle_start=True,
-            ping_timeout=2000.0,
-            avatar=avatar,
-        )
-
-    def on_invalid_order(self, battle: Battle):
-        print("invalid action!")
-        if battle.available_moves and random.random() < 0.75:
-            # the most common case that leads to invalid action choices is PP stalls.
-            return self.create_order(random.choice(battle.available_moves))
-        elif battle.available_switches:
-            return self.create_order(random.choice(battle.available_switches))
-        return self.choose_random_move(battle)
 
 
 class LocalLadder(_ShowdownEnv):
