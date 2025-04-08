@@ -3,10 +3,16 @@ amago.nets.actor_critic.Actor.n_layers = 2
 amago.nets.actor_critic.Actor.d_hidden = 512
 
 amago.agent.Agent.popart = True
-amago.agent.Agent.num_critics = 6 # was 4 for base models
+amago.agent.Agent.num_critics = 6
 amago.nets.actor_critic.NCritics.n_layers = 2
 amago.nets.actor_critic.NCritics.activation = "leaky_relu"
 amago.nets.actor_critic.NCritics.d_hidden = 512
+amago.nets.actor_critic.NCriticsTwoHot.d_hidden = 512
+amago.nets.actor_critic.NCriticsTwoHot.num_critics = 4
+amago.nets.actor_critic.NCriticsTwoHot.output_bins = 96
+amago.nets.actor_critic.NCriticsTwoHot.min_return = -1100
+amago.nets.actor_critic.NCriticsTwoHot.max_return = 1100
+amago.nets.actor_critic.NCriticsTwoHot.use_symlog = False
 
 MetamonTstepEncoder.d_model = 160
 MetamonTstepEncoder.n_layers = 5

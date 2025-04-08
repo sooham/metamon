@@ -21,7 +21,4 @@ setup(
         "huggingface_hub",
         "poke-env @ git+https://github.com/jakegrigsby/poke-env.git",
     ],
-    extras_require={
-        "flash": ["ninja", "packaging", "flash-attn"],
-    },
 )

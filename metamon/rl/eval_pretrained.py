@@ -1,7 +1,13 @@
 import os
+from pathlib import Path
 import json
 from functools import partial
 import multiprocessing as mp
+import warnings
+from huggingface_hub import hf_hub_download
+
+# Suppress specific gymnasium warnings about env.current_task deprecation
+warnings.filterwarnings("ignore", message=".*env.current_task.*", category=UserWarning)
 
 import amago
 from amago.cli_utils import *
@@ -88,6 +94,9 @@ IL = [BaseRNN]
 
 WANDB_PROJECT = os.environ.get("METAMON_WANDB_PROJECT")
 WANDB_ENTITY = os.environ.get("METAMON_WANDB_ENTITY")
+METAMON_CACHE_DIR = os.environ.get(
+    "METAMON_CACHE_DIR", os.path.expanduser("~/.cache/metamon")
+)
 
 
 def _create_placeholder_experiment(
@@ -96,7 +105,6 @@ def _create_placeholder_experiment(
     # the environment is only used to initialize the network
     # before loading the correct checkpoint
     env = make_placeholder_env()
-    print("made dummy env")
     dummy_env = lambda: env
     experiment = amago.Experiment(
         max_seq_len=max_seq_len,
@@ -134,44 +142,51 @@ def _create_placeholder_experiment(
 
 
 class PretrainedModel:
-    BASE_DIR = "/mnt/nfs_client/jake/metamon_official_ckpts"
-    CKPT_DIR = "bulk_runs"
+    HF_REPO_ID = "jakegrigsby/metamon"
+    DEFAULT_CKPT = 40
 
     def __init__(
         self,
-        username,
-        avatar,
         gin_config,
-        amago_run_name,
+        model_name,
         is_il_model,
         max_seq_len=200,
         agent_type=amago.agent.Agent,
+        hf_cache_dir=None,
     ):
-        self.username = username
-        self.avatar = avatar
-        self.amago_run_name = amago_run_name
+        self.model_name = model_name
         self.gin_config = os.path.join(os.path.dirname(__file__), "configs", gin_config)
-        self.gin_config = gin_config
         self.is_il_model = is_il_model
         self.max_seq_len = max_seq_len
         self.agent_type = agent_type
+        self.hf_cache_dir = hf_cache_dir or METAMON_CACHE_DIR
+        os.makedirs(self.hf_cache_dir, exist_ok=True)
 
     @property
     def base_config(self):
         return {
             "amago.agent.Agent.reward_multiplier": 10.0,
-            "amago.agent.Agent.offline_coeff": 1.0,
-            "amago.agent.Agent.online_coeff": 0.0,
             "amago.agent.Agent.fake_filter": self.is_il_model,
             "amago.agent.Agent.use_multigamma": not self.is_il_model,
         }
 
-    def initialize_agent(self, checkpoint: int, log: bool):
+    def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False):
         use_config(self.base_config, [self.gin_config], finalize=False)
+        checkpoint = checkpoint or self.DEFAULT_CKPT
+        # Download checkpoint from HF Hub
+        checkpoint_path = hf_hub_download(
+            repo_id=self.HF_REPO_ID,
+            filename=f"{self.model_name}/ckpts/policy_weights/policy_epoch_{checkpoint}.pt",
+            cache_dir=self.hf_cache_dir,
+        )
+        base_dir = os.path.dirname(os.path.dirname(checkpoint_path))
+        full_path = Path(base_dir)
+        dset_root = str(full_path.parents[2])
+        dset_name = full_path.parents[1].name
         experiment = _create_placeholder_experiment(
-            dset_root=self.BASE_DIR,
-            dset_name=self.CKPT_DIR,
-            run_name=self.amago_run_name,
+            dset_root=dset_root,
+            dset_name=dset_name,
+            run_name=self.model_name,
             max_seq_len=self.max_seq_len,
             log=log,
             agent_type=self.agent_type,
@@ -185,10 +200,8 @@ class PretrainedModel:
 class SmallIL(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="SmallSparks",
-            avatar="preschooler",
+            model_name="small-il",
             gin_config="small.gin",
-            amago_run_name="small_il_512x3",
             is_il_model=True,
         )
 
@@ -196,10 +209,8 @@ class SmallIL(PretrainedModel):
 class SmallILFA(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="SmallILFA",
-            avatar="preschooler",
+            model_name="small-il-fa",
             gin_config="small.gin",
-            amago_run_name="small_il_512x3_filled_actions",
             is_il_model=True,
         )
 
@@ -207,10 +218,8 @@ class SmallILFA(PretrainedModel):
 class SmallRL(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="SmallRL",
-            avatar="youngster-gen2",
+            model_name="small-rl",
             gin_config="small.gin",
-            amago_run_name="small_rl_512x3",
             is_il_model=False,
         )
 
@@ -218,21 +227,8 @@ class SmallRL(PretrainedModel):
 class SmallRL_ExtremeFilter(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="SmallRLExtremeFilter",
-            avatar="youngster-gen3",
+            model_name="small-rl-exp-extreme",
             gin_config="small.gin",
-            amago_run_name="small_rl_exp_extreme_512x3",
-            is_il_model=False,
-        )
-
-
-class SmallRL_BinaryFA(PretrainedModel):
-    def __init__(self):
-        super().__init__(
-            username="SmallRLBinaryFA",
-            avatar="youngster-gen3",
-            gin_config="small.gin",
-            amago_run_name="small_rl_binary_filter_512x3_filled_actions",
             is_il_model=False,
         )
 
@@ -240,10 +236,8 @@ class SmallRL_BinaryFA(PretrainedModel):
 class SmallRL_BinaryFilter(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="SmallRLBinaryFilter",
-            avatar="youngster-gen4",
+            model_name="small-rl-binary",
             gin_config="small.gin",
-            amago_run_name="small_rl_binary_512x3",
             is_il_model=False,
         )
 
@@ -251,21 +245,17 @@ class SmallRL_BinaryFilter(PretrainedModel):
 class SmallRL_Aug(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="SmallRLAug",
-            avatar="youngster-gen6",
+            model_name="small-rl-aug",
             gin_config="small.gin",
-            amago_run_name="small_rl_aug_3x512",
             is_il_model=False,
         )
 
 
-class SmallRL_DPG(PretrainedModel):
+class SmallRL_MaxQ(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="SmallRLAug",
-            avatar="youngster-gen6",
+            model_name="small-rl-maxq",
             gin_config="small.gin",
-            amago_run_name="small_rl_dpg_binary_512x3",
             is_il_model=False,
         )
 
@@ -273,10 +263,8 @@ class SmallRL_DPG(PretrainedModel):
 class MediumIL(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="MediumIL",
-            avatar="hiker-gen6",
+            model_name="medium-il",
             gin_config="medium.gin",
-            amago_run_name="medium_il_768x6",
             is_il_model=True,
         )
 
@@ -284,10 +272,8 @@ class MediumIL(PretrainedModel):
 class MediumRL(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="MediumRL",
-            avatar="hiker-gen3rs",
+            model_name="medium-rl",
             gin_config="medium.gin",
-            amago_run_name="medium_rl_768x6",
             is_il_model=False,
         )
 
@@ -295,21 +281,17 @@ class MediumRL(PretrainedModel):
 class MediumRL_Aug(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="MediumRLAug",
-            avatar="hiker-gen3rs",
+            model_name="medium-rl-aug",
             gin_config="medium.gin",
-            amago_run_name="medium_rl_aug_768x6",
             is_il_model=False,
         )
 
 
-class MediumRL_DPG(PretrainedModel):
+class MediumRL_MaxQ(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="MediumRLDPG",
-            avatar="hiker-gen3rs",
+            model_name="medium-rl-maxq",
             gin_config="medium.gin",
-            amago_run_name="medium_rl_dpg_binary_768x6",
             is_il_model=False,
         )
 
@@ -317,22 +299,18 @@ class MediumRL_DPG(PretrainedModel):
 class LargeRL_Aug(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="Montezuma2600",
-            avatar="bugcatcher-gen3rs",
+            model_name="large-rl-aug",
             gin_config="large.gin",
-            amago_run_name="large_rl_1280x9",
             is_il_model=False,
             max_seq_len=128,
         )
 
 
-class LargeIL_Aug(PretrainedModel):
+class LargeIL(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="DittoIsAllYouNeed",
-            avatar="clown",
+            model_name="large-il",
             gin_config="large.gin",
-            amago_run_name="large_il_1280x9",
             is_il_model=True,
             max_seq_len=128,
         )
@@ -341,12 +319,8 @@ class LargeIL_Aug(PretrainedModel):
 class SyntheticRLV0(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="Metamon1",
-            avatar="rancher",
+            model_name="synthetic-rl-v0",
             gin_config="synthetic.gin",
-            # the "768x6" model size claimed in these checkpoint names is a harmless mistake.
-            # it's the 1280x9 model
-            amago_run_name="large_rl_dpg_binary_synthetic_data_768x6",
             is_il_model=False,
             max_seq_len=128,
         )
@@ -355,46 +329,44 @@ class SyntheticRLV0(PretrainedModel):
 class SyntheticRLV1(PretrainedModel):
     def __init__(self):
         super().__init__(
-            username="TheDeadlyTriad",
-            avatar="sailor-gen1rb",
+            model_name="synthetic-rl-v1",
             gin_config="synthetic.gin",
-            amago_run_name="large_rl_dpg_binary_synthetic_v2",
             is_il_model=False,
             max_seq_len=128,
         )
 
 
 class SyntheticRLV1_SelfPlay(PretrainedModel):
+    DEFAULT_CKPT = 48
+
     def __init__(self):
         super().__init__(
-            username="ABitterLesson",
-            avatar="red-gen1main",
+            model_name="synthetic-rl-v1+sp",
             gin_config="synthetic.gin",
-            amago_run_name="large_rl_dpg_binary_sp_v1",
             is_il_model=False,
             max_seq_len=128,
         )
 
 
 class SyntheticRLV1_PlusPlus(PretrainedModel):
+    DEFAULT_CKPT = 38
+
     def __init__(self):
         super().__init__(
-            username="QPrime",
-            avatar="fisherman-gen1rb",
+            model_name="synthetic-rl-v1++",
             gin_config="synthetic.gin",
-            amago_run_name="synthetic_v3",
             is_il_model=False,
             max_seq_len=128,
         )
 
 
 class SyntheticRLV2(PretrainedModel):
+    DEFAULT_CKPT = 48
+
     def __init__(self):
         super().__init__(
-            username="MetamonII",
-            avatar="sailor-gen1rb",
+            model_name="synthetic-rl-v2",
             gin_config="synthetic.gin",
-            amago_run_name="twohot_v0",
             is_il_model=False,
             max_seq_len=128,
             agent_type=amago.agent.MultiTaskAgent,
@@ -413,10 +385,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--formats", nargs="+", default="ou", choices=["ubers", "ou", "uu", "nu"]
     )
-    parser.add_argument("--eval_dir", required=True)
+    parser.add_argument("--username", required=True)
     parser.add_argument("--ps_password", default=None)
-    parser.add_argument("--n_challenges", type=int, default=150)
-    parser.add_argument("--checkpoints", type=int, nargs="+", required=True)
+    parser.add_argument("--n_challenges", type=int, default=10)
+    parser.add_argument("--avatar", default="preschooler")
+    parser.add_argument("--checkpoints", type=int, nargs="+", default=[None])
     parser.add_argument(
         "--eval_type",
         choices=[
@@ -443,7 +416,6 @@ if __name__ == "__main__":
                 agent = agent_maker.initialize_agent(
                     checkpoint=checkpoint, log=args.log_to_wandb
                 )
-
                 if args.eval_type == "heuristic":
                     make_envs = [
                         partial(
@@ -473,19 +445,15 @@ if __name__ == "__main__":
                     make_envs *= 1
                     agent.parallel_actors = len(make_envs)
                 elif "ladder" in args.eval_type:
-                    username = agent_maker.username
-                    if "local" in args.eval_type:
-                        username += str(checkpoint)
-                        episodes = args.n_challenges
                     make_envs = partial(
                         make_ladder_env,
                         gen=gen,
                         format=format,
-                        username=username,
+                        username=args.username,
                         password=args.ps_password,
                         local="local" in args.eval_type,
                         wait_for_input=args.wait_for_input,
-                        avatar=agent_maker.avatar,
+                        avatar=args.avatar,
                         n_challenges=args.n_challenges + 1,
                     )
                     agent.env_mode = "sync"
@@ -495,8 +463,10 @@ if __name__ == "__main__":
                 agent.verbose = False
                 results = agent.evaluate_test(
                     make_envs,
+                    # sets upper bound on total timesteps
                     timesteps=args.n_challenges * 200,
                     save_trajs_to=args.save_trajs_to,
-                    episodes=episodes,
+                    # terminates after n_challenges
+                    episodes=args.n_challenges,
                 )
                 print(json.dumps(results, indent=4, sort_keys=True))

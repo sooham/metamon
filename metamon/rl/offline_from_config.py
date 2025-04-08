@@ -110,9 +110,7 @@ class RebuildValEnvExperiment(amago.Experiment):
 
     def _get_grad_norms(self):
         base = super()._get_grad_norms()
-        base[
-            "metamon_text_emb_grad_norm"
-        ] = (
+        base["metamon_text_emb_grad_norm"] = (
             self.policy.tstep_encoder.turn_embedding.token_embedding.text_emb.weight.grad.norm()
         )
         return base
