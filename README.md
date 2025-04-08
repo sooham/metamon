@@ -247,7 +247,7 @@ python -m metamon.compete --task_dist Gen1OU --player GymLeader --opponent Rando
 ## Citation
 
 ```bibtex
-@misc{grigsby2025humanlevelcompetitivepokemonscalable,
+@misc{grigsby2025metamon,
       title={Human-Level Competitive Pok\'emon via Scalable Offline Reinforcement Learning with Transformers}, 
       author={Jake Grigsby and Yuqi Xie and Justin Sasek and Steven Zheng and Yuke Zhu},
       year={2025},
