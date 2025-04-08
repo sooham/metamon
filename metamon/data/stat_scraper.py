@@ -1,4 +1,5 @@
 import os
+import argparse
 import asyncio
 import aiohttp
 import aiofiles
@@ -6,8 +7,27 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
 base_url = "https://www.smogon.com/stats/"
-local_directory = "stats"
 
+parser = argparse.ArgumentParser(description="Scrape Smogon stats")
+parser.add_argument(
+    "--start_date",
+    type=int,
+    default=2015,
+    help="Start date for scraping (YYYY)",
+)
+parser.add_argument(
+    "--end_date",
+    type=int,
+    default=2024,
+    help="End date for scraping (YYYY)",
+)
+parser.add_argument(
+    "--save_dir",
+    type=str,
+    default="./stats",
+    help="Local directory to save the scraped files",
+)
+args = parser.parse_args()
 
 def ensure_dir(file_path):
     if not os.path.exists(file_path):
@@ -86,13 +106,13 @@ async def scrape(session, url, local_dir):
         print(f"Error on url {url}: {e}")
 
 
-ensure_dir(local_directory)
+ensure_dir(args.save_dir)
 
 
 async def main():
     async with aiohttp.ClientSession() as session:
         await scrape_base(
-            session, base_url, local_directory, start_date=2015, end_date=2021
+            session, base_url, args.save_dir, start_date=args.start_date, end_date=args.end_date
         )
 
 

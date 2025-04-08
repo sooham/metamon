@@ -2,9 +2,21 @@ import os
 import re
 import json
 from metamon.data import DATA_PATH
+from metamon.data.download_stats import download_data
 from metamon.data.team_builder.format_rules import get_valid_pokemon, Tier
 
-from poke_env.data import to_id_str
+from functools import lru_cache
+
+# Src: https://github.com/hsahovic/poke-env/blob/master/src/poke_env/data/normalize.py
+@lru_cache(2**13)
+def to_id_str(name: str) -> str:
+    """Converts a full-name to its corresponding id string.
+    :param name: The name to convert.
+    :type name: str
+    :return: The corresponding id string.
+    :rtype: str
+    """
+    return "".join(char for char in name if char.isalnum()).lower()
 
 TIER_MAP = {
     "ubers": Tier.UBERS,
@@ -156,13 +168,15 @@ class PreloadedSmogonStat(SmogonStat):
         inclusive_file_path = os.path.join(
             DATA_PATH, f"movesets_data/{gen}/inclusive.json"
         )
-        if self.verbose:
-            print(f"Loaded precomputed Smogon data from {file_path}")
+        if not os.path.exists(file_path) or not os.path.exists(inclusive_file_path):
+            download_data()
         with open(file_path, "r") as file:
             self._movesets = json.load(file)
         if inclusive:
             with open(inclusive_file_path, "r") as file:
                 self._inclusive = json.load(file)
+        if self.verbose:
+            print(f"Loaded precomputed Smogon data from {file_path}")
         self._name_conversion = {
             to_id_str(pokemon): pokemon for pokemon in self._movesets.keys()
         }
@@ -377,8 +391,6 @@ def merge_movesets(movesets):
 
 if __name__ == "__main__":
     stats = PreloadedSmogonStat("gen9ou")
-    print(len(stats.usage))
-    stats.remove_banned_pm("/home/xieleo/pokemon-showdown")
     print(len(stats.usage))
     for mon in sorted(
         stats.movesets.keys(), key=lambda m: stats[m]["count"], reverse=True
