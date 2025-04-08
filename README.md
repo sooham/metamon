@@ -178,7 +178,7 @@ We are working on releasing intermediate versions of the dataset used to train v
 
 <br>
 
-## Pretrained Models
+## [Pretrained Models](https://huggingface.co/jakegrigsby/metamon/tree/main)
 
 We have made every checkpoint of 18 models available on huggingface at [`jakegrigsby/metamon`](https://huggingface.co/jakegrigsby/metamon/tree/main).
 
