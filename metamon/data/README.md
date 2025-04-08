@@ -1,47 +1,80 @@
 # Smogon Data
 
-You can download the pre-calculated movesets data by simply running the following command:
+This module allows you to download or scrape pre-calculated competitive Pokémon moveset statistics from [Smogon](https://www.smogon.com/) for use in your own projects.
 
-``` bash
+## Option 1: Download Pre-Processed Movesets
+
+To quickly get started with pre-calculated movesets, simply run:
+
+```bash
 python metamon/data/download_stats.py
 ```
 
-If you want to scrape the data by yourself, you can follow the steps below.
+This will download the latest processed moveset data directly.
 
-## Prerequisites
+---
 
-Install pokemon showdown server from [https://github.com/smogon/pokemon-showdown](https://github.com/smogon/pokemon-showdown)
+## Option 2: Scrape and Parse Smogon Data Yourself
 
-## Step 1: Scrape Data from Smogon Stats Page
+If you prefer to scrape the data manually and have more control over the dataset, follow the steps below.
 
-Run `python stat_scraper.py` to scrape data from smogon stat page. The default smogon data saving dir is `./stats`
+### Prerequisites
 
-You can specify the date range of the data. Just add `--start_date` and `--end_date` to the command. Default date is from 2015 to 2024. Example:
+- Clone and install the [Pokémon Showdown](https://github.com/smogon/pokemon-showdown) server locally.
 
-``` bash
+---
+
+### Step 1: Scrape Data from Smogon's Stats Page
+
+Run the following command to scrape Smogon's usage stats:
+
+```bash
+python stat_scraper.py
+```
+
+By default, data is saved to the `./stats` directory.
+
+#### Optional: Specify a Date Range
+
+You can set a custom date range using the `--start_date` and `--end_date` flags:
+
+```bash
 python stat_scraper.py --start_date 2021 --end_date 2022
 ```
 
-## Step 2: Parse the raw data movesets
+Default range: **2015 to 2024**
 
-There are two things needed, movesets data and checks data, you can run the following command to parse the data:
+---
 
-``` bash
-# parse the movesets data
+### Step 2: Parse the Raw Data
+
+After scraping, you need to parse two components: **movesets** and **checks**.
+
+#### 1. Parse Movesets
+
+```bash
 cd metamon/data
 python create_movesets_jsons.py --smogon_stat_dir ./stats --ps_path LOCAL_POKEMONSHOWDOWN_SERVER_PATH
-python create_checks_jsons.py --smogon_stat_dir ./stats 
 ```
 
-The default save directory will be under `metamon/data`, you can change the directory by changing `DATA_PATH` in `metamon/data/__init__.py`.
+#### 2. Parse Checks
 
-## Step 3: Load the data
+```bash
+python create_checks_jsons.py --smogon_stat_dir ./stats
+```
 
-To load data from Smogon Stat, you can use the `metamon.data.team_builder.stat_reader.PreloadedSmogonStat`
+By default, the parsed JSON files will be saved in the `metamon/data` directory.  
+To customize the output path, modify the `DATA_PATH` variable in `metamon/data/__init__.py`.
 
-### Example
+---
+
+### Step 3: Load the Data
+
+Use the `PreloadedSmogonStat` class to load the processed data:
 
 ```python
+from metamon.data.team_builder.stat_reader import PreloadedSmogonStat
+
 stats = PreloadedSmogonStat("gen8ou", inclusive=False)
 print(stats.movesets['Mimikyu'])
 ```
