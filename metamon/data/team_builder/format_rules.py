@@ -98,8 +98,3 @@ def get_valid_pokemon(ps_path, format):
             valid_pokemon[tier] = []
         valid_pokemon[tier].append(name)
     return valid_pokemon
-
-
-if __name__ == "__main__":
-    data = get_valid_pokemon("/home/xieleo/pokemon-showdown", "gen9")
-    print(data)
