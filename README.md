@@ -1,18 +1,23 @@
-# Metamon
+
+<div align="center">
+    <img src="media/metamon_text_logo.png" alt="Metamon Text Logo" width="350">
+</div>
+
+<br>
+
 <div align="center">
     <img src="media/metamon_banner.png" alt="Metamon Banner" width="700">
 </div>
 
 <br>
 
-<!-- GitHub does not support HTML buttons, so we use links styled as buttons -->
+<div align="center">
 
-<!-- Start of Selection -->
-<p align="center">
-    <a href="https://metamon.tech" target="_blank">Website</a> |
-    <a href="https://arxiv.org/abs/2504.04395" target="_blank">Paper</a>
-</p>
-<!-- End of Selection -->
+[![Paper](https://img.shields.io/badge/Paper-arXiv%3A2304.12345-red)](https://arxiv.org/abs/2504.04395)
+[![Website](https://img.shields.io/badge/Project-Website-blue)](https://metamon.tech)
+
+</div>
+
 
 <br>
 
