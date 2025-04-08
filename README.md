@@ -1,6 +1,6 @@
 
 <div align="center">
-    <img src="media/metamon_text_logo.png" alt="Metamon Text Logo" width="350">
+    <img src="media/metamon_text_logo.png" alt="Metamon Text Logo" width="380">
 </div>
 
 <br>
@@ -26,14 +26,14 @@
 
 **Metamon** enables reinforcement learning (RL) research in Competitive Pokémon Singles (as played on [Pokémon Showdown](https://pokemonshowdown.com/)) by providing:
 
-1. A large (and continuously growing) dataset of RL trajectories "reconstructed" from real human battles.
-2. Starting points for training imitation learning (IL) and offline reinforcement learning (RL) policies.
-3. A standardized suite of teams and opponents for evaluation.
+- A large dataset of RL trajectories "reconstructed" from real human battles.
+- Starting points for training imitation learning (IL) and offline RL policies.
+- A standardized suite of teams and opponents for evaluation.
 
 Currently, it is focused on the **first four generations of Pokémon**, which have the longset battle lengths and provide the least information about the opponent's team.
 
 
-Metamon is the codebase behind ["Human-Level Competetitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) Please check out our project website for an overview of our results. This README documents the dataset and evaluation details to help get started in Competitive Pokémon AI.
+Metamon is the codebase behind ["Human-Level Competetitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395). Please check out our [project website](https://metamon.tech) for an overview of our results. This README documents the dataset, pretrained models, training, and evaluation details to help you get battling!
 
 
 <div align="center">
@@ -61,12 +61,15 @@ conda create -n metamon python==3.10
 conda activate metamon
 ```
 
+Then, install with:
 
-### Pokémon Showdown
+```bash
+git clone git@github.com:UT-Austin-RPL/metamon.git
+cd metamon
+pip install -e .
+```
 
-To install [Pokémon Showdown](https://pokemonshowdown.com/) (PS), you will need a modern version of `npm` / Node.js. It's likely you already have this (check that `npm -v` is > 10.0), but if not, you can find instructions [here](https://nodejs.org/en/download/package-manager).
-
-This repo comes packaged with the specific commit that we used during the project (though newer versions should be fine!)
+To install [Pokémon Showdown](https://pokemonshowdown.com/) (PS), you will need a modern version of `npm` / Node.js. It's likely you already have this (check that `npm -v` is > 10.0), but if not, you can find instructions [here](https://nodejs.org/en/download/package-manager). This repo comes packaged with the specific commit that we used during the project (though newer versions should be fine!)
 
 ```bash
 cd server/pokemon-showdown
@@ -77,7 +80,7 @@ Then, we will start a local PS server to handle our battle traffic. The server s
 ```bash
 cp ../config.js config/
 ```
-The main setting in this `config.js` file worth increasing is `export.num_workers`, which will help handle concurrent battles.
+The main setting in this `config.js` file worth knowing about is `export.num_workers`, which helps handle concurrent battles.
 
 You will need to have the PS server running in the background while using Metamon:
 ```bash
@@ -88,8 +91,7 @@ node pokemon-showdown start --no-security # no-security removes the account logi
 You should see a status message printed for each worker.
 
 
-### Poke-Env
-[`poke-env`](https://github.com/hsahovic/poke-env) is a python interface for interacting with the javascript PS server. **Metamon relies on a custom (and by now quite out-of-sync) fork for various early-gen fixes, which should install as part of the metamon package below**. If you run into issues, the repo is here:
+[`poke-env`](https://github.com/hsahovic/poke-env) is a python interface for interacting with the javascript PS server. **Metamon relies on a custom (and now quite out-of-sync) fork for various early-gen fixes, which should install as part of the metamon package**. If you run into issues, the repo is here:
 
 ```bash
 # does not need to be in the same directory as pokemon-showdown
@@ -98,25 +100,11 @@ cd poke-env
 pip install -e .
 ```
 
-### Metamon
-Metamon closes the rest of the gap between `poke-env` and large-scale RL. It can be installed with:
-```bash
-git clone git@github.com:UT-Austin-RPL/metamon.git
-cd metamon
-pip install -e .
-```
-
 You can verify that installation has gone smoothly with:
 ```bash
 python -m metamon.env
 ```
-Which will run a few test battles and print a progress bar to the terminal.
-
-
-### AMAGO *(Optional)*
-We plan to move the pretrained agents into `metamon` in the near future. But for now, the only way to run them is to install [`amago`](https://github.com/UT-Austin-RPL/amago), which is work by the same authors, and handled all our RL training. Please follow the instructions there.
-
-<br>
+Which will run a few test battles on your local server and print a progress bar to the terminal.
 
 
 <br>

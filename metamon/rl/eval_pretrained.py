@@ -296,7 +296,7 @@ class MediumRL_MaxQ(PretrainedModel):
         )
 
 
-class LargeRL_Aug(PretrainedModel):
+class LargeRL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="large-rl-aug",
@@ -379,17 +379,67 @@ if __name__ == "__main__":
     mp.set_start_method("spawn")
 
     parser = ArgumentParser()
-    parser.add_argument("--agent", required=True)
-    parser.add_argument("--gens", type=int, nargs="+", default=1)
-    parser.add_argument("--log_to_wandb", action="store_true")
     parser.add_argument(
-        "--formats", nargs="+", default="ou", choices=["ubers", "ou", "uu", "nu"]
+        "--agent",
+        required=True,
+        choices=[
+            "SmallIL",
+            "SmallILFA",
+            "SmallRL",
+            "SmallRL_ExtremeFilter",
+            "SmallRL_BinaryFilter",
+            "SmallRL_Aug",
+            "SmallRL_MaxQ",
+            "MediumIL",
+            "MediumRL",
+            "MediumRL_Aug",
+            "MediumRL_MaxQ",
+            "LargeIL",
+            "LargeRL",
+            "SyntheticRLV0",
+            "SyntheticRLV1",
+            "SyntheticRLV1_SelfPlay",
+            "SyntheticRLV1_PlusPlus",
+            "SyntheticRLV2",
+        ],
+        help="Choose a pretrained model to evaluate.",
     )
-    parser.add_argument("--username", required=True)
-    parser.add_argument("--ps_password", default=None)
-    parser.add_argument("--n_challenges", type=int, default=10)
-    parser.add_argument("--avatar", default="preschooler")
-    parser.add_argument("--checkpoints", type=int, nargs="+", default=[None])
+    parser.add_argument(
+        "--gens",
+        type=int,
+        nargs="+",
+        default=1,
+        help="Specify the generations to evaluate.",
+    )
+    parser.add_argument(
+        "--log_to_wandb", action="store_true", help="Log results to Weights & Biases."
+    )
+    parser.add_argument(
+        "--formats",
+        nargs="+",
+        default="ou",
+        choices=["ubers", "ou", "uu", "nu"],
+        help="Specify the battle formats.",
+    )
+    parser.add_argument(
+        "--username", default="Metamon", help="Username for the Showdown server."
+    )
+    parser.add_argument(
+        "--ps_password", default=None, help="Password for the Showdown server."
+    )
+    parser.add_argument(
+        "--n_challenges", type=int, default=10, help="Number of battles to run."
+    )
+    parser.add_argument(
+        "--avatar", default="red-gen1main", help="Avatar to use for the battles."
+    )
+    parser.add_argument(
+        "--checkpoints",
+        type=int,
+        nargs="+",
+        default=[None],
+        help="Checkpoints to evaluate.",
+    )
     parser.add_argument(
         "--eval_type",
         choices=[
@@ -398,14 +448,24 @@ if __name__ == "__main__":
             "ladder",
             "local-ladder",
         ],
+        help="Type of evaluation to perform. 'heuristic' will run the agent against the heuristic baselines, 'il' will run the agent against the IL baselines, 'ladder' will run the agent on the public Showdown ladder, and 'local-ladder' will run the agent against the local Showdown ladder. If you set two agents to play on the local-ladder, they will be battling each other!",
     )
-    parser.add_argument("--save_trajs_to", default=None)
+    parser.add_argument(
+        "--save_trajs_to",
+        default=None,
+        help="Path to save (amago-format) trajectories of completed battles.",
+    )
     parser.add_argument(
         "--team_split",
         default="competitive",
         choices=["competitive", "train", "replays", "random_lead"],
+        help="Team split strategy.",
     )
-    parser.add_argument("--wait_for_input", action="store_true")
+    parser.add_argument(
+        "--wait_for_input",
+        action="store_true",
+        help="Wait for user input before starting.",
+    )
     args = parser.parse_args()
 
     agent_maker = eval(args.agent)()

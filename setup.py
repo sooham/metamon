@@ -6,7 +6,7 @@ setup(
     author="Jake Grigsby",
     author_email="grigsby@cs.utexas.edu",
     license="MIT",
-    packages=find_packages(include=["metamon", "server/poke_env"]),
+    packages=find_packages(include=["metamon"]),
     python_requires=">=3.10",
     install_requires=[
         "gymnasium>=0.26,<=0.29.1",
@@ -20,5 +20,6 @@ setup(
         "termcolor",
         "huggingface_hub",
         "poke-env @ git+https://github.com/jakegrigsby/poke-env.git",
+        "amago @ git+https://github.com/ut-austin-rpl/amago.git",
     ],
 )
