@@ -1,6 +1,6 @@
 
 <div align="center">
-    <img src="media/metamon_text_logo.png" alt="Metamon Text Logo" width="380">
+    <img src="media/metamon_text_logo.png" alt="Metamon Text Logo" width="390">
 </div>
 
 <br>
