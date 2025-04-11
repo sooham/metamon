@@ -100,48 +100,6 @@ if __name__ == "__main__":
         os.path.join(args.parsed_replay_root, "**/*.npz"), recursive=True
     )
 
-    (
-        unrated,
-        r1000_less,
-        r1000_1100,
-        r1100_1200,
-        r1200_1300,
-        r1300_1400,
-        r1400_1500,
-        r1500_plus,
-    ) = (0, 0, 0, 0, 0, 0, 0, 0)
-    for filename in filenames:
-        rating = os.path.basename(filename).split("_")[-2]
-        if rating == "Unrated":
-            unrated += 1
-            continue
-        rating = int(rating)
-        if rating < 1000:
-            r1000_less += 1
-        elif 1000 <= rating < 1100:
-            r1000_1100 += 1
-        elif 1100 <= rating < 1200:
-            r1100_1200 += 1
-        elif 1200 <= rating < 1300:
-            r1200_1300 += 1
-        elif 1300 <= rating < 1400:
-            r1300_1400 += 1
-        elif 1400 <= rating < 1500:
-            r1400_1500 += 1
-        elif 1500 <= rating:
-            r1500_plus += 1
-
-    print(args.parsed_replay_root)
-    print(f"Unrated: {unrated}")
-    print(f"Rated < 1000: {r1000_less}")
-    print(f"1000 <= Rating < 1100: {r1000_1100}")
-    print(f"1100 <= Rating < 1200: {r1100_1200}")
-    print(f"1200 <= Rating < 1300: {r1200_1300}")
-    print(f"1300 <= Rating < 1400: {r1300_1400}")
-    print(f"1400 <= Rating < 1500: {r1400_1500}")
-    print(f"Rated >= 1500: {r1500_plus}")
-
-    lengths = []
     print(len(tokenizer))
     for filename in tqdm.tqdm(filenames):
         try:
@@ -153,9 +111,6 @@ if __name__ == "__main__":
         except:
             # os.remove(filename)
             print(f"Failed to load: {filename}")
-
-    lengths = np.array(lengths)
-    np.savez("replay_lengths.npz", lengths=lengths)
 
     from metamon.task_distributions import TASK_DISTRIBUTIONS
     from metamon.env import MetaShowdown
