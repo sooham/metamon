@@ -4,13 +4,15 @@ import json
 from functools import partial
 import multiprocessing as mp
 import warnings
+
 from huggingface_hub import hf_hub_download
 
 # Suppress specific gymnasium warnings about env.current_task deprecation
 warnings.filterwarnings("ignore", message=".*env.current_task.*", category=UserWarning)
-
 import amago
 from amago.cli_utils import *
+from amago.utils import amago_warning
+import torch
 
 from metamon.env import MetaShowdown, TokenizedEnv, LocalLadder
 from metamon.rl.metamon_to_amago import (
@@ -159,10 +161,24 @@ class PretrainedModel:
 
     @property
     def base_config(self):
+        has_gpu = torch.cuda.is_available()
+        try:
+            import flash_attn
+
+            has_flash_attn = True
+        except ImportError:
+            has_flash_attn = False
+        if has_flash_attn and has_gpu:
+            attn_type = amago.nets.transformer.FlashAttention
+            amago_warning("Using FlashAttention")
+        else:
+            attn_type = amago.nets.transformer.VanillaAttention
+            amago_warning("Warning: Using unofficial VanillaAttention implementation")
         return {
             "amago.agent.Agent.reward_multiplier": 10.0,
             "amago.agent.Agent.fake_filter": self.is_il_model,
             "amago.agent.Agent.use_multigamma": not self.is_il_model,
+            "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": attn_type,
         }
 
     def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False):
