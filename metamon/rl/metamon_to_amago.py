@@ -59,7 +59,7 @@ class PSLadderAMAGOWrapper(MetamonAMAGOWrapper):
         return f"psladder_{self.env.env.env.username}"
 
 
-class MetamonToAMAGO(gym.Env):
+class ReplayConversionEnv(gym.Env):
     def __init__(self, input_dir, tokenizer=get_tokenizer("allreplays-v3")):
         self.tokenizer = tokenizer
         self.action_space = gym.spaces.Discrete(9)

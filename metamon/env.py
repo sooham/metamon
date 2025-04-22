@@ -1,5 +1,4 @@
 import time
-import random
 import os
 import gc
 import string
@@ -10,10 +9,9 @@ import numpy as np
 import gymnasium as gym
 from poke_env import (
     AccountConfiguration,
-    ShowdownServerConfiguration,
     LocalhostServerConfiguration,
 )
-from poke_env.environment import Battle, Status
+from poke_env.environment import Battle
 from poke_env.player import OpenAIGymEnv, Player
 
 
