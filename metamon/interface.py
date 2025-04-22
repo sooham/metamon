@@ -661,3 +661,6 @@ class BinaryReward(RewardFunction):
         elif state.battle_lost:
             return -100.0
         return 0.0
+
+
+
