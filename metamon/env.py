@@ -1,5 +1,4 @@
 import time
-import random
 import os
 import gc
 import string
@@ -10,10 +9,9 @@ import numpy as np
 import gymnasium as gym
 from poke_env import (
     AccountConfiguration,
-    ShowdownServerConfiguration,
     LocalhostServerConfiguration,
 )
-from poke_env.environment import Battle, Status
+from poke_env.environment import Battle
 from poke_env.player import OpenAIGymEnv, Player
 
 
@@ -289,6 +287,10 @@ def check_avatar(avatar: str):
 
 
 class LocalLadder(_ShowdownEnv):
+
+    # increases time to launch opponent envs before ladder loop times out ("Agent is not challenging")
+    _INIT_RETRIES = 1000
+
     def __init__(
         self,
         username: str,
@@ -309,6 +311,7 @@ class LocalLadder(_ShowdownEnv):
             team=UniformRandomTeambuilder(gen=gen, format=format, split=team_split),
             start_challenging=False,
             start_timer_on_battle_start=True,
+            avatar=avatar,
         )
 
     def reset(self, *args, **kwargs):

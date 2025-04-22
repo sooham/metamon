@@ -1,7 +1,5 @@
-import os
 from functools import lru_cache
 import re
-import json
 from dataclasses import dataclass
 from typing import Optional, List
 from abc import ABC, abstractmethod
@@ -14,7 +12,6 @@ from poke_env.environment import (
     Pokemon,
     Field,
     Effect,
-    Weather,
     SideCondition,
     Status,
     PokemonType,
@@ -664,3 +661,6 @@ class BinaryReward(RewardFunction):
         elif state.battle_lost:
             return -100.0
         return 0.0
+
+
+
