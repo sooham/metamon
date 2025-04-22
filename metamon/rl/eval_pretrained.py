@@ -168,7 +168,6 @@ class PretrainedModel:
         has_gpu = torch.cuda.is_available()
         try:
             import flash_attn
-
             has_flash_attn = True
         except ImportError:
             has_flash_attn = False

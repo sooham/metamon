@@ -309,6 +309,7 @@ class LocalLadder(_ShowdownEnv):
             team=UniformRandomTeambuilder(gen=gen, format=format, split=team_split),
             start_challenging=False,
             start_timer_on_battle_start=True,
+            avatar=avatar,
         )
 
     def reset(self, *args, **kwargs):
