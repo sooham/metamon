@@ -1,12 +1,12 @@
 # Replay Parser
 
-The replay parser converts from the spectator POV of raw Pokemon Showdown replays to the first-peron POV of RL agents. The process is summarized by the following (simplified) example:
+The replay parser converts from the spectator POV of raw Pokémon Showdown replays to the first-peron POV of RL agents. The process is summarized by the following (simplified) example:
 
 <p align="center">
   <img src="../../../media/replay_reconstruction_example.png">
 </p>
 
-For a real example, view [this replay](https://replay.pokemonshowdown.com/gen4nu-776588848). The parser begins with the raw replay:
+For a real example, view [this replay](https://replay.Pokémonshowdown.com/gen4nu-776588848). The parser begins with the raw replay:
 
 <p align="center">
   <img src="../../../media/raw_replay_example.png" width="400">
@@ -20,7 +20,7 @@ And infers missing information to produce training data like:
 
 More information and discussion in Appendix D of the paper.
 
-**If you would like to train on your own set of Showdown replay logs, and/or would like to change the observation or reward function of existing replays, you will need run the replay parser**. Please be warned that it is poorly documented and requires significant Pokemon knowledge to debug/improve/extend. It is not really expected that this part of the codebase will be used externally. However, you can open an issue and I will get back to you. Updates are expected:
+**If you would like to train on your own set of Showdown replay logs, and/or would like to change the observation or reward function of existing replays, you will need run the replay parser**. Please be warned that it is poorly documented and requires significant Pokémon knowledge to debug/improve/extend. It is not really expected that this part of the codebase will be used externally. However, you can open an issue and I will get back to you. Updates are expected:
 
 ### Roadmap
 - Improved team inference logic (beyond all-time averages of Showdown usage stats)

@@ -5,14 +5,17 @@ from functools import partial
 import multiprocessing as mp
 import warnings
 
-from huggingface_hub import hf_hub_download
+warnings.filterwarnings("ignore")
 
-# Suppress specific gymnasium warnings about env.current_task deprecation
-warnings.filterwarnings("ignore", message=".*env.current_task.*", category=UserWarning)
+
+def red_warning(msg: str):
+    print(f"\033[91m{msg}\033[0m")
+
+
+from huggingface_hub import hf_hub_download
+import torch
 import amago
 from amago.cli_utils import *
-from amago.utils import amago_warning
-import torch
 
 from metamon.env import MetaShowdown, TokenizedEnv, LocalLadder
 from metamon.rl.metamon_to_amago import (
@@ -121,6 +124,7 @@ def _create_placeholder_experiment(
         start_learning_at_epoch=float("inf"),
         start_collecting_at_epoch=float("inf"),
         train_timesteps_per_epoch=0,
+        stagger_traj_file_lengths=False,
         train_batches_per_epoch=0,
         val_interval=None,
         val_timesteps_per_epoch=0,
@@ -170,10 +174,10 @@ class PretrainedModel:
             has_flash_attn = False
         if has_flash_attn and has_gpu:
             attn_type = amago.nets.transformer.FlashAttention
-            amago_warning("Using FlashAttention")
+            red_warning("Using FlashAttention")
         else:
             attn_type = amago.nets.transformer.VanillaAttention
-            amago_warning("Warning: Using unofficial VanillaAttention implementation")
+            red_warning("Warning: Using unofficial VanillaAttention implementation")
         return {
             "amago.agent.Agent.reward_multiplier": 10.0,
             "amago.agent.Agent.fake_filter": self.is_il_model,
