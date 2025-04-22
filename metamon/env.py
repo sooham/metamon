@@ -289,6 +289,10 @@ def check_avatar(avatar: str):
 
 
 class LocalLadder(_ShowdownEnv):
+
+    # increases time to launch opponent envs before ladder loop times out ("Agent is not challenging")
+    _INIT_RETRIES = 1000
+
     def __init__(
         self,
         username: str,
