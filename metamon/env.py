@@ -1,9 +1,9 @@
 import time
+import copy
 import os
 import gc
-import string
 import uuid
-from typing import Optional, Type
+from typing import Optional
 
 import numpy as np
 import gymnasium as gym
@@ -20,22 +20,30 @@ from metamon.interface import (
     action_idx_to_battle_order,
     RewardFunction,
     DefaultShapedReward,
+    ObservationSpace,
+    DefaultObservationSpace,
 )
 from metamon.task_distributions import (
     TaskDistribution,
     UniformRandomTeambuilder,
     FixedGenOpponentDistribution,
 )
-from metamon.data.tokenizer import get_tokenizer
+from metamon.data.tokenizer import get_tokenizer, PokemonTokenizer
 from metamon.data import DATA_PATH
 
 
 class _ShowdownEnv(OpenAIGymEnv):
     def __init__(
-        self, opponent: Player, reward_function: RewardFunction, *args, **kwargs
+        self,
+        opponent: Player,
+        reward_function: Optional[RewardFunction] = None,
+        observation_space: Optional[ObservationSpace] = None,
+        *args,
+        **kwargs,
     ):
         self._current_baseline_opponent = opponent
-        self.reward_function = reward_function
+        self.reward_function = reward_function or DefaultShapedReward()
+        self.metamon_obs_space = observation_space or DefaultObservationSpace()
         super().__init__(*args, **kwargs)
 
     def action_space_size(self):
@@ -65,23 +73,7 @@ class _ShowdownEnv(OpenAIGymEnv):
         return self._current_baseline_opponent
 
     def describe_embedding(self) -> gym.spaces.Space:
-        return gym.spaces.Dict(
-            {
-                "numbers": gym.spaces.Box(
-                    low=-10.0,
-                    high=10.0,
-                    shape=(48,),
-                    dtype=np.float32,
-                ),
-                "text": gym.spaces.Text(
-                    max_length=900,
-                    min_length=800,
-                    charset=set(string.ascii_lowercase)
-                    | set(str(n) for n in range(0, 10))
-                    | {"<", ">"},
-                ),
-            }
-        )
+        return self.metamon_obs_space.gym_space
 
     def calc_reward(self, last_battle: Battle, current_battle: Battle) -> float:
         last_state = UniversalState.from_Battle(last_battle)
@@ -91,19 +83,21 @@ class _ShowdownEnv(OpenAIGymEnv):
 
     def embed_battle(self, battle: Battle):
         universal_state = UniversalState.from_Battle(battle)
-        return universal_state.to_numpy()
+        return self.metamon_obs_space.state_to_obs(universal_state)
 
 
 class MetaShowdown(gym.Env):
     def __init__(
         self,
         task_distribution: TaskDistribution,
+        observation_space: Optional[ObservationSpace] = None,
         test_set: bool = False,
         new_task_every: int = 50,
         turn_limit: int = 200,
     ):
         self.task_distribution = task_distribution
         self.current_task = self.task_distribution.generate_task(test_set=test_set)
+        self.metamon_obs_space = observation_space or DefaultObservationSpace()
         self.inner_env = None
         self.battle_format = None
         self.test_set = test_set
@@ -113,26 +107,7 @@ class MetaShowdown(gym.Env):
         self.new_task_every = new_task_every
         self.action_space = gym.spaces.Discrete(9)
         self.turn_limit = turn_limit
-        self.observation_space = gym.spaces.Dict(
-            {
-                "numbers": gym.spaces.Box(
-                    low=-10.0,
-                    high=10.0,
-                    shape=(48,),
-                    dtype=np.float32,
-                ),
-                "text": gym.spaces.Text(
-                    max_length=900,
-                    min_length=800,
-                    charset=set(string.ascii_lowercase)
-                    | set(str(n) for n in range(0, 10))
-                    | {"<", ">"},
-                ),
-                "meta": gym.spaces.Box(
-                    low=0.0, high=float("inf"), shape=(2,), dtype=np.float32
-                ),
-            }
-        )
+        self.observation_space = self.metamon_obs_space.gym_space
 
     def new_task(self):
         if isinstance(self.task_distribution, FixedGenOpponentDistribution):
@@ -166,6 +141,7 @@ class MetaShowdown(gym.Env):
                 ),
                 opponent=self.opponent,
                 reward_function=self.current_task.reward_function,
+                observation_space=self.metamon_obs_space,
                 start_challenging=True,
                 team=self.current_task.player_teambuilder,
                 ping_timeout=None,
@@ -197,6 +173,7 @@ class MetaShowdown(gym.Env):
             ),
             opponent=self.opponent,
             reward_function=self.current_task.reward_function,
+            observation_space=self.metamon_obs_space,
             start_challenging=True,
             team=self.current_task.player_teambuilder,
             ping_timeout=None,
@@ -287,7 +264,6 @@ def check_avatar(avatar: str):
 
 
 class LocalLadder(_ShowdownEnv):
-
     # increases time to launch opponent envs before ladder loop times out ("Agent is not challenging")
     _INIT_RETRIES = 1000
 
@@ -298,12 +274,14 @@ class LocalLadder(_ShowdownEnv):
         format: str,
         team_split: str,
         avatar: Optional[str] = None,
-        reward_function: Optional[Type[RewardFunction]] = None,
+        reward_function: Optional[RewardFunction] = None,
+        observation_space: Optional[ObservationSpace] = None,
     ):
         if avatar is not None:
             check_avatar(avatar)
         super().__init__(
             reward_function=reward_function or DefaultShapedReward(),
+            observation_space=observation_space or DefaultObservationSpace(),
             opponent=None,
             battle_format=f"gen{gen}{format.lower()}",
             server_configuration=LocalhostServerConfiguration,
@@ -333,26 +311,32 @@ class LocalLadder(_ShowdownEnv):
 
 
 class TokenizedEnv(gym.ObservationWrapper):
-    def __init__(self, env: MetaShowdown, tokenizer=get_tokenizer("allreplays-v3")):
+    def __init__(
+        self,
+        env: gym.Env,
+        obs_key_to_tokenize: str = "text",
+        tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
+    ):
         super().__init__(env)
         self.tokenizer = tokenizer
-        obs_space = {
-            "tokens": gym.spaces.Box(
-                low=-1, high=len(tokenizer), shape=(87,), dtype=np.int32
-            ),
-            "numbers": env.observation_space["numbers"],
+        self.obs_key_to_tokenize = obs_key_to_tokenize
+        obs_space = copy.deepcopy(env.observation_space)
+        new_space_dict = {
+            key: space
+            for key, space in obs_space.spaces.items()
+            if key != self.obs_key_to_tokenize
         }
-        self.add_meta = "meta" in env.observation_space
-        if self.add_meta:
-            obs_space["meta"] = env.observation_space["meta"]
-        self.observation_space = gym.spaces.Dict(obs_space)
+        # TODO: auto-set tokenized length based on placeholder obs
+        new_space_dict["tokens"] = gym.spaces.Box(
+            low=-1, high=len(tokenizer), shape=(87,), dtype=np.int32
+        )
+        self.observation_space = gym.spaces.Dict(new_space_dict)
 
     def observation(self, obs):
-        tokens = self.tokenizer.tokenize(obs["text"].tolist())
-        obs_dict = {"tokens": tokens, "numbers": obs["numbers"]}
-        if self.add_meta:
-            obs_dict["meta"] = obs["meta"]
-        return obs_dict
+        to_tokenize = obs.pop(self.obs_key_to_tokenize)
+        tokens = self.tokenizer.tokenize(to_tokenize.tolist())
+        obs["tokens"] = tokens
+        return obs
 
     def close(self, *args, **kwargs):
         self.env.close(*args, **kwargs)
@@ -360,10 +344,7 @@ class TokenizedEnv(gym.ObservationWrapper):
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
-    from metamon.task_distributions import (
-        get_task_distribution,
-        FixedGenOpponentDistribution,
-    )
+    from metamon.task_distributions import FixedGenOpponentDistribution
     import metamon
 
     parser = ArgumentParser()

@@ -168,12 +168,12 @@ class PretrainedModel:
         has_gpu = torch.cuda.is_available()
         try:
             import flash_attn
+
             has_flash_attn = True
         except ImportError:
             has_flash_attn = False
         if has_flash_attn and has_gpu:
             attn_type = amago.nets.transformer.FlashAttention
-            red_warning("Using FlashAttention")
         else:
             attn_type = amago.nets.transformer.VanillaAttention
             red_warning("Warning: Using unofficial VanillaAttention implementation")
@@ -182,6 +182,9 @@ class PretrainedModel:
             "amago.agent.Agent.fake_filter": self.is_il_model,
             "amago.agent.Agent.use_multigamma": not self.is_il_model,
             "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": attn_type,
+            # skip cpu-intensive init, because we're going to be replacing the weights
+            # with a checkpoint anyway.... If you get an error about this, pull `amago`.
+            "amago.nets.transformer.SigmaReparam.fast_init": True,
         }
 
     def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False):
