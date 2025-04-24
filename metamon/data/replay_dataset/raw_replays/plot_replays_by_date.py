@@ -51,6 +51,9 @@ def plot_aggregate_time_series(data: dict, ax: plt.Axes) -> None:
     # Increase tick label size
     ax.tick_params(axis="both", which="major", labelsize=12)
 
+    # Set x-axis limits from Jan 1 2014 to present
+    ax.set_xlim(datetime(2014, 1, 1), datetime.now())
+
     # Rotate and align the tick labels so they look better
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
 
