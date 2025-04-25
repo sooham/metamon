@@ -26,6 +26,18 @@ def extract_replay_info(replay_data: dict) -> dict:
     for key in approved_entries:
         if key not in replay_data:
             replay_data[key] = "MISSING"
+        elif key == "players":
+            try:
+                replay_data[key] = [str(player) for player in replay_data[key]]
+            except Exception as e:
+                print(f"Error converting players to list of strings: {e}")
+                replay_data[key] = "MISSING"
+        elif key == "uploadtime":
+            try:
+                replay_data[key] = int(replay_data[key])
+            except Exception as e:
+                print(f"Error converting uploadtime to int: {replay_data[key]}")
+                replay_data[key] = "MISSING"
         else:
             replay_data[key] = str(replay_data[key])
     return replay_data
