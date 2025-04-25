@@ -27,6 +27,7 @@ class ReplayParser:
         verbose: bool = False,
         sleep_on_handled_exception: int = 0.1,
         reward_function: interface.RewardFunction = interface.DefaultShapedReward(),
+        observation_space: interface.ObservationSpace = interface.DefaultObservationSpace(),
     ):
         self.output_dir = output_dir
         self.verbose = verbose
@@ -35,6 +36,7 @@ class ReplayParser:
         self.sleep_on_handled_exception = sleep_on_handled_exception
         self.error_history = {"Forward": {}, "Backward": {}}
         self.reward_function = reward_function
+        self.observation_space = observation_space
 
     def summarize_errors(self):
         return {
@@ -103,10 +105,7 @@ class ReplayParser:
         for state, action in zip(states, actions):
             universal_state = interface.UniversalState.from_ReplayState(state)
             action_idx = interface.replaystate_action_to_idx(state, action)
-            obs = universal_state.to_numpy()
-            if len(obs["numbers"]) != 48:
-                breakpoint()
-                raise ToNumpyError(obs)
+            obs = self.observation_space.state_to_obs(universal_state)
             obs_strings.append(obs["text"])
             if action_idx is None:
                 raise InvalidActionIndex(obs["text"], action)
@@ -249,7 +248,7 @@ if __name__ == "__main__":
 
     invalid_format_set: set[str] = set()
     path = os.path.join(args.raw_replay_dir, f"gen{args.gen}", args.format)
-    filenames = glob.glob(f"{path}/*.json")
+    filenames = glob.glob(f"{path}/**/*.json", recursive=True)
     random.shuffle(filenames)
     if args.filter_by_code is not None:
         filenames = [f for f in filenames if args.filter_by_code in f]
@@ -258,8 +257,13 @@ if __name__ == "__main__":
     if args.max is not None:
         filenames = filenames[: args.max]
 
+    output_dir = (
+        os.path.join(args.output_dir, f"gen{args.gen}{args.format}")
+        if args.output_dir
+        else None
+    )
     parser = ReplayParser(
-        output_dir=os.path.join(args.output_dir, f"gen{args.gen}{args.format}"),
+        output_dir=output_dir,
         verbose=args.verbose,
     )
     if args.processes > 1:
