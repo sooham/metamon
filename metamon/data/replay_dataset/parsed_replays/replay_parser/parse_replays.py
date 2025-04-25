@@ -9,14 +9,14 @@ from datetime import datetime
 
 import numpy as np
 from metamon import interface
-from metamon.data.replay_dataset.replay_parser import backward, forward
-from metamon.data.replay_dataset.replay_parser.exceptions import (
+from metamon.data.replay_dataset.parsed_replays.replay_parser import backward, forward
+from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import (
     BackwardException,
     ForwardException,
     InvalidActionIndex,
     ToNumpyError,
 )
-from metamon.data.replay_dataset.replay_parser.replay_state import Action, ReplayState
+from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import Action, ReplayState
 
 
 class ReplayParser:
@@ -133,12 +133,13 @@ class ReplayParser:
         replay: backward.POVReplay,
         to_train_set: bool,
         time_played: datetime,
-        username: str,
+        player_username: str,
+        opponenent_username: str,
     ):
         obs_seq, actions, rewards = self.povreplay_to_seq(replay)
         if self.output_dir is not None:
             won = "WIN" if replay.winner else "LOSS"
-            filename = f"{replay.gameid}_{replay.rating}_{username}_{time_played.strftime('%m-%d-%Y')}_{won}.npz"
+            filename = f"{replay.gameid}_{replay.rating}_{player_username}_vs_{opponenent_username}_{time_played.strftime('%m-%d-%Y')}_{won}.npz"
             split = "train" if to_train_set else "val"
             path = os.path.join(self.output_dir, split)
             if not os.path.exists(path):
@@ -186,7 +187,6 @@ class ReplayParser:
         replay = forward.ParsedReplay(
             gameid="-".join(path.split("-")[-2:]).replace(".json", ""),
             format=data["format"],
-            views=data["views"],
             time_played=time_played,
         )
         log = self.clean_log(data)
@@ -204,13 +204,15 @@ class ReplayParser:
                 replay_from_p1,
                 to_train_set,
                 time_played=time_played,
-                username=p1_username,
+                player_username=p1_username,
+                opponenent_username=p2_username,
             )
             self.save_to_disk(
                 replay_from_p2,
                 to_train_set,
                 time_played=time_played,
-                username=p2_username,
+                player_username=p2_username,
+                opponenent_username=p1_username,
             )
 
         except (ForwardException, BackwardException) as e:

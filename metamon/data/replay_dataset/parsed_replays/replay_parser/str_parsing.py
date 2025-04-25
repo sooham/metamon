@@ -1,7 +1,7 @@
 import re
 from typing import Optional
 
-from metamon.data.replay_dataset.replay_parser.exceptions import *
+from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import *
 from poke_env.data import to_id_str
 
 

@@ -4,9 +4,9 @@ from datetime import datetime
 from itertools import chain
 from typing import List, Optional
 
-from metamon.data.replay_dataset.replay_parser import checks
-from metamon.data.replay_dataset.replay_parser.exceptions import *
-from metamon.data.replay_dataset.replay_parser.replay_state import (
+from metamon.data.replay_dataset.parsed_replays.replay_parser import checks
+from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import *
+from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
     Action,
     BackwardMarkers,
     Boosts,
@@ -16,7 +16,8 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
     Turn,
     Winner,
 )
-from metamon.data.replay_dataset.replay_parser.str_parsing import *
+from metamon.data.replay_dataset.parsed_replays.replay_parser.str_parsing import *
+
 from poke_env.data import to_id_str
 from poke_env.environment import STACKABLE_CONDITIONS
 from poke_env.environment import Effect as PEEffect
@@ -30,7 +31,6 @@ from poke_env.environment import Weather as PEWeather
 class ParsedReplay:
     gameid: str
     format: str
-    views: int
     time_played: datetime
     ratings: List[Optional[int | str]] = field(default_factory=lambda: [None, None])
     players: List[Optional[str]] = field(default_factory=lambda: [None, None])
@@ -65,7 +65,7 @@ class ParsedReplay:
         poke_2_str = "\n\t".join([str(x) for x in self.turnlist[-1].pokemon_2])
         items = [
             f"format={self.format}",
-            f"gen={self.gen}" f"views={self.views}",
+            f"gen={self.gen}",
             f"rating={self.rating}",
             f"players={self.players}",
             f"pokemon 1={poke_1_str}",
