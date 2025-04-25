@@ -68,7 +68,6 @@ def main():
     parser.add_argument("--commit-message", required=True, help="Commit message")
     args = parser.parse_args()
 
-    # Process replay files into a dataset
     dataset = process_replay_files(args.input_dir)
 
     print("\nDataset statistics:")
@@ -78,10 +77,7 @@ def main():
         n_null = sum(1 for x in dataset[col] if x is None)
         print(f"{col}: {len(dataset) - n_null} non-null values")
 
-    breakpoint()
-    print(
-        f"\nUploading dataset to HuggingFace ({args.repo_id}) as version {version}..."
-    )
+    print(f"\nUploading dataset to HuggingFace ({args.repo_id})")
 
     # Push to HuggingFace
     dataset.push_to_hub(
