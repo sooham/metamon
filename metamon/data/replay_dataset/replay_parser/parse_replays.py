@@ -98,18 +98,17 @@ class ReplayParser:
         self, states: list[ReplayState], actions: list[Action]
     ):
         universal_states = []
-        obs_strings = []
-        obs_numerical = []
+        obs_seq = {key: [] for key in self.observation_space.gym_space.keys()}
         action_idxs = []
 
         for state, action in zip(states, actions):
             universal_state = interface.UniversalState.from_ReplayState(state)
             action_idx = interface.replaystate_action_to_idx(state, action)
             obs = self.observation_space.state_to_obs(universal_state)
-            obs_strings.append(obs["text"])
+            for obs_key, obs_val in obs.items():
+                obs_seq[obs_key].append(obs_val)
             if action_idx is None:
-                raise InvalidActionIndex(obs["text"], action)
-            obs_numerical.append(obs["numbers"])
+                raise InvalidActionIndex(obs, action)
             action_idxs.append(action_idx)
             universal_states.append(universal_state)
 
@@ -117,11 +116,10 @@ class ReplayParser:
         for prev_state, state in zip(universal_states, universal_states[1:]):
             rewards.append(self.reward_function(prev_state, state))
 
-        obs_strings = np.array(obs_strings)
-        obs_numerical = np.array(obs_numerical)
+        obs_seq = {key: np.array(val) for key, val in obs_seq.items()}
         action_idxs = np.array(action_idxs, dtype=np.int32)
         rewards = np.array(rewards, dtype=np.float32)
-        return (obs_strings, obs_numerical), action_idxs, rewards
+        return obs_seq, action_idxs, rewards
 
     def povreplay_to_seq(self, replay: backward.POVReplay):
         states, actions = self.povreplay_to_state_action(replay)
@@ -130,11 +128,17 @@ class ReplayParser:
         )
         return obs, action_idxs, rewards
 
-    def save_to_disk(self, replay: backward.POVReplay, to_train_set: bool):
-        (obs_text, obs_num), actions, rewards = self.povreplay_to_seq(replay)
+    def save_to_disk(
+        self,
+        replay: backward.POVReplay,
+        to_train_set: bool,
+        time_played: datetime,
+        username: str,
+    ):
+        obs_seq, actions, rewards = self.povreplay_to_seq(replay)
         if self.output_dir is not None:
             won = "WIN" if replay.winner else "LOSS"
-            filename = f"{replay.gameid}_{replay.rating}_{won}.npz"
+            filename = f"{replay.gameid}_{replay.rating}_{username}_{time_played.strftime('%m-%d-%Y')}_{won}.npz"
             split = "train" if to_train_set else "val"
             path = os.path.join(self.output_dir, split)
             if not os.path.exists(path):
@@ -142,8 +146,7 @@ class ReplayParser:
             with open(os.path.join(path, filename), "wb") as f:
                 np.savez_compressed(
                     f,
-                    obs_text=obs_text,
-                    obs_num=obs_num,
+                    **obs_seq,
                     actions=actions,
                     rewards=rewards,
                 )
@@ -178,11 +181,13 @@ class ReplayParser:
                 return
 
         # prepare data
+        p1_username, p2_username = data["players"]
+        time_played = datetime.fromtimestamp(int(data["uploadtime"]))
         replay = forward.ParsedReplay(
             gameid="-".join(path.split("-")[-2:]).replace(".json", ""),
             format=data["format"],
             views=data["views"],
-            time_played=datetime.utcfromtimestamp(int(data["uploadtime"])),
+            time_played=time_played,
         )
         log = self.clean_log(data)
 
@@ -195,8 +200,18 @@ class ReplayParser:
 
             # save as IL/RL experience
             to_train_set = random.random() < self.train_test_split
-            self.save_to_disk(replay_from_p1, to_train_set)
-            self.save_to_disk(replay_from_p2, to_train_set)
+            self.save_to_disk(
+                replay_from_p1,
+                to_train_set,
+                time_played=time_played,
+                username=p1_username,
+            )
+            self.save_to_disk(
+                replay_from_p2,
+                to_train_set,
+                time_played=time_played,
+                username=p2_username,
+            )
 
         except (ForwardException, BackwardException) as e:
             self.add_exception_to_history(e)
