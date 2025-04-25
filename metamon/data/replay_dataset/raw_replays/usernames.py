@@ -4,7 +4,6 @@ import random
 import argparse
 import multiprocessing as mp
 from tqdm import tqdm
-import time
 from typing import Optional
 from functools import lru_cache
 
@@ -20,8 +19,8 @@ OFFICIAL_USERNAMES = os.path.join(
 
 
 class UsernameMap:
-    def __init__(self, real_to_anon: dict[str, str]):
-        self.real_to_anon = real_to_anon
+    def __init__(self, real_to_anon: Optional[dict[str, str]] = None):
+        self.real_to_anon = real_to_anon or {}
         self.anon_to_real = {v: k for k, v in self.real_to_anon.items()}
         self.used_anon_names = set(self.real_to_anon.keys())
 
@@ -87,7 +86,9 @@ class UsernameMap:
 
     def generate_username(self) -> str:
         """Generate a random anonymous username using Pokemon words."""
-        return f"{random.choice(POKEMON_WORDS)}_{random.randint(0, 99999)}"[-18:]
+        return f"{random.choice(POKEMON_WORDS)}{random.randint(0, 99999)}"[
+            -18:
+        ].replace("_", "")
 
 
 def extract_usernames_from_replay(replay_path: str) -> set[str]:
