@@ -1,4 +1,9 @@
-#!/usr/bin/env python3
+"""
+Pulls replays from the PokéChamp dataset and converts to standard replay jsons
+(https://huggingface.co/datasets/milkkarten/pokechamp). The dataset is focused on
+2024/2025 battles that were already present in the Metamon version.
+~66k Gen 1-4 replays adds 144 previously missing battles as of April 2025.
+"""
 
 import argparse
 import json
@@ -39,7 +44,6 @@ def convert_battle_to_replay(
     # Parse the battle text into lines
     lines = battle_text.split("\n")
 
-    # Create the replay JSON
     replay = {
         "id": battle_id,
         "format": format_str,
@@ -51,11 +55,9 @@ def convert_battle_to_replay(
 
 
 def process_dataset(output_dir: str, split: str = "train", formats: set = None) -> None:
-    # Load the dataset
     print(f"Loading {split} split from Hugging Face dataset...")
     dataset = load_dataset("milkkarten/pokechamp", split=split)
 
-    # Get available formats if none specified
     if formats is None:
         formats = get_available_formats(dataset)
         print(f"\nFound {len(formats)} formats in dataset:")
@@ -64,7 +66,6 @@ def process_dataset(output_dir: str, split: str = "train", formats: set = None) 
                 print(f"  {fmt}")
         return
 
-    # Validate requested formats
     invalid_formats = [fmt for fmt in formats if not is_valid_format(fmt)]
     if invalid_formats:
         print(f"\nError: Invalid format(s): {', '.join(invalid_formats)}")
@@ -73,7 +74,6 @@ def process_dataset(output_dir: str, split: str = "train", formats: set = None) 
         )
         return
 
-    # Check which formats are available
     available_formats = get_available_formats(dataset)
     missing_formats = formats - available_formats
     if missing_formats:
@@ -88,10 +88,8 @@ def process_dataset(output_dir: str, split: str = "train", formats: set = None) 
 
     print(f"\nProcessing {len(formats)} format(s): {', '.join(sorted(formats))}")
 
-    # Create output directory structure
     os.makedirs(output_dir, exist_ok=True)
 
-    # Process each battle
     print("Processing battles...")
     format_counts = {fmt: 0 for fmt in formats}
     skipped_count = 0
@@ -101,29 +99,26 @@ def process_dataset(output_dir: str, split: str = "train", formats: set = None) 
         if gamemode not in formats:
             continue
 
-        # Extract game ID
         game_id = extract_game_id(battle["battle_id"])
         if not game_id:
             skipped_count += 1
             continue
 
         date = "-".join(battle["battle_id"].split("-")[1:])
-        # Convert battle to replay format
         replay = convert_battle_to_replay(
             battle_text=battle["text"],
+            # convert to battle_id used by main replay set for deduplication
             battle_id=f"{gamemode}-{battle['battle_id'].split('-')[0]}",
             format_str=gamemode,
             date=date,
         )
 
-        # Save replay JSON using game ID
         replay_path = os.path.join(output_dir, f"{game_id}.json")
         with open(replay_path, "w") as f:
             json.dump(replay, f)
 
         format_counts[gamemode] += 1
 
-    # Print summary
     print("\nSummary:")
     print(f"Output directory: {output_dir}")
     if skipped_count > 0:
@@ -158,11 +153,7 @@ def main():
     )
     args = parser.parse_args()
 
-    # Convert formats to set and normalize
     formats = {normalize_format(fmt) for fmt in args.formats} if args.formats else None
-    print(formats)
-
-    # Process the dataset
     process_dataset(args.output_dir, args.split, formats)
 
 

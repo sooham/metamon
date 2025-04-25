@@ -22,6 +22,10 @@ class PokemonTokenizer:
         return len(self._data.keys())
 
     @property
+    def all_words(self) -> list[str]:
+        return list(self._data.keys())
+
+    @property
     def new_token(self):
         return len(self)
 
