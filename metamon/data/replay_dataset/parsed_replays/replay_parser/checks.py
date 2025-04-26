@@ -1,5 +1,7 @@
 from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import *
-from metamon.data.replay_dataset.parsed_replays.replay_parser.forward import SpecialCategories
+from metamon.data.replay_dataset.parsed_replays.replay_parser.forward import (
+    SpecialCategories,
+)
 from poke_env.environment import Effect as PEEffect
 
 
