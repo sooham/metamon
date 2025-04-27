@@ -8,10 +8,8 @@ import time as time_module
 import aiohttp
 from tqdm import tqdm
 
-# Base URL for replay links
 REPLAY_DOMAIN = "https://replay.pokemonshowdown.com"
 
-# Max requests per second
 N_REQUESTS_PER_SECOND = 1
 
 
@@ -95,38 +93,31 @@ async def scrape_format(
                     for entry in j[:5]:
                         print(f"  {entry['id']} (time: {entry['uploadtime']})")
 
-            # Get game links
-            ids = [entry["id"].replace("?p2", "") for entry in j]
-            links = [f"{REPLAY_DOMAIN}/{id}" for id in ids]
-
-            # Update most recent time from first entry if needed
-            if j and j[0]["uploadtime"] > new_stop_time:
-                new_stop_time = j[0]["uploadtime"]
-
-            # If we've hit our start_date (if specified), we can break
-            if start_date and j[-1]["uploadtime"] < start_date:
-                # Write any remaining entries that are within our date range
-                final_links = [
-                    f"{REPLAY_DOMAIN}/{entry['id'].replace('?p2', '')}"
-                    for entry in j
-                    if entry["uploadtime"] >= start_date
-                ]
-                with WriteProtection():
-                    for link in final_links:
-                        if link not in found_links:
-                            f.write(f"{link}\n")
-                            found_links.add(link)
-                tqdm_bar.update(len(final_links))
-                break
+            # Filter entries within the date range
+            filtered_entries = [
+                entry
+                for entry in j
+                if (start_date is None or entry["uploadtime"] >= start_date)
+                and (end_date is None or entry["uploadtime"] <= end_date)
+            ]
+            filtered_links = [
+                f"{REPLAY_DOMAIN}/{entry['id'].replace('?p2', '')}"
+                for entry in filtered_entries
+            ]
 
             with WriteProtection():
-                for link in links:
+                for link in filtered_links:
                     if link not in found_links:
                         f.write(f"{link}\n")
                         found_links.add(link)
+            tqdm_bar.update(len(filtered_links))
+
+            # If the last entry is before the start_date, stop paginating
+            if start_date is not None and j[-1]["uploadtime"] <= start_date:
+                break
 
             # Update progress bar with actual number of new results
-            tqdm_bar.update(len(links))
+            tqdm_bar.update(len(j))
 
             # Check if we have a complete page (indicating more results)
             if len(j) < 51:
@@ -160,15 +151,15 @@ async def main(args):
     # Convert date strings to timestamps
     start_date = parse_date(args.start_date)
     end_date = parse_date(args.end_date)
+    assert end_date > start_date
 
     tqdm_bar = tqdm()
     futures = []
     async with aiohttp.ClientSession() as session:
         for format in args.formats:
-            out_game_link_file = (
-                f"data/link_files/format/{args.start_date}-{args.end_date}.txt"
+            out_game_link_file = os.path.join(
+                args.output_dir, f"{format}-{args.start_date}-{args.end_date}.txt"
             )
-
             print(f"Writing to {out_game_link_file}")
             os.makedirs(os.path.dirname(out_game_link_file), exist_ok=True)
 
@@ -198,5 +189,6 @@ if __name__ == "__main__":
     parser.add_argument("--n_requests_per_second", type=float, default=5.0)
     parser.add_argument("--start_date", help="Start date in YYYY-MM-DD format")
     parser.add_argument("--end_date", help="End date in YYYY-MM-DD format")
+    parser.add_argument("--output-dir", help="Output directory")
     args = parser.parse_args()
     asyncio.run(main(args))
