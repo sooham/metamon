@@ -136,9 +136,6 @@ class TimestepTransformer(nn.Module):
         self.scratch_tokens = scratch_tokens
         self.d_model = d_model
         self.pos_emb = FixedPosEmb(d_model=d_model)
-        print(d_model)
-        print(n_heads)
-        print()
         emb_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_heads,

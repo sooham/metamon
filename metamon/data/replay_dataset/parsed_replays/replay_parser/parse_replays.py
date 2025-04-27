@@ -6,6 +6,7 @@ import json
 import os
 import warnings
 from datetime import datetime
+from typing import Optional
 
 import numpy as np
 from metamon import interface
@@ -29,8 +30,8 @@ class ReplayParser:
         train_test_split: float = 0.8,
         verbose: bool = False,
         sleep_on_handled_exception: int = 0.1,
-        reward_function: interface.RewardFunction = interface.DefaultShapedReward(),
-        observation_space: interface.ObservationSpace = interface.DefaultObservationSpace(),
+        reward_function: Optional[interface.RewardFunction] = None,
+        observation_space: Optional[interface.ObservationSpace] = None,
     ):
         self.output_dir = output_dir
         self.verbose = verbose
@@ -38,8 +39,10 @@ class ReplayParser:
         self.train_test_split = train_test_split
         self.sleep_on_handled_exception = sleep_on_handled_exception
         self.error_history = {"Forward": {}, "Backward": {}}
-        self.reward_function = reward_function
-        self.observation_space = observation_space
+        self.reward_function = reward_function or interface.DefaultShapedReward()
+        self.observation_space = (
+            observation_space or interface.DefaultObservationSpace()
+        )
 
     def summarize_errors(self):
         return {
@@ -168,10 +171,10 @@ class ReplayParser:
         else:
             e_dict[err_key] = [path]
 
-    def parse_parallel(self, paths: list[str], pool_size: int = 8):
+    def parse_parallel(self, file_paths: list[str], pool_size: int = 8):
         pool = multiprocessing.Pool(pool_size)
         for _ in tqdm.tqdm(
-            pool.imap_unordered(self.parse_replay, paths), total=len(filenames)
+            pool.imap_unordered(self.parse_replay, file_paths), total=len(file_paths)
         ):
             pass
 
