@@ -6,17 +6,21 @@ import json
 import os
 import warnings
 from datetime import datetime
+from typing import Optional
 
 import numpy as np
 from metamon import interface
-from metamon.data.replay_dataset.replay_parser import backward, forward
-from metamon.data.replay_dataset.replay_parser.exceptions import (
+from metamon.data.replay_dataset.parsed_replays.replay_parser import backward, forward
+from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import (
     BackwardException,
     ForwardException,
     InvalidActionIndex,
     ToNumpyError,
 )
-from metamon.data.replay_dataset.replay_parser.replay_state import Action, ReplayState
+from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
+    Action,
+    ReplayState,
+)
 
 
 class ReplayParser:
@@ -26,7 +30,8 @@ class ReplayParser:
         train_test_split: float = 0.8,
         verbose: bool = False,
         sleep_on_handled_exception: int = 0.1,
-        reward_function: interface.RewardFunction = interface.DefaultShapedReward(),
+        reward_function: Optional[interface.RewardFunction] = None,
+        observation_space: Optional[interface.ObservationSpace] = None,
     ):
         self.output_dir = output_dir
         self.verbose = verbose
@@ -34,7 +39,10 @@ class ReplayParser:
         self.train_test_split = train_test_split
         self.sleep_on_handled_exception = sleep_on_handled_exception
         self.error_history = {"Forward": {}, "Backward": {}}
-        self.reward_function = reward_function
+        self.reward_function = reward_function or interface.DefaultShapedReward()
+        self.observation_space = (
+            observation_space or interface.DefaultObservationSpace()
+        )
 
     def summarize_errors(self):
         return {
@@ -96,21 +104,17 @@ class ReplayParser:
         self, states: list[ReplayState], actions: list[Action]
     ):
         universal_states = []
-        obs_strings = []
-        obs_numerical = []
+        obs_seq = {key: [] for key in self.observation_space.gym_space.keys()}
         action_idxs = []
 
         for state, action in zip(states, actions):
             universal_state = interface.UniversalState.from_ReplayState(state)
             action_idx = interface.replaystate_action_to_idx(state, action)
-            obs = universal_state.to_numpy()
-            if len(obs["numbers"]) != 48:
-                breakpoint()
-                raise ToNumpyError(obs)
-            obs_strings.append(obs["text"])
+            obs = self.observation_space.state_to_obs(universal_state)
+            for obs_key, obs_val in obs.items():
+                obs_seq[obs_key].append(obs_val)
             if action_idx is None:
-                raise InvalidActionIndex(obs["text"], action)
-            obs_numerical.append(obs["numbers"])
+                raise InvalidActionIndex(obs, action)
             action_idxs.append(action_idx)
             universal_states.append(universal_state)
 
@@ -118,11 +122,10 @@ class ReplayParser:
         for prev_state, state in zip(universal_states, universal_states[1:]):
             rewards.append(self.reward_function(prev_state, state))
 
-        obs_strings = np.array(obs_strings)
-        obs_numerical = np.array(obs_numerical)
+        obs_seq = {key: np.array(val) for key, val in obs_seq.items()}
         action_idxs = np.array(action_idxs, dtype=np.int32)
         rewards = np.array(rewards, dtype=np.float32)
-        return (obs_strings, obs_numerical), action_idxs, rewards
+        return obs_seq, action_idxs, rewards
 
     def povreplay_to_seq(self, replay: backward.POVReplay):
         states, actions = self.povreplay_to_state_action(replay)
@@ -131,11 +134,18 @@ class ReplayParser:
         )
         return obs, action_idxs, rewards
 
-    def save_to_disk(self, replay: backward.POVReplay, to_train_set: bool):
-        (obs_text, obs_num), actions, rewards = self.povreplay_to_seq(replay)
+    def save_to_disk(
+        self,
+        replay: backward.POVReplay,
+        to_train_set: bool,
+        time_played: datetime,
+        player_username: str,
+        opponenent_username: str,
+    ):
+        obs_seq, actions, rewards = self.povreplay_to_seq(replay)
         if self.output_dir is not None:
             won = "WIN" if replay.winner else "LOSS"
-            filename = f"{replay.gameid}_{replay.rating}_{won}.npz"
+            filename = f"{replay.gameid}_{replay.rating}_{player_username}_vs_{opponenent_username}_{time_played.strftime('%m-%d-%Y')}_{won}.npz"
             split = "train" if to_train_set else "val"
             path = os.path.join(self.output_dir, split)
             if not os.path.exists(path):
@@ -143,8 +153,7 @@ class ReplayParser:
             with open(os.path.join(path, filename), "wb") as f:
                 np.savez_compressed(
                     f,
-                    obs_text=obs_text,
-                    obs_num=obs_num,
+                    **obs_seq,
                     actions=actions,
                     rewards=rewards,
                 )
@@ -162,10 +171,10 @@ class ReplayParser:
         else:
             e_dict[err_key] = [path]
 
-    def parse_parallel(self, paths: list[str], pool_size: int = 8):
+    def parse_parallel(self, file_paths: list[str], pool_size: int = 8):
         pool = multiprocessing.Pool(pool_size)
         for _ in tqdm.tqdm(
-            pool.imap_unordered(self.parse_replay, paths), total=len(filenames)
+            pool.imap_unordered(self.parse_replay, file_paths), total=len(file_paths)
         ):
             pass
 
@@ -179,11 +188,12 @@ class ReplayParser:
                 return
 
         # prepare data
+        p1_username, p2_username = data["players"]
+        time_played = datetime.fromtimestamp(int(data["uploadtime"]))
         replay = forward.ParsedReplay(
             gameid="-".join(path.split("-")[-2:]).replace(".json", ""),
             format=data["format"],
-            views=data["views"],
-            time_played=datetime.utcfromtimestamp(int(data["uploadtime"])),
+            time_played=time_played,
         )
         log = self.clean_log(data)
 
@@ -196,80 +206,21 @@ class ReplayParser:
 
             # save as IL/RL experience
             to_train_set = random.random() < self.train_test_split
-            self.save_to_disk(replay_from_p1, to_train_set)
-            self.save_to_disk(replay_from_p2, to_train_set)
+            self.save_to_disk(
+                replay_from_p1,
+                to_train_set,
+                time_played=time_played,
+                player_username=p1_username,
+                opponenent_username=p2_username,
+            )
+            self.save_to_disk(
+                replay_from_p2,
+                to_train_set,
+                time_played=time_played,
+                player_username=p2_username,
+                opponenent_username=p1_username,
+            )
 
         except (ForwardException, BackwardException) as e:
             self.add_exception_to_history(e)
             warnings.warn(f"Skipping replay {path} due to known exception: {e}.")
-
-
-if __name__ == "__main__":
-    from argparse import ArgumentParser
-
-    parser = ArgumentParser()
-    parser.add_argument("--gen", type=int, choices=list(range(1, 10)), required=True)
-    parser.add_argument(
-        "--raw_replay_dir", required=True, help="Path to raw replay dataset folder."
-    )
-    parser.add_argument(
-        "--format",
-        type=str,
-        choices=["ou", "uu", "nu", "ubers"],
-        required=True,
-    )
-    parser.add_argument("--max", type=int, help="Parse up to this many replays.")
-    parser.add_argument(
-        "--filter_by_code",
-        help="Skip to a specific game id. For example: `gen4ubers-1101300080`",
-    )
-    parser.add_argument(
-        "--start_from",
-        type=int,
-        default=0,
-        help="Start parsing from this index of the dataset (skip replays you've already checked)",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Prints the raw replay stream during parsing (useful for debugging)",
-    )
-    parser.add_argument(
-        "--processes",
-        type=int,
-        default=1,
-        help="Number of parallel parser processes to run",
-    )
-    parser.add_argument(
-        "--output_dir",
-        default=None,
-        help="Directory for output .npz files. `None` runs w/o saving to disk. Data will be saved to {--output_dir}/gen{gen}{format}",
-    )
-    args = parser.parse_args()
-
-    invalid_format_set: set[str] = set()
-    path = os.path.join(args.raw_replay_dir, f"gen{args.gen}", args.format)
-    filenames = glob.glob(f"{path}/*.json")
-    random.shuffle(filenames)
-    if args.filter_by_code is not None:
-        filenames = [f for f in filenames if args.filter_by_code in f]
-    if args.start_from is not None:
-        filenames = filenames[args.start_from :]
-    if args.max is not None:
-        filenames = filenames[: args.max]
-
-    parser = ReplayParser(
-        output_dir=os.path.join(args.output_dir, f"gen{args.gen}{args.format}"),
-        verbose=args.verbose,
-    )
-    if args.processes > 1:
-        random.shuffle(filenames)
-        parser.parse_parallel(filenames, args.processes)
-    else:
-        for filename in tqdm.tqdm(filenames):
-            parser.parse_replay(filename)
-        errors = parser.summarize_errors()
-        for fb, sub in errors.items():
-            print(f"{fb} Errors:")
-            for i, (err, c) in enumerate(sub.items()):
-                print(f"\t{i + 1}. {err}: {c}")

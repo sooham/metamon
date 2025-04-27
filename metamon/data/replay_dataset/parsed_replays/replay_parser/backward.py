@@ -4,9 +4,9 @@ import re
 from functools import lru_cache
 from typing import List, Optional
 
-from metamon.data.replay_dataset.replay_parser import checks, forward
-from metamon.data.replay_dataset.replay_parser.exceptions import *
-from metamon.data.replay_dataset.replay_parser.replay_state import (
+from metamon.data.replay_dataset.parsed_replays.replay_parser import checks, forward
+from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import *
+from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
     Action,
     Boosts,
     Move,
@@ -130,7 +130,6 @@ class POVReplay:
         self.gen = filled_replay.gen
         self.time_played = filled_replay.time_played
         self.rules = filled_replay.rules
-        self.views = filled_replay.views
 
         # rating and winner from POV
         self.rating = filled_replay.ratings[0 if from_p1_pov else 1]

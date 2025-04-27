@@ -22,9 +22,7 @@ from metamon.il.model import (
     TransformerTurnEmbedding,
     FFTurnEmbedding,
 )
-from metamon.data.replay_dataset import (
-    ShowdownReplayDataset,
-)
+from metamon.data.replay_dataset.parsed_replays import ParsedReplayDataset
 from metamon.data.tokenizer import get_tokenizer
 
 MAGIC_PAD_VAL = -1
@@ -129,8 +127,8 @@ class Run:
             wins_losses_both=self.wins_losses_both,
             max_size=self.max_dset_size,
         )
-        self.train_dset = ShowdownReplayDataset(**dset_kwargs, dset_split="train")
-        self.val_dset = ShowdownReplayDataset(**dset_kwargs, dset_split="val")
+        self.train_dset = ParsedReplayDataset(**dset_kwargs, dset_split="train")
+        self.val_dset = ParsedReplayDataset(**dset_kwargs, dset_split="val")
 
         dloader_kwargs = dict(
             batch_size=self.batch_size,

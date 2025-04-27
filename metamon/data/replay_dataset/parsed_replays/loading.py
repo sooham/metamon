@@ -9,7 +9,7 @@ import numpy as np
 from metamon.data.tokenizer import PokemonTokenizer, get_tokenizer
 
 
-class ShowdownReplayDataset(Dataset):
+class ParsedReplayDataset(Dataset):
     def __init__(
         self,
         dset_root: str,

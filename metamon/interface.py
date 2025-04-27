@@ -5,6 +5,8 @@ from typing import Optional, List
 from abc import ABC, abstractmethod
 
 import numpy as np
+import gymnasium as gym
+import string
 
 from poke_env.environment import (
     Battle,
@@ -21,7 +23,7 @@ from poke_env.data import to_id_str
 
 import metamon
 from metamon.data import DATA_PATH
-from metamon.data.replay_dataset.replay_parser.replay_state import (
+from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
     Move as ReplayMove,
     Pokemon as ReplayPokemon,
     Action as ReplayAction,
@@ -479,6 +481,7 @@ class UniversalState:
     # fmt: on
 
     def to_numpy(self) -> dict[str, np.ndarray]:
+        print("in universal state!!!!")
         player_str = (
             f"<player> {self.player_active_pokemon.get_string_features(active=True)}"
         )
@@ -663,4 +666,96 @@ class BinaryReward(RewardFunction):
         return 0.0
 
 
+class ObservationSpace(ABC):
+    def __init__(self, *args, **kwargs):
+        pass
 
+    def __name__(self) -> str:
+        return self.__class__.__name__
+
+    @property
+    @abstractmethod
+    def gym_space(self) -> gym.spaces.Space:
+        """Return the observation space for this observation type."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def state_to_obs(self, state: UniversalState):
+        raise NotImplementedError
+
+    def __call__(self, state: UniversalState) -> dict[str, np.ndarray]:
+        obs = self.state_to_obs(state)
+        # Verify observation matches the defined gym space
+        if not self.gym_space.contains(obs):
+            raise ValueError(
+                f"Observation {obs} does not comply with defined gym space {self.gym_space}"
+            )
+        return obs
+
+
+class DefaultObservationSpace(ObservationSpace):
+    @property
+    def gym_space(self):
+        return gym.spaces.Dict(
+            {
+                "numbers": gym.spaces.Box(
+                    low=-10.0,
+                    high=10.0,
+                    shape=(48,),
+                    dtype=np.float32,
+                ),
+                "text": gym.spaces.Text(
+                    max_length=900,
+                    min_length=800,
+                    charset=set(string.ascii_lowercase)
+                    | set(str(n) for n in range(0, 10))
+                    | {"<", ">"},
+                ),
+            }
+        )
+
+    def state_to_obs(self, state: UniversalState):
+        player_str = (
+            f"<player> {state.player_active_pokemon.get_string_features(active=True)}"
+        )
+        numerical = [
+            state.opponents_remaining / 6.0
+        ] + state.player_active_pokemon.get_numerical_features(active=True)
+
+        # consistent move order
+        move_str, move_num = "", -1
+        for move_num, move in enumerate(
+            consistent_move_order(state.player_active_pokemon.moves)
+        ):
+            move_str += f" <move> {move.get_string_features(active=True)}"
+            numerical += move.get_numerical_features(active=True)
+
+        while move_num < 3:
+            move_str += f" <move> {UniversalMove.get_pad_string(active=True)}"
+            numerical += UniversalMove.get_pad_numerical(active=True)
+            move_num += 1
+
+        # consistent switch order
+        switch_str, switch_num = "", -1
+        for switch_num, switch in enumerate(
+            consistent_pokemon_order(state.available_switches)
+        ):
+            switch_str += f" <switch> {switch.get_string_features(active=False)}"
+            numerical += switch.get_numerical_features(active=False)
+        while switch_num < 4:
+            switch_str += f" <switch> {UniversalPokemon.get_pad_string(active=False)}"
+            numerical += UniversalPokemon.get_pad_numerical(active=False)
+            switch_num += 1
+
+        force_switch = "<forcedswitch>" if state.forced_switch else "<anychoice>"
+        opponent_str = f"<opponent> {state.opponent_active_pokemon.get_string_features(active=True)}"
+        numerical += state.opponent_active_pokemon.get_numerical_features(active=True)
+        global_str = f"<conditions> {state.weather} {state.player_conditions} {state.opponent_conditions}"
+        prev_move_str = f"<player_prev> {state.player_prev_move.get_string_features(active=False)} <opp_prev> {state.opponent_prev_move.get_string_features(active=False)}"
+
+        text = np.array(
+            f"<{state.format}> {force_switch} {player_str} {move_str.strip()} {switch_str.strip()} {opponent_str} {global_str} {prev_move_str}",
+            dtype=np.str_,
+        )
+        numbers = np.array(numerical, dtype=np.float32)
+        return {"text": text, "numbers": numbers}

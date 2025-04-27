@@ -30,7 +30,7 @@
 - Starting points for training imitation learning (IL) and offline RL policies.
 - A standardized suite of teams and opponents for evaluation.
 
-Currently, it is focused on the **first four generations of Pokémon**, which have the longset battle lengths and provide the least information about the opponent's team.
+Currently, it is focused on singles formats of the **first four generations of Pokémon**, which have the longset battle lengths and provide the least information about the opponent's team.
 
 
 Metamon is the codebase behind ["Human-Level Competetitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395). Please check out our [project website](https://metamon.tech) for an overview of our results. This README documents the dataset, pretrained models, training, and evaluation details to help you get battling!
@@ -112,7 +112,7 @@ Which will run a few test battles on your local server and print a progress bar 
 
 ## Battle Datasets
 
-PS creates "replays" of battles that players can choose to upload to the website before they expire. We gathered all surviving historical replays for Generations 1-4 Ubers, OverUsed, UnderUsed, and NeverUsed, and now save active battles before expiration to accelerate dataset growth.
+PS creates "replays" of battles that players can choose to upload to the website before they expire. We gathered all surviving historical replays for Generations 1-4 Ubers, OverUsed, UnderUsed, and NeverUsed, and now save new battles to grow the dataset.
 
 PS replays are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. We unlock the replay dataset for RL by "reconstructing" the point-of-view of each player. 
 
@@ -122,14 +122,15 @@ PS replays are saved from the point-of-view of a *spectator* rather than the poi
 <br>
 
 
-Datasets are stored on huggingface in two formats:
+Datasets are stored on huggingface in three formats:
 
 | Name |  Battles | Description |
 |------|------|-------------|
-|**[`metamon-parsed-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-replays)** | 1.05M | Real Showdown battles only! Provides the dataset in the most portable form (fresh from the [replay parser](metamon/data/replay_dataset/replay_parser/)). Observations are dicts of text and numerical features. These datasets have **missing actions** (`action = -1`) where the player's choice is not revelead to spectators. Includes ~100k more trajectories than were used by most experiments in the paper (because more human battles have been played!). |
+|**[`metamon-raw-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-raw-replays)** | 535k | Our curated set of Pokémon Showdown replay `.json` files... to save the Showdown API some download requests and to maintain an official reference of our training data. Will be regularly updated as new battles are played and collected. |
+|**[`metamon-parsed-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-replays)** | 1.05M | Real Showdown battles only! Provides the dataset in the most portable form (fresh from the [replay parser](metamon/data/replay_dataset/parsed_replays/replay_parser/)). Observations are dicts of text and numerical features. These datasets have **missing actions** (`action = -1`) where the player's choice is not revelead to spectators. Includes ~100k more trajectories than were used by most experiments in the paper (because more human battles have been played!). |
 |**[`metamon-synthetic`](https://huggingface.co/datasets/jakegrigsby/metamon-synthetic)** | 5M | Parsed replays + self-play data converted to the format expected by the RL trainer --- though they can still be used anywhere with a little pre-processing. Text is stored as tokenized ints based on all the words that appear in the parsed replays. Missing actions have been filled by an IL model. This is the final version used in the paper. |
 
-See `python -m metamon.data.replay_dataset.download -h` to download and extract the parsed replay dataset.
+See `python -m metamon.data.replay_dataset.raw_replays.download_from_hf -h` to download the raw replay dataset, and `python -m metamon.data.replay_dataset.parsed_replays.download_from_hf -h` to download and extract the parsed replays.
 
 
 <br>
