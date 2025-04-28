@@ -22,7 +22,7 @@ class UnfinishedMessageException(ForwardException):
         )
 
 
-class TeamTooLarge(ForwardException):
+class UnusualTeamSize(ForwardException):
     def __init__(self, size: int):
         super().__init__(f"Playing with {size} pokemon on a team.")
 

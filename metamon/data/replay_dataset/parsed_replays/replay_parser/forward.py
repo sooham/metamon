@@ -222,8 +222,8 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         # |teamsize|PLAYER|NUMBER
         player, size = data
         size = int(size)
-        if size > 6:
-            raise TeamTooLarge(size)
+        if size != 6:
+            raise UnusualTeamSize(size)
         blank_team = [None] * size
         if player == "p1":
             curr_turn.pokemon_1 = blank_team

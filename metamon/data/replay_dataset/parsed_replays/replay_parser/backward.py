@@ -41,45 +41,13 @@ def fill_missing_team_info(
     gen = int(battle_format.split("gen")[1][0])
     predictor = NaiveUsagePredictor()
     poke_names = [p.name for p in poke_list if p is not None]
-    converted_poke = []
-    for p in poke_list:
-        if p is None:
-            converted_poke.append(PokemonSet.missing_pokemon())
-            continue
-        moves = [m.name for m in p.had_moves.values()]
-        while len(moves) < 4:
-            moves.append(PokemonSet.MISSING_MOVE)
-        if p.had_item == PokemonSet.NO_ITEM:
-            item = Nothing.NO_ITEM
-        elif p.had_item is None:
-            item = PokemonSet.MISSING_ITEM
-        else:
-            item = p.had_item
-        if p.had_ability == PokemonSet.NO_ABILITY:
-            ability = Nothing.NO_ABILITY
-        elif p.had_ability is None:
-            ability = PokemonSet.MISSING_ABILITY
-        else:
-            ability = p.had_ability
-        converted_poke.append(
-            PokemonSet(
-                name=p.name,
-                moves=moves,
-                ability=ability,
-                item=item,
-                nature=PokemonSet.MISSING_NATURE,
-                evs=[PokemonSet.MISSING_EV] * 6,
-                ivs=[PokemonSet.MISSING_IV] * 6,
-            )
-        )
+    converted_poke = [PokemonSet.from_ReplayPokemon(p) for p in poke_list]
     if len(converted_poke) < 6:
         breakpoint()
-
     team = TeamSet(
         lead=converted_poke[0], reserve=converted_poke[1:], format=battle_format
     )
     predicted_team = predictor.predict(team)
-
     pokemon_to_add = [
         poke for poke in predicted_team.pokemon if poke.name not in poke_names
     ]
