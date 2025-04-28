@@ -62,7 +62,6 @@ def fill_missing_team_info(
         sample_team = team_builder.generate_new_team(pokemon_names)
     except PokemonStatsLookupError as e:
         raise BackwardException(str(e))
-    breakpoint()
     sample_team_dict = {x["name"]: x for x in sample_team}
 
     # Fill in missing pokemon
