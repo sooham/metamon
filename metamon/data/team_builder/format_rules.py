@@ -1,5 +1,4 @@
 import os
-import subprocess
 import re
 import json
 from enum import Enum
@@ -67,17 +66,6 @@ def ts_to_dict(ts_file):
 
     data = json.loads(content)
     return data
-
-
-def find_global_npm_package_path(package_name):
-    # Get the global node_modules path
-    npm_root = subprocess.check_output(["npm", "root", "-g"], text=True).strip()
-    breakpoint()
-    package_path = os.path.join(npm_root, package_name)
-    if os.path.exists(package_path):
-        return package_path
-    else:
-        return None
 
 
 def get_valid_pokemon(format):
