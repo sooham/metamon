@@ -52,7 +52,10 @@ def parse_extra(raw: str) -> str:
     *_, info = raw.split("[from]")
     if "[from]" not in raw or not info:
         raise StrParsingException("parse_extra", raw)
-    return info.strip()
+    info = info.strip()
+    if info.startswith("move:"):
+        info = info.replace("move:", "").strip()
+    return info
 
 
 def parse_effect(effect: str) -> str:

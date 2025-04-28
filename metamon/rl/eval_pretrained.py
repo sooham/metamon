@@ -12,8 +12,10 @@ def red_warning(msg: str):
     print(f"\033[91m{msg}\033[0m")
 
 
+import gymnasium as gym
 from huggingface_hub import hf_hub_download
 import torch
+import numpy as np
 import amago
 from amago.cli_utils import *
 
@@ -26,58 +28,18 @@ from metamon.rl.metamon_to_amago import (
 from metamon.task_distributions import (
     get_task_distribution,
     FixedGenOpponentDistribution,
+    Task,
+)
+from metamon.interface import (
+    ObservationSpace,
+    RewardFunction,
+    DefaultObservationSpace,
+    DefaultShapedReward,
 )
 from metamon.baselines.heuristic.basic import *
 from metamon.baselines.heuristic.kaizo import EmeraldKaizo
 from metamon.baselines.model_based.bcrnn_baselines import BaseRNN, WinsOnlyRNN, MiniRNN
-
-
-def make_placeholder_env():
-    env = MetaShowdown(
-        task_distribution=get_task_distribution("AllGenOU")(
-            specify_opponents=[RandomBaseline]
-        ),
-        new_task_every=100,
-    )
-    env = TokenizedEnv(env)
-    return MetamonAMAGOWrapper(env)
-
-
-def make_ladder_env(
-    gen: int,
-    format: str,
-    username: str,
-    avatar: str,
-    n_challenges: int,
-    team_split: str,
-    wait_for_input: bool = False,
-):
-    env = LocalLadder(
-        gen=gen,
-        format=format,
-        username=username[-18:],
-        avatar=avatar,
-        team_split=team_split,
-    )
-    if wait_for_input:
-        input("Hit any key to start challenging")
-    env.start_laddering(n_challenges=n_challenges)
-    env = TokenizedEnv(env)
-    return PSLadderAMAGOWrapper(env)
-
-
-def make_baseline_env(gen, format, player_split: str, opponent_split: str, opponent):
-    env = MetaShowdown(
-        task_distribution=FixedGenOpponentDistribution(
-            format=f"gen{gen}{format}",
-            opponent=opponent,
-            player_split=player_split,
-            opponent_split=opponent_split,
-        ),
-        new_task_every=1,
-    )
-    env = TokenizedEnv(env)
-    return MetamonAMAGOWrapper(env)
+from metamon.data.tokenizer import PokemonTokenizer, get_tokenizer
 
 
 HEURISTIC_COMPOSITE_BASELINES = [
@@ -99,12 +61,118 @@ METAMON_CACHE_DIR = os.environ.get(
 )
 
 
+def make_placeholder_env(
+    observation_space: ObservationSpace,
+    reward_function: RewardFunction,
+    tokenizer: PokemonTokenizer,
+):
+    """
+    Create an environment that does nothing, but will be used to initialize the network
+    """
+
+    class _PlaceholderShowdown(gym.Env):
+        def __init__(self):
+            super().__init__()
+            self.observation_space = observation_space.gym_space
+            self.action_space = gym.spaces.Discrete(9)
+            self.current_task = Task(
+                battle_format="gen1ou",
+                opponent_type=RandomBaseline,
+                k_shots=0,
+                player_teambuilder=None,
+                opponent_teambuilder=None,
+                reward_function=reward_function,
+            )
+
+        def reset(self, *args, **kwargs):
+            obs = {
+                key: np.zeros(value.shape, dtype=value.dtype)
+                for key, value in self.observation_space.items()
+            }
+            return obs, {}
+
+    env = _PlaceholderShowdown()
+    env = TokenizedEnv(env, tokenizer=tokenizer)
+    return MetamonAMAGOWrapper(env)
+
+
+def make_ladder_env(
+    gen: int,
+    format: str,
+    observation_space: ObservationSpace,
+    reward_function: RewardFunction,
+    tokenizer: PokemonTokenizer,
+    username: str,
+    avatar: str,
+    n_challenges: int,
+    team_split: str,
+    wait_for_input: bool = False,
+):
+    """
+    Battle on the local Showdown ladder
+    """
+    env = LocalLadder(
+        observation_space=observation_space,
+        reward_function=reward_function,
+        gen=gen,
+        format=format,
+        username=username[-18:],
+        avatar=avatar,
+        team_split=team_split,
+    )
+    if wait_for_input:
+        input("Hit any key to start challenging")
+    env.start_laddering(n_challenges=n_challenges)
+    env = TokenizedEnv(env, tokenizer=tokenizer)
+    return PSLadderAMAGOWrapper(env)
+
+
+def make_baseline_env(
+    gen,
+    format,
+    observation_space: ObservationSpace,
+    reward_function: RewardFunction,
+    tokenizer: PokemonTokenizer,
+    player_split: str,
+    opponent_split: str,
+    opponent,
+):
+    """
+    Battle against a built-in baseline opponent
+    """
+    env = MetaShowdown(
+        task_distribution=FixedGenOpponentDistribution(
+            format=f"gen{gen}{format}",
+            opponent=opponent,
+            player_split=player_split,
+            opponent_split=opponent_split,
+            reward_function=reward_function,
+        ),
+        new_task_every=1,
+        observation_space=observation_space,
+    )
+    env = TokenizedEnv(env, tokenizer=tokenizer)
+    return MetamonAMAGOWrapper(env)
+
+
 def _create_placeholder_experiment(
-    dset_root, dset_name, run_name, max_seq_len, log, agent_type
+    dset_root,
+    dset_name,
+    run_name,
+    max_seq_len,
+    log,
+    agent_type,
+    observation_space: ObservationSpace,
+    reward_function: RewardFunction,
+    tokenizer: PokemonTokenizer,
 ):
     # the environment is only used to initialize the network
     # before loading the correct checkpoint
-    env = make_placeholder_env()
+    env = make_placeholder_env(
+        observation_space=observation_space,
+        reward_function=reward_function,
+        tokenizer=tokenizer,
+    )
     dummy_env = lambda: env
     experiment = amago.Experiment(
         max_seq_len=max_seq_len,
@@ -143,8 +211,15 @@ def _create_placeholder_experiment(
 
 
 class PretrainedModel:
+    """
+    Create an AMAGO agent and load a pretrained checkpoint from the HuggingFace Hub
+    """
+
     HF_REPO_ID = "jakegrigsby/metamon"
     DEFAULT_CKPT = 40
+    OBSERVATION_SPACE = DefaultObservationSpace()
+    REWARD_FUNCTION = DefaultShapedReward()
+    TOKENIZER = get_tokenizer("allreplays-v3")
 
     def __init__(
         self,
@@ -207,6 +282,9 @@ class PretrainedModel:
             max_seq_len=self.max_seq_len,
             log=log,
             agent_type=self.agent_type,
+            observation_space=self.OBSERVATION_SPACE,
+            reward_function=self.REWARD_FUNCTION,
+            tokenizer=self.TOKENIZER,
         )
         experiment.start()
         if checkpoint > 0:
@@ -498,6 +576,9 @@ if __name__ == "__main__":
                             player_split=args.team_split,
                             opponent_split=args.team_split,
                             opponent=o,
+                            observation_space=agent_maker.OBSERVATION_SPACE,
+                            reward_function=agent_maker.REWARD_FUNCTION,
+                            tokenizer=agent_maker.TOKENIZER,
                         )
                         for o in HEURISTIC_COMPOSITE_BASELINES
                     ]
@@ -512,6 +593,9 @@ if __name__ == "__main__":
                             player_split=args.team_split,
                             opponent_split=args.team_split,
                             opponent=o,
+                            observation_space=agent_maker.OBSERVATION_SPACE,
+                            reward_function=agent_maker.REWARD_FUNCTION,
+                            tokenizer=agent_maker.TOKENIZER,
                         )
                         for o in IL
                     ]
@@ -527,6 +611,9 @@ if __name__ == "__main__":
                         avatar=args.avatar,
                         n_challenges=args.n_challenges + 1,
                         team_split=args.team_split,
+                        observation_space=agent_maker.OBSERVATION_SPACE,
+                        reward_function=agent_maker.REWARD_FUNCTION,
+                        tokenizer=agent_maker.TOKENIZER,
                     )
                     agent.env_mode = "sync"
                 else:

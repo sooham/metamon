@@ -1,7 +1,6 @@
 import copy
 from dataclasses import dataclass, field
 from datetime import datetime
-from itertools import chain
 from typing import List, Optional
 
 from metamon.data.replay_dataset.parsed_replays.replay_parser import checks
@@ -97,7 +96,6 @@ class SpecialCategories:
         "Copycat",
         "Nature Power",
         "Magic Coat",
-        "magiccoat",
         "Mirror Move",
         "Assist",
         "Snatch",
@@ -254,9 +252,26 @@ def parse_row(replay: ParsedReplay, row: List[str]):
             )
 
     elif name == "choice":
-        # if only this worked in every replay. it might be possible to get more
-        # accurate in some situations when we know we can trust the choice messages.
-        pass
+        # https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md#sending-decisions
+        # `choice` messaegs reveal players action choices directly instead of waiting to see the outcome of the move/switch.
+        # they are not present in every replay, but when they are, they can help us fill missing actions.
+        # It would be possible to catch many more choices if we could use the numeric arg format of some
+        # messages (e.g. `move 1`). We'd need to infer a mapping between the numeric args and the move names.
+        for player_idx, player_choice in enumerate(data):
+            if player_choice:
+                for poke_idx, poke_choice in enumerate(player_choice.split(",")):
+                    msg = poke_choice.split(" ")
+                    command = msg[0]
+                    args = re.sub(r'\d+', '', " ".join(msg[1:])).strip()
+                    if command == "move" and args and args.lower() not in {"recharge", "struggle"}:
+                        user_pokemon = curr_turn.active_pokemon_1[poke_idx] if player_idx == 0 else curr_turn.active_pokemon_2[poke_idx]
+                        move = Move(name=args, gen=replay.gen)
+                        choice = Action(name=move.name, is_switch=False, is_noop=False, user=user_pokemon, target=None)
+                        user_pokemon.reveal_move(move)
+                        if player_idx == 0:
+                            curr_turn.choices_1[poke_idx] = choice
+                        else:
+                            curr_turn.choices_2[poke_idx] = choice
 
     elif name == "tie":
         # |tie
@@ -371,8 +386,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                         return
                 elif is_ability:
                     raise UnimplementedMoveFromMoveAbility(data)
-                    #ability = parse_ability_from_extra(extra_from_message)
-                    #pokemon.reveal_ability(ability)
             else:
                 # OLD REPLAY VERSION
                 ability_or_move = parse_extra(extra_from_message)
@@ -385,7 +398,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                         if ability_or_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                             pokemon.reveal_move(move)
                         return
-                probably_ability = ability_or_move not in {"lockedmove", "pursuit", "Pursuit"} and not probably_item and not probably_repeat_move
+                probably_ability = ability_or_move.lower() not in {"lockedmove", "pursuit"} and not probably_item and not probably_repeat_move
                 if probably_ability:
                     raise UnimplementedMoveFromMoveAbility(data)
 
@@ -426,7 +439,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         # create Action
         curr_turn.set_move_attribute(
             s=poke_str,
-            move_name=move_name,
+            move_name=move.name,
             is_noop=False,
             is_switch=False,
             user=pokemon,
@@ -868,9 +881,13 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         effect = PEEffect.from_showdown_message(data[1])
         if effect == PEEffect.PROTECT:
             pokemon.protected = True
-
+    
     else:
-        raise UnimplementedMessage(row)
+        if data[0].startswith(">>>"):
+            # leaked browser console messages?
+            pass
+        else:
+            raise UnimplementedMessage(row)
 
 
 def forward_fill(replay: ParsedReplay, log: list[list[str]], verbose: bool = False) -> ParsedReplay:
@@ -880,6 +897,7 @@ def forward_fill(replay: ParsedReplay, log: list[list[str]], verbose: bool = Fal
                 print(row)
             parse_row(replay, row)
 
+    checks.check_noun_spelling(replay)
     checks.check_finished(replay)
     checks.check_replay_rules(replay)
     checks.check_forward_consistency(replay)

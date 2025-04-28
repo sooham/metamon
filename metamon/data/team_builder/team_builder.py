@@ -15,13 +15,11 @@ class PokemonStatsLookupError(KeyError):
 
 
 class TeamBuilder:
-    def __init__(
-        self, format, ps_path, verbose=True, remove_banned=True, inclusive=False
-    ):
+    def __init__(self, format, verbose=True, remove_banned=True, inclusive=False):
         self.format = format
         self.stat = PreloadedSmogonStat(format, verbose=verbose, inclusive=inclusive)
         if remove_banned:
-            self.stat.remove_banned_pm(ps_path)
+            self.stat.remove_banned_pm()
         self.verbose = verbose
 
         # use for different hp ivs

@@ -20,6 +20,6 @@ setup(
         "termcolor",
         "huggingface_hub",
         "poke-env @ git+https://github.com/jakegrigsby/poke-env.git",
-        "amago @ git+https://github.com/ut-austin-rpl/amago.git",
+        "amago @ git+https://github.com/ut-austin-rpl/amago.git@main",
     ],
 )

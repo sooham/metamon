@@ -66,20 +66,15 @@ class Boosts:
 
 class Move(PEMove):
     def __init__(self, name: str, gen: int):
-        # PEMove object is only used to retrieve attributes in the observation
-        lookup_name = to_id_str(name)
-
-        # map replay spelling to poke-env spelling
-        if lookup_name == "vicegrip":
-            lookup_name = "visegrip"
-
+        # in an attempt to handle `choice` messages that give names in a case/space insensitive format,
+        # we'll go from the name parsed from the replay --> poke_env id --> poke_env's official move name
+        self.lookup_name = to_id_str(name)
         try:
-            super().__init__(move_id=lookup_name, gen=gen)
+            super().__init__(move_id=self.lookup_name, gen=gen)
             self.charge_move = bool(self.entry["flags"].get("charge"))
+            self.name = self.entry["name"]
         except:
-            raise MovedexMissingEntry(name, lookup_name)
-        # ReplayMove state used during replay parsing
-        self.name = name
+            raise MovedexMissingEntry(name, self.lookup_name)
         self.gen_ = gen
         self.pp = self.current_pp  # split from poke-env PP counter
         self.maximum_pp = self.pp
@@ -110,11 +105,11 @@ class Pokemon:
 
         # pokedex lookup
         pokedex = GenData.from_gen(gen).pokedex
-        pokedex_name = to_id_str(name)
+        self.lookup_name = to_id_str(name)
         try:
-            pokedex_info = pokedex[pokedex_name]
+            pokedex_info = pokedex[self.lookup_name]
         except KeyError:
-            raise PokedexMissingEntry(name, pokedex_name)
+            raise PokedexMissingEntry(name, self.lookup_name)
         self.type = pokedex_info["types"]
         self.base_stats = pokedex_info["baseStats"]
 
@@ -407,7 +402,9 @@ class Turn:
         default_factory=lambda: [None, None]
     )
     moves_1: List[Optional[Action]] = field(default_factory=lambda: [None, None])
+    choices_1: List[Optional[Action]] = field(default_factory=lambda: [None, None])
     moves_2: List[Optional[Action]] = field(default_factory=lambda: [None, None])
+    choices_2: List[Optional[Action]] = field(default_factory=lambda: [None, None])
     weather: PEWeather | Nothing = Nothing.NO_WEATHER
     battle_field: Dict[PEField, int] = field(default_factory=dict)
     conditions_1: Dict[PESideCondition, int] = field(default_factory=dict)
@@ -437,6 +434,8 @@ class Turn:
         # create blank actions
         next_turn.moves_1 = [None, None]
         next_turn.moves_2 = [None, None]
+        next_turn.choices_1 = [None, None]
+        next_turn.choices_2 = [None, None]
         next_turn.subturns = []
         next_turn.turn_number += 1
         return next_turn

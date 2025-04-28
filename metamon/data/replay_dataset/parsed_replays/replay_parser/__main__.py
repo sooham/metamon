@@ -9,7 +9,7 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
 
     parser = ArgumentParser()
-    parser.add_argument("--gen", type=int, choices=list(range(1, 10)), required=True)
+    parser.add_argument("--gen", type=int, choices=list(range(1, 5)), required=True)
     parser.add_argument(
         "--raw_replay_dir", required=True, help="Path to raw replay dataset folder."
     )

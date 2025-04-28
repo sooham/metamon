@@ -158,7 +158,7 @@ class ReplayParser:
                     rewards=rewards,
                 )
 
-    def add_exception_to_history(self, e):
+    def add_exception_to_history(self, e, path):
         if isinstance(e, ForwardException):
             e_dict = self.error_history["Forward"]
         elif isinstance(e, BackwardException):
@@ -191,7 +191,7 @@ class ReplayParser:
         p1_username, p2_username = data["players"]
         time_played = datetime.fromtimestamp(int(data["uploadtime"]))
         replay = forward.ParsedReplay(
-            gameid="-".join(path.split("-")[-2:]).replace(".json", ""),
+            gameid=os.path.basename(path).replace(".json", ""),
             format=data["format"],
             time_played=time_played,
         )
@@ -222,5 +222,5 @@ class ReplayParser:
             )
 
         except (ForwardException, BackwardException) as e:
-            self.add_exception_to_history(e)
+            self.add_exception_to_history(e, path)
             warnings.warn(f"Skipping replay {path} due to known exception: {e}.")

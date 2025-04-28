@@ -68,7 +68,16 @@ def ts_to_dict(ts_file):
     return data
 
 
-def get_valid_pokemon(ps_path, format):
+def get_valid_pokemon(format):
+    ps_path = os.path.join(
+        os.path.abspath(__file__).split("metamon")[0],
+        "metamon",
+        "server",
+        "pokemon-showdown",
+    )
+    if not os.path.exists(ps_path):
+        raise ImportError("Cannot find path to pokemon-showdown")
+
     if "gen9" in format:
         formats_data = "formats-data.ts"
 

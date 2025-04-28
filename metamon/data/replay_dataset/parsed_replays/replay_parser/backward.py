@@ -24,9 +24,8 @@ from metamon.data.team_builder import PokemonStatsLookupError, TeamBuilder
 def get_team_builder(format: str) -> Optional[TeamBuilder]:
     team_builder = TeamBuilder(
         format,
-        ps_path="/home/jake/pokemon-showdown/",
         verbose=False,
-        remove_banned=False,
+        remove_banned=True,  # TODO: remove this
         inclusive=True,
     )
     if len(team_builder.stat.movesets) == 0:
@@ -175,7 +174,17 @@ class POVReplay:
             )  # turn_t holds the state at the very end of the turn
             # and the action we clicked between turns is held in the next turn
             moves = turn_t1.moves_1 if self.from_p1_pov else turn_t1.moves_2
-            self.actionlist.append(moves)
+            choices = turn_t1.choices_1 if self.from_p1_pov else turn_t1.choices_2
+            actionlist = [None, None]
+            for move_idx, (move, choice) in enumerate(zip(moves, choices)):
+                if move is not None:
+                    # we default to the original system of *used* moves
+                    actionlist[move_idx] = move
+                elif choice is not None:
+                    # if the move was missing, but a `choice` message was parsed,
+                    # we can fall back to that.
+                    actionlist[move_idx] = choice
+            self.actionlist.append(actionlist)
 
         # add final state
         self.povturnlist.append(turn_t1)

@@ -5,18 +5,7 @@ from metamon.data import DATA_PATH
 from metamon.data.download_stats import download_data
 from metamon.data.team_builder.format_rules import get_valid_pokemon, Tier
 
-from functools import lru_cache
-
-# Src: https://github.com/hsahovic/poke-env/blob/master/src/poke_env/data/normalize.py
-@lru_cache(2**13)
-def to_id_str(name: str) -> str:
-    """Converts a full-name to its corresponding id string.
-    :param name: The name to convert.
-    :type name: str
-    :return: The corresponding id string.
-    :rtype: str
-    """
-    return "".join(char for char in name if char.isalnum()).lower()
+from poke_env.data import to_id_str
 
 TIER_MAP = {
     "ubers": Tier.UBERS,
@@ -91,8 +80,8 @@ class SmogonStat:
         for i, (check, usage) in enumerate(sorted_checks[:5]):
             print(f"\t\t{i+1}. {check} ({usage * 100: .1f}%)")
 
-    def remove_banned_pm(self, ps_path):
-        valid_pm_dict = get_valid_pokemon(ps_path, self.format[:4])
+    def remove_banned_pm(self):
+        valid_pm_dict = get_valid_pokemon(self.format)
         tier = TIER_MAP[self.format[4:]]
         valid_pm = []
         # get all pokemon valid in this tier
