@@ -1,4 +1,5 @@
 import os
+import subprocess
 import re
 import json
 from enum import Enum
@@ -68,7 +69,27 @@ def ts_to_dict(ts_file):
     return data
 
 
-def get_valid_pokemon(ps_path, format):
+def find_global_npm_package_path(package_name):
+    # Get the global node_modules path
+    npm_root = subprocess.check_output(["npm", "root", "-g"], text=True).strip()
+    breakpoint()
+    package_path = os.path.join(npm_root, package_name)
+    if os.path.exists(package_path):
+        return package_path
+    else:
+        return None
+
+
+def get_valid_pokemon(format):
+    ps_path = os.path.join(
+        os.path.abspath(__file__).split("metamon")[0],
+        "metamon",
+        "server",
+        "pokemon-showdown",
+    )
+    if not os.path.exists(ps_path):
+        raise ImportError("Cannot find path to pokemon-showdown")
+
     if "gen9" in format:
         formats_data = "formats-data.ts"
 
