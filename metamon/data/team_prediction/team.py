@@ -1,8 +1,8 @@
-from typing import List, Optional
 import random
-from dataclasses import dataclass
 import os
 import copy
+from dataclasses import dataclass
+from typing import List
 
 
 @dataclass
@@ -31,6 +31,34 @@ class PokemonSet:
         assert len(self.moves) == 4
         assert len(self.evs) == 6
         assert len(self.ivs) == 6
+        assert self.nature is not None
+        assert self.item is not None
+        assert self.ability is not None
+
+    def fill_from_pokemon(self, other):
+        if not isinstance(other, PokemonSet):
+            raise ValueError("other must be a PokemonSet")
+        if not self.name == other.name:
+            raise ValueError("other must have the same name")
+        new_moves = list(set(other.moves) - set(self.moves))
+        for move in self.moves:
+            if move == self.MISSING_MOVE:
+                if new_moves:
+                    new_move = new_moves.pop()
+                    self.moves[self.moves.index(move)] = new_move
+        assert len(self.moves) == 4
+        if self.ability == self.MISSING_ABILITY:
+            self.ability = other.ability
+        if self.item == self.MISSING_ITEM:
+            self.item = other.item
+        if self.nature == self.MISSING_NATURE:
+            self.nature = other.nature
+        for idx, ev in enumerate(self.evs):
+            if ev == self.MISSING_EV:
+                self.evs[idx] = other.evs[idx]
+        for idx, iv in enumerate(self.ivs):
+            if iv == self.MISSING_IV:
+                self.ivs[idx] = other.ivs[idx]
 
     def to_str(self):
         evs = "EVs: "
@@ -210,6 +238,10 @@ class TeamSet:
     lead: PokemonSet
     reserve: List[PokemonSet]
     format: str
+
+    @property
+    def pokemon(self):
+        return [self.lead] + self.reserve
 
     def to_str(self):
         out = f"{self.lead.to_str()}"

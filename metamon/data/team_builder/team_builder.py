@@ -268,10 +268,3 @@ def same_team_members(team1, team2):
     names1 = [x["name"] for x in team1]
     names2 = [x["name"] for x in team2]
     return set(names1) == set(names2)
-
-
-if __name__ == "__main__":
-    tb = TeamBuilder("gen1ou", "/home/jake/pokemon-showdown")
-    for i in range(1000):
-        team = tb.generate_new_team()
-    print(tb.team_to_str(team))

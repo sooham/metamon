@@ -192,7 +192,7 @@ class ReplayParser:
         time_played = datetime.fromtimestamp(int(data["uploadtime"]))
         replay = forward.ParsedReplay(
             gameid=os.path.basename(path).replace(".json", ""),
-            format=data["format"],
+            format=data["formatid"],
             time_played=time_played,
         )
         log = self.clean_log(data)
