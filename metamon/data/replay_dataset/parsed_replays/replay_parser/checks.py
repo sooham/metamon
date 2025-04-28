@@ -3,6 +3,7 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.forward import (
     SpecialCategories,
 )
 from poke_env.environment import Effect as PEEffect
+from poke_env.data import to_id_str
 
 
 def check_finished(replay):
@@ -28,9 +29,9 @@ def check_replay_rules(replay):
         names_1 = names(turn.pokemon_1)
         names_2 = names(turn.pokemon_2)
         if len(names_1) != len(set(names_1)):
-            breakpoint()
+            raise ForwardVerify(f"Found duplicate pokemon names on Team 1: {names_1}")
         if len(names_2) != len(set(names_2)):
-            breakpoint()
+            raise ForwardVerify(f"Found duplicate pokemon names on Team 2: {names_2}")
 
 
 def check_forward_consistency(replay):
@@ -134,6 +135,26 @@ def check_forward_consistency(replay):
                     raise ForwardVerify(f"{pokemon_t.name} PP of {lowest_pp_move} < 0")
 
 
+def check_noun_spelling(replay):
+    for turn in replay:
+        for pokemon in turn.all_pokemon:
+            if pokemon is None:
+                continue
+            for poke_attr in [
+                "name",
+                "had_name",
+                "active_item",
+                "active_ability",
+                "active_item",
+            ]:
+                val = getattr(pokemon, poke_attr)
+                if isinstance(val, str):
+                    if to_id_str(val) == val:
+                        raise ForwardVerify(
+                            f"Potential to_id_str --> Proper Name mismatch: {val}"
+                        )
+
+
 def check_filled_mon(pokemon):
     p = pokemon
     if (
@@ -168,14 +189,17 @@ def check_filled_mon(pokemon):
             "Magikarp",
         }:
             pass
-        # elif moveset_size == 3 and PEEffect.MIMIC in pokemon.effects and len(p.had_moves) == 4:
-        #    pass
-        # elif moveset_size == 3 and pokemon.name in JOKES (metapod, weedle, caterpie, etc.)
-        #    pass
         else:
             raise TooFewMoves(p)
     elif moveset_size > 4:
         raise TooManyMoves(p)
+
+    # sanity check on annonying spelling changes across move names
+    moves_by_lookup = set([m.lookup_name for m in pokemon.moves.values()])
+    if len(moves_by_lookup) != moveset_size:
+        raise ForwardVerify(
+            f"Found duplicate moves for {pokemon.name}: {moves_by_lookup}"
+        )
 
 
 def check_info_filled(replay):
