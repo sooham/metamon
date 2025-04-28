@@ -24,9 +24,8 @@ from metamon.data.team_builder import PokemonStatsLookupError, TeamBuilder
 def get_team_builder(format: str) -> Optional[TeamBuilder]:
     team_builder = TeamBuilder(
         format,
-        ps_path="/home/jake/pokemon-showdown/",
         verbose=False,
-        remove_banned=False,
+        remove_banned=True,  # TODO: remove this
         inclusive=True,
     )
     if len(team_builder.stat.movesets) == 0:
@@ -63,6 +62,7 @@ def fill_missing_team_info(
         sample_team = team_builder.generate_new_team(pokemon_names)
     except PokemonStatsLookupError as e:
         raise BackwardException(str(e))
+    breakpoint()
     sample_team_dict = {x["name"]: x for x in sample_team}
 
     # Fill in missing pokemon

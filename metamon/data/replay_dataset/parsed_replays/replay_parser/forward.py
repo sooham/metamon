@@ -1,8 +1,7 @@
 import copy
 from dataclasses import dataclass, field
 from datetime import datetime
-from itertools import chain
-from typing import List, Optional, Set
+from typing import List, Optional
 
 from metamon.data.replay_dataset.parsed_replays.replay_parser import checks
 from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import *
