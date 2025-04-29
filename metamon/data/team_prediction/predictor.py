@@ -25,8 +25,13 @@ class NaiveUsagePredictor(TeamPredictor):
     def predict(self, team: TeamSet):
         team_builder = get_legacy_teambuilder(team.format)
         pokemon = [team.lead] + team.reserve
+        # use legacy team builder to generate a team of 6 Pokémon based on the ones we already
+        # have and their common teammates. Teammates and all moves/items/abilities are sampled
+        # from a premade set of Showdown usage statistics.
         existing_names = [p.name for p in pokemon if p.name != PokemonSet.MISSING_NAME]
         sample_team = team_builder.generate_new_team(existing_names)
+
+        # convert from the output of the old team builder to the new PokemonSet format
         cleaned_dict = {}
         for poke in sample_team:
             if poke["name"] == PokemonSet.MISSING_NAME:
@@ -36,18 +41,31 @@ class NaiveUsagePredictor(TeamPredictor):
             nature = nature.strip()
             evs = [int(x) for x in evs.split("/")]
             ivs = [int(x) for x in poke["IVs"].split("/")]
+            item = poke["item"].strip()
+            ability = poke["ability"].strip()
+            if ability == "No Ability":
+                ability = PokemonSet.NO_ABILITY
+            if not item:
+                item = PokemonSet.NO_ITEM
             cleaned_dict[poke["name"]] = {
                 "moves": poke["moves"],
                 "nature": nature,
                 "evs": evs,
                 "ivs": ivs,
-                "ability": poke["ability"],
-                "item": poke["item"],
+                "ability": ability,
+                "item": item,
             }
-        sample_team = [
-            PokemonSet.from_dict(val | {"name": key})
-            for key, val in cleaned_dict.items()
-        ]
+        try:
+            sample_team = [
+                PokemonSet.from_dict(val | {"name": key})
+                for key, val in cleaned_dict.items()
+            ]
+        except Exception as e:
+            breakpoint()
+            raise e
+
+        # fill missing information in the revelealed replay time with plausible values
+        # from the generated team.
         new_pokemon = [p for p in sample_team if p.name not in existing_names]
         merged_team = []
         for p in team.pokemon:
@@ -58,9 +76,7 @@ class NaiveUsagePredictor(TeamPredictor):
             for new_p in sample_team:
                 if new_p.name == p.name:
                     filled_p = copy.deepcopy(p)
-                    filled_p.fill_from_pokemon(new_p)
+                    filled_p.fill_from_PokemonSet(new_p)
                     merged_team.append(filled_p)
                     break
-            else:
-                breakpoint()
         return TeamSet(lead=merged_team[0], reserve=merged_team[1:], format=team.format)

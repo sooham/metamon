@@ -7,6 +7,7 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import *
+
 from poke_env.data import to_id_str
 from poke_env.data.gen_data import GenData
 from poke_env.environment import Effect as PEEffect
@@ -74,6 +75,7 @@ class Move(PEMove):
             self.charge_move = bool(self.entry["flags"].get("charge"))
             self.name = self.entry["name"]
         except:
+            breakpoint()
             raise MovedexMissingEntry(name, self.lookup_name)
         self.gen_ = gen
         self.pp = self.current_pp  # split from poke-env PP counter
@@ -102,6 +104,7 @@ class Pokemon:
         self.had_name = name
         self.unique_id: str = str(uuid.uuid4())
         self.lvl = lvl
+        self.gen = gen
 
         # pokedex lookup
         pokedex = GenData.from_gen(gen).pokedex
@@ -369,6 +372,31 @@ class Pokemon:
             f"\t\thp={self.current_hp}/{self.max_hp}\n",
         ]
         return ",\n".join(items)
+
+    def fill_from_PokemonSet(self, pokemon_set):
+        if not self.name == pokemon_set.name:
+            raise ValueError("other must have the same name")
+        item = pokemon_set.item
+        if item == pokemon_set.NO_ITEM:
+            item = Nothing.NO_ITEM
+        elif item == pokemon_set.MISSING_ITEM:
+            item = None
+        self.had_item = item
+        ability = pokemon_set.ability
+        if ability == pokemon_set.NO_ABILITY:
+            ability = Nothing.NO_ABILITY
+        elif ability == pokemon_set.MISSING_ABILITY:
+            ability = None
+        self.had_ability = ability
+        moves_to_add = set(pokemon_set.moves) - set(self.had_moves.keys())
+        while len(self.had_moves.keys()) < 4 and moves_to_add:
+            new_move = Move(name=moves_to_add.pop(), gen=self.gen)
+            self.had_moves[new_move.name] = new_move
+        if self.max_hp is None:
+            assert self.current_hp is None
+            self.max_hp = 100
+            self.current_hp = 100
+        return self
 
 
 @dataclass

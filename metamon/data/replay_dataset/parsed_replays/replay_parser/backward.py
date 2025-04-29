@@ -1,8 +1,6 @@
 import copy
-import time
 import re
-from functools import lru_cache
-from typing import List, Optional
+from typing import List
 
 from metamon.data.replay_dataset.parsed_replays.replay_parser import checks, forward
 from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import *
@@ -17,22 +15,8 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state impor
     get_pokedex_and_moves,
     unknown,
 )
-from metamon.data.team_builder import PokemonStatsLookupError, TeamBuilder
 from metamon.data.team_prediction.predictor import NaiveUsagePredictor
 from metamon.data.team_prediction.team import TeamSet, PokemonSet
-
-
-@lru_cache
-def get_team_builder(format: str) -> Optional[TeamBuilder]:
-    team_builder = TeamBuilder(
-        format,
-        verbose=False,
-        remove_banned=False,
-        inclusive=True,
-    )
-    if len(team_builder.stat.movesets) == 0:
-        return None
-    return team_builder
 
 
 def fill_missing_team_info(
@@ -42,8 +26,6 @@ def fill_missing_team_info(
     predictor = NaiveUsagePredictor()
     poke_names = [p.name for p in poke_list if p is not None]
     converted_poke = [PokemonSet.from_ReplayPokemon(p) for p in poke_list]
-    if len(converted_poke) < 6:
-        breakpoint()
     team = TeamSet(
         lead=converted_poke[0], reserve=converted_poke[1:], format=battle_format
     )
@@ -59,113 +41,16 @@ def fill_missing_team_info(
         raise BackwardException(
             f"Could not fill in all missing pokemon for {poke_list} with {predicted_team}"
         )
-
-    # Fill missing attributes
     for p in poke_list:
         for match in predicted_team.pokemon:
             if match.name == p.name:
                 break
         else:
-
             raise BackwardException(f"Could not find match for {p.name}")
-        sample_item = match.item
-        if sample_item == PokemonSet.NO_ITEM:
-            sample_item = Nothing.NO_ITEM
-        sample_ability = match.ability
-        if sample_ability == PokemonSet.NO_ABILITY:
-            sample_ability = Nothing.NO_ABILITY
-        p.had_ability = sample_ability
-        p.had_item = sample_item
-        # need to find new moves again to maintain PP counts
-        possible_moves_to_add = set(match.moves) - set(p.had_moves.keys())
-        while len(p.had_moves.keys()) < 4 and possible_moves_to_add:
-            new_move = Move(name=possible_moves_to_add.pop(), gen=gen)
-            p.had_moves[new_move.name] = new_move
-        if p.max_hp is None:
-            assert p.current_hp is None
-            # if pokemon was never damaged or switch in, it would have unknown HP.
-            # we can safely set to 100/100 without worrying about base stats, EVs, IVs,
-            # because the hp is only ever shown to the agent as a fraction.
-            p.max_hp = 100
-            p.current_hp = 100
-    return poke_list
+        p.fill_from_PokemonSet(match)
 
-
-def fill_missing_team_info_old(
-    battle_format: str, poke_list: List[Pokemon]
-) -> List[Pokemon]:
-    """
-    Returns a new (out-of-place) version of a team with all missing information filled in.
-
-    Info that cannot be known is inferred by sampling from human usage data.
-    """
-    poke_list = copy.deepcopy(poke_list)
-
-    # Generate sample team
-    cleaned_format = re.sub(r"\[|\]| ", "", battle_format).lower()
-    gen = int(cleaned_format[3])
-    pokemon_names = [p.name for p in poke_list if p is not None]
-    try:
-        team_builder = get_team_builder(cleaned_format)
-    except:
-        raise BackwardException(
-            f"Could not load TeamBuilder for format {cleaned_format}"
-        )
-    else:
-        if team_builder is None:
-            raise BackwardException(
-                f"Could not load TeamBuilder for format {cleaned_format}"
-            )
-    try:
-        sample_team = team_builder.generate_new_team(pokemon_names)
-    except PokemonStatsLookupError as e:
-        raise BackwardException(str(e))
-    breakpoint()
-    sample_team_dict = {x["name"]: x for x in sample_team}
-
-    # Fill in missing pokemon
-    while None in poke_list and sample_team:
-        generated = sample_team.pop()
-        if generated["name"] not in pokemon_names:
-            new_pokemon = Pokemon(name=generated["name"], lvl=100, gen=gen)
-            poke_list[poke_list.index(None)] = new_pokemon
-    if None in poke_list:
-        raise BackwardException(
-            f"Could not fill in all missing pokemon for {poke_list} with {sample_team}"
-        )
-
-    # Fill missing attributes
-    for p in poke_list:
-        sample_p = sample_team_dict[p.name]
-
-        # quick cleanup of generated items/abilities
-        sample_item = sample_p["item"]
-        if sample_item == "No Item" or not sample_item.strip():
-            sample_item = Nothing.NO_ITEM
-        sample_ability = sample_p["ability"]
-        if sample_ability == "No Ability" or not sample_ability.strip():
-            sample_ability = Nothing.NO_ABILITY
-
-        # the initial state of each pokemon is in the `had` attrs. if we still
-        # don't know something, fill it in. then the backfill will move this
-        # info into the `active_` attrs.
-        if unknown(p.had_ability):
-            p.had_ability = sample_ability
-        if unknown(p.had_item):
-            p.had_item = sample_item
-        possible_moves_to_add = set(sample_p["moves"]) - set(p.had_moves.keys())
-        while len(p.had_moves.keys()) < 4 and possible_moves_to_add:
-            new_move = Move(name=possible_moves_to_add.pop(), gen=gen)
-            p.had_moves[new_move.name] = new_move
-
-        if p.max_hp is None:
-            assert p.current_hp is None
-            # if pokemon was never damaged or switch in, it would have unknown HP.
-            # we can safely set to 100/100 without worrying about base stats, EVs, IVs,
-            # because the hp is only ever shown to the agent as a fraction.
-            p.max_hp = 100
-            p.current_hp = 100
-
+    for name in poke_names:
+        assert name in [p.name for p in poke_list]
     return poke_list
 
 

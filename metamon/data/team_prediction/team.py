@@ -2,7 +2,12 @@ import random
 import os
 import copy
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
+
+from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
+    Pokemon,
+    Nothing,
+)
 
 
 @dataclass
@@ -35,7 +40,40 @@ class PokemonSet:
         assert self.item is not None
         assert self.ability is not None
 
-    def fill_from_pokemon(self, other):
+    @classmethod
+    def from_ReplayPokemon(cls, pokemon: Optional[Pokemon]):
+        if pokemon is None:
+            return cls.missing_pokemon()
+
+        moves = [m.name for m in pokemon.had_moves.values()]
+        while len(moves) < 4:
+            moves.append(cls.MISSING_MOVE)
+
+        if pokemon.had_item == Nothing.NO_ITEM:
+            item = cls.NO_ITEM
+        elif pokemon.had_item is None:
+            item = cls.MISSING_ITEM
+        else:
+            item = pokemon.had_item
+
+        if pokemon.had_ability == Nothing.NO_ABILITY:
+            ability = cls.NO_ABILITY
+        elif pokemon.had_ability is None:
+            ability = cls.MISSING_ABILITY
+        else:
+            ability = pokemon.had_ability
+
+        return cls(
+            name=pokemon.name,
+            moves=moves,
+            ability=ability,
+            item=item,
+            nature=cls.MISSING_NATURE,
+            evs=[cls.MISSING_EV] * 6,
+            ivs=[cls.MISSING_IV] * 6,
+        )
+
+    def fill_from_PokemonSet(self, other):
         if not isinstance(other, PokemonSet):
             raise ValueError("other must be a PokemonSet")
         if not self.name == other.name:
