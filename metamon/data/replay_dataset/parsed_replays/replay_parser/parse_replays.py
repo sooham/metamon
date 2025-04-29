@@ -15,7 +15,6 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import 
     BackwardException,
     ForwardException,
     InvalidActionIndex,
-    ToNumpyError,
 )
 from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
     Action,
@@ -27,7 +26,8 @@ from metamon.data.team_prediction.predictor import TeamPredictor, NaiveUsagePred
 class ReplayParser:
     def __init__(
         self,
-        output_dir: str,
+        replay_output_dir: Optional[str] = None,
+        team_output_dir: Optional[str] = None,
         train_test_split: float = 0.8,
         verbose: bool = False,
         sleep_on_handled_exception: int = 0.1,
@@ -35,7 +35,8 @@ class ReplayParser:
         observation_space: Optional[interface.ObservationSpace] = None,
         team_predictor: Optional[TeamPredictor] = None,
     ):
-        self.output_dir = output_dir
+        self.output_dir = replay_output_dir
+        self.team_output_dir = team_output_dir
         self.verbose = verbose
         assert 0.0 <= train_test_split <= 1.0
         self.train_test_split = train_test_split
@@ -146,20 +147,26 @@ class ReplayParser:
         opponenent_username: str,
     ):
         obs_seq, actions, rewards = self.povreplay_to_seq(replay)
+        won = "WIN" if replay.winner else "LOSS"
+        filename = f"{replay.gameid}_{replay.rating}_{player_username}_vs_{opponenent_username}_{time_played.strftime('%m-%d-%Y')}_{won}"
+        split = "train" if to_train_set else "val"
         if self.output_dir is not None:
-            won = "WIN" if replay.winner else "LOSS"
-            filename = f"{replay.gameid}_{replay.rating}_{player_username}_vs_{opponenent_username}_{time_played.strftime('%m-%d-%Y')}_{won}.npz"
-            split = "train" if to_train_set else "val"
             path = os.path.join(self.output_dir, split)
             if not os.path.exists(path):
                 os.makedirs(path)
-            with open(os.path.join(path, filename), "wb") as f:
+            with open(os.path.join(path, f"{filename}.npz"), "wb") as f:
                 np.savez_compressed(
                     f,
                     **obs_seq,
                     actions=actions,
                     rewards=rewards,
                 )
+        if self.team_output_dir is not None:
+            path = os.path.join(self.team_output_dir, split)
+            if not os.path.exists(path):
+                os.makedirs(path)
+            with open(os.path.join(path, f"{filename}.team"), "w") as f:
+                f.write(replay.revealed_team.to_str())
 
     def add_exception_to_history(self, e, path):
         if isinstance(e, ForwardException):

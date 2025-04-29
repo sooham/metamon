@@ -388,7 +388,10 @@ class Pokemon:
         elif ability == pokemon_set.MISSING_ABILITY:
             ability = None
         self.had_ability = ability
-        moves_to_add = set(pokemon_set.moves) - set(self.had_moves.keys())
+        pokemon_set_moves = set(
+            move for move in pokemon_set.moves if move != pokemon_set.MISSING_MOVE
+        )
+        moves_to_add = pokemon_set_moves - set(self.had_moves.keys())
         while len(self.had_moves.keys()) < 4 and moves_to_add:
             new_move = Move(name=moves_to_add.pop(), gen=self.gen)
             self.had_moves[new_move.name] = new_move

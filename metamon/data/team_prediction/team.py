@@ -23,6 +23,7 @@ class PokemonSet:
     NO_MOVE = "<nomove>"
     NO_ABILITY = "<noability>"
     NO_ITEM = "<noitem>"
+    NO_NATURE = "<nonature>"
 
     MISSING_NAME = "$missing_name$"
     MISSING_MOVE = "$missing_move$"
@@ -33,7 +34,7 @@ class PokemonSet:
     MISSING_NATURE = "$missing_nature$"
 
     def __post_init__(self):
-        assert len(self.moves) == 4
+        assert self.moves
         assert len(self.evs) == 6
         assert len(self.ivs) == 6
         assert self.nature is not None
@@ -44,33 +45,32 @@ class PokemonSet:
     def from_ReplayPokemon(cls, pokemon: Optional[Pokemon]):
         if pokemon is None:
             return cls.missing_pokemon()
-
         moves = [m.name for m in pokemon.had_moves.values()]
         while len(moves) < 4:
             moves.append(cls.MISSING_MOVE)
-
-        if pokemon.had_item == Nothing.NO_ITEM:
+        if pokemon.gen == 1 or pokemon.had_item == Nothing.NO_ITEM:
             item = cls.NO_ITEM
         elif pokemon.had_item is None:
             item = cls.MISSING_ITEM
         else:
             item = pokemon.had_item
-
-        if pokemon.had_ability == Nothing.NO_ABILITY:
+        if pokemon.gen <= 2 or pokemon.had_ability == Nothing.NO_ABILITY:
             ability = cls.NO_ABILITY
         elif pokemon.had_ability is None:
             ability = cls.MISSING_ABILITY
         else:
             ability = pokemon.had_ability
-
+        nature = cls.MISSING_NATURE if pokemon.gen > 2 else cls.NO_NATURE
+        evs = [cls.MISSING_EV] * 6 if pokemon.gen > 2 else [252] * 6
+        ivs = [cls.MISSING_IV] * 6 if pokemon.gen > 1 else [31] * 6
         return cls(
             name=pokemon.name,
             moves=moves,
             ability=ability,
             item=item,
-            nature=cls.MISSING_NATURE,
-            evs=[cls.MISSING_EV] * 6,
-            ivs=[cls.MISSING_IV] * 6,
+            nature=nature,
+            evs=evs,
+            ivs=ivs,
         )
 
     def fill_from_PokemonSet(self, other):
@@ -84,7 +84,6 @@ class PokemonSet:
                 if new_moves:
                     new_move = new_moves.pop()
                     self.moves[self.moves.index(move)] = new_move
-        assert len(self.moves) == 4
         if self.ability == self.MISSING_ABILITY:
             self.ability = other.ability
         if self.item == self.MISSING_ITEM:
@@ -101,22 +100,20 @@ class PokemonSet:
     def to_str(self):
         evs = "EVs: "
         for desc, ev_val in zip(["HP", "Atk", "Def", "SpA", "SpD", "Spe"], self.evs):
-            evs += f"{ev_val if ev_val is not None else self.MISSING_EV} {desc}"
+            evs += f"{ev_val} {desc}"
             if desc != "Spe":
                 evs += " / "
-        evs += f"\n{self.nature or self.MISSING_NATURE} Nature"
+        if self.nature != self.NO_NATURE:
+            evs += f"\n{self.nature} Nature"
         ivs = "IVs: "
         for desc, iv_val in zip(["HP", "Atk", "Def", "SpA", "SpD", "Spe"], self.ivs):
-            ivs += f"{iv_val if iv_val is not None else self.MISSING_IV} {desc}"
+            ivs += f"{iv_val} {desc}"
             if desc != "Spe":
                 ivs += " / "
 
-        start = f"{self.name or self.MISSING_NAME} @ {self.item or self.MISSING_ITEM}"
+        start = f"{self.name} @ {self.item}"
         moves = "\n".join([f"- {move}" for move in self.moves])
-        return (
-            start
-            + f"\nAbility: {self.ability or self.MISSING_ABILITY}\n{evs}\n{ivs}\n{moves}"
-        )
+        return start + f"\nAbility: {self.ability}\n{evs}\n{ivs}\n{moves}"
 
     @classmethod
     def from_showdown_block(cls, block: str, format: str):
@@ -133,10 +130,10 @@ class PokemonSet:
             item = cls.MISSING_ITEM if gen > 1 else cls.NO_ITEM
 
         # Set defaults based on gen
-        if gen == 1 or gen == 2:
+        if gen <= 2:
             evs = [252] * 6
             ivs = [31] * 6
-            nature = "Hardy"  # Nature doesn't exist, but placeholder
+            nature = cls.NO_NATURE
             ability = cls.NO_ABILITY
         else:
             evs = [cls.MISSING_EV] * 6
@@ -160,7 +157,10 @@ class PokemonSet:
                             idx = ["HP", "Atk", "Def", "SpA", "SpD", "Spe"].index(
                                 stat_name
                             )
-                            evs[idx] = int(val)
+                            if val != cls.MISSING_EV:
+                                evs[idx] = int(val)
+                            else:
+                                evs[idx] = cls.MISSING_EV
             elif line.startswith("IVs:"):
                 # Only parse if not Gen 1/2
                 if gen >= 3:
@@ -172,10 +172,13 @@ class PokemonSet:
                             idx = ["HP", "Atk", "Def", "SpA", "SpD", "Spe"].index(
                                 stat_name
                             )
-                            ivs[idx] = int(val)
+                            if val != cls.MISSING_IV:
+                                ivs[idx] = int(val)
+                            else:
+                                ivs[idx] = cls.MISSING_IV
             elif line.endswith("Nature"):
                 if gen >= 3:
-                    nature = line.split()[0]
+                    nature = line.split()[0].strip()
             elif line.startswith("- "):
                 moves[moves.index(cls.MISSING_MOVE)] = line[2:].strip()
         return cls(
@@ -353,16 +356,18 @@ class TeamSet:
 if __name__ == "__main__":
     import os
 
-    TEAM_DIR = os.path.join(os.path.dirname(__file__), "..", "teams")
-    TEAM_DIR = os.path.join(TEAM_DIR, "gen4", "ou", "competitive")
+    # TEAM_DIR = os.path.join(os.path.dirname(__file__), "..", "teams")
+    TEAM_DIR = "/mnt/data1/shared_pokemon_project/metamon_team_files"
+    # TEAM_DIR = os.path.join(TEAM_DIR, "gen4", "ou", "competitive")
     team_files = []
     for root, dirs, files in os.walk(TEAM_DIR):
         for file in files:
-            if file.endswith(".txt") or file.startswith("team"):
+            if file.endswith(".team") or file.startswith("team"):
                 team_files.append(os.path.join(root, file))
 
     print(f"Found {len(team_files)} team files.")
 
+    random.shuffle(team_files)
     for path in team_files:
         print(f"\nLoading team from: {path}")
         with open(path, "r") as f:

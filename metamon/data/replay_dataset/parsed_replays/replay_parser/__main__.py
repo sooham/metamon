@@ -46,6 +46,11 @@ if __name__ == "__main__":
         default=None,
         help="Directory for output .npz files. `None` runs w/o saving to disk. Data will be saved to {--output_dir}/gen{gen}{format}",
     )
+    parser.add_argument(
+        "--team_output_dir",
+        default=None,
+        help="Directory for output .team files. `None` runs w/o saving to disk. Data will be saved to {--team_output_dir}/gen{gen}{format}_teams",
+    )
     args = parser.parse_args()
 
     invalid_format_set: set[str] = set()
@@ -64,8 +69,14 @@ if __name__ == "__main__":
         if args.output_dir
         else None
     )
+    team_output_dir = (
+        os.path.join(args.team_output_dir, f"gen{args.gen}{args.format}_teams")
+        if args.team_output_dir
+        else None
+    )
     parser = ReplayParser(
-        output_dir=output_dir,
+        replay_output_dir=output_dir,
+        team_output_dir=team_output_dir,
         verbose=args.verbose,
     )
     if args.processes > 1:
