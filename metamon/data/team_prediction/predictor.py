@@ -24,6 +24,7 @@ class NaiveUsagePredictor(TeamPredictor):
 
     def predict(self, team: TeamSet):
         team_builder = get_legacy_teambuilder(team.format)
+        gen = int(team.format.split("gen")[1][0])
         pokemon = [team.lead] + team.reserve
         # use legacy team builder to generate a team of 6 Pokémon based on the ones we already
         # have and their common teammates. Teammates and all moves/items/abilities are sampled
@@ -49,6 +50,7 @@ class NaiveUsagePredictor(TeamPredictor):
                 item = PokemonSet.NO_ITEM
             cleaned_dict[poke["name"]] = {
                 "moves": poke["moves"],
+                "gen": gen,
                 "nature": nature,
                 "evs": evs,
                 "ivs": ivs,

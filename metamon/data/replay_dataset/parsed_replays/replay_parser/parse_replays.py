@@ -165,7 +165,7 @@ class ReplayParser:
             path = os.path.join(self.team_output_dir, split)
             if not os.path.exists(path):
                 os.makedirs(path)
-            with open(os.path.join(path, f"{filename}.team"), "w") as f:
+            with open(os.path.join(path, f"{filename}.{replay.format}_team"), "w") as f:
                 f.write(replay.revealed_team.to_str())
 
     def add_exception_to_history(self, e, path):

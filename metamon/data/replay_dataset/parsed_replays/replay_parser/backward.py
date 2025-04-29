@@ -24,7 +24,7 @@ def fill_missing_team_info(
 ) -> List[Pokemon]:
     gen = int(battle_format.split("gen")[1][0])
     poke_names = [p.name for p in poke_list if p is not None]
-    converted_poke = [PokemonSet.from_ReplayPokemon(p) for p in poke_list]
+    converted_poke = [PokemonSet.from_ReplayPokemon(p, gen=gen) for p in poke_list]
     revealed_team = TeamSet(
         lead=converted_poke[0], reserve=converted_poke[1:], format=battle_format
     )
