@@ -21,6 +21,7 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state impor
     Action,
     ReplayState,
 )
+from metamon.data.team_prediction.predictor import TeamPredictor, NaiveUsagePredictor
 
 
 class ReplayParser:
@@ -32,6 +33,7 @@ class ReplayParser:
         sleep_on_handled_exception: int = 0.1,
         reward_function: Optional[interface.RewardFunction] = None,
         observation_space: Optional[interface.ObservationSpace] = None,
+        team_predictor: Optional[TeamPredictor] = None,
     ):
         self.output_dir = output_dir
         self.verbose = verbose
@@ -43,6 +45,7 @@ class ReplayParser:
         self.observation_space = (
             observation_space or interface.DefaultObservationSpace()
         )
+        self.team_predictor = team_predictor or NaiveUsagePredictor()
 
     def summarize_errors(self):
         return {
@@ -202,7 +205,9 @@ class ReplayParser:
             replay = forward.forward_fill(replay, log, verbose=self.verbose)
 
             # backward fill
-            replay_from_p1, replay_from_p2 = backward.backward_fill(replay)
+            replay_from_p1, replay_from_p2 = backward.backward_fill(
+                replay, team_predictor=self.team_predictor
+            )
 
             # save as IL/RL experience
             to_train_set = random.random() < self.train_test_split

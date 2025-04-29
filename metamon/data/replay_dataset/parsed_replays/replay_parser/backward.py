@@ -15,21 +15,20 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state impor
     get_pokedex_and_moves,
     unknown,
 )
-from metamon.data.team_prediction.predictor import NaiveUsagePredictor
+from metamon.data.team_prediction.predictor import NaiveUsagePredictor, TeamPredictor
 from metamon.data.team_prediction.team import TeamSet, PokemonSet
 
 
 def fill_missing_team_info(
-    battle_format: str, poke_list: List[Pokemon]
+    battle_format: str, poke_list: List[Pokemon], team_predictor: TeamPredictor
 ) -> List[Pokemon]:
     gen = int(battle_format.split("gen")[1][0])
-    predictor = NaiveUsagePredictor()
     poke_names = [p.name for p in poke_list if p is not None]
     converted_poke = [PokemonSet.from_ReplayPokemon(p) for p in poke_list]
     team = TeamSet(
         lead=converted_poke[0], reserve=converted_poke[1:], format=battle_format
     )
-    predicted_team = predictor.predict(team)
+    predicted_team = team_predictor.predict(team)
     pokemon_to_add = [
         poke for poke in predicted_team.pokemon if poke.name not in poke_names
     ]
@@ -135,14 +134,20 @@ class POVReplay:
         self.actionlist.append([None, None])
 
 
-def add_filled_final_turn(replay: forward.ParsedReplay) -> forward.ParsedReplay:
+def add_filled_final_turn(
+    replay: forward.ParsedReplay, team_predictor: TeamPredictor
+) -> forward.ParsedReplay:
     # add an extra turn to a replay with all missing information guessed
     # by sampling from the TeamBuilder. this extra turn can then be moved
     # backwards through the replay and discareded.
     filled_turn = replay[-1].create_next_turn()
     filled_turn.on_end_of_turn()
-    filled_turn.pokemon_1 = fill_missing_team_info(replay.format, replay[-1].pokemon_1)
-    filled_turn.pokemon_2 = fill_missing_team_info(replay.format, replay[-1].pokemon_2)
+    filled_turn.pokemon_1 = fill_missing_team_info(
+        replay.format, replay[-1].pokemon_1, team_predictor=team_predictor
+    )
+    filled_turn.pokemon_2 = fill_missing_team_info(
+        replay.format, replay[-1].pokemon_2, team_predictor=team_predictor
+    )
     replay.turnlist.append(filled_turn)
     return replay
 
@@ -203,12 +208,16 @@ def resolve_transforms(replay):
                 pokemon.type = types[pokemon.unique_id]
 
 
-def backward_fill(replay: forward.ParsedReplay) -> tuple[POVReplay, POVReplay]:
+def backward_fill(
+    replay: forward.ParsedReplay, team_predictor: TeamPredictor
+) -> tuple[POVReplay, POVReplay]:
     cleaned_format = re.sub(r"\[|\]| ", "", replay.format).lower()
     pokedex, _ = get_pokedex_and_moves(cleaned_format)
 
     # fill in missing team info at the end of the forward pass
-    replay_filled = add_filled_final_turn(copy.deepcopy(replay))
+    replay_filled = add_filled_final_turn(
+        copy.deepcopy(replay), team_predictor=team_predictor
+    )
 
     # copy that info across the trajectory
     flat_turnlist = replay_filled.flattened_turnlist
