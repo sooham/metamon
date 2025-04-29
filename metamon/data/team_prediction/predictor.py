@@ -21,7 +21,6 @@ def get_legacy_teambuilder(format: str):
 
 
 class NaiveUsagePredictor(TeamPredictor):
-
     def predict(self, team: TeamSet):
         team_builder = get_legacy_teambuilder(team.format)
         gen = int(team.format.split("gen")[1][0])

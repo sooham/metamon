@@ -32,9 +32,10 @@ class TeamPredictionDataset(Dataset):
             mask_attrs_prob: Probability of masking individual attributes
             seed: Random seed for reproducibility
         """
-        self.mask_pokemon_prob_low, self.mask_pokemon_prob_high = (
-            mask_pokemon_prob_range
-        )
+        (
+            self.mask_pokemon_prob_low,
+            self.mask_pokemon_prob_high,
+        ) = mask_pokemon_prob_range
         self.mask_attrs_prob_low, self.mask_attrs_prob_high = mask_attrs_prob_range
         assert self.mask_pokemon_prob_low <= self.mask_pokemon_prob_high
         assert self.mask_attrs_prob_low <= self.mask_attrs_prob_high
@@ -109,9 +110,10 @@ class TeamPredictionDataset(Dataset):
         )
         x_seq = x.to_seq(include_stats=False)
         y_seq = y.to_seq(include_stats=False)
-        x_tokens = self.vocab.pokeset_seq_to_ints(x_seq)
-        y_tokens = self.vocab.pokeset_seq_to_ints(y_seq)
-        return x_tokens, y_tokens
+        x_tokens, x_type_ids = self.vocab.pokeset_seq_to_ints(x_seq)
+        y_tokens, y_type_ids = self.vocab.pokeset_seq_to_ints(y_seq)
+        assert (x_type_ids == y_type_ids).all()
+        return x_tokens, x_type_ids, y_tokens
 
 
 class CompetitiveTeamPredictionDataset(TeamPredictionDataset):
@@ -142,8 +144,10 @@ if __name__ == "__main__":
     print(f"Dataset size: {len(dataset)}")
 
     # Test loading a single item
-    x, y = dataset[0]
+    x, type_ids, y = dataset[0]
     print("\nMasked team (x):")
     print(x)
+    print("\nType IDs:")
+    print(type_ids)
     print("\nComplete team (y):")
     print(y)
