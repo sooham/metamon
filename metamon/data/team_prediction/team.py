@@ -5,6 +5,7 @@ import copy
 from functools import lru_cache
 from dataclasses import dataclass
 from typing import List, Optional
+import unicodedata
 
 from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
     Pokemon,
@@ -26,7 +27,7 @@ def moveset_size(pokemon_name: str, gen: int) -> int:
             set(stat.get_from_inclusive(pokemon_name)["moves"].keys()) - {"Nothing"}
         )
     except KeyError:
-        breakpoint()
+        print(f"KeyError for {pokemon_name} in gen {gen}")
         return 4
     if moves < 4:
         breakpoint()
@@ -177,17 +178,32 @@ class PokemonSet:
 
     @classmethod
     def from_showdown_block(cls, block: str, gen: int):
+        block = block.replace("\u200b", "")
         lines = [line.strip() for line in block.strip().split("\n") if line.strip()]
 
-        # e.g., Smogonbirb (Talonflame) (F) @ Flyinium Z
-        name_line = re.sub(r"\([^)]*\)", "", lines[0]).strip()
-        if "@" in name_line:
-            name, item = [l.strip() for l in name_line.split("@")]
-            if not item:
-                item = cls.default_item(gen)
+        # Parse first line: handle nickname, gender, and item
+        first = lines[0]
+        if "@" in first:
+            name_part, item_part = first.split("@", 1)
+            item = item_part.strip() or cls.default_item(gen)
         else:
-            name = name_line.strip()
+            name_part = first
             item = cls.default_item(gen)
+        name_raw = name_part.strip()
+        # Extract parenthetical contents and pick the species (ignore gender flags)
+        contents = re.findall(r"\(([^)]+)\)", name_raw)
+        species = None
+        for content in contents:
+            c = content.strip()
+            if c.upper() in ("M", "F"):
+                continue
+            species = c
+            break
+        if species:
+            name = species
+        else:
+            # Remove any parentheses (nicknames or gender)
+            name = re.sub(r"\s*\([^)]*\)", "", name_raw).strip()
 
         # Set defaults based on gen
         evs = cls.default_evs(gen)
@@ -201,6 +217,7 @@ class PokemonSet:
                 if gen > 2:
                     ability = line.split(":", 1)[1].strip()
             elif line.startswith("EVs:"):
+                evs = [0] * 6 if gen > 2 else [252] * 6
                 for part in line[4:].split("/"):
                     stat = part.strip().split(" ")
                     if len(stat) == 2:
@@ -224,9 +241,16 @@ class PokemonSet:
                 if gen >= 3:
                     nature = line.split()[0].strip()
             elif line.startswith("- "):
+                move_raw = line[2:].strip()
+                # if multiple options, take the first option
+                if "/" in move_raw:
+                    move_raw = move_raw.split("/", 1)[0].strip()
+                # normalize Hidden Power by dropping any specific type
+                if move_raw.startswith("Hidden Power"):
+                    move_raw = "Hidden Power"
                 try:
-                    moves[moves.index(cls.MISSING_MOVE)] = line[2:].strip()
-                except:
+                    moves[moves.index(cls.MISSING_MOVE)] = move_raw
+                except ValueError:
                     breakpoint()
         return cls(
             name=name,

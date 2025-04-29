@@ -1,12 +1,40 @@
-Tauros
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-Mew
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
+Jynx
+IVs: 2 Atk
+- Blizzard
+- Lovely Kiss
+- Rest
+- Seismic Toss
+
 Exeggutor
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
+- Explosion
+- Psychic
+- Sleep Powder
+- Stun Spore
+
 Mewtwo
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
+IVs: 2 Atk
+- Amnesia
+- Ice Beam
+- Psychic
+- Recover
+
+Mew
+IVs: 2 Atk
+- Reflect
+- Soft-Boiled
+- Transform
+- Thunder Wave
+
 Slowbro
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-Snorlax
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
+IVs: 2 Atk
+- Amnesia
+- Rest
+- Surf
+- Thunder Wave
+
+Chansey
+IVs: 2 Atk
+- Light Screen
+- Seismic Toss
+- Soft-Boiled
+- Thunder Wave

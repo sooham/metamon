@@ -1,17 +1,43 @@
-Jynx
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-EVs: 252 HP / 252 Def / 252 SpA / 252 SpD / 252 Spe
-Chansey
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-EVs: 252 HP / 252 Def / 252 SpA / 252 SpD / 252 Spe
+Jolteon
+Ability: none
+- Thunder Wave
+- Thunderbolt
+- Pin Missile
+- Double Kick
+
 Mewtwo
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-EVs: 252 HP / 252 Def / 252 SpA / 252 SpD / 252 Spe
-Exeggutor
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-Slowbro
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-EVs: 252 HP / 252 Def / 252 SpA / 252 SpD / 252 Spe
+Ability: none
+IVs: 2 Atk
+- Amnesia
+- Psychic
+- Thunderbolt
+- Recover
+
 Mew
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-EVs: 252 HP / 252 Def / 252 SpA / 252 SpD / 252 Spe
+Ability: none
+- Swords Dance
+- Earthquake
+- Explosion
+- Soft-Boiled
+
+Snorlax
+Ability: none
+- Body Slam
+- Earthquake
+- Hyper Beam
+- Self-Destruct
+
+Chansey (F)
+Ability: none
+IVs: 2 Atk
+- Soft-Boiled
+- Ice Beam
+- Thunder Wave
+- Sing
+
+Tauros (M)
+Ability: none
+- Blizzard
+- Body Slam
+- Hyper Beam
+- Earthquake

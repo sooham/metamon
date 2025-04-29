@@ -85,10 +85,7 @@ class _TeamTokenizer(PokemonTokenizer):
     def tokenize(self, seq: list[str]) -> np.ndarray:
         for i, s in enumerate(seq):
             if s.startswith("Move:") and "Hidden Power" in s:
-                print(f"Found Hidden Power: {s}")
-                breakpoint()
                 seq[i] = "Move: Hidden Power"
-
         out = np.array([self[s] for s in seq], dtype=np.int32)
         for i, token in enumerate(out):
             if token == UNKNOWN_TOKEN:
@@ -110,7 +107,16 @@ class Vocabulary:
     def __init__(self):
         vocab_path = os.path.join(os.path.dirname(__file__), "vocab.json")
         self.tokenizer = _TeamTokenizer().load_tokens_from_disk(vocab_path)
-        prefixes = ["Mon:", "Ability:", "Item:", "Nature:", "Move:", "EV:", "IV:"]
+        prefixes = [
+            "Format:",
+            "Mon:",
+            "Ability:",
+            "Item:",
+            "Nature:",
+            "Move:",
+            "EV:",
+            "IV:",
+        ]
         for prefix in prefixes:
             attr_name = f"{prefix.lower().rstrip(':')}_mask"
             setattr(
@@ -123,6 +129,7 @@ class Vocabulary:
                 ],
             )
         self.masks = {
+            "format": self.format_mask,
             "mon": self.mon_mask,
             "ability": self.ability_mask,
             "item": self.item_mask,
@@ -144,6 +151,16 @@ class Vocabulary:
                 "IV": 6,
             },
         )
+        self.type_id_to_mask = {
+            0: self.format_mask,
+            1: self.mon_mask,
+            2: self.ability_mask,
+            3: self.item_mask,
+            4: self.nature_mask,
+            5: self.move_mask,
+            6: self.ev_mask,
+            7: self.iv_mask,
+        }
 
     def pokeset_seq_to_ints(self, seq: list[str]) -> np.ndarray:
         tokens = self.tokenizer.tokenize(seq)
@@ -156,9 +173,21 @@ class Vocabulary:
         return self.tokenizer.invert(ints)
 
     def filter_probs(self, probs: torch.Tensor, type_ids: torch.Tensor) -> torch.Tensor:
-        # TODO
-        breakpoint()
-        # return filtered_probs
+        # probs: [batch_size, seq_len, vocab_size], type_ids: [batch_size, seq_len]
+        # Initialize mask and flatten batch+seq dims
+        B, L, V = probs.shape
+        mask = torch.zeros_like(probs)
+        # For each type_id, set allowed vocab indices
+        for type_id, mask_indices in self.type_id_to_mask.items():
+            # TODO: speedup
+            if not mask_indices:
+                continue
+            for b in range(B):
+                for l in range(L):
+                    if type_ids[b, l] == type_id:
+                        mask[b, l, mask_indices] = 1.0
+        filtered = probs * mask
+        return filtered / (filtered.sum(dim=-1, keepdim=True) + 1e-10)
 
 
 if __name__ == "__main__":

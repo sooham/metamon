@@ -1,12 +1,38 @@
-Exeggutor
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-Snorlax
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-Zapdos
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-Slowbro
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
+Tauros
+Ability: Intimidate
+- Body Slam
+- Earthquake
+- Hyper Beam
+- Blizzard
+
 Mewtwo
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
+- Amnesia
+- Psychic
+- Ice Beam
+- Recover
+
 Mew
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
+- Swords Dance
+- Body Slam
+- Reflect
+- Soft-Boiled
+
+Exeggutor
+- Sleep Powder
+- Stun Spore
+- Psychic
+- Explosion
+
+Slowbro
+Ability: Oblivious
+- Thunder Wave
+- Amnesia
+- Ice Beam
+- Rest
+
+Snorlax
+Ability: Immunity
+- Body Slam
+- Hyper Beam
+- Earthquake
+- Self-Destruct

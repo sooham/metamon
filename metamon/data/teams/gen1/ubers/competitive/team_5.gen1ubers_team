@@ -1,15 +1,43 @@
-Alakazam
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-EVs: 252 HP / 252 Def / 252 SpA / 252 SpD / 252 Spe
+Gengar
+Ability: none
+- Hypnosis
+- Night Shade
+- Thunderbolt
+- Explosion
+
 Mewtwo
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-EVs: 252 HP / 252 Def / 252 SpA / 252 SpD / 252 Spe
+Ability: none
+IVs: 2 Atk
+- Amnesia
+- Psychic
+- Thunderbolt
+- Recover
+
 Mew
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
+Ability: none
+- Swords Dance
+- Earthquake
+- Explosion
+- Soft-Boiled
+
 Snorlax
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
+Ability: none
+- Body Slam
+- Earthquake
+- Hyper Beam
+- Self-Destruct
+
 Chansey (F)
-EVs: 252 HP / 252 Def / 252 SpA / 252 SpD / 252 Spe
-Slowbro
-EVs: 252 HP / 252 Atk / 252 Def / 252 SpA / 252 SpD / 252 Spe
-EVs: 252 HP / 252 Def / 252 SpA / 252 SpD / 252 Spe
+Ability: none
+IVs: 2 Atk
+- Soft-Boiled
+- Ice Beam
+- Thunder Wave
+- Sing
+
+Zapdos
+Ability: none
+- Drill Peck
+- Thunderbolt
+- Thunder Wave
+- Agility

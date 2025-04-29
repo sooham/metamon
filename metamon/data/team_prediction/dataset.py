@@ -39,7 +39,7 @@ class TeamPredictionDataset(Dataset):
         self.mask_attrs_prob_low, self.mask_attrs_prob_high = mask_attrs_prob_range
         assert self.mask_pokemon_prob_low <= self.mask_pokemon_prob_high
         assert self.mask_attrs_prob_low <= self.mask_attrs_prob_high
-        assert 0 <= validation_ratio < 1, "validation_ratio must be in [0, 1)"
+        assert 0 <= validation_ratio <= 1, "validation_ratio must be in [0, 1)"
 
         self.vocab = Vocabulary()
         if seed is not None:
@@ -112,7 +112,14 @@ class TeamPredictionDataset(Dataset):
         y_seq = y.to_seq(include_stats=False)
         x_tokens, x_type_ids = self.vocab.pokeset_seq_to_ints(x_seq)
         y_tokens, y_type_ids = self.vocab.pokeset_seq_to_ints(y_seq)
+        if len(x_tokens) != len(x_type_ids) or len(y_tokens) != len(y_type_ids):
+            breakpoint()
+        if len(x_tokens) != (7 * 6) + 1:
+            breakpoint()
         assert (x_type_ids == y_type_ids).all()
+        x_tokens = torch.from_numpy(x_tokens).long()
+        x_type_ids = torch.from_numpy(x_type_ids).long()
+        y_tokens = torch.from_numpy(y_tokens).long()
         return x_tokens, x_type_ids, y_tokens
 
 
@@ -130,8 +137,8 @@ class CompetitiveTeamPredictionDataset(TeamPredictionDataset):
                 )
         super().__init__(
             data_dir=team_dirs,
-            split="train",
-            validation_ratio=0.0,
+            split="val",
+            validation_ratio=1.0,
             mask_pokemon_prob_range=mask_pokemon_prob_range,
             mask_attrs_prob_range=mask_attrs_prob_range,
         )
