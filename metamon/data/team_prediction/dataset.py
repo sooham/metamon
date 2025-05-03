@@ -87,11 +87,22 @@ class TeamPredictionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.team_files)
 
+    def _mask(self, seq: list[str]) -> list[str]:
+        mask_out = []
+        for token in seq:
+            if random.random() < self.mask_pokemon_prob:
+                mask_out.append(self.vocab.special_tokens["Mon"])
+            else:
+                mask_out.append(token)
+        return mask_out
+
     def __getitem__(self, idx: int) -> Tuple[TeamSet, TeamSet]:
         """
         Returns:
             x: Masked team
+            x_type_ids: Type indicating ints (pokemon, ability, item, etc.)
             y: Complete team (ground truth)
+            pred_mask: Mask indicating which values are eligible for loss function
         """
         path = self.team_files[idx]
         # Extract format from file extension (e.g. .gen4ou_team -> gen4ou)
@@ -108,8 +119,12 @@ class TeamPredictionDataset(Dataset):
             mask_pokemon_prob=mask_pokemon_prob,
             mask_attrs_prob=mask_attrs_prob,
         )
-        x_seq = x.to_seq(include_stats=False)
-        y_seq = y.to_seq(include_stats=False)
+        x_seq, x_needs_pred = x.to_seq(include_stats=False)
+        y_seq, y_needs_pred = y.to_seq(include_stats=False)
+        # we will only train on values that are missing from x but provided by y
+        pred_mask = torch.logical_and(
+            torch.tensor(x_needs_pred), ~torch.tensor(y_needs_pred)
+        )
         x_tokens, x_type_ids = self.vocab.pokeset_seq_to_ints(x_seq)
         y_tokens, y_type_ids = self.vocab.pokeset_seq_to_ints(y_seq)
         if len(x_tokens) != len(x_type_ids) or len(y_tokens) != len(y_type_ids):
@@ -120,7 +135,7 @@ class TeamPredictionDataset(Dataset):
         x_tokens = torch.from_numpy(x_tokens).long()
         x_type_ids = torch.from_numpy(x_type_ids).long()
         y_tokens = torch.from_numpy(y_tokens).long()
-        return x_tokens, x_type_ids, y_tokens
+        return x_tokens, x_type_ids, y_tokens, pred_mask
 
 
 class CompetitiveTeamPredictionDataset(TeamPredictionDataset):

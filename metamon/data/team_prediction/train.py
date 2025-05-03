@@ -1,6 +1,7 @@
 import os
 import argparse
 import random
+import re
 
 import tqdm
 import torch
@@ -16,6 +17,122 @@ from metamon.data.team_prediction.dataset import (
 from metamon.data.team_prediction.model import TeamTransformer
 from metamon.data.team_prediction.vocabulary import Vocabulary
 from metamon.data.team_prediction.team import TeamSet
+
+
+def compute_loss_and_accuracy(
+    logits: torch.Tensor, y_tokens: torch.Tensor, pred_mask: torch.Tensor
+) -> tuple[torch.Tensor, float]:
+    """
+    Computes cross-entropy loss and accuracy. Only masked positions are used for loss/accuracy.
+    Returns: (loss, accuracy)
+    """
+    B, L, V = logits.shape
+    loss = F.cross_entropy(logits.view(-1, V), y_tokens.view(-1), reduction="none")
+    num_preds = max(pred_mask.sum().item(), 1)
+    loss = (loss * pred_mask.view(-1)).sum() / num_preds
+    preds = logits.argmax(dim=-1)
+    correct = ((preds == y_tokens) * pred_mask).sum().item()
+    accuracy = correct / num_preds
+    return loss, accuracy
+
+
+def evaluate(
+    model: nn.Module, dataloader: DataLoader, device: torch.device
+) -> tuple[float, float]:
+    """
+    Evaluate model on a dataloader. Returns (avg_loss, avg_accuracy).
+    """
+    model.eval()
+    total_loss = 0.0
+    total_acc = 0.0
+    with torch.no_grad():
+        for batch in tqdm.tqdm(dataloader, desc="Evaluating"):
+            x_tokens, type_ids, y_tokens, pred_mask = batch
+            x_tokens = x_tokens.to(device)
+            type_ids = type_ids.to(device)
+            y_tokens = y_tokens.to(device)
+            pred_mask = pred_mask.to(device)
+            logits = model(x_tokens, type_ids)
+            loss, acc = compute_loss_and_accuracy(logits, y_tokens, pred_mask)
+            total_loss += loss.item()
+            total_acc += acc
+    avg_loss = total_loss / len(dataloader)
+    avg_acc = total_acc / len(dataloader)
+    return avg_loss, avg_acc
+
+
+def wandb_to_console_color(text: str) -> str:
+    # Replace :blue[], :red[], :green[] with ANSI codes
+    text = re.sub(r":blue\[(.*?)\]", r"\033[94m\1\033[0m", text)
+    text = re.sub(r":red\[(.*?)\]", r"\033[91m\1\033[0m", text)
+    text = re.sub(r":green\[(.*?)\]", r"\033[92m\1\033[0m", text)
+    return text
+
+
+def log_example_predictions(
+    model: nn.Module,
+    vocab: Vocabulary,
+    x_tokens: torch.Tensor,
+    type_ids: torch.Tensor,
+    y_tokens: torch.Tensor,
+    pred_masks: torch.Tensor,
+    device: torch.device,
+    num_examples: int,
+    use_wandb: bool,
+    epoch: int,
+):
+    """
+    Log example predictions to wandb or print to console.
+    """
+    model.eval()
+    x_tokens = x_tokens.to(device)
+    type_ids = type_ids.to(device)
+    logits = model(x_tokens, type_ids)
+    probs = torch.softmax(logits, dim=-1)
+    filt = vocab.filter_probs(probs, type_ids)
+    bs, seq_len, vs = filt.shape
+    flat = filt.view(-1, vs)
+    sampled = torch.multinomial(flat, 1).view(bs, seq_len)
+
+    table = wandb.Table(columns=["input", "predicted", "ground_truth"])
+    for i in range(min(bs, num_examples)):
+        x_seq = vocab.ints_to_pokeset_seq(x_tokens[i].cpu().tolist())
+        pred_seq = vocab.ints_to_pokeset_seq(sampled[i].tolist())
+        true_seq = vocab.ints_to_pokeset_seq(y_tokens[i].cpu().tolist())
+        mask = pred_masks[i]
+        x_str = " ".join(f":green[{x}]" if m else x for x, m in zip(x_seq, mask))
+        pred_str = []
+        true_str = []
+        for p, t, m in zip(pred_seq, true_seq, mask):
+            color = ":blue[" if p == t else ":red[" if m else ""
+            end = "]" if m else ""
+            pred_str.append(f"{color}{p}{end}")
+            true_str.append(f"{color}{t}{end}")
+        pred_str = " ".join(pred_str)
+        true_str = " ".join(true_str)
+
+        table.add_data(
+            f"**Input**:\n{x_str}",
+            f"**Predicted**:\n{pred_str}",
+            f"**Ground truth**:\n{true_str}",
+        )
+    if use_wandb:
+        wandb.log({"val/example_predictions": table}, step=epoch)
+    else:
+        print(f"Examples at epoch {epoch}:")
+        for i in range(min(bs, num_examples)):
+            print("---")
+            # Use the same strings as above, but convert color markup to ANSI
+            x_str_console = wandb_to_console_color(table.data[i][0].split("\n", 1)[1])
+            pred_str_console = wandb_to_console_color(
+                table.data[i][1].split("\n", 1)[1]
+            )
+            true_str_console = wandb_to_console_color(
+                table.data[i][2].split("\n", 1)[1]
+            )
+            print(f"**Input**:\n{x_str_console}")
+            print(f"**Predicted**:\n{pred_str_console}")
+            print(f"**Ground truth**:\n{true_str_console}")
 
 
 def train(config, use_wandb: bool = True):
@@ -57,13 +174,13 @@ def train(config, use_wandb: bool = True):
     val_loader = DataLoader(
         val_dset,
         batch_size=config.batch_size,
-        shuffle=False,
+        shuffle=True,
         num_workers=config.num_workers,
     )
     comp_loader = DataLoader(
         comp_dset,
         batch_size=config.batch_size,
-        shuffle=False,
+        shuffle=True,
         num_workers=config.num_workers,
     )
 
@@ -94,140 +211,67 @@ def train(config, use_wandb: bool = True):
     for epoch in range(1, config.epochs + 1):
         model.train()
         running_loss = 0.0
-        train_correct = 0
-        train_total = 0
-        for x_tokens, type_ids, y_tokens in tqdm.tqdm(train_loader, desc="Training"):
+        running_acc = 0.0
+        for x_tokens, type_ids, y_tokens, pred_mask in tqdm.tqdm(
+            train_loader, desc="Training"
+        ):
             x_tokens = x_tokens.to(device)
             type_ids = type_ids.to(device)
             y_tokens = y_tokens.to(device)
-
+            pred_mask = pred_mask.to(device)
             logits = model(x_tokens, type_ids)
-            # Compute loss
-            loss = F.cross_entropy(
-                logits.view(-1, len(vocab.tokenizer)), y_tokens.view(-1)
-            )
-            # Compute accuracy
-            preds = logits.argmax(dim=-1)
-            train_correct += (preds == y_tokens).sum().item()
-            train_total += y_tokens.numel()
+            loss, acc = compute_loss_and_accuracy(logits, y_tokens, pred_mask)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
+            running_acc += acc
         train_loss = running_loss / len(train_loader)
-        train_acc = train_correct / train_total if train_total else 0.0
-        if use_wandb:
-            wandb.log(
-                {"replay_train/loss": train_loss, "replay_train/accuracy": train_acc},
-                step=epoch,
-            )
-        else:
-            print(
-                f"Epoch {epoch} | Replay Train - loss: {train_loss:.4f}, accuracy: {train_acc:.4f}"
-            )
+        train_acc = running_acc / len(train_loader)
 
-        # Validation on replay_val split
-        model.eval()
-        val_loss = 0.0
-        val_correct = 0
-        val_total = 0
-        with torch.no_grad():
-            for x_tokens, type_ids, y_tokens in tqdm.tqdm(
-                val_loader, desc="Validation on replay_val split"
-            ):
-                x_tokens = x_tokens.to(device)
-                type_ids = type_ids.to(device)
-                y_tokens = y_tokens.to(device)
-                logits = model(x_tokens, type_ids)
-                loss = F.cross_entropy(
-                    logits.view(-1, len(vocab.tokenizer)), y_tokens.view(-1)
-                )
-                # accuracy
-                preds = logits.argmax(dim=-1)
-                val_correct += (preds == y_tokens).sum().item()
-                val_total += y_tokens.numel()
-                val_loss += loss.item()
-        val_loss /= len(val_loader)
-        val_acc = val_correct / val_total if val_total else 0.0
-        if use_wandb:
-            wandb.log(
-                {"replay_val/loss": val_loss, "replay_val/accuracy": val_acc},
-                step=epoch,
-            )
-        else:
-            print(
-                f"Epoch {epoch} | Replay Val   - loss: {val_loss:.4f}, accuracy: {val_acc:.4f}"
-            )
+        val_loss, val_acc = evaluate(model, val_loader, device)
+        comp_loss, comp_acc = evaluate(model, comp_loader, device)
 
-        # Validation on competitive_val set
-        comp_loss = 0.0
-        comp_correct = 0
-        comp_total = 0
-        with torch.no_grad():
-            for x_tokens, type_ids, y_tokens in tqdm.tqdm(
-                comp_loader, desc="Validation on competitive_val set"
-            ):
-                x_tokens = x_tokens.to(device)
-                type_ids = type_ids.to(device)
-                y_tokens = y_tokens.to(device)
-                logits = model(x_tokens, type_ids)
-                loss = F.cross_entropy(
-                    logits.view(-1, len(vocab.tokenizer)), y_tokens.view(-1)
-                )
-                # accuracy
-                preds = logits.argmax(dim=-1)
-                comp_correct += (preds == y_tokens).sum().item()
-                comp_total += y_tokens.numel()
-                comp_loss += loss.item()
-        comp_loss /= len(comp_loader)
-        comp_acc = comp_correct / comp_total if comp_total else 0.0
+        # Log metrics for each dataset split
+        metrics = {
+            "train": {"loss": train_loss, "accuracy": train_acc},
+            "val": {
+                "replay_loss": val_loss,
+                "replay_accuracy": val_acc,
+                "competitive_loss": comp_loss,
+                "competitive_accuracy": comp_acc,
+            },
+        }
         if use_wandb:
-            wandb.log(
-                {
-                    "competitive_val/loss": comp_loss,
-                    "competitive_val/accuracy": comp_acc,
-                },
-                step=epoch,
-            )
+            # Log all metrics to wandb
+            wandb_metrics = {}
+            for split, split_metrics in metrics.items():
+                for metric_name, value in split_metrics.items():
+                    wandb_metrics[f"{split}/{metric_name}"] = value
+            wandb.log(wandb_metrics, step=epoch)
         else:
-            print(
-                f"Epoch {epoch} | Competitive - loss: {comp_loss:.4f}, accuracy: {comp_acc:.4f}"
-            )
+            # Print metrics to console
+            print(f"\nEpoch {epoch}")
+            print(f"Train       - loss: {train_loss:.4f}, accuracy: {train_acc:.4f}")
+            print(f"Replay Val  - loss: {val_loss:.4f}, accuracy: {val_acc:.4f}")
+            print(f"Competitive - loss: {comp_loss:.4f}, accuracy: {comp_acc:.4f}\n")
 
         # Log example predictions
-        examples = next(iter(val_loader))
-        x_tokens, type_ids, y_tokens = examples
-        x_tokens = x_tokens.to(device)
-        type_ids = type_ids.to(device)
-        logits = model(x_tokens, type_ids)
-        probs = torch.softmax(logits, dim=-1)
-        filt = vocab.filter_probs(probs, type_ids)
-        bs, seq_len, vs = filt.shape
-        flat = filt.view(-1, vs)
-        sampled = torch.multinomial(flat, 1).view(bs, seq_len)
-
-        table = wandb.Table(columns=["input", "predicted", "ground_truth"])
-        for i in range(min(bs, config.num_examples)):
-            x_seq = vocab.ints_to_pokeset_seq(x_tokens[i].cpu().tolist())
-            pred_seq = vocab.ints_to_pokeset_seq(sampled[i].tolist())
-            true_seq = vocab.ints_to_pokeset_seq(y_tokens[i].cpu().tolist())
-            x_team = TeamSet.from_seq(x_seq, include_stats=False)
-            pred_team = TeamSet.from_seq(pred_seq, include_stats=False)
-            true_team = TeamSet.from_seq(true_seq, include_stats=False)
-            table.add_data(
-                f"**Input**:\n{x_team.to_str()}",
-                f"**Predicted**:\n{pred_team.to_str()}",
-                f"**Ground truth**:\n{true_team.to_str()}",
-            )
-        if use_wandb:
-            wandb.log({"predictions": table}, step=epoch)
-        else:
-            print(f"Examples at epoch {epoch}:")
-            for row in table.data:
-                print("---")
-                print(row[0])
-                print(row[1])
-                print(row[2])
+        example_batch = next(iter(val_loader))
+        x_tokens, type_ids, y_tokens, pred_masks = example_batch
+        log_example_predictions(
+            model=model,
+            vocab=vocab,
+            x_tokens=x_tokens,
+            type_ids=type_ids,
+            y_tokens=y_tokens,
+            pred_masks=pred_masks,
+            device=device,
+            num_examples=config.num_examples,
+            use_wandb=use_wandb,
+            epoch=epoch,
+        )
+        breakpoint()
 
         # Early stopping check
         if val_loss < best_val_loss:
@@ -235,13 +279,12 @@ def train(config, use_wandb: bool = True):
             patience_count = 0
             best_model = os.path.join(ckpt_dir, "best_model.pt")
             torch.save(model.state_dict(), best_model)
+            print(f"New best model saved to {best_model}")
             if use_wandb:
                 # Log best checkpoint as Artifact
                 artifact = wandb.Artifact(f"{config.run_name}-best-model", type="model")
                 artifact.add_file(best_model)
                 wandb.log_artifact(artifact)
-            else:
-                print(f"Best model saved to {best_model}")
         else:
             patience_count += 1
             if patience_count >= config.patience:

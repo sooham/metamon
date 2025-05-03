@@ -67,6 +67,13 @@ class PokemonSet:
         assert self.nature is not None
         assert self.item is not None
         assert self.ability is not None
+        self.missing_strings = [
+            self.MISSING_MOVE,
+            self.MISSING_ABILITY,
+            self.MISSING_ITEM,
+            self.MISSING_NATURE,
+        ]
+        self.missing_regex = re.compile("|".join(map(re.escape, self.missing_strings)))
 
     @classmethod
     def default_moves(cls, name: str, gen: int):
@@ -300,7 +307,8 @@ class PokemonSet:
             evs = [f"EVs: {ev}" for ev in self.evs]
             ivs = [f"IV: {iv}" for iv in self.ivs]
             seq += [nature] + evs + ivs
-        return seq
+        mask = [bool(self.missing_regex.search(word)) for word in seq]
+        return seq, mask
 
     @classmethod
     def from_seq(cls, seq: List[str], gen: int, include_stats: bool = True):
@@ -406,10 +414,20 @@ class TeamSet:
         return out
 
     def to_seq(self, include_stats: bool = True):
-        seq = [f"Format: {self.format}"] + self.lead.to_seq(include_stats=include_stats)
-        for reserve in self.reserve:
-            seq += reserve.to_seq(include_stats=include_stats)
-        return seq
+        lead_seq, lead_mask = self.lead.to_seq(include_stats=include_stats)
+        reserve_seq, reserve_mask = [], []
+        for p in self.reserve:
+            p_seq, p_mask = p.to_seq(include_stats=include_stats)
+            reserve_seq.append(p_seq)
+            reserve_mask.append(p_mask)
+
+        # add format to the beginning (which never needs to be predicted)
+        seq = [f"Format: {self.format}"] + lead_seq
+        mask = [False] + lead_mask
+        for reserve_seq, reserve_mask in zip(reserve_seq, reserve_mask):
+            seq += reserve_seq
+            mask += reserve_mask
+        return seq, mask
 
     @classmethod
     def from_seq(cls, seq: List[str], include_stats: bool = True):

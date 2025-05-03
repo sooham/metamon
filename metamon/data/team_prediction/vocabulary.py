@@ -68,7 +68,7 @@ def create_vocabularies():
     return team_tokenizer
 
 
-class _TeamTokenizer(PokemonTokenizer):
+class TeamTokenizer(PokemonTokenizer):
     def __init__(self):
         super().__init__()
         self._inv_data = None
@@ -106,7 +106,7 @@ class _TeamTokenizer(PokemonTokenizer):
 class Vocabulary:
     def __init__(self):
         vocab_path = os.path.join(os.path.dirname(__file__), "vocab.json")
-        self.tokenizer = _TeamTokenizer().load_tokens_from_disk(vocab_path)
+        self.tokenizer = TeamTokenizer().load_tokens_from_disk(vocab_path)
         prefixes = [
             "Format:",
             "Mon:",
