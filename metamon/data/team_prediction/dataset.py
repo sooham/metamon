@@ -17,10 +17,10 @@ class TeamPredictionDataset(Dataset):
     def __init__(
         self,
         data_dir: Union[str, Iterable[str]],
+        mask_pokemon_prob_range: Tuple[float, float],
+        mask_attrs_prob_range: Tuple[float, float],
         split: Literal["train", "val"] = "train",
         validation_ratio: float = 0.1,
-        mask_pokemon_prob_range: Tuple[float, float] = (0.1, 0.1),
-        mask_attrs_prob_range: Tuple[float, float] = (0.1, 0.1),
         seed: Optional[int] = None,
     ):
         """
@@ -127,10 +127,9 @@ class TeamPredictionDataset(Dataset):
         )
         x_tokens, x_type_ids = self.vocab.pokeset_seq_to_ints(x_seq)
         y_tokens, y_type_ids = self.vocab.pokeset_seq_to_ints(y_seq)
-        if len(x_tokens) != len(x_type_ids) or len(y_tokens) != len(y_type_ids):
-            breakpoint()
-        if len(x_tokens) != (7 * 6) + 1:
-            breakpoint()
+        assert len(x_tokens) == len(x_type_ids)
+        assert len(y_tokens) == len(y_type_ids)
+        assert len(x_tokens) == (7 * 6) + 1
         assert (x_type_ids == y_type_ids).all()
         x_tokens = torch.from_numpy(x_tokens).long()
         x_type_ids = torch.from_numpy(x_type_ids).long()

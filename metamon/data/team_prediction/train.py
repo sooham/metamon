@@ -87,25 +87,32 @@ def log_example_predictions(
     model.eval()
     x_tokens = x_tokens.to(device)
     type_ids = type_ids.to(device)
+    pred_masks = pred_masks.to(device)
     logits = model(x_tokens, type_ids)
     probs = torch.softmax(logits, dim=-1)
     filt = vocab.filter_probs(probs, type_ids)
     bs, seq_len, vs = filt.shape
     flat = filt.view(-1, vs)
     sampled = torch.multinomial(flat, 1).view(bs, seq_len)
+    # Use sampled predictions where pred_mask is True, otherwise keep input tokens
+    merged = torch.where(pred_masks, sampled, x_tokens).cpu()
 
     table = wandb.Table(columns=["input", "predicted", "ground_truth"])
     for i in range(min(bs, num_examples)):
         x_seq = vocab.ints_to_pokeset_seq(x_tokens[i].cpu().tolist())
-        pred_seq = vocab.ints_to_pokeset_seq(sampled[i].tolist())
-        true_seq = vocab.ints_to_pokeset_seq(y_tokens[i].cpu().tolist())
+        pred_seq = vocab.ints_to_pokeset_seq(merged[i].tolist())
+        true_seq = vocab.ints_to_pokeset_seq(y_tokens[i].tolist())
         mask = pred_masks[i]
         x_str = " ".join(f":green[{x}]" if m else x for x, m in zip(x_seq, mask))
         pred_str = []
         true_str = []
         for p, t, m in zip(pred_seq, true_seq, mask):
-            color = ":blue[" if p == t else ":red[" if m else ""
-            end = "]" if m else ""
+            if m:
+                color = ":blue[" if p == t else ":red["
+                end = "]"
+            else:
+                color = ""
+                end = ""
             pred_str.append(f"{color}{p}{end}")
             true_str.append(f"{color}{t}{end}")
         pred_str = " ".join(pred_str)
@@ -147,21 +154,21 @@ def train(config, use_wandb: bool = True):
         data_dir=config.train_data_dir,
         split="train",
         validation_ratio=config.val_ratio,
-        mask_pokemon_prob_range=(config.mask_p, config.mask_p),
-        mask_attrs_prob_range=(config.mask_a, config.mask_a),
+        mask_pokemon_prob_range=(config.mask_pokemon_prob, config.mask_pokemon_prob),
+        mask_attrs_prob_range=(config.mask_attrs_prob, config.mask_attrs_prob),
         seed=config.seed,
     )
     val_dset = TeamPredictionDataset(
         data_dir=config.train_data_dir,
         split="val",
         validation_ratio=config.val_ratio,
-        mask_pokemon_prob_range=(config.mask_p, config.mask_p),
-        mask_attrs_prob_range=(config.mask_a, config.mask_a),
+        mask_pokemon_prob_range=(config.mask_pokemon_prob, config.mask_pokemon_prob),
+        mask_attrs_prob_range=(config.mask_attrs_prob, config.mask_attrs_prob),
         seed=config.seed,
     )
     comp_dset = CompetitiveTeamPredictionDataset(
-        mask_pokemon_prob_range=(config.mask_p, config.mask_p),
-        mask_attrs_prob_range=(config.mask_a, config.mask_a),
+        mask_pokemon_prob_range=(config.mask_pokemon_prob, config.mask_pokemon_prob),
+        mask_attrs_prob_range=(config.mask_attrs_prob, config.mask_attrs_prob),
     )
 
     # DataLoaders
@@ -208,7 +215,7 @@ def train(config, use_wandb: bool = True):
     # Training loop with early stopping
     best_val_loss = float("inf")
     patience_count = 0
-    for epoch in range(1, config.epochs + 1):
+    for epoch in range(1, config.max_epochs + 1):
         model.train()
         running_loss = 0.0
         running_acc = 0.0
@@ -256,7 +263,6 @@ def train(config, use_wandb: bool = True):
             print(f"Replay Val  - loss: {val_loss:.4f}, accuracy: {val_acc:.4f}")
             print(f"Competitive - loss: {comp_loss:.4f}, accuracy: {comp_acc:.4f}\n")
 
-        # Log example predictions
         example_batch = next(iter(val_loader))
         x_tokens, type_ids, y_tokens, pred_masks = example_batch
         log_example_predictions(
@@ -271,7 +277,6 @@ def train(config, use_wandb: bool = True):
             use_wandb=use_wandb,
             epoch=epoch,
         )
-        breakpoint()
 
         # Early stopping check
         if val_loss < best_val_loss:
@@ -332,19 +337,19 @@ if __name__ == "__main__":
     sweep_defaults = {
         "train_data_dir": "/mnt/data1/shared_pokemon_project/metamon_team_files",
         "val_ratio": 0.1,
-        "batch_size": 32,
+        "batch_size": 8,
         "num_workers": 0,
-        "mask_p": 0.1,
-        "mask_a": 0.1,
+        "mask_pokemon_prob": 0.1,
+        "mask_attrs_prob": 0.1,
         "seed": 42,
         "max_seq_len": 64,
         "d_model": 256,
         "nhead": 4,
         "num_layers": 3,
         "dim_ff": 1024,
-        "dropout": 0.1,
-        "learning_rate": 1e-4,
-        "epochs": 20,
+        "dropout": 0.0,
+        "learning_rate": 1e-3,
+        "max_epochs": 1000,
         "patience": 5,
         "weight_decay": 1e-4,
         "num_examples": 4,

@@ -128,6 +128,13 @@ class Vocabulary:
                     if token.startswith(prefix)
                 ],
             )
+
+        self.missing_mask = [
+            i
+            for i, token in enumerate(self.tokenizer.all_words)
+            if token.count("$") == 2
+        ]
+
         self.masks = {
             "format": self.format_mask,
             "mon": self.mon_mask,
@@ -137,6 +144,7 @@ class Vocabulary:
             "move": self.move_mask,
             "ev": self.ev_mask,
             "iv": self.iv_mask,
+            "missing": self.missing_mask,
         }
         self.type_ids = defaultdict(
             lambda: UNKNOWN_TOKEN,
@@ -177,6 +185,7 @@ class Vocabulary:
         # Initialize mask and flatten batch+seq dims
         B, L, V = probs.shape
         mask = torch.zeros_like(probs)
+
         # For each type_id, set allowed vocab indices
         for type_id, mask_indices in self.type_id_to_mask.items():
             # TODO: speedup
@@ -186,6 +195,11 @@ class Vocabulary:
                 for l in range(L):
                     if type_ids[b, l] == type_id:
                         mask[b, l, mask_indices] = 1.0
+
+        # ban prediction of missing values
+        mask[:, :, self.missing_mask] = 0.0
+
+        # renormalize probs
         filtered = probs * mask
         return filtered / (filtered.sum(dim=-1, keepdim=True) + 1e-10)
 
