@@ -89,7 +89,8 @@ class UniversalMove:
     base_power: int
     accuracy: float
     priority: int
-    pp: int
+    current_pp: int
+    max_pp: int
 
     def __post_init__(self):
         for name, should_be in self.__annotations__.items():
@@ -131,7 +132,8 @@ class UniversalMove:
             base_power=0,
             accuracy=1.0,
             priority=0,
-            pp=0,
+            current_pp=0,
+            max_pp=0,
         )
 
     @classmethod
@@ -140,7 +142,8 @@ class UniversalMove:
         # a different pp tracker
         universal_move = cls.from_Move(move)
         if move is not None:
-            universal_move.pp = move.pp
+            universal_move.current_pp = move.pp
+            universal_move.max_pp = move.maximum_pp
         return universal_move
 
     @classmethod
@@ -155,7 +158,8 @@ class UniversalMove:
             move_type=move.type.name,
             priority=move.priority,
             accuracy=move.accuracy,
-            pp=move.current_pp,
+            current_pp=move.current_pp,
+            max_pp=move.max_pp,
         )
 
 
