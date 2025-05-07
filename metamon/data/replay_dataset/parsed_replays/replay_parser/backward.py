@@ -33,6 +33,10 @@ def fill_missing_team_info(
         predicted_team = team_predictor.predict(copy.deepcopy(revealed_team))
     except Exception as e:
         raise BackwardException(f"Could not predict team for {revealed_team}")
+
+    if not revealed_team.is_consistent_with(predicted_team):
+        raise InconsistentTeamPrediction(revealed_team, predicted_team)
+
     pokemon_to_add = [
         poke for poke in predicted_team.pokemon if poke.name not in poke_names
     ]

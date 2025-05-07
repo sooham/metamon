@@ -83,4 +83,33 @@ class NaiveUsagePredictor(TeamPredictor):
                 filled_p = copy.deepcopy(p)
                 filled_p.fill_from_PokemonSet(new_p)
                 merged_team.append(filled_p)
-        return TeamSet(lead=merged_team[0], reserve=merged_team[1:], format=team.format)
+        final_team = TeamSet(
+            lead=merged_team[0], reserve=merged_team[1:], format=team.format
+        )
+        return final_team
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Predict team from partial information"
+    )
+    parser.add_argument("team_file", type=str, help="Path to team file")
+    parser.add_argument(
+        "format", type=str, help="Showdown battle format (e.g., gen1ou)"
+    )
+    args = parser.parse_args()
+
+    naive_predictor = NaiveUsagePredictor()
+    og_team = TeamSet.from_showdown_file(args.team_file, args.format)
+    naive_team = naive_predictor.predict(og_team)
+    consistent = og_team.is_consistent_with(naive_team)
+    print(f"Consistent: {consistent}")
+    edited_team = copy.deepcopy(naive_team)
+    edited_team.lead.moves[0] = "Tackle"
+    consistent = og_team.is_consistent_with(edited_team)
+    print(f"Consistent: {consistent}")
+    breakpoint()
+    print(og_team.to_str())
+    print(naive_team.to_str())

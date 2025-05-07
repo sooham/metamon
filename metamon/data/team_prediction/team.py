@@ -71,6 +71,35 @@ class PokemonSet:
         ]
         self.missing_regex = re.compile("|".join(map(re.escape, self.missing_strings)))
 
+    def is_consistent_with(self, other) -> bool:
+        """
+        Determines whether this Pokemon is "consistent" with another Pokemon,
+        where "consistent" means that there is no information we know about this
+        Pokemon that is contradicted by the other. For example, the partial version
+        of a Pokemon revealed by a replay would be consistent with a correct prediction
+        of the rest of the set.
+        """
+        if self.name != other.name:
+            return False
+        if self.gen != other.gen:
+            return False
+        if self.ability != self.MISSING_ABILITY and self.ability != other.ability:
+            return False
+        if self.item != self.MISSING_ITEM and self.item != other.item:
+            return False
+        if self.nature != self.MISSING_NATURE and self.nature != other.nature:
+            return False
+        for our_ev, other_ev in zip(self.evs, other.evs):
+            if our_ev != self.MISSING_EV and our_ev != other_ev:
+                return False
+        for our_iv, other_iv in zip(self.ivs, other.ivs):
+            if our_iv != self.MISSING_IV and our_iv != other_iv:
+                return False
+        for our_move in self.moves:
+            if our_move != self.MISSING_MOVE and our_move not in other.moves:
+                return False
+        return True
+
     @classmethod
     def default_moves(cls, name: str, gen: int):
         if name == cls.MISSING_NAME:
@@ -375,6 +404,32 @@ class TeamSet:
     lead: PokemonSet
     reserve: List[PokemonSet]
     format: str
+
+    def is_consistent_with(self, other) -> bool:
+        """
+        Determines whether this team is "consistent" with another team,
+        where "consistent" means that there is no information we know about this
+        team that is contradicted by the other. For example, the partial version
+        of a team revealed by a replay would be consistent with a correct prediction
+        of the rest of the team.
+        """
+        if self.format != other.format:
+            return False
+        if not self.lead.is_consistent_with(other.lead):
+            return False
+
+        # check rest of pokemon where order doesn't matter
+        our_names = {p.name for p in self.reserve if p.name != PokemonSet.MISSING_NAME}
+        other_names = {p.name for p in other.reserve}
+        if not our_names.issubset(other_names):
+            return False
+        other_dict = {p.name: p for p in other.reserve}
+        for our_pokemon in self.reserve:
+            if our_pokemon.name == PokemonSet.MISSING_NAME:
+                continue
+            if not our_pokemon.is_consistent_with(other_dict[our_pokemon.name]):
+                return False
+        return True
 
     @property
     def pokemon(self):
