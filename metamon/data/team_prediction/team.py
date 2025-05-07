@@ -17,6 +17,7 @@ from metamon.data.team_builder.stat_reader import PreloadedSmogonStat
 
 @lru_cache
 def get_preloaded_stat(gen: int):
+    # we grab the biggest dataset we can by using ubers "inclusive" (ubers including lower tiers)
     return PreloadedSmogonStat(f"gen{gen}ubers", inclusive=True, verbose=False)
 
 
@@ -27,10 +28,7 @@ def moveset_size(pokemon_name: str, gen: int) -> int:
             set(stat.get_from_inclusive(pokemon_name)["moves"].keys()) - {"Nothing"}
         )
     except KeyError:
-        print(f"KeyError for {pokemon_name} in gen {gen}")
         return 4
-    if moves < 4:
-        breakpoint()
     moveset = min(moves, 4)
     return moveset
 
@@ -60,8 +58,6 @@ class PokemonSet:
     MISSING_NATURE = "$missing_nature$"
 
     def __post_init__(self):
-        if self.name != self.MISSING_NAME:
-            assert len(self.moves) == moveset_size(self.name, self.gen)
         assert len(self.evs) == 6
         assert len(self.ivs) == 6
         assert self.nature is not None

@@ -1,8 +1,9 @@
 import copy
 from abc import ABC, abstractmethod
 from functools import lru_cache
+from collections import deque
 
-from metamon.data.team_builder.team_builder import TeamBuilder
+from metamon.data.team_builder.team_builder import TeamBuilder, PokemonStatsLookupError
 from metamon.data.team_prediction.team import TeamSet, PokemonSet
 
 
@@ -29,13 +30,16 @@ class NaiveUsagePredictor(TeamPredictor):
         # have and their common teammates. Teammates and all moves/items/abilities are sampled
         # from a premade set of Showdown usage statistics.
         existing_names = [p.name for p in pokemon if p.name != PokemonSet.MISSING_NAME]
-        sample_team = team_builder.generate_new_team(existing_names)
+        try:
+            sample_team = team_builder.generate_new_team(existing_names)
+        except PokemonStatsLookupError as e:
+            raise e
 
         # convert from the output of the old team builder to the new PokemonSet format
         cleaned_dict = {}
         for poke in sample_team:
             if poke["name"] == PokemonSet.MISSING_NAME:
-                breakpoint()
+                raise ValueError("Missing name in sample team")
             spread = poke["spread"]
             nature, evs = spread.split(":")
             nature = nature.strip()
@@ -56,28 +60,27 @@ class NaiveUsagePredictor(TeamPredictor):
                 "ability": ability,
                 "item": item,
             }
-        try:
-            sample_team = [
-                PokemonSet.from_dict(val | {"name": key})
-                for key, val in cleaned_dict.items()
-            ]
-        except Exception as e:
-            breakpoint()
-            raise e
 
-        # fill missing information in the revelealed replay time with plausible values
-        # from the generated team.
-        new_pokemon = [p for p in sample_team if p.name not in existing_names]
+        sample_team = []
+        for key, val in cleaned_dict.items():
+            as_pokemon_dict = val | {"name": key}
+            try:
+                sample_team.append(PokemonSet.from_dict(as_pokemon_dict))
+            except Exception as e:
+                raise e
+
+        # Build a mapping from name to PokemonSet for fast lookup
+        sample_team_map = {p.name: p for p in sample_team}
+        # Prepare a queue of new Pokemon to fill missing slots
+        new_pokemon = deque([p for p in sample_team if p.name not in existing_names])
         merged_team = []
         for p in team.pokemon:
             if p.name == PokemonSet.MISSING_NAME:
-                new_choice = new_pokemon.pop(0)
+                new_choice = new_pokemon.popleft()
                 merged_team.append(copy.deepcopy(new_choice))
-                continue
-            for new_p in sample_team:
-                if new_p.name == p.name:
-                    filled_p = copy.deepcopy(p)
-                    filled_p.fill_from_PokemonSet(new_p)
-                    merged_team.append(filled_p)
-                    break
+            else:
+                new_p = sample_team_map.get(p.name)
+                filled_p = copy.deepcopy(p)
+                filled_p.fill_from_PokemonSet(new_p)
+                merged_team.append(filled_p)
         return TeamSet(lead=merged_team[0], reserve=merged_team[1:], format=team.format)

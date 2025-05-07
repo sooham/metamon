@@ -286,7 +286,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         poke_list = curr_turn.get_pokemon_list_from_str(data[0])
         assert isinstance(poke_list, list)
         if None not in poke_list:
-            raise TeamTooLarge(len(poke_list) + 1)
+            raise UnusualTeamSize(len(poke_list) + 1)
         poke_name, lvl = Pokemon.identify_from_details(data[1])
         insert_at = poke_list.index(None)
         poke_list[insert_at] = Pokemon(name=poke_name, lvl=lvl, gen=replay.gen)
@@ -883,7 +883,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
             pokemon.protected = True
     
     else:
-        if data[0].startswith(">>>"):
+        if data and data[0].startswith(">>>"):
             # leaked browser console messages?
             pass
         else:
@@ -894,7 +894,7 @@ def forward_fill(replay: ParsedReplay, log: list[list[str]], verbose: bool = Fal
     for row in log:
         if row:
             if verbose:
-                print(row)
+                print(f"{replay.gameid} {row}")
             parse_row(replay, row)
 
     checks.check_noun_spelling(replay)

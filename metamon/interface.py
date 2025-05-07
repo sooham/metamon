@@ -1,6 +1,6 @@
 from functools import lru_cache
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Optional, List
 from abc import ABC, abstractmethod
 
@@ -481,55 +481,14 @@ class UniversalState:
             battle_lost=battle.lost if battle.lost else False,
             opponents_remaining=opponents_remaining,
         )
-
-    # fmt: on
-
-    def to_numpy(self) -> dict[str, np.ndarray]:
-        print("in universal state!!!!")
-        player_str = (
-            f"<player> {self.player_active_pokemon.get_string_features(active=True)}"
-        )
-        numerical = [
-            self.opponents_remaining / 6.0
-        ] + self.player_active_pokemon.get_numerical_features(active=True)
-
-        # consistent move order
-        move_str, move_num = "", -1
-        for move_num, move in enumerate(
-            consistent_move_order(self.player_active_pokemon.moves)
-        ):
-            move_str += f" <move> {move.get_string_features(active=True)}"
-            numerical += move.get_numerical_features(active=True)
-
-        while move_num < 3:
-            move_str += f" <move> {UniversalMove.get_pad_string(active=True)}"
-            numerical += UniversalMove.get_pad_numerical(active=True)
-            move_num += 1
-
-        # consistent switch order
-        switch_str, switch_num = "", -1
-        for switch_num, switch in enumerate(
-            consistent_pokemon_order(self.available_switches)
-        ):
-            switch_str += f" <switch> {switch.get_string_features(active=False)}"
-            numerical += switch.get_numerical_features(active=False)
-        while switch_num < 4:
-            switch_str += f" <switch> {UniversalPokemon.get_pad_string(active=False)}"
-            numerical += UniversalPokemon.get_pad_numerical(active=False)
-            switch_num += 1
-
-        force_switch = "<forcedswitch>" if self.forced_switch else "<anychoice>"
-        opponent_str = f"<opponent> {self.opponent_active_pokemon.get_string_features(active=True)}"
-        numerical += self.opponent_active_pokemon.get_numerical_features(active=True)
-        global_str = f"<conditions> {self.weather} {self.player_conditions} {self.opponent_conditions}"
-        prev_move_str = f"<player_prev> {self.player_prev_move.get_string_features(active=False)} <opp_prev> {self.opponent_prev_move.get_string_features(active=False)}"
-
-        text = np.array(
-            f"<{self.format}> {force_switch} {player_str} {move_str.strip()} {switch_str.strip()} {opponent_str} {global_str} {prev_move_str}",
-            dtype=np.str_,
-        )
-        numbers = np.array(numerical, dtype=np.float32)
-        return {"text": text, "numbers": numbers}
+    
+    def to_dict(self) -> dict:
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: dict):
+        #return cls(**data)
+        raise NotImplementedError
 
 
 def replaystate_action_to_idx(

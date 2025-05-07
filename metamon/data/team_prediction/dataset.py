@@ -28,8 +28,8 @@ class TeamPredictionDataset(Dataset):
             data_dir: Directory or iterable of directories containing .team files (will be searched recursively)
             split: Whether this is the training or validation split
             validation_ratio: Fraction of data to use for validation
-            mask_pokemon_prob: Probability of masking an entire Pokemon
-            mask_attrs_prob: Probability of masking individual attributes
+            mask_pokemon_prob_range: Range of probabilities to use for masking an entire Pokemon
+            mask_attrs_prob_range: Range of probabilities to use for masking an indivudal attribute
             seed: Random seed for reproducibility
         """
         (

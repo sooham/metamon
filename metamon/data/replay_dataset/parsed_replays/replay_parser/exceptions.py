@@ -205,7 +205,5 @@ class ForceSwitchMishandled(BackwardException):
 
 
 class InvalidActionIndex(BackwardException):
-    def __init__(self, obs_text, action):
-        super().__init__(
-            f"Action `{action}` is not a valid choice in state with text description `{obs_text}`"
-        )
+    def __init__(self, state, action):
+        super().__init__(f"Action `{action}` is not a valid choice in state `{state}`")

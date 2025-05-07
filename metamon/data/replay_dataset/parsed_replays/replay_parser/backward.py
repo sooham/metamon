@@ -17,6 +17,7 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state impor
 )
 from metamon.data.team_prediction.predictor import TeamPredictor
 from metamon.data.team_prediction.team import TeamSet, PokemonSet
+from metamon.data.team_builder.team_builder import PokemonStatsLookupError
 
 
 def fill_missing_team_info(
@@ -28,7 +29,10 @@ def fill_missing_team_info(
     revealed_team = TeamSet(
         lead=converted_poke[0], reserve=converted_poke[1:], format=battle_format
     )
-    predicted_team = team_predictor.predict(copy.deepcopy(revealed_team))
+    try:
+        predicted_team = team_predictor.predict(copy.deepcopy(revealed_team))
+    except Exception as e:
+        raise BackwardException(f"Could not predict team for {revealed_team}")
     pokemon_to_add = [
         poke for poke in predicted_team.pokemon if poke.name not in poke_names
     ]

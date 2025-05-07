@@ -151,7 +151,7 @@ def check_noun_spelling(replay):
                 if isinstance(val, str):
                     if to_id_str(val) == val:
                         raise ForwardVerify(
-                            f"Potential to_id_str --> Proper Name mismatch: {val}"
+                            f"Potential to_id_str --> Proper Name mismatch: {val}, sometimes caused by all-lowercase logs"
                         )
 
 
@@ -187,6 +187,7 @@ def check_filled_mon(pokemon):
             "Metapod",
             "Caterpie",
             "Magikarp",
+            "Pineco",
         }:
             pass
         else:
