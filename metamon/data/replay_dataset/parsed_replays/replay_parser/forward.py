@@ -676,7 +676,8 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         # |-item|POKEMON|ITEM|[from]EFFECT or |-enditem|POKEMON|ITEM|[from]EFFECT
         pokemon = curr_turn.get_pokemon_from_str(data[0])
         item = data[1]
-        assert pokemon is not None
+        if pokemon is None:
+            raise RareValueError(f"Could not find pokemon from {data[0]}")
 
         # adjust active item
         if "end" in name:

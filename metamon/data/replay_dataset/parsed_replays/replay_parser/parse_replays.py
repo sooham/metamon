@@ -168,7 +168,6 @@ class ReplayParser:
 
     def parse_replay(self, path: str):
         # read replay data from disk
-        print(f"Loading {path}")
         with open(path, "r") as f:
             try:
                 data = json.load(f)
