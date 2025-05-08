@@ -71,6 +71,22 @@ class PokemonSet:
         ]
         self.missing_regex = re.compile("|".join(map(re.escape, self.missing_strings)))
 
+    def __eq__(self, other):
+        if not isinstance(other, PokemonSet):
+            return False
+        possible = (
+            self.name == other.name
+            and self.gen == other.gen
+            and self.ability == other.ability
+            and self.item == other.item
+            and self.nature == other.nature
+            and self.evs == other.evs
+            and self.ivs == other.ivs
+        )
+        if possible and set(self.moves) == set(other.moves):
+            return True
+        return False
+
     def is_consistent_with(self, other) -> bool:
         """
         Determines whether this Pokemon is "consistent" with another Pokemon,
@@ -280,10 +296,7 @@ class PokemonSet:
                 # normalize Hidden Power by dropping any specific type
                 if move_raw.startswith("Hidden Power"):
                     move_raw = "Hidden Power"
-                try:
-                    moves[moves.index(cls.MISSING_MOVE)] = move_raw
-                except ValueError:
-                    breakpoint()
+                moves[moves.index(cls.MISSING_MOVE)] = move_raw
         return cls(
             name=name,
             gen=gen,
