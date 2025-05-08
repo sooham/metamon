@@ -5,10 +5,12 @@ from abc import ABC, abstractmethod
 from functools import lru_cache
 from collections import deque, defaultdict
 import tqdm
+from torch.utils.data import DataLoader
 
 from metamon.data.team_builder.team_builder import TeamBuilder, PokemonStatsLookupError
 from metamon.data.team_builder.stat_reader import PreloadedSmogonStat
 from metamon.data.team_prediction.team import TeamSet, PokemonSet
+from metamon.data.team_prediction.dataset import TeamDataset
 
 
 class TeamPredictor(ABC):
@@ -16,8 +18,12 @@ class TeamPredictor(ABC):
         pass
 
     @abstractmethod
+    def set_format(self, format: str):
+        raise NotImplementedError
+
+    @abstractmethod
     def predict(self, team: TeamSet) -> TeamSet:
-        raise NotImplementedError("Subclass must implement this method")
+        raise NotImplementedError
 
 
 @lru_cache(maxsize=32)
@@ -26,6 +32,9 @@ def get_legacy_teambuilder(format: str):
 
 
 class NaiveUsagePredictor(TeamPredictor):
+    def set_format(self, format: str):
+        pass
+
     def predict(self, team: TeamSet):
         team_builder = get_legacy_teambuilder(team.format)
         gen = int(team.format.split("gen")[1][0])
@@ -93,48 +102,69 @@ class NaiveUsagePredictor(TeamPredictor):
         return final_team
 
 
-class ImprovedUsagePredictor(NaiveUsagePredictor):
-    def __init__(self, max_teams: int = 10000):
+class ReplayPredictor(NaiveUsagePredictor):
+    def __init__(self, max_teams: int = 100000, num_team_file_loader_workers: int = 10):
         self.stat_format = None
         self.max_teams = max_teams
+        self.num_team_file_loader_workers = num_team_file_loader_workers
 
     def set_format(self, format: str):
-        if format != self.stat_format:
-            print(f"Loading new format: {format}")
-            self.smogon_stat = PreloadedSmogonStat(
-                format, verbose=False, inclusive=True
-            )
-            self.stat_format = format
-            self.teams = self.load_teams(format)
+        print(f"Loading new format: {format}")
+        self.smogon_stat = PreloadedSmogonStat(format, verbose=False, inclusive=True)
+        self.stat_format = format
+        self._load_teams(format)
 
-    def load_teams(self, format: str):
+    def _load_teams(self, format: str):
         team_path = os.environ.get("METAMON_TEAMFILE_PATH", None)
         if team_path is None:
-            raise ValueError("METAMON_TEAMFILE_PATH environment variable is not set")
+            print("METAMON_TEAMFILE_PATH environment variable is not set")
+            exit()
         team_path = os.path.join(team_path, f"{format}_teams")
+
+        # Initialize containers
         self.teams = []
         self.pokemon_sets = defaultdict(list)
-        filenames = os.listdir(team_path)
+        self.team_rosters = []
+
+        # Get list of team files and shuffle
+        filenames = [f for f in os.listdir(team_path) if f.endswith("team")]
         random.shuffle(filenames)
-        for team_file in tqdm.tqdm(
-            filenames[: self.max_teams],
-            colour="blue",
-            desc="Loading Team Files for Team Prediction",
-        ):
-            if team_file.endswith("team"):
-                team_path_full = os.path.join(team_path, team_file)
-                try:
-                    team = TeamSet.from_showdown_file(team_path_full, format)
-                    self.teams.append(team)
-                    for p in team.pokemon:
-                        self.pokemon_sets[p.name].append(p)
-                except Exception as e:
-                    print(f"Failed to load team from {team_file}: {e}")
+        filenames = filenames[: self.max_teams]
+
+        print(
+            f"Loading up to {len(filenames)} team files using {self.num_team_file_loader_workers} workers"
+        )
+
+        # Create dataset and dataloader
+        dataset = TeamDataset(filenames, team_path, format)
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=16,
+            num_workers=self.num_team_file_loader_workers,
+            prefetch_factor=2 if self.num_team_file_loader_workers > 0 else None,
+            collate_fn=lambda x: x,  # Prevent automatic batching
+        )
+
+        # Process in parallel with progress bar
+        for batch in tqdm.tqdm(dataloader, desc="Loading Team Files", colour="blue"):
+            for result in batch:
+                if result is None:
+                    continue
+                team, pokemon_dict, team_roster = result
+                self.teams.append(team)
+                for name, pokemon in pokemon_dict.items():
+                    self.pokemon_sets[name].append(pokemon)
+                self.team_rosters.append(team_roster - {PokemonSet.MISSING_NAME})
+
         if not self.teams:
             raise ValueError(f"No valid team files found in {team_path}")
-        return self.teams
 
-    def _fill_from_consistent(self, pokemon: PokemonSet):
+        print(
+            f"Loaded {len(self.teams)} teams with {len(self.pokemon_sets)} unique Pokémon"
+        )
+
+    def _fill_pokemon_by_consistency(self, pokemon: PokemonSet):
         candidates = self.pokemon_sets[pokemon.name]
         consistent = [
             p for p in candidates if (pokemon.is_consistent_with(p) and pokemon != p)
@@ -149,7 +179,15 @@ class ImprovedUsagePredictor(NaiveUsagePredictor):
         return pokemon
 
     def predict(self, team: TeamSet) -> TeamSet:
-        self.set_format(team.format)
+        og_team = copy.deepcopy(team)
+        if self.stat_format is None:
+            raise ValueError(
+                "Format not set. Call set_format() on TeamPredictor first."
+            )
+        elif self.stat_format != team.format:
+            raise ValueError(f"Format mismatch: {self.stat_format} != {team.format}")
+
+        # step 1: expand the team as far as possible based on other replays that are consistent with the current team
         consistent = [t for t in self.teams if team.is_consistent_with(t)]
         if consistent:
             team = consistent.pop(random.randint(0, len(consistent) - 1))
@@ -157,17 +195,38 @@ class ImprovedUsagePredictor(NaiveUsagePredictor):
                 team = consistent.pop(random.randint(0, len(consistent) - 1))
                 consistent = [t for t in consistent if team.is_consistent_with(t)]
 
+        # step 2: fill the names of missing Pokemon based on other replays
+        if any(p.name == PokemonSet.MISSING_NAME for p in team.pokemon):
+            current_team_roster = set(
+                p.name for p in team.pokemon if p.name != PokemonSet.MISSING_NAME
+            )
+            candidates = [t for t in self.team_rosters if current_team_roster < t]
+            if candidates:
+                while candidates:
+                    expanded_roster = candidates.pop(
+                        random.randint(0, len(candidates) - 1)
+                    )
+                    candidates = [t for t in candidates if expanded_roster < t]
+                new_pokemon = expanded_roster - current_team_roster
+                if not len(new_pokemon) == sum(
+                    p.name == PokemonSet.MISSING_NAME for p in team.pokemon
+                ):
+                    breakpoint()
+                for p in team.pokemon:
+                    if p.name == PokemonSet.MISSING_NAME:
+                        p.name = new_pokemon.pop()
+
+        # step 3: fill each individual Pokemon with a self-consistent set
         filled_team = []
         for p in team.pokemon:
-            if p.name != PokemonSet.MISSING_NAME:
-                filled_team.append(self._fill_from_consistent(p))
-            else:
-                filled_team.append(p)
+            filled_team.append(self._fill_pokemon_by_consistency(p))
 
         most_complete_team = TeamSet(
             lead=filled_team[0], reserve=filled_team[1:], format=team.format
         )
-        print(most_complete_team.to_str())
+        if not og_team.is_consistent_with(most_complete_team):
+            breakpoint()
+        # step 4: fall back to old method for any remaining info
         return super().predict(most_complete_team)
 
 

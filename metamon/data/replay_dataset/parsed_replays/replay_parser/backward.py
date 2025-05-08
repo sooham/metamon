@@ -29,10 +29,10 @@ def fill_missing_team_info(
     revealed_team = TeamSet(
         lead=converted_poke[0], reserve=converted_poke[1:], format=battle_format
     )
-    try:
-        predicted_team = team_predictor.predict(copy.deepcopy(revealed_team))
-    except Exception as e:
-        raise BackwardException(f"Could not predict team for {revealed_team}")
+    # try:
+    predicted_team = team_predictor.predict(copy.deepcopy(revealed_team))
+    # except Exception as e:
+    #    raise BackwardException(f"Could not predict team for {revealed_team}")
 
     if not revealed_team.is_consistent_with(predicted_team):
         raise InconsistentTeamPrediction(revealed_team, predicted_team)

@@ -4,6 +4,7 @@ import random
 import tqdm
 
 from .parse_replays import ReplayParser
+from metamon.data.team_prediction.predictor import *
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
@@ -47,6 +48,13 @@ if __name__ == "__main__":
         help="Directory for output .npz files. `None` runs w/o saving to disk. Data will be saved to {--output_dir}/gen{gen}{format}",
     )
     parser.add_argument(
+        "--team_predictor",
+        type=str,
+        choices=["NaiveUsagePredictor", "ReplayPredictor"],
+        default="NaiveUsagePredictor",
+        help="Team predictor to use",
+    )
+    parser.add_argument(
         "--team_output_dir",
         default=None,
         help="Directory for output .team files. `None` runs w/o saving to disk. Data will be saved to {--team_output_dir}/gen{gen}{format}_teams",
@@ -64,20 +72,23 @@ if __name__ == "__main__":
     if args.max is not None:
         filenames = filenames[: args.max]
 
+    battle_format = f"gen{args.gen}{args.format.lower()}"
     output_dir = (
-        os.path.join(args.output_dir, f"gen{args.gen}{args.format}")
-        if args.output_dir
-        else None
+        os.path.join(args.output_dir, battle_format) if args.output_dir else None
     )
     team_output_dir = (
-        os.path.join(args.team_output_dir, f"gen{args.gen}{args.format}_teams")
+        os.path.join(args.team_output_dir, battle_format)
         if args.team_output_dir
         else None
     )
+    team_predictor = eval(args.team_predictor)()
+    team_predictor.set_format(battle_format)
+
     parser = ReplayParser(
         replay_output_dir=output_dir,
         team_output_dir=team_output_dir,
         verbose=args.verbose,
+        team_predictor=team_predictor,
     )
     if args.processes > 1:
         random.shuffle(filenames)

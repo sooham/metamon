@@ -297,6 +297,7 @@ class PokemonSet:
                 if move_raw.startswith("Hidden Power"):
                     move_raw = "Hidden Power"
                 moves[moves.index(cls.MISSING_MOVE)] = move_raw
+
         return cls(
             name=name,
             gen=gen,

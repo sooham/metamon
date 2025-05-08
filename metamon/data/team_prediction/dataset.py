@@ -2,7 +2,7 @@ import os
 import random
 import re
 import pathlib
-from typing import List, Tuple, Optional, Union, Iterable, Literal
+from typing import List, Tuple, Optional, Union, Iterable, Literal, Dict, Set
 
 import torch
 from torch.utils.data import Dataset
@@ -11,6 +11,31 @@ from metamon.data.team_prediction.team import TeamSet
 from metamon.data.team_prediction.vocabulary import Vocabulary
 from metamon.data import DATA_PATH
 from poke_env.data import to_id_str
+from metamon.data.team_prediction.team import PokemonSet
+
+
+class TeamDataset(Dataset):
+    def __init__(self, filenames, team_path, format):
+        self.filenames = filenames
+        self.team_path = team_path
+        self.format = format
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def __getitem__(
+        self, idx
+    ) -> Tuple[TeamSet, Dict[str, PokemonSet], Set[str]] | None:
+        team_file = self.filenames[idx]
+        team_path_full = os.path.join(self.team_path, team_file)
+        try:
+            team = TeamSet.from_showdown_file(team_path_full, self.format)
+        except Exception as e:
+            print(f"Error loading team file {team_path_full}: {e}")
+            return None
+        pokemon_sets = {p.name: p for p in team.pokemon}
+        team_roster = set(p.name for p in team.pokemon)
+        return (team, pokemon_sets, team_roster)
 
 
 class TeamPredictionDataset(Dataset):
