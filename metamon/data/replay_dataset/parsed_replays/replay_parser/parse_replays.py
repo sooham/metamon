@@ -165,6 +165,8 @@ class ReplayParser:
             pool.imap_unordered(self.parse_replay, file_paths), total=len(file_paths)
         ):
             pass
+        pool.close()
+        pool.join()
 
     def parse_replay(self, path: str):
         # read replay data from disk
@@ -191,7 +193,8 @@ class ReplayParser:
 
             # backward fill
             replay_from_p1, replay_from_p2 = backward.backward_fill(
-                replay, team_predictor=self.team_predictor
+                replay,
+                team_predictor=self.team_predictor,
             )
             # save
             self.save_to_disk(

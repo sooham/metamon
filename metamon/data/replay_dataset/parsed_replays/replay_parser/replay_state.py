@@ -390,7 +390,13 @@ class Pokemon:
             ability = None
         self.had_ability = ability
         pokemon_set_moves = set(
-            move for move in pokemon_set.moves if move != pokemon_set.MISSING_MOVE
+            move
+            for move in pokemon_set.moves
+            if (
+                move != pokemon_set.MISSING_MOVE
+                and move != "Struggle"
+                and move != pokemon_set.NO_MOVE
+            )
         )
         moves_to_add = pokemon_set_moves - set(self.had_moves.keys())
         while len(self.had_moves.keys()) < 4 and moves_to_add:

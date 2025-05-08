@@ -17,9 +17,15 @@ class TeamPredictor(ABC):
     def __init__(self):
         pass
 
-    @abstractmethod
-    def set_format(self, format: str):
-        raise NotImplementedError
+    @property
+    def num_processes(self):
+        if not hasattr(self, "_num_processes"):
+            self._num_processes = 1
+        return self._num_processes
+
+    @num_processes.setter
+    def num_processes(self, value: int):
+        self._num_processes = value
 
     @abstractmethod
     def predict(self, team: TeamSet) -> TeamSet:
@@ -32,9 +38,6 @@ def get_legacy_teambuilder(format: str):
 
 
 class NaiveUsagePredictor(TeamPredictor):
-    def set_format(self, format: str):
-        pass
-
     def predict(self, team: TeamSet):
         team_builder = get_legacy_teambuilder(team.format)
         gen = int(team.format.split("gen")[1][0])
@@ -102,67 +105,65 @@ class NaiveUsagePredictor(TeamPredictor):
         return final_team
 
 
+@lru_cache(maxsize=1)
+def load_replay_teams(format: str, max_teams: int, num_workers: int = 0):
+    team_path = os.environ.get("METAMON_TEAMFILE_PATH", None)
+    if team_path is None:
+        print("METAMON_TEAMFILE_PATH environment variable is not set")
+        exit()
+    team_path = os.path.join(team_path, f"{format}_teams")
+
+    # Initialize containers
+    teams = []
+    pokemon_sets = defaultdict(list)
+    team_rosters = []
+
+    # Get list of team files and shuffle
+    filenames = [f for f in os.listdir(team_path) if f.endswith("team")]
+    random.shuffle(filenames)
+    filenames = filenames[:max_teams]
+
+    print(f"Loading up to {len(filenames)} team files")
+
+    dataset = TeamDataset(filenames, team_path, format)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=16,
+        num_workers=num_workers,
+        prefetch_factor=2 if num_workers > 0 else None,
+        collate_fn=lambda x: x,
+    )
+
+    # Process in parallel with progress bar
+    for batch in tqdm.tqdm(dataloader, desc="Loading Team Files", colour="blue"):
+        for result in batch:
+            if result is None:
+                continue
+            team, pokemon_dict, team_roster = result
+            teams.append(team)
+            for name, pokemon in pokemon_dict.items():
+                pokemon_sets[name].append(pokemon)
+            team_rosters.append(team_roster - {PokemonSet.MISSING_NAME})
+
+    if not teams:
+        raise ValueError(f"No valid team files found in {team_path}")
+
+    print(f"Loaded {len(teams)} teams with {len(pokemon_sets)} unique Pokémon")
+    return teams, pokemon_sets, team_rosters
+
+
 class ReplayPredictor(NaiveUsagePredictor):
-    def __init__(self, max_teams: int = 100000, num_team_file_loader_workers: int = 10):
+    def __init__(self, max_teams: int = 100_000):
         self.stat_format = None
         self.max_teams = max_teams
-        self.num_team_file_loader_workers = num_team_file_loader_workers
 
-    def set_format(self, format: str):
-        print(f"Loading new format: {format}")
+    def _load_data(self, format: str):
         self.smogon_stat = PreloadedSmogonStat(format, verbose=False, inclusive=True)
+        workers = 0 if self.num_processes > 1 else 8
+        self.teams, self.pokemon_sets, self.team_rosters = load_replay_teams(
+            format, self.max_teams, workers
+        )
         self.stat_format = format
-        self._load_teams(format)
-
-    def _load_teams(self, format: str):
-        team_path = os.environ.get("METAMON_TEAMFILE_PATH", None)
-        if team_path is None:
-            print("METAMON_TEAMFILE_PATH environment variable is not set")
-            exit()
-        team_path = os.path.join(team_path, f"{format}_teams")
-
-        # Initialize containers
-        self.teams = []
-        self.pokemon_sets = defaultdict(list)
-        self.team_rosters = []
-
-        # Get list of team files and shuffle
-        filenames = [f for f in os.listdir(team_path) if f.endswith("team")]
-        random.shuffle(filenames)
-        filenames = filenames[: self.max_teams]
-
-        print(
-            f"Loading up to {len(filenames)} team files using {self.num_team_file_loader_workers} workers"
-        )
-
-        # Create dataset and dataloader
-        dataset = TeamDataset(filenames, team_path, format)
-
-        dataloader = DataLoader(
-            dataset,
-            batch_size=16,
-            num_workers=self.num_team_file_loader_workers,
-            prefetch_factor=2 if self.num_team_file_loader_workers > 0 else None,
-            collate_fn=lambda x: x,  # Prevent automatic batching
-        )
-
-        # Process in parallel with progress bar
-        for batch in tqdm.tqdm(dataloader, desc="Loading Team Files", colour="blue"):
-            for result in batch:
-                if result is None:
-                    continue
-                team, pokemon_dict, team_roster = result
-                self.teams.append(team)
-                for name, pokemon in pokemon_dict.items():
-                    self.pokemon_sets[name].append(pokemon)
-                self.team_rosters.append(team_roster - {PokemonSet.MISSING_NAME})
-
-        if not self.teams:
-            raise ValueError(f"No valid team files found in {team_path}")
-
-        print(
-            f"Loaded {len(self.teams)} teams with {len(self.pokemon_sets)} unique Pokémon"
-        )
 
     def _fill_pokemon_by_consistency(self, pokemon: PokemonSet):
         candidates = self.pokemon_sets[pokemon.name]
@@ -178,48 +179,53 @@ class ReplayPredictor(NaiveUsagePredictor):
             ]
         return pokemon
 
-    def predict(self, team: TeamSet) -> TeamSet:
-        og_team = copy.deepcopy(team)
-        if self.stat_format is None:
-            raise ValueError(
-                "Format not set. Call set_format() on TeamPredictor first."
-            )
-        elif self.stat_format != team.format:
-            raise ValueError(f"Format mismatch: {self.stat_format} != {team.format}")
-
-        # step 1: expand the team as far as possible based on other replays that are consistent with the current team
+    def _fill_team_by_consistency(self, team: TeamSet):
         consistent = [t for t in self.teams if team.is_consistent_with(t)]
         if consistent:
             team = consistent.pop(random.randint(0, len(consistent) - 1))
             while len(consistent) > 1:
                 team = consistent.pop(random.randint(0, len(consistent) - 1))
                 consistent = [t for t in consistent if team.is_consistent_with(t)]
+        return team
+
+    def _fill_roster_by_consistency(self, team: TeamSet):
+        current_team_roster = set(
+            p.name for p in team.pokemon if p.name != PokemonSet.MISSING_NAME
+        )
+        candidates = [t for t in self.team_rosters if current_team_roster < t]
+        if candidates:
+            while candidates:
+                expanded_roster = candidates.pop(random.randint(0, len(candidates) - 1))
+                candidates = [t for t in candidates if expanded_roster < t]
+            new_pokemon = expanded_roster - current_team_roster
+            if not len(new_pokemon) == sum(
+                p.name == PokemonSet.MISSING_NAME for p in team.pokemon
+            ):
+                breakpoint()
+            for p in team.pokemon:
+                if p.name == PokemonSet.MISSING_NAME:
+                    p.name = new_pokemon.pop()
+        return team
+
+    def predict(self, team: TeamSet) -> TeamSet:
+        if self.stat_format != team.format:
+            self._load_data(team.format)
+
+        og_team = copy.deepcopy(team)
+        # step 1: expand the team as far as possible based on other replays that are consistent with the current team
+        team = self._fill_team_by_consistency(team)
 
         # step 2: fill the names of missing Pokemon based on other replays
         if any(p.name == PokemonSet.MISSING_NAME for p in team.pokemon):
-            current_team_roster = set(
-                p.name for p in team.pokemon if p.name != PokemonSet.MISSING_NAME
-            )
-            candidates = [t for t in self.team_rosters if current_team_roster < t]
-            if candidates:
-                while candidates:
-                    expanded_roster = candidates.pop(
-                        random.randint(0, len(candidates) - 1)
-                    )
-                    candidates = [t for t in candidates if expanded_roster < t]
-                new_pokemon = expanded_roster - current_team_roster
-                if not len(new_pokemon) == sum(
-                    p.name == PokemonSet.MISSING_NAME for p in team.pokemon
-                ):
-                    breakpoint()
-                for p in team.pokemon:
-                    if p.name == PokemonSet.MISSING_NAME:
-                        p.name = new_pokemon.pop()
+            team = self._fill_roster_by_consistency(team)
 
         # step 3: fill each individual Pokemon with a self-consistent set
         filled_team = []
         for p in team.pokemon:
-            filled_team.append(self._fill_pokemon_by_consistency(p))
+            if p.name != PokemonSet.MISSING_NAME:
+                filled_team.append(self._fill_pokemon_by_consistency(p))
+            else:
+                filled_team.append(p)
 
         most_complete_team = TeamSet(
             lead=filled_team[0], reserve=filled_team[1:], format=team.format

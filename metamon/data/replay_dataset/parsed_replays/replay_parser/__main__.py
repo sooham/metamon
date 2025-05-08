@@ -82,8 +82,7 @@ if __name__ == "__main__":
         else None
     )
     team_predictor = eval(args.team_predictor)()
-    team_predictor.set_format(battle_format)
-
+    team_predictor.num_processes = args.processes
     parser = ReplayParser(
         replay_output_dir=output_dir,
         team_output_dir=team_output_dir,
