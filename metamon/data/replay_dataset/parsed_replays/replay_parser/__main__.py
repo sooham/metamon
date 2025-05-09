@@ -32,6 +32,12 @@ if __name__ == "__main__":
         help="Start parsing from this index of the dataset (skip replays you've already checked)",
     )
     parser.add_argument(
+        "--end_after",
+        type=int,
+        default=None,
+        help="Stop parsing after this many replays",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Prints the raw replay stream during parsing (useful for debugging)",
@@ -69,6 +75,8 @@ if __name__ == "__main__":
         filenames = [f for f in filenames if args.filter_by_code in f]
     if args.start_from is not None:
         filenames = filenames[args.start_from :]
+    if args.end_after is not None:
+        filenames = filenames[: args.end_after]
     if args.max is not None:
         filenames = filenames[: args.max]
 
@@ -81,13 +89,11 @@ if __name__ == "__main__":
         if args.team_output_dir
         else None
     )
-    team_predictor = eval(args.team_predictor)()
-    team_predictor.num_processes = args.processes
     parser = ReplayParser(
         replay_output_dir=output_dir,
         team_output_dir=team_output_dir,
         verbose=args.verbose,
-        team_predictor=team_predictor,
+        team_predictor=eval(args.team_predictor)(),
     )
     if args.processes > 1:
         random.shuffle(filenames)

@@ -2,7 +2,7 @@ import random
 import re
 import os
 import copy
-from functools import lru_cache
+from functools import lru_cache, total_ordering
 from dataclasses import dataclass
 from typing import List, Optional
 import unicodedata
@@ -33,6 +33,7 @@ def moveset_size(pokemon_name: str, gen: int) -> int:
     return moveset
 
 
+@total_ordering
 @dataclass
 class PokemonSet:
     name: str
@@ -57,6 +58,39 @@ class PokemonSet:
     MISSING_IV = "$missing_iv$"
     MISSING_NATURE = "$missing_nature$"
 
+    def __hash__(self):
+        moves_frozen = frozenset(self.moves) - {self.MISSING_MOVE}
+        evs_tuple = tuple(self.evs)
+        ivs_tuple = tuple(self.ivs)
+        return hash(
+            (
+                self.name,
+                self.gen,
+                moves_frozen,
+                self.ability,
+                self.item,
+                self.nature,
+                evs_tuple,
+                ivs_tuple,
+            )
+        )
+
+    def __len__(self):
+        return self.revealed_details
+
+    @property
+    def revealed_details(self) -> int:
+        score = (
+            int(self.name != self.MISSING_NAME)
+            + int(self.ability != self.MISSING_ABILITY)
+            + int(self.item != self.MISSING_ITEM)
+            + int(self.nature != self.MISSING_NATURE)
+            + sum(int(move != self.MISSING_MOVE) for move in self.moves)
+            + sum(int(ev != self.MISSING_EV) for ev in self.evs)
+            + sum(int(iv != self.MISSING_IV) for iv in self.ivs)
+        )
+        return score
+
     def __post_init__(self):
         assert len(self.evs) == 6
         assert len(self.ivs) == 6
@@ -76,16 +110,21 @@ class PokemonSet:
             return False
         possible = (
             self.name == other.name
-            and self.gen == other.gen
             and self.ability == other.ability
             and self.item == other.item
             and self.nature == other.nature
             and self.evs == other.evs
             and self.ivs == other.ivs
+            and self.gen == other.gen
         )
-        if possible and set(self.moves) == set(other.moves):
+        if possible and (set(self.moves) - {self.MISSING_MOVE}) == (
+            set(other.moves) - {other.MISSING_MOVE}
+        ):
             return True
         return False
+
+    def __lt__(self, other):
+        return self.is_consistent_with(other) and self != other
 
     def is_consistent_with(self, other) -> bool:
         """
@@ -105,14 +144,14 @@ class PokemonSet:
             return False
         if self.nature != self.MISSING_NATURE and self.nature != other.nature:
             return False
+        for our_move in self.moves:
+            if our_move != self.MISSING_MOVE and our_move not in other.moves:
+                return False
         for our_ev, other_ev in zip(self.evs, other.evs):
             if our_ev != self.MISSING_EV and our_ev != other_ev:
                 return False
         for our_iv, other_iv in zip(self.ivs, other.ivs):
             if our_iv != self.MISSING_IV and our_iv != other_iv:
-                return False
-        for our_move in self.moves:
-            if our_move != self.MISSING_MOVE and our_move not in other.moves:
                 return False
         return True
 
@@ -413,11 +452,65 @@ class PokemonSet:
         return type(self).from_dict(data)
 
 
+@total_ordering
+@dataclass
+class Roster:
+    """
+    A simplified version of a Team that only tracks Pokemon names.
+
+    Used for simple two-step prediction strategy of Step 1) predict team, Step 2) predict movesets for each member of that team.
+    """
+
+    lead: str
+    reserve: frozenset[str]
+
+    def to_dict(self):
+        return {
+            "lead": self.lead,
+            "reserve": list(self.reserve),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict):
+        return cls(lead=d["lead"], reserve=frozenset(d["reserve"]))
+
+    def __len__(self):
+        return int(self.lead != PokemonSet.MISSING_NAME) + sum(
+            r != PokemonSet.MISSING_NAME for r in self.reserve
+        )
+
+    def __hash__(self):
+        return hash((self.lead, self.reserve))
+
+    def __eq__(self, other):
+        return self.lead == other.lead and self.reserve == other.reserve
+
+    def is_consistent_with(self, other) -> bool:
+        if self.lead != other.lead:
+            return False
+        for our_pokemon in self.reserve:
+            if our_pokemon == PokemonSet.MISSING_NAME:
+                continue
+            elif our_pokemon not in other.reserve:
+                return False
+        return True
+
+    def __lt__(self, other):
+        return self.is_consistent_with(other) and self != other
+
+
 @dataclass
 class TeamSet:
     lead: PokemonSet
     reserve: List[PokemonSet]
     format: str
+
+    def __eq__(self, other):
+        return (
+            self.format == other.format
+            and self.lead == other.lead
+            and set(self.reserve) == set(other.reserve)
+        )
 
     def is_consistent_with(self, other) -> bool:
         """

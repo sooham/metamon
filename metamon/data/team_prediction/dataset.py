@@ -1,23 +1,28 @@
 import os
 import random
-import re
 import pathlib
 from typing import List, Tuple, Optional, Union, Iterable, Literal, Dict, Set
 
 import torch
 from torch.utils.data import Dataset
 
-from metamon.data.team_prediction.team import TeamSet
+from metamon.data.team_prediction.team import TeamSet, Roster, PokemonSet
 from metamon.data.team_prediction.vocabulary import Vocabulary
 from metamon.data import DATA_PATH
 from poke_env.data import to_id_str
-from metamon.data.team_prediction.team import PokemonSet
 
 
 class TeamDataset(Dataset):
-    def __init__(self, filenames, team_path, format):
-        self.filenames = filenames
-        self.team_path = team_path
+    def __init__(
+        self, team_file_dir: str, format: str, max_teams: Optional[int] = None
+    ):
+        self.team_path = os.path.join(team_file_dir, f"{format}_teams")
+        if not os.path.exists(self.team_path):
+            raise ValueError(f"Team directory {self.team_path} does not exist")
+        self.filenames = os.listdir(self.team_path)
+        random.shuffle(self.filenames)
+        if max_teams is not None:
+            self.filenames = self.filenames[:max_teams]
         self.format = format
 
     def __len__(self):
@@ -34,7 +39,7 @@ class TeamDataset(Dataset):
             print(f"Error loading team file {team_path_full}: {e}")
             return None
         pokemon_sets = {p.name: p for p in team.pokemon}
-        team_roster = set(p.name for p in team.pokemon)
+        team_roster = Roster(team.lead.name, frozenset(p.name for p in team.reserve))
         return (team, pokemon_sets, team_roster)
 
 
