@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from functools import lru_cache
 from collections import deque
 from typing import Set, List, Tuple
+import numpy as np
 
 from metamon.data.team_builder.team_builder import TeamBuilder, PokemonStatsLookupError
 from metamon.data.team_builder.stat_reader import PreloadedSmogonStat
@@ -25,7 +26,7 @@ class TeamPredictor(ABC):
         raise NotImplementedError
 
 
-@lru_cache(maxsize=32)
+@lru_cache(maxsize=16)
 def get_legacy_teambuilder(format: str):
     return TeamBuilder(format, verbose=False, remove_banned=False, inclusive=True)
 
@@ -135,29 +136,143 @@ def load_replay_stats_by_format(format: str):
 
 
 class ReplayPredictor(NaiveUsagePredictor):
-    def __init__(self, max_teams: int = 10_000):
+    """
+    NaiveUsagePredictor *independently* samples missing details from PS usage stats.
+    The flaw with this is that it creates unlikely combinations of pokemon and movesets.
+    For example, if there are 2 common movesets for a particular Pokemon, it will sample
+    a very unlikely combination of moves from both sets.
+
+    ReplayPredictor instead matches the current revealed team to a set of candidates
+    discovered from every replay in the dataset. It then samples from these candidates,
+    falling back to NaiveUsagePredictor for any remaining info.
+    """
+
+    def __init__(self, top_k_teams: int = 100, top_k_movesets: int = 10):
         self.stat_format = None
-        self.max_teams = max_teams
+        self.top_k_teams = top_k_teams
+        self.top_k_movesets = top_k_movesets
 
     def _load_data(self, format: str):
         self.smogon_stat = PreloadedSmogonStat(format, verbose=False, inclusive=True)
         self.pokemon_sets, self.team_rosters = load_replay_stats_by_format(format)
 
+    def score_roster(self, current_roster: Roster, candidate_roster: Roster) -> float:
+        score = 1.0
+        eps = 1e-6
+        assert current_roster.lead != PokemonSet.MISSING_NAME
+
+        new_pokemon = current_roster.additional_details(candidate_roster)
+        if len(new_pokemon) < 6 - len(current_roster):
+            score *= eps
+
+        for p in new_pokemon:
+            if p in self.smogon_stat[current_roster.lead]["teammates"]:
+                score *= self.smogon_stat[current_roster.lead]["teammates"][p]
+            else:
+                score *= eps
+
+        return score
+
     def sample_roster_from_candidates(
         self, current_roster: Roster, candidates: List[Tuple[Roster, float]]
     ):
-        weights = [w for _, w in candidates]
+        weights = [self.score_roster(current_roster, r) for r, _ in candidates]
         weights = [w / sum(weights) for w in weights]
         roster = random.choices(candidates, weights=weights, k=1)[0][0]
-        return roster
+        return copy.deepcopy(roster)
+
+    def score_pokemon(
+        self, current_pokemon: PokemonSet, candidate_pokemon: PokemonSet
+    ) -> float:
+        """
+        Scores a diff between a current Pokemon and a candidate predicted Pokemon.
+
+        The basic problem we need to address is the difference between a moveset that is frequently *possible* vs. a moveset that is frequently *used*.
+        Our replay stats track the number of real movesets that *could be* each candidate, but in reality some of these are very unlikely.
+
+        For example, in gen1ou, it is common for Tauros to reveal {Earthquake, Body Slam, Hyper Beam} during a battle.
+        Our candidates computed by the replay stats will find us all the movesets that have these three moves.
+        There are many choices for the 4th move that have appeared at some point. The "weights" assigned to each candidate
+        from the replay stats will give options that look something like this:
+            Blizzard, weight=6812
+            Fire Blast, weight=5574
+            Rest, weight=5507
+            Stomp, weight=5507
+            ...
+            Thunder, weight=4709
+            Swords Dance, weight=3333
+        Stomp/Thunder/Swords Dance are dramatically overrepresented because many replays are consistent with these movesets,
+        but in reality that are much more rarely used.
+
+        This function adjusts candidates based on the usage stats of their suggested additions, e.g. P(Fire Blast|Tauros) >> P(Thunder|Tauros).
+        """
+        eps = 1e-6
+        if current_pokemon.name == PokemonSet.MISSING_NAME:
+            breakpoint()
+
+        diff = current_pokemon.additional_details(candidate_pokemon)
+        if diff is None:
+            breakpoint()
+            return eps
+        name = current_pokemon.name
+
+        try:
+            smogon_stat = self.smogon_stat[name]
+        except KeyError:
+            breakpoint()
+            return eps
+
+        score = 1.0
+
+        new_moves = diff.get("moves", [])
+        if len(new_moves) < (
+            len(current_pokemon.moves) - current_pokemon.revealed_moves
+        ):
+            # if the candidate does not reveal all the missing moves, downweight
+            score *= eps
+
+        if (
+            current_pokemon.ability == PokemonSet.MISSING_ABILITY
+            and "ability" not in diff
+        ):
+            # if the candidate does not reveal the missing ability, downweight
+            score *= eps
+
+        if current_pokemon.item == PokemonSet.MISSING_ITEM and "item" not in diff:
+            # if the candidate does not reveal the missing item, downweight
+            score *= eps
+
+        if "moves" in diff:
+            move_stats = smogon_stat["moves"]
+            for new_move in diff["moves"]:
+                if new_move not in move_stats:
+                    score *= eps
+                else:
+                    score *= move_stats[new_move]
+
+        if "ability" in diff:
+            if diff["ability"] not in smogon_stat["abilities"]:
+                score *= eps
+            else:
+                score *= smogon_stat["abilities"][diff["ability"]]
+
+        if "item" in diff:
+            if diff["item"] not in smogon_stat["items"]:
+                score *= eps
+            else:
+                score *= smogon_stat["items"][diff["item"]]
+
+        return score
 
     def sample_pokemon_from_candidates(
-        self, current_pokemon: PokemonSet, candidates: List[PokemonSet]
+        self,
+        current_pokemon: PokemonSet,
+        candidates: List[PokemonSet],
     ):
-        weights = [w for _, w in candidates]
+        weights = [self.score_pokemon(current_pokemon, p) for p, _ in candidates]
         weights = [w / sum(weights) for w in weights]
         pokemon = random.choices(candidates, weights=weights, k=1)[0][0]
-        return pokemon
+        return copy.deepcopy(pokemon)
 
     def fill_team(self, team: TeamSet) -> TeamSet:
         if self.stat_format != team.format:
@@ -168,26 +283,33 @@ class ReplayPredictor(NaiveUsagePredictor):
         reserve_names = [p.name for p in team.reserve]
         roster = Roster(lead=lead_name, reserve=reserve_names)
 
-        candidates = [
+        candidate_rosters = [
             (r, w) for r, w in self.team_rosters if roster.is_consistent_with(r)
         ]
-        if candidates:
-            roster = self.sample_roster_from_candidates(roster, candidates)
+        if candidate_rosters:
+            top_k_candidate_rosters = sorted(
+                candidate_rosters, key=lambda x: x[1], reverse=True
+            )[: self.top_k_teams]
+            roster = self.sample_roster_from_candidates(roster, top_k_candidate_rosters)
             assert roster.lead == lead_name
-            candidates = [p for p in roster.reserve if p not in reserve_names]
+            team.fill_from_Roster(roster)
+
+        if any(pokemon.name == PokemonSet.MISSING_NAME for pokemon in team.pokemon):
+            breakpoint()
 
         for pokemon in team.pokemon:
-            if pokemon.name == PokemonSet.MISSING_NAME and candidates:
-                pokemon.name = candidates.pop()
-
-        for pokemon in team.pokemon:
-            candidates = [
+            candidate_sets = [
                 (p, w)
                 for p, w in self.pokemon_sets[pokemon.name]
                 if pokemon.is_consistent_with(p)
             ]
-            if candidates:
-                new_pokemon = self.sample_pokemon_from_candidates(pokemon, candidates)
+            if candidate_sets:
+                top_k_candidate_sets = sorted(
+                    candidate_sets, key=lambda x: x[1], reverse=True
+                )[: self.top_k_movesets]
+                new_pokemon = self.sample_pokemon_from_candidates(
+                    pokemon, top_k_candidate_sets
+                )
                 pokemon.fill_from_PokemonSet(new_pokemon)
 
         # fall back to old method for any remaining info

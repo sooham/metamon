@@ -33,6 +33,15 @@ def moveset_size(pokemon_name: str, gen: int) -> int:
     return moveset
 
 
+def _one_hidden_power(move_name: str) -> str:
+    if move_name.startswith("Hidden Power"):
+        return "Hidden Power"
+    elif move_name.startswith("hiddenpower"):
+        return "hiddenpower"
+    else:
+        return move_name
+
+
 @total_ordering
 @dataclass
 class PokemonSet:
@@ -78,6 +87,31 @@ class PokemonSet:
     def __len__(self):
         return self.revealed_details
 
+    def additional_details(self, other) -> Optional[dict]:
+        """
+        Returns a dictionary of the details in `other` that are not in `self`,
+        a.k.a. newly revealed details during team prediction.
+
+        If the two sets are not consistent, returns None.
+        """
+        if not isinstance(other, PokemonSet):
+            raise ValueError("other must be a PokemonSet")
+        if not self.is_consistent_with(other):
+            return None
+        other = other.to_dict()
+        current = self.to_dict()
+        diff = {}
+        for key, value in other.items():
+            if key == "moves":
+                other_moves = set(value) - {self.MISSING_MOVE, self.NO_MOVE}
+                our_moves = set(current["moves"]) - {self.MISSING_MOVE, self.NO_MOVE}
+                diff_moves = other_moves - our_moves
+                if diff_moves:
+                    diff["moves"] = diff_moves
+            elif current[key] != value:
+                diff[key] = value
+        return diff
+
     @property
     def revealed_details(self) -> int:
         score = (
@@ -90,6 +124,10 @@ class PokemonSet:
             + sum(int(iv != self.MISSING_IV) for iv in self.ivs)
         )
         return score
+
+    @property
+    def revealed_moves(self) -> int:
+        return len(set(self.moves) - {self.MISSING_MOVE})
 
     def __post_init__(self):
         assert len(self.evs) == 6
@@ -104,6 +142,7 @@ class PokemonSet:
             self.MISSING_NATURE,
         ]
         self.missing_regex = re.compile("|".join(map(re.escape, self.missing_strings)))
+        self.moves = [_one_hidden_power(move) for move in self.moves]
 
     def __eq__(self, other):
         if not isinstance(other, PokemonSet):
@@ -332,9 +371,6 @@ class PokemonSet:
                 # if multiple options, take the first option
                 if "/" in move_raw:
                     move_raw = move_raw.split("/", 1)[0].strip()
-                # normalize Hidden Power by dropping any specific type
-                if move_raw.startswith("Hidden Power"):
-                    move_raw = "Hidden Power"
                 moves[moves.index(cls.MISSING_MOVE)] = move_raw
 
         return cls(
@@ -474,6 +510,10 @@ class Roster:
     def from_dict(cls, d: dict):
         return cls(lead=d["lead"], reserve=frozenset(d["reserve"]))
 
+    @property
+    def known_pokemon(self):
+        return set([self.lead] + list(self.reserve)) - {PokemonSet.MISSING_NAME}
+
     def __len__(self):
         return int(self.lead != PokemonSet.MISSING_NAME) + sum(
             r != PokemonSet.MISSING_NAME for r in self.reserve
@@ -494,6 +534,19 @@ class Roster:
             elif our_pokemon not in other.reserve:
                 return False
         return True
+
+    def additional_details(self, other) -> Optional[frozenset[str]]:
+        """
+        Returns a set of the Pokemon names in `other` that are not in `self`,
+        a.k.a. newly revealed details during team prediction.
+
+        If the two sets are not consistent, returns None.
+        """
+        if not isinstance(other, Roster):
+            raise ValueError("other must be a Roster")
+        if not self.is_consistent_with(other):
+            return None
+        return other.known_pokemon - self.known_pokemon
 
     def __lt__(self, other):
         return self.is_consistent_with(other) and self != other
@@ -629,6 +682,22 @@ class TeamSet:
         x.reserve = masked_reserve
         x.lead = masked_lead
         return x, y
+
+    def fill_from_Roster(self, roster: Roster):
+        if (
+            self.lead.name == PokemonSet.MISSING_NAME
+            and roster.lead != PokemonSet.MISSING_NAME
+        ):
+            self.lead.name = roster.lead
+        if any(p.name == PokemonSet.MISSING_NAME for p in self.reserve):
+            roster_pokemon = set(roster.reserve)
+            current_pokemon = set(p.name for p in self.reserve) - {
+                PokemonSet.MISSING_NAME
+            }
+            new_pokemon = roster_pokemon - current_pokemon
+            for pokemon in self.pokemon:
+                if pokemon.name == PokemonSet.MISSING_NAME and new_pokemon:
+                    pokemon.name = new_pokemon.pop()
 
 
 if __name__ == "__main__":

@@ -81,6 +81,12 @@ def consistent_move_order(moves):
     return sorted(moves, key=key)
 
 
+@lru_cache(9)
+def hidden_power_reference(gen: int) -> Move:
+    # we will map all hidden powers to this move
+    return Move(move_id="hiddenpower", gen=gen)
+
+
 @dataclass
 class UniversalMove:
     name: str
@@ -151,13 +157,20 @@ class UniversalMove:
         if move is None:
             return cls.blank_move()
         assert isinstance(move, Move)
+        if move.id.startswith("hiddenpower"):
+            # we map every hidden power to the typeless version
+            # because the types don't show up in replays
+            reference = hidden_power_reference(move._gen)
+        else:
+            reference = move
         return cls(
-            name=move.id,
-            category=move.category.name,
-            base_power=move.base_power,
-            move_type=move.type.name,
-            priority=move.priority,
-            accuracy=move.accuracy,
+            name=reference.id,
+            category=reference.category.name,
+            base_power=reference.base_power,
+            move_type=reference.type.name,
+            priority=reference.priority,
+            accuracy=reference.accuracy,
+            # always use `move` for pp tracking
             current_pp=move.current_pp,
             max_pp=move.max_pp,
         )

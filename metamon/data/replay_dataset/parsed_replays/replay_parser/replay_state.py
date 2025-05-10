@@ -30,6 +30,15 @@ class Nothing(Enum):
     NO_STATUS = auto()
 
 
+def _one_hidden_power(move_name: str) -> str:
+    if move_name.startswith("Hidden Power"):
+        return "Hidden Power"
+    elif move_name.startswith("hiddenpower"):
+        return "hiddenpower"
+    else:
+        return move_name
+
+
 @dataclass
 class Boosts:
     atk_: int = 0
@@ -69,6 +78,7 @@ class Move(PEMove):
     def __init__(self, name: str, gen: int):
         # in an attempt to handle `choice` messages that give names in a case/space insensitive format,
         # we'll go from the name parsed from the replay --> poke_env id --> poke_env's official move name
+        name = _one_hidden_power(name)
         self.lookup_name = to_id_str(name)
         try:
             super().__init__(move_id=self.lookup_name, gen=gen)
@@ -390,7 +400,7 @@ class Pokemon:
             ability = None
         self.had_ability = ability
         pokemon_set_moves = set(
-            move
+            _one_hidden_power(move)
             for move in pokemon_set.moves
             if (
                 move != pokemon_set.MISSING_MOVE
@@ -400,7 +410,8 @@ class Pokemon:
         )
         moves_to_add = pokemon_set_moves - set(self.had_moves.keys())
         while len(self.had_moves.keys()) < 4 and moves_to_add:
-            new_move = Move(name=moves_to_add.pop(), gen=self.gen)
+            choice = moves_to_add.pop()
+            new_move = Move(name=choice, gen=self.gen)
             self.had_moves[new_move.name] = new_move
         if self.max_hp is None:
             assert self.current_hp is None

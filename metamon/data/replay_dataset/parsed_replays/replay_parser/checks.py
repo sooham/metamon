@@ -176,6 +176,10 @@ def check_filled_mon(pokemon):
         raise BackwardException(f"Pokemon info has not been filled: {p}")
 
     moveset_size = len(pokemon.moves)
+    no_duplicates = len(pokemon.moves) == len(set(m.id for m in pokemon.moves.values()))
+    if not no_duplicates:
+        breakpoint()
+
     if moveset_size < 3:
         # there is usually a good reason for 3 moves, but less than that and we're worried about
         # the backward accuracy
