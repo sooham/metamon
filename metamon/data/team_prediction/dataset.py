@@ -1,16 +1,46 @@
 import os
 import random
-import re
 import pathlib
-from typing import List, Tuple, Optional, Union, Iterable, Literal
+from typing import List, Tuple, Optional, Union, Iterable, Literal, Dict, Set
 
 import torch
 from torch.utils.data import Dataset
 
-from metamon.data.team_prediction.team import TeamSet
+from metamon.data.team_prediction.team import TeamSet, Roster, PokemonSet
 from metamon.data.team_prediction.vocabulary import Vocabulary
 from metamon.data import DATA_PATH
 from poke_env.data import to_id_str
+
+
+class TeamDataset(Dataset):
+    def __init__(
+        self, team_file_dir: str, format: str, max_teams: Optional[int] = None
+    ):
+        self.team_path = os.path.join(team_file_dir, f"{format}_teams")
+        if not os.path.exists(self.team_path):
+            raise ValueError(f"Team directory {self.team_path} does not exist")
+        self.filenames = os.listdir(self.team_path)
+        random.shuffle(self.filenames)
+        if max_teams is not None:
+            self.filenames = self.filenames[:max_teams]
+        self.format = format
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def __getitem__(
+        self, idx
+    ) -> Tuple[TeamSet, Dict[str, PokemonSet], Set[str]] | None:
+        team_file = self.filenames[idx]
+        team_path_full = os.path.join(self.team_path, team_file)
+        try:
+            team = TeamSet.from_showdown_file(team_path_full, self.format)
+        except Exception as e:
+            print(f"Error loading team file {team_path_full}: {e}")
+            return None
+        pokemon_sets = {p.name: p for p in team.pokemon}
+        team_roster = Roster(team.lead.name, frozenset(p.name for p in team.reserve))
+        return (team, pokemon_sets, team_roster)
 
 
 class TeamPredictionDataset(Dataset):
@@ -28,8 +58,8 @@ class TeamPredictionDataset(Dataset):
             data_dir: Directory or iterable of directories containing .team files (will be searched recursively)
             split: Whether this is the training or validation split
             validation_ratio: Fraction of data to use for validation
-            mask_pokemon_prob: Probability of masking an entire Pokemon
-            mask_attrs_prob: Probability of masking individual attributes
+            mask_pokemon_prob_range: Range of probabilities to use for masking an entire Pokemon
+            mask_attrs_prob_range: Range of probabilities to use for masking an indivudal attribute
             seed: Random seed for reproducibility
         """
         (

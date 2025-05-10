@@ -17,18 +17,34 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state impor
 )
 from metamon.data.team_prediction.predictor import TeamPredictor
 from metamon.data.team_prediction.team import TeamSet, PokemonSet
+from metamon.data.team_builder.team_builder import PokemonStatsLookupError
 
 
 def fill_missing_team_info(
     battle_format: str, poke_list: List[Pokemon], team_predictor: TeamPredictor
 ) -> List[Pokemon]:
+    """
+    Team prediction works by:
+
+    1. Converting the team we've gathered here in the replay parser to the format expected by the team_prediction module
+    2. Predicting the team with a TeamPredictor
+    3. Filling missing information with the predicted team
+    """
+
+    # 1. Convert the team to the format expected by the team_prediction module
     gen = int(battle_format.split("gen")[1][0])
     poke_names = [p.name for p in poke_list if p is not None]
     converted_poke = [PokemonSet.from_ReplayPokemon(p, gen=gen) for p in poke_list]
     revealed_team = TeamSet(
         lead=converted_poke[0], reserve=converted_poke[1:], format=battle_format
     )
-    predicted_team = team_predictor.predict(copy.deepcopy(revealed_team))
+
+    # 2. Predict the team
+    predicted_team = team_predictor.predict(revealed_team)
+    if not revealed_team.is_consistent_with(predicted_team):
+        raise InconsistentTeamPrediction(revealed_team, predicted_team)
+
+    # 3. Filling missing information with the predicted team
     pokemon_to_add = [
         poke for poke in predicted_team.pokemon if poke.name not in poke_names
     ]
@@ -36,10 +52,16 @@ def fill_missing_team_info(
         generated = pokemon_to_add.pop(0)
         new_pokemon = Pokemon(name=generated.name, lvl=100, gen=gen)
         poke_list[poke_list.index(None)] = new_pokemon
+
     if None in poke_list:
         raise BackwardException(
             f"Could not fill in all missing pokemon for {poke_list} with {predicted_team}"
         )
+
+    names = [p.name for p in poke_list]
+    if len(names) != len(set(names)):
+        raise BackwardException(f"Duplicate pokemon names in {names}")
+
     for p in poke_list:
         for match in predicted_team.pokemon:
             if match.name == p.name:
@@ -48,8 +70,6 @@ def fill_missing_team_info(
             raise BackwardException(f"Could not find match for {p.name}")
         p.fill_from_PokemonSet(match)
 
-    for name in poke_names:
-        assert name in [p.name for p in poke_list]
     return poke_list, revealed_team
 
 
