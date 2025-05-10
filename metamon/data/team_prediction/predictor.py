@@ -101,23 +101,23 @@ class NaiveUsagePredictor(TeamPredictor):
 
 @lru_cache(maxsize=4)
 def load_replay_stats_by_format(format: str):
-    with open(
-        os.path.join(
-            os.path.dirname(__file__),
-            "consistent_pokemon_sets",
-            f"{format}_pokemon.json",
-        ),
-        "r",
-    ) as f:
+    pokemon_set_path = os.path.join(
+        os.path.dirname(__file__),
+        "replay_stats",
+        f"{format}_pokemon.json",
+    )
+    team_roster_path = os.path.join(
+        os.path.dirname(__file__),
+        "replay_stats",
+        f"{format}_team_rosters.json",
+    )
+    if not os.path.exists(pokemon_set_path) or not os.path.exists(team_roster_path):
+        raise FileNotFoundError(
+            f"Stat files not found for format {format}. To use ReplayPredictor, you must first run `python -m metamon.data.team_prediction.generate_replay_stats`"
+        )
+    with open(pokemon_set_path, "r") as f:
         pokemon_sets = json.load(f)
-    with open(
-        os.path.join(
-            os.path.dirname(__file__),
-            "consistent_pokemon_sets",
-            f"{format}_team_rosters.json",
-        ),
-        "r",
-    ) as f:
+    with open(team_roster_path, "r") as f:
         team_rosters = json.load(f)["rosters"]
 
     rosters = []
@@ -145,40 +145,72 @@ class ReplayPredictor(NaiveUsagePredictor):
     ReplayPredictor instead matches the current revealed team to a set of candidates
     discovered from every replay in the dataset. It then samples from these candidates,
     falling back to NaiveUsagePredictor for any remaining info.
+
+    Currently only supports gen1ou, gen2ou, gen3ou, and gen4ou. Falls back to NaiveUsagePredictor
+    otherwise.
     """
 
-    def __init__(self, top_k_teams: int = 100, top_k_movesets: int = 10):
+    def __init__(
+        self,
+        top_k_consistent_teams: int = 20,
+        top_k_consistent_movesets: int = 15,
+        top_k_scored_teams: int = 10,
+        top_k_scored_movesets: int = 3,
+    ):
         self.stat_format = None
-        self.top_k_teams = top_k_teams
-        self.top_k_movesets = top_k_movesets
+        self.top_k_consistent_teams = top_k_consistent_teams
+        self.top_k_consistent_movesets = top_k_consistent_movesets
+        self.top_k_scored_teams = top_k_scored_teams
+        self.top_k_scored_movesets = top_k_scored_movesets
 
     def _load_data(self, format: str):
         self.smogon_stat = PreloadedSmogonStat(format, verbose=False, inclusive=True)
         self.pokemon_sets, self.team_rosters = load_replay_stats_by_format(format)
 
+    def _sample_from_top_k(self, choices, probs: List[float], k: int) -> float:
+        probs = np.array(probs)
+        k = min(k, len(probs))
+        # grab the k highest probs
+        topk_idx = np.argpartition(probs, -k)
+        new_probs = probs[topk_idx[-k:]]
+        new_probs /= new_probs.sum()
+        new_choices = [choices[i] for i in topk_idx[-k:]]
+        return random.choices(new_choices, weights=new_probs, k=1)[0]
+
     def score_roster(self, current_roster: Roster, candidate_roster: Roster) -> float:
         score = 1.0
         eps = 1e-6
-        assert current_roster.lead != PokemonSet.MISSING_NAME
 
+        # we only want to judge the likelihood of new info
         new_pokemon = current_roster.additional_details(candidate_roster)
         if len(new_pokemon) < 6 - len(current_roster):
+            # heavily downweight candidates that don't fill our team
             score *= eps
 
-        for p in new_pokemon:
-            if p in self.smogon_stat[current_roster.lead]["teammates"]:
-                score *= self.smogon_stat[current_roster.lead]["teammates"][p]
-            else:
-                score *= eps
+        # grab p(teammate | pokemon) for all pokemon in our team where that info exists
+        teammates = []
+        for p in current_roster.known_pokemon:
+            try:
+                teammates.append(self.smogon_stat[p]["teammates"])
+            except KeyError:
+                continue
 
+        for p in new_pokemon:
+            # pick pokemon that are very likely to appear alongside
+            # at least one of our current pokemon.
+            max_teammate_weight = eps
+            for teammate in teammates:
+                if p in teammate:
+                    max_teammate_weight = max(max_teammate_weight, teammate[p])
+            score *= max_teammate_weight
         return score
 
     def sample_roster_from_candidates(
         self, current_roster: Roster, candidates: List[Tuple[Roster, float]]
     ):
         weights = [self.score_roster(current_roster, r) for r, _ in candidates]
-        weights = [w / sum(weights) for w in weights]
-        roster = random.choices(candidates, weights=weights, k=1)[0][0]
+        choices = [r for r, _ in candidates]
+        roster = self._sample_from_top_k(choices, weights, k=self.top_k_scored_teams)
         return copy.deepcopy(roster)
 
     def score_pokemon(
@@ -206,20 +238,17 @@ class ReplayPredictor(NaiveUsagePredictor):
 
         This function adjusts candidates based on the usage stats of their suggested additions, e.g. P(Fire Blast|Tauros) >> P(Thunder|Tauros).
         """
+        name = current_pokemon.name
         eps = 1e-6
-        if current_pokemon.name == PokemonSet.MISSING_NAME:
-            breakpoint()
 
+        # we only want to judge the likelihood of new info
         diff = current_pokemon.additional_details(candidate_pokemon)
         if diff is None:
-            breakpoint()
             return eps
-        name = current_pokemon.name
 
         try:
             smogon_stat = self.smogon_stat[name]
         except KeyError:
-            breakpoint()
             return eps
 
         score = 1.0
@@ -267,36 +296,98 @@ class ReplayPredictor(NaiveUsagePredictor):
     def sample_pokemon_from_candidates(
         self,
         current_pokemon: PokemonSet,
-        candidates: List[PokemonSet],
+        candidates: List[Tuple[PokemonSet, float]],
     ):
         weights = [self.score_pokemon(current_pokemon, p) for p, _ in candidates]
-        weights = [w / sum(weights) for w in weights]
-        pokemon = random.choices(candidates, weights=weights, k=1)[0][0]
+        choices = [p for p, _ in candidates]
+        pokemon = self._sample_from_top_k(
+            choices, weights, k=self.top_k_scored_movesets
+        )
         return copy.deepcopy(pokemon)
 
-    def fill_team(self, team: TeamSet) -> TeamSet:
-        if self.stat_format != team.format:
-            self._load_data(team.format)
-        og_team = copy.deepcopy(team)
+    def emergency_fill_team(self, team: TeamSet):
+        found_pokemon = set([p.name for p in team.known_pokemon])
+        extra_pokemon = set()
+        # we use this to deduplicate form changes like "Rotom-Wash" and "Rotom-Heat"
+        _form_agnostic = lambda pnames: set(map(lambda x: x.split("-")[0], pnames))
 
+        tries = 0
+        while len(extra_pokemon | found_pokemon) < 6 and tries < 100:
+            tries += 1
+            for pokemon in team.known_pokemon:
+                try:
+                    teammates = self.smogon_stat[pokemon.name]["teammates"]
+                except KeyError:
+                    continue
+                # get all the teammates in the PS usage stats
+                already_found = _form_agnostic(found_pokemon | extra_pokemon)
+                emergency_options = {
+                    k: v
+                    for k, v in teammates.items()
+                    if k.split("-")[0] not in already_found
+                }
+                if emergency_options:
+                    # sample a new pokemon according to usage weights
+                    name_choices = list(emergency_options.keys())
+                    ps_usage_weights = list(emergency_options.values())
+                    choice = random.choices(
+                        name_choices, weights=ps_usage_weights, k=1
+                    )[0]
+                    extra_pokemon.add(choice)
+                    break
+
+        assert len(extra_pokemon) == 6 - len(found_pokemon)
+
+        for extra in extra_pokemon:
+            for pokemon in team.pokemon:
+                if pokemon.name == PokemonSet.MISSING_NAME:
+                    pokemon.name = extra
+                    break
+
+    def fill_team(self, team: TeamSet) -> TeamSet:
+        if team.format not in {"gen1ou", "gen2ou", "gen3ou", "gen4ou"}:
+            breakpoint()
+            # we only trust our stats for the big OU formats for now
+            return super().fill_team(team)
+
+        if self.stat_format != team.format:
+            # load the stats on a format change
+            self._load_data(team.format)
+
+        # first we fill our team of 6 pokemon names
         lead_name = team.lead.name
         reserve_names = [p.name for p in team.reserve]
         roster = Roster(lead=lead_name, reserve=reserve_names)
-
+        # from the set of "most revealed" rosters implied by every replay in the dataset,
+        # grab the ones that do not contradict the roster we have so far
         candidate_rosters = [
             (r, w) for r, w in self.team_rosters if roster.is_consistent_with(r)
         ]
         if candidate_rosters:
+            # the "most revealed" rosters have weights associated with the number of replays
+            # that *may* use them. It's not quite right to sample from these weights, but
+            # taking the top k is a decent start.
             top_k_candidate_rosters = sorted(
                 candidate_rosters, key=lambda x: x[1], reverse=True
-            )[: self.top_k_teams]
+            )[: self.top_k_consistent_teams]
             roster = self.sample_roster_from_candidates(roster, top_k_candidate_rosters)
             assert roster.lead == lead_name
+            # this fills the $missing_name$ slots on the team, but movesets will be blank
             team.fill_from_Roster(roster)
+            # due to the definition of a "most revealed" roster (which is basically a leaf node
+            # on a directed graph of all the teams ever revealed by a replay with an edge
+            # from team A --> team B if team B could be a more revealed version of team A)
+            # there may still be missing Pokemon on the roster.
+
+        # if we still need Pokemon, we prefer to naive guess them here instead of waiting
+        # for NaiveUsagePredictor, because our moveset prediction below is much improved.
+        if len(team.known_pokemon) < 6:
+            self.emergency_fill_team(team)
 
         if any(pokemon.name == PokemonSet.MISSING_NAME for pokemon in team.pokemon):
             breakpoint()
 
+        # now we fill in the movesets following similar logic
         for pokemon in team.pokemon:
             candidate_sets = [
                 (p, w)
@@ -306,7 +397,7 @@ class ReplayPredictor(NaiveUsagePredictor):
             if candidate_sets:
                 top_k_candidate_sets = sorted(
                     candidate_sets, key=lambda x: x[1], reverse=True
-                )[: self.top_k_movesets]
+                )[: self.top_k_consistent_movesets]
                 new_pokemon = self.sample_pokemon_from_candidates(
                     pokemon, top_k_candidate_sets
                 )

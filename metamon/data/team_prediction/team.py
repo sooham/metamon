@@ -558,6 +558,10 @@ class TeamSet:
     reserve: List[PokemonSet]
     format: str
 
+    @property
+    def known_pokemon(self) -> List[PokemonSet]:
+        return [p for p in self.pokemon if p.name != PokemonSet.MISSING_NAME]
+
     def __eq__(self, other):
         return (
             self.format == other.format

@@ -175,7 +175,7 @@ if __name__ == "__main__":
         results = pool.map(process_pokemon_sets, pokemon_sets_items)
 
     processed_sets = dict(results)
-    output_dir = os.path.join(os.path.dirname(__file__), "consistent_pokemon_sets")
+    output_dir = os.path.join(os.path.dirname(__file__), "replay_stats")
     os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(output_dir, f"{args.format}_pokemon.json"), "w") as f:
         json.dump(processed_sets, f, indent=2)
