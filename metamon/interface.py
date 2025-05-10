@@ -211,6 +211,12 @@ class UniversalPokemon:
                 actually_is = type(self.__dict__[name])
                 raise TypeError(f"UniversalPokemon `{name}` has type {actually_is}")
 
+    @classmethod
+    def from_dict(cls, data: dict):
+        args = data.copy()
+        args["moves"] = [UniversalMove(**m) for m in data["moves"]]
+        return cls(**args)
+
     @staticmethod
     def universal_items(item_rep: Optional[str | ReplayNothing]) -> str:
         if item_rep is None or item_rep == "unknown_item":
@@ -500,8 +506,16 @@ class UniversalState:
     
     @classmethod
     def from_dict(cls, data: dict):
-        #return cls(**data)
-        raise NotImplementedError
+        args = data.copy()
+        # convert nested Pokemon objects
+        args["player_active_pokemon"] = UniversalPokemon.from_dict(data["player_active_pokemon"])
+        args["opponent_active_pokemon"] = UniversalPokemon.from_dict(data["opponent_active_pokemon"])
+        args["available_switches"] = [UniversalPokemon.from_dict(p) for p in data["available_switches"]]
+        # convert nested Move objects
+        args["player_prev_move"] = UniversalMove(**args["player_prev_move"])
+        args["opponent_prev_move"] = UniversalMove(**args["opponent_prev_move"])
+        # create UniversalState from the processed dict
+        return cls(**args)
 
 
 def replaystate_action_to_idx(

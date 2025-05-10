@@ -194,10 +194,10 @@ class ReplayPredictor(NaiveUsagePredictor):
         probs = np.array(probs)
         k = min(k, len(probs))
         # grab the k highest probs
-        topk_idx = np.argpartition(probs, -k)
-        new_probs = probs[topk_idx[-k:]]
+        topk_idx = np.argpartition(probs, -k)[-k:]
+        new_probs = probs[topk_idx]
         new_probs /= new_probs.sum()
-        new_choices = [choices[i] for i in topk_idx[-k:]]
+        new_choices = [choices[i] for i in topk_idx]
         return random.choices(new_choices, weights=new_probs, k=1)[0]
 
     def score_roster(self, current_roster: Roster, candidate_roster: Roster) -> float:
@@ -373,7 +373,6 @@ class ReplayPredictor(NaiveUsagePredictor):
 
     def fill_team(self, team: TeamSet) -> TeamSet:
         if team.format not in {"gen1ou", "gen2ou", "gen3ou", "gen4ou"}:
-            breakpoint()
             # we only trust our stats for the big OU formats for now
             return super().fill_team(team)
 
@@ -410,9 +409,6 @@ class ReplayPredictor(NaiveUsagePredictor):
         # for NaiveUsagePredictor, because our moveset prediction below is much improved.
         if len(team.known_pokemon) < 6:
             self.emergency_fill_team(team)
-
-        if any(pokemon.name == PokemonSet.MISSING_NAME for pokemon in team.pokemon):
-            breakpoint()
 
         # now we fill in the movesets following similar logic
         for pokemon in team.pokemon:
