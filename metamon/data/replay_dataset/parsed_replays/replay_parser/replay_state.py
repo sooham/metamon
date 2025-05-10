@@ -31,6 +31,7 @@ class Nothing(Enum):
 
 
 def _one_hidden_power(move_name: str) -> str:
+    # used to map all hidden power moves to the same name
     if move_name.startswith("Hidden Power"):
         return "Hidden Power"
     elif move_name.startswith("hiddenpower"):
@@ -85,8 +86,6 @@ class Move(PEMove):
             self.charge_move = bool(self.entry["flags"].get("charge"))
             self.name = self.entry["name"]
         except:
-            if "<nomove>" in name:
-                breakpoint()
             raise MovedexMissingEntry(name, self.lookup_name)
         self.gen_ = gen
         self.pp = self.current_pp  # split from poke-env PP counter

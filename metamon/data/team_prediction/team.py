@@ -22,6 +22,7 @@ def get_preloaded_stat(gen: int):
 
 
 def moveset_size(pokemon_name: str, gen: int) -> int:
+    # attempts to handle cases where we would expect a Pokemon to have less than 4 moves
     stat = get_preloaded_stat(gen)
     try:
         moves = len(
@@ -34,6 +35,7 @@ def moveset_size(pokemon_name: str, gen: int) -> int:
 
 
 def _one_hidden_power(move_name: str) -> str:
+    # used to map all hidden power moves to the same name
     if move_name.startswith("Hidden Power"):
         return "Hidden Power"
     elif move_name.startswith("hiddenpower"):
@@ -45,6 +47,13 @@ def _one_hidden_power(move_name: str) -> str:
 @total_ordering
 @dataclass
 class PokemonSet:
+    """
+    Represents a Pokemon's moveset, ability, item, nature, and EVs/IVs during team prediction.
+
+    Defines a useful ordering between Pokemon where PokemonSet A < PokemonSet B if B
+    is a superset of the information revealed in A.
+    """
+
     name: str
     gen: int
     moves: List[str]
@@ -66,6 +75,21 @@ class PokemonSet:
     MISSING_EV = "$missing_ev$"
     MISSING_IV = "$missing_iv$"
     MISSING_NATURE = "$missing_nature$"
+
+    def __post_init__(self):
+        assert len(self.evs) == 6
+        assert len(self.ivs) == 6
+        assert self.nature is not None
+        assert self.item is not None
+        assert self.ability is not None
+        self.missing_strings = [
+            self.MISSING_MOVE,
+            self.MISSING_ABILITY,
+            self.MISSING_ITEM,
+            self.MISSING_NATURE,
+        ]
+        self.missing_regex = re.compile("|".join(map(re.escape, self.missing_strings)))
+        self.moves = [_one_hidden_power(move) for move in self.moves]
 
     def __hash__(self):
         moves_frozen = frozenset(self.moves) - {self.MISSING_MOVE}
@@ -114,6 +138,12 @@ class PokemonSet:
 
     @property
     def revealed_details(self) -> int:
+        """
+        Counts the number of details revealed in this PokemonSet.
+
+        This is used to skip comparisons between PokemonSets, because
+        A cannot be < B if A has more revealed details than B.
+        """
         score = (
             int(self.name != self.MISSING_NAME)
             + int(self.ability != self.MISSING_ABILITY)
@@ -127,22 +157,10 @@ class PokemonSet:
 
     @property
     def revealed_moves(self) -> int:
+        """
+        Counts the number of moves revealed in this PokemonSet.
+        """
         return len(set(self.moves) - {self.MISSING_MOVE})
-
-    def __post_init__(self):
-        assert len(self.evs) == 6
-        assert len(self.ivs) == 6
-        assert self.nature is not None
-        assert self.item is not None
-        assert self.ability is not None
-        self.missing_strings = [
-            self.MISSING_MOVE,
-            self.MISSING_ABILITY,
-            self.MISSING_ITEM,
-            self.MISSING_NATURE,
-        ]
-        self.missing_regex = re.compile("|".join(map(re.escape, self.missing_strings)))
-        self.moves = [_one_hidden_power(move) for move in self.moves]
 
     def __eq__(self, other):
         if not isinstance(other, PokemonSet):
@@ -209,6 +227,7 @@ class PokemonSet:
 
     @classmethod
     def default_evs(cls, gen: int):
+        # mirroring Showdown logic where EVs are assumed to be 252
         return [252] * 6 if gen <= 2 else [cls.MISSING_EV] * 6
 
     @classmethod
@@ -227,6 +246,11 @@ class PokemonSet:
 
     @classmethod
     def from_ReplayPokemon(cls, pokemon: Optional[Pokemon], gen: int):
+        """
+        Used to convert between the Pokemon we are filling in the replay parser
+        and this PokemonSet format used for team prediction.
+        """
+
         if pokemon is None:
             return cls.missing_pokemon(gen=gen)
         moves = [m.name for m in pokemon.had_moves.values()]
@@ -285,6 +309,9 @@ class PokemonSet:
                 self.ivs[idx] = other.ivs[idx]
 
     def to_str(self):
+        """
+        Outputs the poke-paste-style string for this PokemonSet.
+        """
         evs = "EVs: "
         for desc, ev_val in zip(["HP", "Atk", "Def", "SpA", "SpD", "Spe"], self.evs):
             evs += f"{ev_val} {desc}"
@@ -304,6 +331,9 @@ class PokemonSet:
 
     @classmethod
     def from_showdown_block(cls, block: str, gen: int):
+        """
+        Creates a PokemonSet from a poke-paste string.
+        """
         block = block.replace("\u200b", "")
         lines = [line.strip() for line in block.strip().split("\n") if line.strip()]
 
@@ -409,6 +439,9 @@ class PokemonSet:
         )
 
     def to_seq(self, include_stats: bool = True):
+        """ "
+        Creates a simple sequence format that is used by a team prediction model.
+        """
         seq = [
             f"Mon: {self.name}",
             f"Ability: {self.ability}",
@@ -426,6 +459,9 @@ class PokemonSet:
 
     @classmethod
     def from_seq(cls, seq: List[str], gen: int, include_stats: bool = True):
+        """
+        Creates a PokemonSet from the sequence format, which may have been predicted by a model.
+        """
         name = seq[0].split(":")[1].strip()
         ability = seq[1].split(":")[1].strip()
         item = seq[2].split(":")[1].strip()
@@ -463,6 +499,10 @@ class PokemonSet:
         )
 
     def masked(self, mask_attrs_prob: float = 0.1):
+        """
+        Randomly sets some of the known attributes of this PokemonSet to be missing,
+        so that we may learn to predict them.
+        """
         data = self.to_dict()
         data["name"] = self.name
         # Mask nature, item, ability
@@ -554,6 +594,13 @@ class Roster:
 
 @dataclass
 class TeamSet:
+    """
+    Represents an entire team during team prediction.
+
+    Mostly splits the functionality into something that needs to be done for each
+    Pokemon on the team and calls the PokemonSet version.
+    """
+
     lead: PokemonSet
     reserve: List[PokemonSet]
     format: str
@@ -563,6 +610,10 @@ class TeamSet:
         return [p for p in self.pokemon if p.name != PokemonSet.MISSING_NAME]
 
     def __eq__(self, other):
+        """
+        Note that in gen1-4 the leads need to match, but the rest of the roster can be in any order
+        and we'd still consider the teams equal.
+        """
         return (
             self.format == other.format
             and self.lead == other.lead
@@ -600,6 +651,9 @@ class TeamSet:
         return [self.lead] + self.reserve
 
     def to_str(self):
+        """
+        Outputs the poke-paste-style string.
+        """
         out = f"{self.lead.to_str()}"
         for p in self.reserve:
             out += f"\n\n{p.to_str()}"
@@ -607,6 +661,9 @@ class TeamSet:
 
     @classmethod
     def from_showdown_file(cls, path: str, format: str):
+        """
+        Creates a TeamSet from a showdown file.
+        """
         with open(path, "r") as f:
             content = f.read()
         gen = int(format.split("gen")[1][0])
@@ -688,6 +745,9 @@ class TeamSet:
         return x, y
 
     def fill_from_Roster(self, roster: Roster):
+        """
+        Fill in missing Pokemon names from a Roster.
+        """
         if (
             self.lead.name == PokemonSet.MISSING_NAME
             and roster.lead != PokemonSet.MISSING_NAME
@@ -708,7 +768,6 @@ if __name__ == "__main__":
     import os
 
     TEAM_DIR = os.path.join(os.path.dirname(__file__), "..", "teams")
-    # TEAM_DIR = "/mnt/data1/shared_pokemon_project/metamon_team_files"
     TEAM_DIR = os.path.join(TEAM_DIR, "gen1", "ou", "competitive")
     team_files = []
     for root, dirs, files in os.walk(TEAM_DIR):
@@ -733,6 +792,4 @@ if __name__ == "__main__":
         print(x.to_seq(include_stats=False))
         print(y.to_seq(include_stats=False))
         assert len(x.to_seq(include_stats=False)) == len(y.to_seq(include_stats=False))
-        y_copy = TeamSet.from_seq(y.to_seq(include_stats=True), include_stats=True)
-        if y_copy.to_str() != y.to_str():
-            breakpoint()
+        y_copy = TeamSet.from_seq(y.to_seq(include_stats=True)[0], include_stats=True)

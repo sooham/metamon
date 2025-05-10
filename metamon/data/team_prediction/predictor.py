@@ -32,6 +32,19 @@ def get_legacy_teambuilder(format: str):
 
 
 class NaiveUsagePredictor(TeamPredictor):
+    """
+    The original paper strategy. We use the names of the pokemon we have already know
+    to guess the full team, then fill in the movesets using usage stats. Every decision
+    is made independently by sampling from unconditioned usage distributions. This has
+    some downsides that are explained / improved by the ReplayPredictor. Every detail that
+    was missing in the orignial team is then filled by grabbing the same attribute from
+    the generated team.
+
+    This team_prediction module didn't exist in the original version. Because i'm lazy,
+    this works by converting to the old format, running the legacy predictor, and then
+    converting back.
+    """
+
     def fill_team(self, team: TeamSet):
         team_builder = get_legacy_teambuilder(team.format)
         gen = int(team.format.split("gen")[1][0])
@@ -101,6 +114,9 @@ class NaiveUsagePredictor(TeamPredictor):
 
 @lru_cache(maxsize=4)
 def load_replay_stats_by_format(format: str):
+    """
+    This loads large json files that are created by the `generate_replay_stats` script.
+    """
     pokemon_set_path = os.path.join(
         os.path.dirname(__file__),
         "replay_stats",
@@ -143,8 +159,12 @@ class ReplayPredictor(NaiveUsagePredictor):
     a very unlikely combination of moves from both sets.
 
     ReplayPredictor instead matches the current revealed team to a set of candidates
-    discovered from every replay in the dataset. It then samples from these candidates,
-    falling back to NaiveUsagePredictor for any remaining info.
+    discovered from every replay in the dataset. If we think of revealed teams as nodes
+    on a graph, where an edge A -> B exists if team B could have been made from team A
+    by revealing more information, then these `candidate` teams are the leaf nodes. By sampling
+    from the most commonly implied candidates, we are restricting our predictions to real +
+    reasonably popular choices. Some hacky logic based on usage stats is still needed to filter
+    candidates that are frequently valid but rarely actually used (see `score_pokemon`).
 
     Currently only supports gen1ou, gen2ou, gen3ou, and gen4ou. Falls back to NaiveUsagePredictor
     otherwise.
@@ -168,6 +188,9 @@ class ReplayPredictor(NaiveUsagePredictor):
         self.pokemon_sets, self.team_rosters = load_replay_stats_by_format(format)
 
     def _sample_from_top_k(self, choices, probs: List[float], k: int) -> float:
+        """
+        Sample from the top k choices, weighted by their probabilities.
+        """
         probs = np.array(probs)
         k = min(k, len(probs))
         # grab the k highest probs
@@ -178,6 +201,9 @@ class ReplayPredictor(NaiveUsagePredictor):
         return random.choices(new_choices, weights=new_probs, k=1)[0]
 
     def score_roster(self, current_roster: Roster, candidate_roster: Roster) -> float:
+        """
+        Score a candidate roster based on how likely it is to have been made from the current roster.
+        """
         score = 1.0
         eps = 1e-6
 
@@ -220,7 +246,7 @@ class ReplayPredictor(NaiveUsagePredictor):
         Scores a diff between a current Pokemon and a candidate predicted Pokemon.
 
         The basic problem we need to address is the difference between a moveset that is frequently *possible* vs. a moveset that is frequently *used*.
-        Our replay stats track the number of real movesets that *could be* each candidate, but in reality some of these are very unlikely.
+        This occurs when Pokemon almost always use 1-2 key moves but rarely reveal the rest such that the common moves carry very little info.
 
         For example, in gen1ou, it is common for Tauros to reveal {Earthquake, Body Slam, Hyper Beam} during a battle.
         Our candidates computed by the replay stats will find us all the movesets that have these three moves.
@@ -234,7 +260,8 @@ class ReplayPredictor(NaiveUsagePredictor):
             Thunder, weight=4709
             Swords Dance, weight=3333
         Stomp/Thunder/Swords Dance are dramatically overrepresented because many replays are consistent with these movesets,
-        but in reality that are much more rarely used.
+        but in reality these would rarely be the 4th move. A team that revealed {Fire Blast, Earthquake, Hyper Beam} would not have
+        this problem. The 4th move is clearly Body Slam.
 
         This function adjusts candidates based on the usage stats of their suggested additions, e.g. P(Fire Blast|Tauros) >> P(Thunder|Tauros).
         """
