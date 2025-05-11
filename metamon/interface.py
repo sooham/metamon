@@ -762,10 +762,10 @@ class DefaultObservationSpace(ObservationSpace):
 class TokenizedObservationSpace(ObservationSpace):
     def __init__(
         self,
-        base_obs_space: Type[ObservationSpace],
-        tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
+        base_obs_space: ObservationSpace,
+        tokenizer: PokemonTokenizer,
     ):
-        self.base_obs_space = base_obs_space()
+        self.base_obs_space = base_obs_space
         self.tokenizer = tokenizer
 
     @property

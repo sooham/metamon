@@ -9,10 +9,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from metamon.data.tokenizer import get_tokenizer
-from metamon.il.model import TransformerTurnEmbedding
-
 import metamon
+from metamon.il.model import TransformerTurnEmbedding
+from metamon.data.tokenizer import PokemonTokenizer, get_tokenizer
+
 from amago.envs import AMAGOEnv, SequenceWrapper
 from amago.nets.utils import symlog
 
@@ -131,6 +131,7 @@ class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
         self,
         obs_space,
         rl2_space,
+        tokenizer: PokemonTokenizer,
         extra_emb_dim: int = 18,
         d_model: int = 100,
         n_layers: int = 3,
@@ -141,7 +142,6 @@ class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
         super().__init__(obs_space=obs_space, rl2_space=rl2_space)
         if token_mask_aug:
             print("Using token mask aug")
-        tokenizer = get_tokenizer("allreplays-v3")
         self.token_mask_aug = token_mask_aug
         self.extra_emb = nn.Linear(rl2_space.shape[-1], extra_emb_dim)
         self.turn_embedding = TransformerTurnEmbedding(
@@ -161,10 +161,10 @@ class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
     @torch.compile
     def inner_forward(self, obs, rl2s, log_dict=None):
         if self.training and self.token_mask_aug:
-            obs["tokens"] = unknown_token_mask(obs["tokens"])
+            obs["text_tokens"] = unknown_token_mask(obs["text_tokens"])
         extras = F.leaky_relu(self.extra_emb(symlog(rl2s)))
         numerical = torch.cat((obs["numbers"], extras), dim=-1)
         turn_emb = self.turn_embedding(
-            token_inputs=obs["tokens"], numerical_inputs=numerical
+            token_inputs=obs["text_tokens"], numerical_inputs=numerical
         )
         return turn_emb

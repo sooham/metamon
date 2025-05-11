@@ -4,6 +4,7 @@ import json
 from functools import partial
 import multiprocessing as mp
 import warnings
+from typing import Type, Optional
 
 warnings.filterwarnings("ignore")
 
@@ -19,14 +20,13 @@ import numpy as np
 import amago
 from amago.cli_utils import *
 
-from metamon.env import MetaShowdown, TokenizedEnv, LocalLadder
+from metamon.env import MetaShowdown, LocalLadder
 from metamon.rl.metamon_to_amago import (
     PSLadderAMAGOWrapper,
     MetamonAMAGOWrapper,
     MetamonTstepEncoder,
 )
 from metamon.task_distributions import (
-    get_task_distribution,
     FixedGenOpponentDistribution,
     Task,
 )
@@ -35,6 +35,7 @@ from metamon.interface import (
     RewardFunction,
     DefaultObservationSpace,
     DefaultShapedReward,
+    TokenizedObservationSpace,
 )
 from metamon.baselines.heuristic.basic import *
 from metamon.baselines.heuristic.kaizo import EmeraldKaizo
@@ -64,7 +65,6 @@ METAMON_CACHE_DIR = os.environ.get(
 def make_placeholder_env(
     observation_space: ObservationSpace,
     reward_function: RewardFunction,
-    tokenizer: PokemonTokenizer,
 ):
     """
     Create an environment that does nothing, but will be used to initialize the network
@@ -92,7 +92,6 @@ def make_placeholder_env(
             return obs, {}
 
     env = _PlaceholderShowdown()
-    env = TokenizedEnv(env, tokenizer=tokenizer)
     return MetamonAMAGOWrapper(env)
 
 
@@ -101,7 +100,6 @@ def make_ladder_env(
     format: str,
     observation_space: ObservationSpace,
     reward_function: RewardFunction,
-    tokenizer: PokemonTokenizer,
     username: str,
     avatar: str,
     n_challenges: int,
@@ -123,7 +121,6 @@ def make_ladder_env(
     if wait_for_input:
         input("Hit any key to start challenging")
     env.start_laddering(n_challenges=n_challenges)
-    env = TokenizedEnv(env, tokenizer=tokenizer)
     return PSLadderAMAGOWrapper(env)
 
 
@@ -132,7 +129,6 @@ def make_baseline_env(
     format,
     observation_space: ObservationSpace,
     reward_function: RewardFunction,
-    tokenizer: PokemonTokenizer,
     player_split: str,
     opponent_split: str,
     opponent,
@@ -151,7 +147,6 @@ def make_baseline_env(
         new_task_every=1,
         observation_space=observation_space,
     )
-    env = TokenizedEnv(env, tokenizer=tokenizer)
     return MetamonAMAGOWrapper(env)
 
 
@@ -161,17 +156,21 @@ def _create_placeholder_experiment(
     run_name,
     max_seq_len,
     log,
-    agent_type,
+    agent_type: Type[amago.agent.Agent],
+    tstep_encoder_type: Type[amago.nets.tstep_encoders.TstepEncoder],
+    traj_encoder_type: Type[amago.nets.traj_encoders.TrajEncoder],
     observation_space: ObservationSpace,
     reward_function: RewardFunction,
-    tokenizer: PokemonTokenizer,
 ):
+    """
+    Initialize an AMAGO experiment that will be used to load a pretrained checkpoint
+    and manage agent/env interaction.
+    """
     # the environment is only used to initialize the network
     # before loading the correct checkpoint
     env = make_placeholder_env(
         observation_space=observation_space,
         reward_function=reward_function,
-        tokenizer=tokenizer,
     )
     dummy_env = lambda: env
     experiment = amago.Experiment(
@@ -181,8 +180,8 @@ def _create_placeholder_experiment(
         make_train_env=dummy_env,
         make_val_env=dummy_env,
         parallel_actors=1,
-        traj_encoder_type=amago.nets.traj_encoders.TformerTrajEncoder,
-        tstep_encoder_type=MetamonTstepEncoder,
+        traj_encoder_type=traj_encoder_type,
+        tstep_encoder_type=tstep_encoder_type,
         agent_type=agent_type,
         exploration_wrapper_type=None,
         dset_root=dset_root,
@@ -216,30 +215,53 @@ class PretrainedModel:
     """
 
     HF_REPO_ID = "jakegrigsby/metamon"
-    DEFAULT_CKPT = 40
-    OBSERVATION_SPACE = DefaultObservationSpace()
-    REWARD_FUNCTION = DefaultShapedReward()
-    TOKENIZER = get_tokenizer("allreplays-v3")
+    DEFAULT_CKPT = 40  # a.k.a. 1M grad steps
 
+    # fmt: off
     def __init__(
         self,
-        gin_config,
-        model_name,
-        is_il_model,
-        max_seq_len=200,
-        agent_type=amago.agent.Agent,
-        hf_cache_dir=None,
+        # gin files modify the model architecture (layers, size, etc.)
+        gin_config : str,
+        # model name is used to identify the model in the HuggingFace Hub
+        model_name: str,
+        # whether the model is an IL model (vs RL) (IL expects slightly less params)
+        is_il_model: bool,
+        # max sequence length for the model
+        max_seq_len: int = 200,
+        # type of agent to use
+        agent_type: Type[amago.agent.Agent] = amago.agent.Agent,
+        # type of tstep encoder to use (defaults to custom MetamonTstepEncoder)
+        tstep_encoder_type: Type[amago.nets.tstep_encoders.TstepEncoder] = MetamonTstepEncoder,
+        # type of traj encoder to use (defaults to amago Transformer)
+        traj_encoder_type: Type[amago.nets.traj_encoders.TrajEncoder] = amago.nets.traj_encoders.TformerTrajEncoder,
+        # tokenize the text component of the observation space
+        tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
+        # use original paper observation space and reward function
+        observation_space: ObservationSpace = DefaultObservationSpace(),
+        reward_function: RewardFunction = DefaultShapedReward(),
+        # cache directory for the HuggingFace Hub (note that these files are large)
+        hf_cache_dir: Optional[str] = None,
     ):
+    # fmt: on
+
         self.model_name = model_name
         self.gin_config = os.path.join(os.path.dirname(__file__), "configs", gin_config)
         self.is_il_model = is_il_model
         self.max_seq_len = max_seq_len
         self.agent_type = agent_type
         self.hf_cache_dir = hf_cache_dir or METAMON_CACHE_DIR
+        self.tokenizer = tokenizer
+        self.observation_space = TokenizedObservationSpace(
+            base_obs_space=observation_space,
+            tokenizer=tokenizer,
+        )
+        self.reward_function = reward_function
+        self.traj_encoder_type = traj_encoder_type
+        self.tstep_encoder_type = tstep_encoder_type
         os.makedirs(self.hf_cache_dir, exist_ok=True)
 
     @property
-    def base_config(self):
+    def base_config(self) -> dict:
         has_gpu = torch.cuda.is_available()
         try:
             import flash_attn
@@ -253,16 +275,19 @@ class PretrainedModel:
             attn_type = amago.nets.transformer.VanillaAttention
             red_warning("Warning: Using unofficial VanillaAttention implementation")
         return {
+            # some of these settings are not actually necessary for inference
             "amago.agent.Agent.reward_multiplier": 10.0,
             "amago.agent.Agent.fake_filter": self.is_il_model,
             "amago.agent.Agent.use_multigamma": not self.is_il_model,
             "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": attn_type,
+            "MetamonTstepEncoder.tokenizer": self.tokenizer,
             # skip cpu-intensive init, because we're going to be replacing the weights
             # with a checkpoint anyway.... If you get an error about this, pull `amago`.
             "amago.nets.transformer.SigmaReparam.fast_init": True,
         }
 
-    def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False):
+    def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False) -> amago.Experiment:
+        # use the base config and the gin file to configure the model
         use_config(self.base_config, [self.gin_config], finalize=False)
         checkpoint = checkpoint or self.DEFAULT_CKPT
         # Download checkpoint from HF Hub
@@ -275,6 +300,7 @@ class PretrainedModel:
         full_path = Path(base_dir)
         dset_root = str(full_path.parents[2])
         dset_name = full_path.parents[1].name
+        # build an experiment
         experiment = _create_placeholder_experiment(
             dset_root=dset_root,
             dset_name=dset_name,
@@ -282,12 +308,15 @@ class PretrainedModel:
             max_seq_len=self.max_seq_len,
             log=log,
             agent_type=self.agent_type,
-            observation_space=self.OBSERVATION_SPACE,
-            reward_function=self.REWARD_FUNCTION,
-            tokenizer=self.TOKENIZER,
+            tstep_encoder_type=self.tstep_encoder_type,
+            traj_encoder_type=self.traj_encoder_type,
+            observation_space=self.observation_space,
+            reward_function=self.reward_function,
         )
+        # starting the experiment will build the initial model
         experiment.start()
         if checkpoint > 0:
+            # replace the weights with the pretrained checkpoint
             experiment.load_checkpoint(checkpoint, resume_training_state=False)
         return experiment
 
@@ -576,9 +605,8 @@ if __name__ == "__main__":
                             player_split=args.team_split,
                             opponent_split=args.team_split,
                             opponent=o,
-                            observation_space=agent_maker.OBSERVATION_SPACE,
-                            reward_function=agent_maker.REWARD_FUNCTION,
-                            tokenizer=agent_maker.TOKENIZER,
+                            observation_space=agent_maker.observation_space,
+                            reward_function=agent_maker.reward_function,
                         )
                         for o in HEURISTIC_COMPOSITE_BASELINES
                     ]
@@ -593,9 +621,8 @@ if __name__ == "__main__":
                             player_split=args.team_split,
                             opponent_split=args.team_split,
                             opponent=o,
-                            observation_space=agent_maker.OBSERVATION_SPACE,
-                            reward_function=agent_maker.REWARD_FUNCTION,
-                            tokenizer=agent_maker.TOKENIZER,
+                            observation_space=agent_maker.observation_space,
+                            reward_function=agent_maker.reward_function,
                         )
                         for o in IL
                     ]
@@ -611,9 +638,8 @@ if __name__ == "__main__":
                         avatar=args.avatar,
                         n_challenges=args.n_challenges + 1,
                         team_split=args.team_split,
-                        observation_space=agent_maker.OBSERVATION_SPACE,
-                        reward_function=agent_maker.REWARD_FUNCTION,
-                        tokenizer=agent_maker.TOKENIZER,
+                        observation_space=agent_maker.observation_space,
+                        reward_function=agent_maker.reward_function,
                     )
                     agent.env_mode = "sync"
                 else:

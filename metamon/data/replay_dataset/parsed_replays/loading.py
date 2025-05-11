@@ -1,6 +1,6 @@
 import os
 import json
-from typing import Optional, Any, Tuple, List
+from typing import Optional, Dict, Tuple, List
 from datetime import datetime
 from collections import defaultdict
 
@@ -113,10 +113,14 @@ if __name__ == "__main__":
         DefaultShapedReward,
         TokenizedObservationSpace,
     )
+    from metamon.data.tokenizer import get_tokenizer
 
     dset = ParsedReplayDataset(
         dset_root="/mnt/nfs_client/jake/metamon_parsed_hf_replays",
-        observation_space=TokenizedObservationSpace(DefaultObservationSpace),
+        observation_space=TokenizedObservationSpace(
+            DefaultObservationSpace(),
+            tokenizer=get_tokenizer("allreplays-v3"),
+        ),
         reward_function=DefaultShapedReward(),
         formats=["gen1ou"],
         verbose=True,

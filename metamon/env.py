@@ -32,7 +32,7 @@ from metamon.data.tokenizer import get_tokenizer, PokemonTokenizer
 from metamon.data import DATA_PATH
 
 
-class _ShowdownEnv(OpenAIGymEnv):
+class ShowdownEnv(OpenAIGymEnv):
     def __init__(
         self,
         opponent: Player,
@@ -133,7 +133,7 @@ class MetaShowdown(gym.Env):
                 ),
                 ping_timeout=None,
             )
-            self.inner_env = _ShowdownEnv(
+            self.inner_env = ShowdownEnv(
                 battle_format=self.current_task.battle_format,
                 server_configuration=self.task_distribution.opp_server_config,
                 account_configuration=AccountConfiguration(
@@ -165,7 +165,7 @@ class MetaShowdown(gym.Env):
         if self.inner_env is not None:
             self.inner_env.close()
             self.finish_all_battles(self.inner_env)
-        self.inner_env = _ShowdownEnv(
+        self.inner_env = ShowdownEnv(
             battle_format=self.current_task.battle_format,
             server_configuration=self.task_distribution.opp_server_config,
             account_configuration=AccountConfiguration(
@@ -263,7 +263,7 @@ def check_avatar(avatar: str):
         )
 
 
-class LocalLadder(_ShowdownEnv):
+class LocalLadder(ShowdownEnv):
     # increases time to launch opponent envs before ladder loop times out ("Agent is not challenging")
     _INIT_RETRIES = 1000
 
@@ -310,38 +310,6 @@ class LocalLadder(_ShowdownEnv):
         return next_state, reward, terminated, truncated, info
 
 
-class TokenizedEnv(gym.ObservationWrapper):
-    def __init__(
-        self,
-        env: gym.Env,
-        obs_key_to_tokenize: str = "text",
-        tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
-    ):
-        super().__init__(env)
-        self.tokenizer = tokenizer
-        self.obs_key_to_tokenize = obs_key_to_tokenize
-        obs_space = copy.deepcopy(env.observation_space)
-        new_space_dict = {
-            key: space
-            for key, space in obs_space.spaces.items()
-            if key != self.obs_key_to_tokenize
-        }
-        # TODO: auto-set tokenized length based on placeholder obs
-        new_space_dict["tokens"] = gym.spaces.Box(
-            low=-1, high=len(tokenizer), shape=(87,), dtype=np.int32
-        )
-        self.observation_space = gym.spaces.Dict(new_space_dict)
-
-    def observation(self, obs):
-        to_tokenize = obs.pop(self.obs_key_to_tokenize)
-        tokens = self.tokenizer.tokenize(to_tokenize.tolist())
-        obs["tokens"] = tokens
-        return obs
-
-    def close(self, *args, **kwargs):
-        self.env.close(*args, **kwargs)
-
-
 if __name__ == "__main__":
     from argparse import ArgumentParser
     from metamon.task_distributions import FixedGenOpponentDistribution
@@ -361,7 +329,6 @@ if __name__ == "__main__":
             opponent_split="train",
         )
         env = MetaShowdown(task_dist, new_task_every=1)
-        env = TokenizedEnv(env)
         return env
 
     env = make_env()
