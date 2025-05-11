@@ -32,6 +32,17 @@ class ParsedReplayDataset(Dataset):
         ]
         self.observation_space = observation_space
         self.reward_function = reward_function
+        self.dset_root = dset_root
+        self.formats = formats
+        self.min_rating = min_rating
+        self.max_rating = max_rating
+        self.min_date = min_date
+        self.max_date = max_date
+        self.wins_losses_both = wins_losses_both
+        self.verbose = verbose
+        self.refresh_files()
+
+    def refresh_files(self):
         self.filenames = []
 
         def _rating_to_int(rating: str) -> int:
@@ -41,11 +52,11 @@ class ParsedReplayDataset(Dataset):
                 return 1000
 
         bar = lambda it, desc: (
-            it if not verbose else tqdm.tqdm(it, desc=desc, colour="red")
+            it if not self.verbose else tqdm.tqdm(it, desc=desc, colour="red")
         )
 
-        for format in formats:
-            path = os.path.join(dset_root, format)
+        for format in self.formats:
+            path = os.path.join(self.dset_root, format)
             for filename in bar(os.listdir(path), desc=f"Finding {format} battles"):
                 if not filename.endswith(".json"):
                     continue
@@ -59,17 +70,17 @@ class ParsedReplayDataset(Dataset):
                 )
                 if (
                     format not in battle_id
-                    or (min_rating is not None and rating < min_rating)
-                    or (max_rating is not None and rating > max_rating)
-                    or (min_date is not None and date < min_date)
-                    or (max_date is not None and date > max_date)
-                    or (wins_losses_both == "wins" and result != "WIN")
-                    or (wins_losses_both == "losses" and result != "LOSS")
+                    or (self.min_rating is not None and rating < self.min_rating)
+                    or (self.max_rating is not None and rating > self.max_rating)
+                    or (self.min_date is not None and date < self.min_date)
+                    or (self.max_date is not None and date > self.max_date)
+                    or (self.wins_losses_both == "wins" and result != "WIN")
+                    or (self.wins_losses_both == "losses" and result != "LOSS")
                 ):
                     continue
                 self.filenames.append(os.path.join(path, filename))
 
-        if verbose:
+        if self.verbose:
             print(f"Dataset contains {len(self.filenames)} battles")
 
     def __len__(self):
@@ -127,4 +138,7 @@ if __name__ == "__main__":
     )
     print(len(dset))
     obs, actions, rewards, dones, missing_actions = dset[0]
+    dset.refresh_files()
+    obs, actions, rewards, dones, missing_actions = dset[0]
+    print(len(dset))
     breakpoint()
