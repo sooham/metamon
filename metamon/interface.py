@@ -1,7 +1,8 @@
 from functools import lru_cache
+import copy
 import re
 from dataclasses import dataclass, asdict
-from typing import Optional, List
+from typing import Optional, List, Type
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -23,6 +24,7 @@ from poke_env.data import to_id_str
 
 import metamon
 from metamon.data import DATA_PATH
+from metamon.data.tokenizer import get_tokenizer, PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
     Move as ReplayMove,
     Pokemon as ReplayPokemon,
@@ -664,6 +666,11 @@ class ObservationSpace(ABC):
         return self.__class__.__name__
 
     @property
+    def tokenizable(self) -> dict[str, int]:
+        """Return a dictionary of tokenizable keys and their expected (max) length."""
+        return {}
+
+    @property
     @abstractmethod
     def gym_space(self) -> gym.spaces.Space:
         """Return the observation space for this observation type."""
@@ -675,11 +682,6 @@ class ObservationSpace(ABC):
 
     def __call__(self, state: UniversalState) -> dict[str, np.ndarray]:
         obs = self.state_to_obs(state)
-        # Verify observation matches the defined gym space
-        if not self.gym_space.contains(obs):
-            raise ValueError(
-                f"Observation {obs} does not comply with defined gym space {self.gym_space}"
-            )
         return obs
 
 
@@ -703,6 +705,12 @@ class DefaultObservationSpace(ObservationSpace):
                 ),
             }
         )
+
+    @property
+    def tokenizable(self) -> dict[str, int]:
+        return {
+            "text": 87,
+        }
 
     def state_to_obs(self, state: UniversalState):
         player_str = (
@@ -749,3 +757,43 @@ class DefaultObservationSpace(ObservationSpace):
         )
         numbers = np.array(numerical, dtype=np.float32)
         return {"text": text, "numbers": numbers}
+
+
+class TokenizedObservationSpace(ObservationSpace):
+    def __init__(
+        self,
+        base_obs_space: Type[ObservationSpace],
+        tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
+    ):
+        self.base_obs_space = base_obs_space()
+        self.tokenizer = tokenizer
+
+    @property
+    def gym_space(self):
+        tokenizable = self.base_obs_space.tokenizable
+        base_space = copy.deepcopy(self.base_obs_space.gym_space)
+        new_space_dict = {
+            key: space
+            for key, space in base_space.spaces.items()
+            if key not in tokenizable
+        }
+        for tokenizable_key, tokenizable_length in tokenizable.items():
+            low_token = min(UNKNOWN_TOKEN, 0)
+            high_token = max(UNKNOWN_TOKEN, len(self.tokenizer))
+            new_space_dict[f"{tokenizable_key}_tokens"] = gym.spaces.Box(
+                low=low_token,
+                high=high_token,
+                shape=(tokenizable_length,),
+                dtype=np.int32,
+            )
+
+        return gym.spaces.Dict(new_space_dict)
+
+    def state_to_obs(self, state: UniversalState):
+        obs = self.base_obs_space.state_to_obs(state)
+        for tokenizable_key in self.base_obs_space.tokenizable.keys():
+            base_obs_key = obs.pop(tokenizable_key)
+            obs[f"{tokenizable_key}_tokens"] = self.tokenizer.tokenize(
+                base_obs_key.tolist()
+            )
+        return obs

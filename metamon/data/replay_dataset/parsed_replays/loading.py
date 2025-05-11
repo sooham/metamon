@@ -2,7 +2,6 @@ import os
 import json
 from typing import Optional
 from datetime import datetime
-from collections import defaultdict
 
 import torch
 from torch.utils.data import Dataset
@@ -75,7 +74,6 @@ class ParsedReplayDataset(Dataset):
         return len(self.filenames)
 
     def __getitem__(self, i):
-        breakpoint()
         with open(self.filenames[i], "r") as f:
             data = json.load(f)
         states = [UniversalState.from_dict(s) for s in data["states"]]
@@ -93,13 +91,19 @@ class ParsedReplayDataset(Dataset):
 
 
 if __name__ == "__main__":
-    from metamon.interface import DefaultObservationSpace, DefaultShapedReward
+    from metamon.interface import (
+        DefaultObservationSpace,
+        DefaultShapedReward,
+        TokenizedObservationSpace,
+    )
 
     dset = ParsedReplayDataset(
         dset_root="/mnt/nfs_client/jake/metamon_parsed_hf_replays",
-        observation_space=DefaultObservationSpace(),
+        observation_space=TokenizedObservationSpace(DefaultObservationSpace),
         reward_function=DefaultShapedReward(),
+        formats=["gen1ou"],
         verbose=True,
     )
     print(len(dset))
     obs, actions, rewards, dones = dset[0]
+    breakpoint()
