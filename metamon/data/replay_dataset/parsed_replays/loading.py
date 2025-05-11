@@ -1,10 +1,12 @@
 import os
 import json
-from typing import Optional
+from typing import Optional, Any, Tuple, List
 from datetime import datetime
+from collections import defaultdict
 
 import torch
 from torch.utils.data import Dataset
+import numpy as np
 import tqdm
 
 from metamon.interface import ObservationSpace, RewardFunction, UniversalState
@@ -16,7 +18,7 @@ class ParsedReplayDataset(Dataset):
         dset_root: str,
         observation_space: ObservationSpace,
         reward_function: RewardFunction,
-        formats: Optional[list[str]] = None,
+        formats: Optional[List[str]] = None,
         wins_losses_both: str = "both",
         min_rating: Optional[int] = None,
         max_rating: Optional[int] = None,
@@ -73,21 +75,36 @@ class ParsedReplayDataset(Dataset):
     def __len__(self):
         return len(self.filenames)
 
-    def __getitem__(self, i):
-        with open(self.filenames[i], "r") as f:
+    def load_filename(self, filename: str):
+        with open(filename, "r") as f:
             data = json.load(f)
         states = [UniversalState.from_dict(s) for s in data["states"]]
         obs = [self.observation_space.state_to_obs(s) for s in states]
-        actions = torch.LongTensor(data["actions"])
-        rewards = torch.Tensor(
+        nested_obs = defaultdict(list)
+        for o in obs:
+            for k, v in o.items():
+                nested_obs[k].append(v)
+        actions = np.array(data["actions"], dtype=np.int32)
+        missing_actions = actions == -1
+        rewards = np.array(
             [
                 self.reward_function(s_t, s_t1)
                 for s_t, s_t1 in zip(states[:-1], states[1:])
-            ]
+            ],
+            dtype=np.float32,
         )
-        dones = torch.zeros_like(rewards, dtype=bool)
+        dones = np.zeros_like(rewards, dtype=bool)
         dones[-1] = True
-        return obs, actions, rewards, dones
+        return dict(nested_obs), actions, rewards, dones, missing_actions
+
+    def __getitem__(self, i) -> Tuple[
+        Dict[str, np.ndarray] | np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]:
+        return self.load_filename(self.filenames[i])
 
 
 if __name__ == "__main__":
@@ -105,5 +122,5 @@ if __name__ == "__main__":
         verbose=True,
     )
     print(len(dset))
-    obs, actions, rewards, dones = dset[0]
+    obs, actions, rewards, dones, missing_actions = dset[0]
     breakpoint()
