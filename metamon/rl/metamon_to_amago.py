@@ -1,4 +1,5 @@
 import os
+import time
 import random
 import glob
 import warnings
@@ -156,14 +157,8 @@ class MetamonAMAGODataset(TrajDset):
 
     @property
     def disk_usage(self):
-        # TODO
-        return 0
-        """
-        d = self.parsed_replay_dset.disk_usage
-        if self.selfplay_replay_dset is not None:
-            d += self.selfplay_replay_dset.disk_usage
-        return d
-        """
+        # avoid slowdowns for extremely large datasets
+        return -1
 
     def clear(self, delete_protected: bool = False):
         warnings.warn(
@@ -291,7 +286,7 @@ class MetamonAMAGOExperiment(amago.Experiment):
         epochs: int = 100,
         train_batches_per_epoch: int = 25_000,
         val_interval: int = 1,
-        val_timesteps_per_epoch: int = 200,
+        val_timesteps_per_epoch: int = 0,  # FIXME
         ckpt_interval: int = 2,
         # optimization
         learning_rate: float = 1.5e-4,

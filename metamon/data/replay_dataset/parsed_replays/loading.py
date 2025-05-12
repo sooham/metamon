@@ -43,10 +43,6 @@ class ParsedReplayDataset(Dataset):
         self.verbose = verbose
         self.refresh_files()
 
-    @property
-    def disk_usage(self):
-        return sum(os.path.getsize(f) for f in self.filenames)
-
     def refresh_files(self):
         self.filenames = []
 
