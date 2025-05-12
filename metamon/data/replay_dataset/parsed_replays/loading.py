@@ -1,5 +1,6 @@
 import os
 import json
+import random
 from typing import Optional, Dict, Tuple, List
 from datetime import datetime
 from collections import defaultdict
@@ -60,9 +61,12 @@ class ParsedReplayDataset(Dataset):
             for filename in bar(os.listdir(path), desc=f"Finding {format} battles"):
                 if not filename.endswith(".json"):
                     continue
-                battle_id, rating, p1_name, _, p2_name, mm_dd_yyyy, result = filename[
-                    :-5
-                ].split("_")
+                try:
+                    battle_id, rating, p1_name, _, p2_name, mm_dd_yyyy, result = (
+                        filename[:-5].split("_")
+                    )
+                except ValueError:
+                    continue
                 rating = _rating_to_int(rating)
                 date = datetime.strptime(mm_dd_yyyy, "%m-%d-%Y")
                 battle_id = (
@@ -107,6 +111,10 @@ class ParsedReplayDataset(Dataset):
         dones = np.zeros_like(rewards, dtype=bool)
         dones[-1] = True
         return dict(nested_obs), actions, rewards, dones, missing_actions
+
+    def random_sample(self):
+        filename = random.choice(self.filenames)
+        return self.load_filename(filename)
 
     def __getitem__(self, i) -> Tuple[
         Dict[str, np.ndarray] | np.ndarray,
