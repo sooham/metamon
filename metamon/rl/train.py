@@ -132,7 +132,7 @@ if __name__ == "__main__":
             opponent_split="train",
             opponent=opponent,
         )
-        for i in range(4, 5)
+        for i in range(1, 5)
         for opponent in live_opponents
     ]
 

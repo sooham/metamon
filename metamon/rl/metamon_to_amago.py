@@ -11,6 +11,7 @@ import amago
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import repeat
 
 import metamon
 from metamon.il.model import TransformerTurnEmbedding
@@ -19,9 +20,10 @@ from metamon.interface import ObservationSpace, RewardFunction
 from metamon.data.tokenizer.tokenizer import UNKNOWN_TOKEN
 from metamon.data.replay_dataset.parsed_replays.loading import ParsedReplayDataset
 
+import amago
 from amago.envs import AMAGOEnv
 from amago.nets.utils import symlog
-from amago.loading import TrajDset, RLData, Batch
+from amago.loading import TrajDset, RLData, Batch, MAGIC_PAD_VAL
 from amago.agent import Agent
 from amago.nets.traj_encoders import TformerTrajEncoder, TrajEncoder
 from amago.nets.tstep_encoders import TstepEncoder
@@ -284,12 +286,12 @@ class MetamonAMAGOExperiment(amago.Experiment):
         log_interval: int = 250,
         # dataset
         padded_sampling: str = "none",
-        dloader_workers: int = 0,
+        dloader_workers: int = 8,
         # learning schedule (update : data / online vs. offline)
         epochs: int = 100,
         train_batches_per_epoch: int = 25_000,
         val_interval: int = 1,
-        val_timesteps_per_epoch: int = 0,
+        val_timesteps_per_epoch: int = 200,
         ckpt_interval: int = 2,
         # optimization
         learning_rate: float = 1.5e-4,
@@ -356,6 +358,11 @@ class MetamonAMAGOExperiment(amago.Experiment):
         )
 
     def init_dsets(self):
+        """
+        Builds pytorch training dataset
+
+        Modified to point to a custom Metamon dataset instead of AMAGO's on-disk replay buffer
+        """
         self.train_dset = MetamonAMAGODataset(
             items_per_epoch=self.train_batches_per_epoch
             * self.batch_size
@@ -370,6 +377,11 @@ class MetamonAMAGOExperiment(amago.Experiment):
         return self.train_dset
 
     def evaluate_val(self):
+        """
+        Handles evaluation loop
+
+        Modified to get around an issue with resuming interaction of poke-env envs
+        """
         print("Rebuilding Envs...")
         self.init_envs()
         self.train_envs.close()
@@ -378,3 +390,48 @@ class MetamonAMAGOExperiment(amago.Experiment):
         self.val_envs.close()
         del self.val_envs
         return out
+
+    def x_axis_metrics(self):
+        """
+        Modified to remove frame/timestep counting because we are tearing down the train envs
+        """
+        return {
+            "Epoch": self.epoch,
+            "gradient_steps": self.grad_update_counter,
+        }
+
+    def compute_loss(self, batch: Batch, log_step: bool):
+        """
+        Core computation of the actor and critic RL loss terms from a `Batch` of data.
+
+        Modified to also mask metamon's missing actions
+        """
+        critic_loss, actor_loss = self.policy_aclr(batch, log_step=log_step)
+        update_info = self.policy.update_info
+        B, L_1, G, _ = actor_loss.shape
+        C = len(self.policy.critics)
+        amago_pad_mask = (
+            ~((batch.rl2s == MAGIC_PAD_VAL).all(-1, keepdim=True))
+        ).float()[:, 1:, ...]
+        # amago_mask : 1.0 if valid, 0.0 if padded by the dataloader
+        metamon_missing_action_mask = (
+            ~batch.obs["missing_action_mask"][:, :-1, :]
+        ).float()
+        # metamon_missing_actions : 1.0 if action was provided, 0.0 if missing
+        combined_mask = amago_pad_mask * metamon_missing_action_mask
+        critic_state_mask = repeat(combined_mask, f"B L 1 -> B L {C} {G} 1")
+        actor_state_mask = repeat(combined_mask, f"B L 1 -> B L {G} 1")
+
+        masked_actor_loss = amago.utils.masked_avg(actor_loss, actor_state_mask)
+        if isinstance(critic_loss, torch.Tensor):
+            masked_critic_loss = amago.utils.masked_avg(critic_loss, critic_state_mask)
+        else:
+            assert critic_loss is None
+            masked_critic_loss = 0.0
+
+        return {
+            "critic_loss": masked_critic_loss,
+            "actor_loss": masked_actor_loss,
+            "seq_len": L_1 + 1,
+            "mask": combined_mask,
+        } | update_info
