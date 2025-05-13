@@ -20,15 +20,16 @@ import numpy as np
 import amago
 from amago.cli_utils import *
 
-from metamon.env import MetaShowdown, LocalLadder
+from metamon.env import (
+    BattleAgainstBaseline,
+    QueueOnLocalLadder,
+    get_metamon_teams,
+    TeamSet,
+)
 from metamon.rl.metamon_to_amago import (
     PSLadderAMAGOWrapper,
     MetamonAMAGOWrapper,
     MetamonTstepEncoder,
-)
-from metamon.task_distributions import (
-    FixedGenOpponentDistribution,
-    Task,
 )
 from metamon.interface import (
     ObservationSpace,
@@ -40,8 +41,7 @@ from metamon.interface import (
 from metamon.baselines.heuristic.basic import *
 from metamon.baselines.heuristic.kaizo import EmeraldKaizo
 from metamon.baselines.model_based.bcrnn_baselines import BaseRNN, WinsOnlyRNN, MiniRNN
-from metamon.data.tokenizer import PokemonTokenizer, get_tokenizer
-
+from metamon.tokenizer import PokemonTokenizer, get_tokenizer
 
 HEURISTIC_COMPOSITE_BASELINES = [
     RandomBaseline,
@@ -51,7 +51,6 @@ HEURISTIC_COMPOSITE_BASELINES = [
     GymLeader,
     EmeraldKaizo,
 ]
-
 
 IL = [BaseRNN]
 
@@ -75,14 +74,8 @@ def make_placeholder_env(
             super().__init__()
             self.observation_space = observation_space.gym_space
             self.action_space = gym.spaces.Discrete(9)
-            self.current_task = Task(
-                battle_format="gen1ou",
-                opponent_type=RandomBaseline,
-                k_shots=0,
-                player_teambuilder=None,
-                opponent_teambuilder=None,
-                reward_function=reward_function,
-            )
+            self.metamon_battle_format = "PlaceholderShowdown"
+            self.metamon_opponent_name = "PlaceholderOpponent"
 
         def reset(self, *args, **kwargs):
             obs = {
@@ -96,56 +89,46 @@ def make_placeholder_env(
 
 
 def make_ladder_env(
-    gen: int,
-    format: str,
+    battle_format: str,
+    player_team_set: TeamSet,
     observation_space: ObservationSpace,
     reward_function: RewardFunction,
+    n_challenges: int,
     username: str,
     avatar: str,
-    n_challenges: int,
-    team_split: str,
-    wait_for_input: bool = False,
 ):
     """
     Battle on the local Showdown ladder
     """
-    env = LocalLadder(
+    env = QueueOnLocalLadder(
+        battle_format=battle_format,
+        num_battles=n_challenges,
         observation_space=observation_space,
         reward_function=reward_function,
-        gen=gen,
-        format=format,
-        username=username[-18:],
-        avatar=avatar,
-        team_split=team_split,
+        player_team_set=player_team_set,
+        player_username=username,
+        player_avatar=avatar,
     )
-    if wait_for_input:
-        input("Hit any key to start challenging")
-    env.start_laddering(n_challenges=n_challenges)
     return PSLadderAMAGOWrapper(env)
 
 
 def make_baseline_env(
-    gen,
-    format,
+    battle_format: str,
+    player_team_set: TeamSet,
     observation_space: ObservationSpace,
     reward_function: RewardFunction,
-    player_split: str,
-    opponent_split: str,
-    opponent,
+    opponent_type: Type[Player],
 ):
     """
     Battle against a built-in baseline opponent
     """
-    env = MetaShowdown(
-        task_distribution=FixedGenOpponentDistribution(
-            format=f"gen{gen}{format}",
-            opponent=opponent,
-            player_split=player_split,
-            opponent_split=opponent_split,
-            reward_function=reward_function,
-        ),
-        new_task_every=1,
+    env = BattleAgainstBaseline(
+        battle_format=battle_format,
         observation_space=observation_space,
+        reward_function=reward_function,
+        team_set=player_team_set,
+        opponent_type=opponent_type,
+        turn_limit=200,
     )
     return MetamonAMAGOWrapper(env)
 
@@ -592,64 +575,52 @@ if __name__ == "__main__":
 
     for gen in args.gens:
         for format in args.formats:
+            battle_format = f"gen{gen}{format.lower()}"
+            player_team_set = get_metamon_teams(battle_format, args.team_split)
             for checkpoint in args.checkpoints:
                 agent = agent_maker.initialize_agent(
                     checkpoint=checkpoint, log=args.log_to_wandb
                 )
+                # create envs
+                env_kwargs = dict(
+                    battle_format=battle_format,
+                    player_team_set=player_team_set,
+                    observation_space=agent_maker.observation_space,
+                    reward_function=agent_maker.reward_function,
+                )
                 if args.eval_type == "heuristic":
                     make_envs = [
-                        partial(
-                            make_baseline_env,
-                            gen=gen,
-                            format=format,
-                            player_split=args.team_split,
-                            opponent_split=args.team_split,
-                            opponent=o,
-                            observation_space=agent_maker.observation_space,
-                            reward_function=agent_maker.reward_function,
-                        )
+                        partial(make_baseline_env, **env_kwargs, opponent_type=o)
                         for o in HEURISTIC_COMPOSITE_BASELINES
                     ]
                     make_envs *= 5
-                    agent.parallel_actors = len(make_envs)
                 elif args.eval_type == "il":
                     make_envs = [
-                        partial(
-                            make_baseline_env,
-                            gen=gen,
-                            format=format,
-                            player_split=args.team_split,
-                            opponent_split=args.team_split,
-                            opponent=o,
-                            observation_space=agent_maker.observation_space,
-                            reward_function=agent_maker.reward_function,
-                        )
+                        partial(make_baseline_env, **env_kwargs, opponent_type=o)
                         for o in IL
                     ]
                     make_envs *= 1
-                    agent.parallel_actors = len(make_envs)
                 elif "ladder" in args.eval_type:
-                    make_envs = partial(
-                        make_ladder_env,
-                        gen=gen,
-                        format=format,
-                        username=args.username,
-                        wait_for_input=args.wait_for_input,
-                        avatar=args.avatar,
-                        n_challenges=args.n_challenges + 1,
-                        team_split=args.team_split,
-                        observation_space=agent_maker.observation_space,
-                        reward_function=agent_maker.reward_function,
-                    )
-                    agent.env_mode = "sync"
+                    make_envs = [
+                        partial(
+                            make_ladder_env,
+                            **env_kwargs,
+                            num_battles=args.n_challenges,
+                            username=args.username,
+                            avatar=args.avatar,
+                        )
+                    ]
                 else:
                     raise ValueError(f"Invalid eval_type: {args.eval_type}")
 
+                agent.parallel_actors = len(make_envs)
                 agent.verbose = False
+
+                # evaluate
                 results = agent.evaluate_test(
                     make_envs,
                     # sets upper bound on total timesteps
-                    timesteps=args.n_challenges * 200,
+                    timesteps=args.n_challenges * 250,
                     save_trajs_to=args.save_trajs_to,
                     # terminates after n_challenges
                     episodes=args.n_challenges,

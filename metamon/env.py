@@ -76,7 +76,7 @@ def _check_avatar(avatar: str):
         return avatar
 
 
-class _PokeEnvWrapper(OpenAIGymEnv):
+class PokeEnvWrapper(OpenAIGymEnv):
     """
     A thin wrapper around poke-env's OpenAIGymEnv that handles the observation space, action
     space, and reward function while adding some basic conveniences.
@@ -110,6 +110,7 @@ class _PokeEnvWrapper(OpenAIGymEnv):
         opponent_account_configuration = AccountConfiguration(opponent_username, None)
 
         if opponent_type is not None:
+            self.metamon_opponent_name = opponent_type.__name__
             self._current_opponent = opponent_type(
                 battle_format=battle_format,
                 team=opponent_team_set,
@@ -120,10 +121,12 @@ class _PokeEnvWrapper(OpenAIGymEnv):
             )
         else:
             self._current_opponent = None
+            self.metamon_opponent_name = "Ladder"
 
         self.reward_function = reward_function
         self.metamon_obs_space = observation_space
         self.turn_limit = turn_limit
+        self.metamon_battle_format = battle_format
         super().__init__(
             battle_format=battle_format,
             server_configuration=self.server_configuration,
@@ -192,7 +195,7 @@ class _PokeEnvWrapper(OpenAIGymEnv):
         return next_state, reward, terminated, truncated, info
 
 
-class BattleAgainstBaseline(_PokeEnvWrapper):
+class BattleAgainstBaseline(PokeEnvWrapper):
     """
     Battle against a specified opponent.
 
@@ -220,7 +223,7 @@ class BattleAgainstBaseline(_PokeEnvWrapper):
         )
 
 
-class QueueOnLocalLadder(_PokeEnvWrapper):
+class QueueOnLocalLadder(PokeEnvWrapper):
     """
     Battle against an opponent by queueing for ladder matches on the local server.
 
@@ -243,7 +246,7 @@ class QueueOnLocalLadder(_PokeEnvWrapper):
         player_team_set: TeamSet,
         player_username: str,
         player_avatar: Optional[str] = None,
-        start_timer_on_battle_start: bool = False,
+        start_timer_on_battle_start: bool = True,
     ):
 
         super().__init__(

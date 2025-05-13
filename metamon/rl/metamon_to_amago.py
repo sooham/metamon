@@ -1,9 +1,6 @@
 import os
-import time
 import random
-import glob
 import warnings
-import gymnasium as gym
 from typing import Optional, Dict, List, Type, Callable, Iterable
 
 import gin
@@ -16,10 +13,9 @@ from einops import repeat
 
 import metamon
 from metamon.il.model import TransformerTurnEmbedding
-from metamon.data.tokenizer import PokemonTokenizer
-from metamon.interface import ObservationSpace, RewardFunction
-from metamon.data.tokenizer.tokenizer import UNKNOWN_TOKEN
-from metamon.data.replay_dataset.parsed_replays.loading import ParsedReplayDataset
+from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
+from metamon.datasets import ParsedReplayDataset
+from metamon.env import PokeEnvWrapper
 
 import amago
 from amago.envs import AMAGOEnv
@@ -32,7 +28,7 @@ from amago.envs.amago_env import AMAGO_ENV_LOG_PREFIX
 
 
 class MetamonAMAGOWrapper(AMAGOEnv):
-    def __init__(self, metamon_env):
+    def __init__(self, metamon_env: PokeEnvWrapper):
         self.reset_counter = 0
         super().__init__(
             env=metamon_env,
@@ -61,7 +57,7 @@ class MetamonAMAGOWrapper(AMAGOEnv):
 
     @property
     def env_name(self):
-        return f"{self.current_task.battle_format}_vs_{self.current_task.opponent_type.__name__}"
+        return f"{self.env.metamon_battle_format}_vs_{self.env.metamon_opponent_name}"
 
 
 class PSLadderAMAGOWrapper(MetamonAMAGOWrapper):
@@ -70,7 +66,7 @@ class PSLadderAMAGOWrapper(MetamonAMAGOWrapper):
 
     @property
     def env_name(self):
-        return f"psladder_{self.env.env.env.username}"
+        return f"psladder_{self.env.env.username}"
 
 
 def unknown_token_mask(tokens, skip_prob: float = 0.2, batch_max_prob: float = 0.33):
