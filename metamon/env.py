@@ -1,9 +1,9 @@
 import time
-import copy
+import random
 import os
-import gc
 import uuid
-from typing import Optional
+import copy
+from typing import Optional, Type
 
 import numpy as np
 import gymnasium as gym
@@ -13,7 +13,7 @@ from poke_env import (
 )
 from poke_env.environment import Battle
 from poke_env.player import OpenAIGymEnv, Player
-
+from poke_env.teambuilder import Teambuilder
 
 from metamon.interface import (
     UniversalState,
@@ -23,28 +23,124 @@ from metamon.interface import (
     ObservationSpace,
     DefaultObservationSpace,
 )
-from metamon.task_distributions import (
-    TaskDistribution,
-    UniformRandomTeambuilder,
-    FixedGenOpponentDistribution,
-)
-from metamon.data.tokenizer import get_tokenizer, PokemonTokenizer
 from metamon.data import DATA_PATH
 
 
-class ShowdownEnv(OpenAIGymEnv):
+TEAM_PATH = os.path.join(os.path.dirname(__file__), "teams")
+
+
+class TeamSet(Teambuilder):
+
+    def __init__(self, team_file_dir: str, battle_format: str):
+        super().__init__()
+        self.team_file_dir = team_file_dir
+        self.battle_format = battle_format
+        self.team_files = self._find_team_files()
+
+    def _find_team_files(self):
+        team_files = []
+        for root, _, files in os.walk(self.team_file_dir):
+            for file in files:
+                if file.endswith(f".{self.battle_format}_team"):
+                    team_files.append(os.path.join(root, file))
+        return team_files
+
+    def yield_team(self):
+        file = random.choice(self.team_files)
+        with open(file, "r") as f:
+            team_data = f.read()
+        return self.join_team(self.parse_showdown_team(team_data))
+
+
+def get_metamon_teams(battle_format: str, split: str) -> TeamSet:
+    gen = int(battle_format[3])
+    tier = battle_format[4:]
+    path = os.path.join(TEAM_PATH, f"gen{gen}", tier, split)
+    if not os.path.exists(path):
+        raise ValueError(
+            f"Cannot locate valid team directory for format [gen{gen}{tier} at path {path}]"
+        )
+    return TeamSet(path, battle_format)
+
+
+def _check_avatar(avatar: str):
+    if avatar is None:
+        return
+    with open(os.path.join(DATA_PATH, "avatar_names.txt"), "r") as f:
+        options = [l.strip() for l in f.readlines()]
+    if avatar not in options:
+        raise ValueError(
+            f"Avatar {avatar} is not valid. See https://play.pokemonshowdown.com/sprites/trainers/ for a list of options."
+        )
+    else:
+        return avatar
+
+
+class _PokeEnvWrapper(OpenAIGymEnv):
+    """
+    A thin wrapper around poke-env's OpenAIGymEnv that handles the observation space, action
+    space, and reward function while adding some basic conveniences.
+    """
+
     def __init__(
         self,
-        opponent: Player,
-        reward_function: Optional[RewardFunction] = None,
-        observation_space: Optional[ObservationSpace] = None,
-        *args,
-        **kwargs,
+        battle_format: str,
+        observation_space: ObservationSpace,
+        reward_function: RewardFunction,
+        player_team_set: TeamSet,
+        opponent_type: Optional[Type[Player]] = None,
+        opponent_team_set: Optional[TeamSet] = None,
+        player_username: Optional[str] = None,
+        player_password: Optional[str] = None,
+        opponent_username: Optional[str] = None,
+        player_avatar: Optional[str] = None,
+        opponent_avatar: Optional[str] = None,
+        start_challenging: bool = True,
+        start_timer_on_battle_start: bool = False,
+        turn_limit: int = 1000,
     ):
-        self._current_baseline_opponent = opponent
-        self.reward_function = reward_function or DefaultShapedReward()
-        self.metamon_obs_space = observation_space or DefaultObservationSpace()
-        super().__init__(*args, **kwargs)
+        opponent_team_set = opponent_team_set or copy.deepcopy(player_team_set)
+        random_username = lambda: f"MM-{str(uuid.uuid4())[:14]}"
+        player_username = player_username or random_username()
+        opponent_username = opponent_username or random_username()
+
+        player_account_configuration = AccountConfiguration(
+            player_username, player_password
+        )
+        opponent_account_configuration = AccountConfiguration(opponent_username, None)
+
+        if opponent_type is not None:
+            self._current_opponent = opponent_type(
+                battle_format=battle_format,
+                team=opponent_team_set,
+                account_configuration=opponent_account_configuration,
+                server_configuration=self.server_configuration,
+                avatar=_check_avatar(opponent_avatar),
+                ping_timeout=None,
+            )
+        else:
+            self._current_opponent = None
+
+        self.reward_function = reward_function
+        self.metamon_obs_space = observation_space
+        self.turn_limit = turn_limit
+        super().__init__(
+            battle_format=battle_format,
+            server_configuration=self.server_configuration,
+            account_configuration=player_account_configuration,
+            team=player_team_set,
+            avatar=_check_avatar(player_avatar),
+            start_timer_on_battle_start=start_timer_on_battle_start,
+            start_challenging=start_challenging,
+            ping_timeout=None,
+        )
+
+    @property
+    def server_configuration(self):
+        return LocalhostServerConfiguration
+
+    def get_opponent(self):
+        return self._current_opponent
 
     def action_space_size(self):
         return 9
@@ -55,6 +151,8 @@ class ShowdownEnv(OpenAIGymEnv):
     def reset(self, *args, **kwargs):
         self.invalid_action_counter = 0
         self.valid_action_counter = 0
+        self.turn_counter = 0
+        self.battle_reference = self.agent.n_won_battles
         return super().reset(*args, **kwargs)
 
     def action_to_move(self, action: int, battle: Battle):
@@ -65,12 +163,6 @@ class ShowdownEnv(OpenAIGymEnv):
         else:
             self.valid_action_counter += 1
             return order
-
-    def set_opponent(self, opponent: Player):
-        self._current_baseline_opponent = opponent
-
-    def get_opponent(self) -> Player:
-        return self._current_baseline_opponent
 
     def describe_embedding(self) -> gym.spaces.Space:
         return self.metamon_obs_space.gym_space
@@ -85,257 +177,117 @@ class ShowdownEnv(OpenAIGymEnv):
         universal_state = UniversalState.from_Battle(battle)
         return self.metamon_obs_space.state_to_obs(universal_state)
 
-
-class MetaShowdown(gym.Env):
-    def __init__(
-        self,
-        task_distribution: TaskDistribution,
-        observation_space: Optional[ObservationSpace] = None,
-        test_set: bool = False,
-        new_task_every: int = 50,
-        turn_limit: int = 200,
-    ):
-        self.task_distribution = task_distribution
-        self.current_task = self.task_distribution.generate_task(test_set=test_set)
-        self.metamon_obs_space = observation_space or DefaultObservationSpace()
-        self.inner_env = None
-        self.battle_format = None
-        self.test_set = test_set
-        self.opponent = None
-        self.reset_counter = 0
-        self.num_won_battles = 0
-        self.new_task_every = new_task_every
-        self.action_space = gym.spaces.Discrete(9)
-        self.turn_limit = turn_limit
-        self.observation_space = self.metamon_obs_space.gym_space
-
-    def new_task(self):
-        if isinstance(self.task_distribution, FixedGenOpponentDistribution):
-            return self.new_task_quick_reset()
-        else:
-            return self.new_task_full_reset()
-
-    def new_task_quick_reset(self):
-        assert (
-            self.new_task_every == 1
-        ), "The fast reset distributions will switch tasks every reset whether this is intended or not..."
-        if self.inner_env is None:
-            self.current_task = self.task_distribution.generate_task(
-                test_set=self.test_set
-            )
-            self.battle_format = self.current_task.battle_format
-            self.opponent = self.current_task.opponent_type(
-                battle_format=self.current_task.battle_format,
-                server_configuration=self.task_distribution.opp_server_config,
-                team=self.current_task.opponent_teambuilder,
-                account_configuration=AccountConfiguration(
-                    username=f"o{str(uuid.uuid4())[:15]}", password=None
-                ),
-                ping_timeout=None,
-            )
-            self.inner_env = ShowdownEnv(
-                battle_format=self.current_task.battle_format,
-                server_configuration=self.task_distribution.opp_server_config,
-                account_configuration=AccountConfiguration(
-                    username=f"p{str(uuid.uuid4())[:15]}", password=None
-                ),
-                opponent=self.opponent,
-                reward_function=self.current_task.reward_function,
-                observation_space=self.metamon_obs_space,
-                start_challenging=True,
-                team=self.current_task.player_teambuilder,
-                ping_timeout=None,
-            )
-            self._baseline_win_count = self.inner_env.agent.n_won_battles
-
-    def new_task_full_reset(self):
-        self.current_task = self.task_distribution.generate_task(test_set=self.test_set)
-        if self.opponent is not None:
-            self.finish_all_battles(self.opponent)
-        self.opponent = self.current_task.opponent_type(
-            battle_format=self.current_task.battle_format,
-            server_configuration=self.task_distribution.opp_server_config,
-            team=self.current_task.opponent_teambuilder,
-            account_configuration=AccountConfiguration(
-                username=f"o{str(uuid.uuid4())[:15]}", password=None
-            ),
-            ping_timeout=None,
-        )
-
-        if self.inner_env is not None:
-            self.inner_env.close()
-            self.finish_all_battles(self.inner_env)
-        self.inner_env = ShowdownEnv(
-            battle_format=self.current_task.battle_format,
-            server_configuration=self.task_distribution.opp_server_config,
-            account_configuration=AccountConfiguration(
-                username=f"p{str(uuid.uuid4())[:15]}", password=None
-            ),
-            opponent=self.opponent,
-            reward_function=self.current_task.reward_function,
-            observation_space=self.metamon_obs_space,
-            start_challenging=True,
-            team=self.current_task.player_teambuilder,
-            ping_timeout=None,
-        )
-        self.battle_format = self.current_task.battle_format
-        # trying hard to keep track of wins in case of crashes or some other
-        # swap of the inner PS/poke-env env.
-        self._baseline_win_count = self.inner_env.agent.n_won_battles
-
-    def close(self, *args, **kwargs):
-        if self.inner_env is not None:
-            self.inner_env.close(*args, **kwargs)
-
-    def render(self, *args, **kwargs):
-        return self.inner_env.render(*args, **kwargs)
-
-    def finish_all_battles(self, player: Player):
-        del player
-        gc.collect()
-
-    def reset(self, *args, **kwargs):
-        if self.reset_counter % self.new_task_every == 0:
-            self.new_task()
-        self.reset_counter += 1
-        self.current_ep = 0
-        self._reset_last = False
-        self.win_loss_history = []
-        obs, info = self.inner_env.reset()
-        self.turn_counter = 0
-        return self.add_meta_info(obs), info
-
-    def add_meta_info(self, obs):
-        obs["meta"] = np.array(
-            [self.current_task.k_shots, self.current_ep], dtype=np.float32
-        )
-        return obs
-
     def step(self, action):
-        if self._reset_last:
-            next_state, info = self.inner_env.reset()
-            self.turn_counter = 0
-            reward = 0.0
-            self._reset_last = False
-        else:
-            (
-                next_state,
-                reward,
-                inner_terminated,
-                inner_truncated,
-                info,
-            ) = self.inner_env.step(action)
-            self.turn_counter += 1
-            inner_truncated = inner_truncated or self.turn_counter > self.turn_limit
-            # we will reset the env on the next `step`
-            self._reset_last = inner_terminated or inner_truncated
-            if self._reset_last:
-                # advance episode here instead of during soft reset to avoid creating a new
-                # game at the end of real server matchups
-                self.current_ep += 1
-                # win tracking system is overly conservative because we're worried about poke-env crashes/errors.
-                battles_won = (
-                    self.inner_env.agent.n_won_battles - self._baseline_win_count
-                )
-                assert battles_won in [1, 0]
-                self.num_won_battles += battles_won
-                self._baseline_win_count = self.inner_env.agent.n_won_battles
-                self.win_loss_history.append(battles_won)
-
-        terminated = self.current_ep > self.current_task.k_shots
-        if terminated:
-            info["win_loss_history"] = self.win_loss_history
-            info["win_rate"] = sum(self.win_loss_history) / len(self.win_loss_history)
-            info["metamon_task_name"] = (
-                f"{self.current_task.battle_format}_vs_{self.current_task.opponent_type.__name__}"
-            )
-            info["valid_action_count"] = self.inner_env.valid_action_counter
-            info["invalid_action_count"] = self.inner_env.invalid_action_counter
-        return self.add_meta_info(next_state), reward, terminated, False, info
-
-
-def check_avatar(avatar: str):
-    with open(os.path.join(DATA_PATH, "avatar_names.txt"), "r") as f:
-        options = [l.strip() for l in f.readlines()]
-    if avatar not in options:
-        raise ValueError(
-            f"Avatar {avatar} is not valid. See https://play.pokemonshowdown.com/sprites/trainers/ for a list of options."
-        )
-
-
-class LocalLadder(ShowdownEnv):
-    # increases time to launch opponent envs before ladder loop times out ("Agent is not challenging")
-    _INIT_RETRIES = 1000
-
-    def __init__(
-        self,
-        username: str,
-        gen: int,
-        format: str,
-        team_split: str,
-        avatar: Optional[str] = None,
-        reward_function: Optional[RewardFunction] = None,
-        observation_space: Optional[ObservationSpace] = None,
-    ):
-        if avatar is not None:
-            check_avatar(avatar)
-        super().__init__(
-            reward_function=reward_function or DefaultShapedReward(),
-            observation_space=observation_space or DefaultObservationSpace(),
-            opponent=None,
-            battle_format=f"gen{gen}{format.lower()}",
-            server_configuration=LocalhostServerConfiguration,
-            account_configuration=AccountConfiguration(username, None),
-            team=UniformRandomTeambuilder(gen=gen, format=format, split=team_split),
-            start_challenging=False,
-            start_timer_on_battle_start=True,
-            avatar=avatar,
-        )
-
-    def reset(self, *args, **kwargs):
-        self.invalid_action_counter = 0
-        self.valid_action_counter = 0
-        self.battle_reference = self.agent.n_won_battles
-        return super().reset(*args, **kwargs)
-
-    def step(self, action):
+        self.turn_counter += 1
         next_state, reward, terminated, truncated, info = super().step(action)
+        hit_time_limit = self.turn_counter > self.turn_limit
+        terminated |= hit_time_limit
+        truncated |= hit_time_limit
         if terminated or truncated:
             info["valid_action_count"] = self.valid_action_counter
             info["invalid_action_count"] = self.invalid_action_counter
             info["win_rate"] = self.agent.n_won_battles - self.battle_reference
             self.battle_reference = self.agent.n_won_battles
             assert info["win_rate"] in [0, 1]
+        return next_state, reward, terminated, truncated, info
+
+
+class BattleAgainstBaseline(_PokeEnvWrapper):
+    """
+    Battle against a specified opponent.
+
+    Can be used to battle any opponent that connects via the poke-env interface
+    (e.g., any baseline in the `baselines` module, or any other custom `Player`)
+    """
+
+    def __init__(
+        self,
+        battle_format: str,
+        observation_space: ObservationSpace,
+        reward_function: RewardFunction,
+        team_set: TeamSet,
+        opponent_type: Type[Player],
+        turn_limit: int = 200,
+    ):
+        super().__init__(
+            battle_format=battle_format,
+            observation_space=observation_space,
+            reward_function=reward_function,
+            player_team_set=team_set,
+            opponent_team_set=team_set,
+            opponent_type=opponent_type,
+            turn_limit=turn_limit,
+        )
+
+
+class QueueOnLocalLadder(_PokeEnvWrapper):
+    """
+    Battle against an opponent by queueing for ladder matches on the local server.
+
+    Can be used to battle any opponent that plays with the Showdown API
+    (e.g. humans, your own ML baselines, third-party heuristic bots, etc.).
+
+    Create the environment, start laddering with the opponent, and the battle(s) will begin
+    when both players are connected.
+    """
+
+    # increases time to launch opponent envs before ladder loop times out ("Agent is not challenging")
+    _INIT_RETRIES = 1000
+
+    def __init__(
+        self,
+        battle_format: str,
+        num_battles: int,
+        observation_space: ObservationSpace,
+        reward_function: RewardFunction,
+        player_team_set: TeamSet,
+        player_username: str,
+        player_avatar: Optional[str] = None,
+        start_timer_on_battle_start: bool = False,
+    ):
+
+        super().__init__(
+            battle_format=battle_format,
+            observation_space=observation_space,
+            reward_function=reward_function,
+            player_team_set=player_team_set,
+            player_username=player_username,
+            player_avatar=player_avatar,
+            start_timer_on_battle_start=start_timer_on_battle_start,
+            opponent_type=None,
+            start_challenging=False,
+            turn_limit=float("inf"),
+        )
+        self.start_laddering(n_challenges=num_battles)
+
+    def step(self, action):
+        next_state, reward, terminated, truncated, info = super().step(action)
         self.render()
         return next_state, reward, terminated, truncated, info
 
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
-    from metamon.task_distributions import FixedGenOpponentDistribution
-    import metamon
+    from metamon.baselines.heuristic.basic import GymLeader
 
     parser = ArgumentParser()
-    parser.add_argument("--task_dist", default="Gen1OU")
+    parser.add_argument("--battle_format", type=str, default="gen1ou")
     parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--team_split", type=str, default="train")
+    parser.add_argument("--team_split", type=str, default="replays")
     args = parser.parse_args()
 
-    def make_env():
-        task_dist = FixedGenOpponentDistribution(
-            "gen1ou",
-            opponent=metamon.baselines.heuristic.basic.GymLeader,
-            player_split="train",
-            opponent_split="train",
-        )
-        env = MetaShowdown(task_dist, new_task_every=1)
-        return env
+    env = BattleAgainstBaseline(
+        battle_format=args.battle_format,
+        team_set=get_metamon_teams(args.battle_format, args.team_split),
+        opponent_type=GymLeader,
+        observation_space=DefaultObservationSpace(),
+        reward_function=DefaultShapedReward(),
+    )
 
-    env = make_env()
     start = time.time()
     counter = 0
     for ep in range(args.episodes):
-        state, info = env.reset()
+        print(f"Episode {ep}")
         inner_start = time.time()
         state, info = env.reset()
         done = False
