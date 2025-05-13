@@ -1,4 +1,4 @@
-from metamon.data.tokenizer.tokenizer import (
+from metamon.tokenizer.tokenizer import (
     PokemonTokenizer,
     get_tokenizer,
     UNKNOWN_TOKEN,

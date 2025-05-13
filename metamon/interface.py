@@ -24,7 +24,7 @@ from poke_env.data import to_id_str
 
 import metamon
 from metamon.data import DATA_PATH
-from metamon.data.tokenizer import get_tokenizer, PokemonTokenizer, UNKNOWN_TOKEN
+from metamon.tokenizer import get_tokenizer, PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
     Move as ReplayMove,
     Pokemon as ReplayPokemon,
