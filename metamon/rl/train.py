@@ -8,9 +8,7 @@ import amago
 from amago.cli_utils import *
 from amago.agent import binary_filter, exp_filter
 
-import metamon
-from metamon.env import MetaShowdown
-from metamon.task_distributions import FixedGenOpponentDistribution
+from metamon.env import BattleAgainstBaseline, TeamSet, get_metamon_teams
 from metamon.interface import (
     ObservationSpace,
     RewardFunction,
@@ -18,9 +16,8 @@ from metamon.interface import (
     DefaultObservationSpace,
     DefaultShapedReward,
 )
-from metamon.task_distributions import get_task_distribution
-from metamon.data.tokenizer import get_tokenizer
-from metamon.data.replay_dataset.parsed_replays.loading import ParsedReplayDataset
+from metamon.tokenizer import get_tokenizer
+from metamon.datasets import ParsedReplayDataset
 from metamon.rl.metamon_to_amago import (
     MetamonAMAGOExperiment,
     MetamonAMAGOWrapper,
@@ -58,27 +55,21 @@ live_opponents = [
 
 
 def make_baseline_env(
-    gen,
-    format,
+    battle_format: str,
     observation_space: ObservationSpace,
     reward_function: RewardFunction,
-    player_split: str,
-    opponent_split: str,
+    team_set: TeamSet,
     opponent,
 ):
     """
     Battle against a built-in baseline opponent
     """
-    env = MetaShowdown(
-        task_distribution=FixedGenOpponentDistribution(
-            format=f"gen{gen}{format}",
-            opponent=opponent,
-            player_split=player_split,
-            opponent_split=opponent_split,
-            reward_function=reward_function,
-        ),
-        new_task_every=1,
+    env = BattleAgainstBaseline(
+        battle_format=battle_format,
         observation_space=observation_space,
+        reward_function=reward_function,
+        team_set=team_set,
+        opponent_type=opponent,
     )
     return MetamonAMAGOWrapper(env)
 
@@ -124,18 +115,15 @@ if __name__ == "__main__":
     make_envs = [
         partial(
             make_baseline_env,
-            gen=i,
-            format="ou",
+            battle_format=f"gen{i}ou",
             observation_space=obs_space,
             reward_function=reward_function,
-            player_split="train",
-            opponent_split="train",
+            team_set=get_metamon_teams(f"gen{i}ou", "train"),
             opponent=opponent,
         )
         for i in range(1, 5)
         for opponent in live_opponents
     ]
-
     experiment = MetamonAMAGOExperiment(
         run_name=args.run_name,
         ckpt_dir=args.ckpt_dir,
