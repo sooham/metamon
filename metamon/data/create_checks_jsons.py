@@ -3,7 +3,7 @@ import os
 import argparse
 
 from metamon.data import DATA_PATH
-from metamon.data.team_builder.stat_reader import SmogonStat
+from metamon.data.legacy_team_builder.stat_reader import SmogonStat
 
 
 if __name__ == "__main__":
@@ -21,9 +21,7 @@ if __name__ == "__main__":
             for mon in stats.movesets.keys():
                 checks = stats.movesets[mon]["checks"]
                 check_cheatsheet[mon] = checks
-            save_dir = os.path.join(
-                DATA_PATH, "checks_data"
-            )
+            save_dir = os.path.join(DATA_PATH, "checks_data")
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
             with open(os.path.join(save_dir, f"gen{gen}{format}.json"), "w") as f:

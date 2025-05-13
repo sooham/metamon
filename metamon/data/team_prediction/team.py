@@ -11,8 +11,7 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state impor
     Pokemon,
     Nothing,
 )
-
-from metamon.data.team_builder.stat_reader import PreloadedSmogonStat
+from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
 
 
 @lru_cache

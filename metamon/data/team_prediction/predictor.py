@@ -8,8 +8,11 @@ from collections import deque
 from typing import Set, List, Tuple
 import numpy as np
 
-from metamon.data.team_builder.team_builder import TeamBuilder, PokemonStatsLookupError
-from metamon.data.team_builder.stat_reader import PreloadedSmogonStat
+from metamon.data.legacy_team_builder.team_builder import (
+    TeamBuilder,
+    PokemonStatsLookupError,
+)
+from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
 from metamon.data.team_prediction.team import TeamSet, PokemonSet, Roster
 
 
@@ -432,6 +435,7 @@ class ReplayPredictor(NaiveUsagePredictor):
 
 if __name__ == "__main__":
     import argparse
+    from metamon.data.team_prediction.dataset import TeamDataset
 
     parser = argparse.ArgumentParser(
         description="Predict team from partial information"
@@ -439,42 +443,34 @@ if __name__ == "__main__":
     parser.add_argument(
         "format", type=str, help="Showdown battle format (e.g., gen1ou)"
     )
+    parser.add_argument(
+        "--metamon_teamfile_path",
+        type=str,
+        help="Path to the metamon teamfile directory",
+    )
     args = parser.parse_args()
 
-    team_files = os.listdir(
-        os.path.join(os.environ["METAMON_TEAMFILE_PATH"], f"{args.format}_teams")
-    )
-    team_file = os.path.join(
-        os.environ["METAMON_TEAMFILE_PATH"],
-        f"{args.format}_teams",
-        random.choice(team_files),
-    )
-    print(f"Using team file: {team_file}")
-
+    dataset = TeamDataset(args.metamon_teamfile_path, format=args.format)
     naive_predictor = NaiveUsagePredictor()
-    og_team = copy.deepcopy(TeamSet.from_showdown_file(team_file, args.format))
-    naive_team = naive_predictor.predict(og_team)
-    consistent = og_team.is_consistent_with(naive_team)
-    print(f"Consistent: {consistent}")
     improved_predictor = ReplayPredictor()
-    improved_team = improved_predictor.predict(og_team)
-    consistent = og_team.is_consistent_with(improved_team)
-    print(f"Consistent: {consistent}")
-    # Print teams side by side
-    og_lines = og_team.to_str().split("\n")
-    naive_lines = naive_team.to_str().split("\n")
-    improved_lines = improved_team.to_str().split("\n")
 
-    # Pad lines to equal length
-    max_len = max(len(og_lines), len(naive_lines), len(improved_lines))
-    og_lines += [""] * (max_len - len(og_lines))
-    naive_lines += [""] * (max_len - len(naive_lines))
-    improved_lines += [""] * (max_len - len(improved_lines))
-
-    # Print header
-    print(f"{'Original Team':<40}{'Naive Prediction':<40}{'Improved Prediction':<40}")
-    print("-" * 120)
-
-    # Print lines side by side
-    for og, naive, improved in zip(og_lines, naive_lines, improved_lines):
-        print(f"{og:<40}{naive:<40}{improved:<40}")
+    for team, _, _ in dataset:
+        naive_team = naive_predictor.predict(team)
+        improved_team = improved_predictor.predict(team)
+        assert team.is_consistent_with(naive_team)
+        assert team.is_consistent_with(improved_team)
+        # Print teams side by side
+        og_lines = team.to_str().split("\n")
+        naive_lines = naive_team.to_str().split("\n")
+        improved_lines = improved_team.to_str().split("\n")
+        max_len = max(len(og_lines), len(naive_lines), len(improved_lines))
+        og_lines += [""] * (max_len - len(og_lines))
+        naive_lines += [""] * (max_len - len(naive_lines))
+        improved_lines += [""] * (max_len - len(improved_lines))
+        print(
+            f"{'Original Team':<40}{'Naive Prediction':<40}{'Improved Prediction':<40}"
+        )
+        print("-" * 120)
+        for og, naive, improved in zip(og_lines, naive_lines, improved_lines):
+            print(f"{og:<40}{naive:<40}{improved:<40}")
+        input()

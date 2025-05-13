@@ -2,10 +2,11 @@ import os
 import json
 import argparse
 from metamon.data import DATA_PATH
-from metamon.data.team_builder.format_rules import Tier, get_valid_pokemon
-from metamon.data.team_builder.stat_reader import SmogonStat, merge_movesets
+from metamon.data.legacy_team_builder.format_rules import Tier, get_valid_pokemon
+from metamon.data.legacy_team_builder.stat_reader import SmogonStat, merge_movesets
 
 VALID_TIERS = [Tier.UBERS, Tier.OU, Tier.UU, Tier.RU, Tier.NU, Tier.PU]
+
 
 def create_for_all_dates(args):
     for i in range(1, 10):
@@ -21,7 +22,9 @@ def create_for_all_dates(args):
             stat = SmogonStat(format_name, args.smogon_stat_dir)
             if stat.movesets:
                 # recursively create the path
-                path = os.path.join(DATA_PATH, f"movesets_data/gen{i}/{format.name.lower()}")
+                path = os.path.join(
+                    DATA_PATH, f"movesets_data/gen{i}/{format.name.lower()}"
+                )
                 os.makedirs(path, exist_ok=True)
                 # dump to json
                 with open(f"{path}/alltime_allrank.json", "w") as f:
