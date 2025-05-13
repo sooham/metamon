@@ -300,7 +300,7 @@ class GRUModel(MetamonILModel):
         self,
         tokenizer: PokemonTokenizer,
         numerical_features: int,
-        token_embedding_dim: int = 100,
+        token_embedding_dim: int = 32,
         num_actions: int = 9,
         turn_embedding_Cls: Type[TurnEmbedding] = TransformerTurnEmbedding,
         rnn_d_hidden: int = 512,

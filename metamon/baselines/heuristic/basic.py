@@ -637,11 +637,6 @@ class EasyPokeEnvHeuristic(_ParameterizedPokeEnvHeuristic):
 
 
 class GruntRandomSwitching(Baseline):
-    """
-    Simple but decent baseline that knows the damage equation
-    and type chart. Picks the highest damage move and the best
-    type matchup when forced to switch.
-    """
 
     def randomize(self):
         pass
