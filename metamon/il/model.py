@@ -1,6 +1,6 @@
 import math
 from abc import ABC, abstractmethod
-from typing import Callable, Type
+from typing import Type
 
 import torch
 from torch import nn
@@ -8,7 +8,7 @@ from torch.nn import functional as F
 from einops import rearrange, repeat
 import gin
 
-from metamon.data.tokenizer import PokemonTokenizer
+from metamon.tokenizer import PokemonTokenizer
 
 
 class MetamonILModel(nn.Module, ABC):

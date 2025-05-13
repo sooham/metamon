@@ -5,9 +5,8 @@ from abc import ABC, abstractmethod
 import torch
 from torch.distributions import Categorical
 
-from metamon.baselines import Baseline, register_baseline, heuristic
+from metamon.baselines import Baseline, register_baseline
 from metamon.interface import action_idx_to_battle_order, UniversalState
-from metamon.data.tokenizer import get_tokenizer
 from metamon.il.model import MetamonILModel
 
 

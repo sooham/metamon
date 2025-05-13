@@ -5,14 +5,15 @@ from poke_env import AccountConfiguration
 import asyncio
 
 from metamon.baselines import ALL_BASELINES
-from metamon.task_distributions import get_task_distribution
+from metamon.env import get_metamon_teams
 
 
 @dataclass
 class MatchupResult:
     player_name: str
     opponent_name: str
-    task_dist_name: str
+    battle_format: str
+    team_split: str
     win_pct: float
     lose_pct: float
     tie_pct: float
@@ -28,29 +29,28 @@ async def _run_battles(player, opponent, n_battles=5):
 def head2head(
     player_name: str,
     opponent_name: str,
-    task_dist_name: str,
-    n_tasks: int,
+    battle_format: str,
+    team_split: str,
+    n_battles: int,
     max_concurrent: int = 5,
     verbose: bool = False,
 ) -> MatchupResult:
-    task_dist = get_task_distribution(task_dist_name)(k_shot_range=[0, 0])
-    iter_ = range(n_tasks)
+    iter_ = range(n_battles)
     if verbose:
         iter_ = tqdm.tqdm(iter_)
     all_win_rates, all_lose_rates, all_tie_rates = [], [], []
     for _ in iter_:
-        task = task_dist.generate_task()
         player = ALL_BASELINES[player_name](
-            battle_format=task.battle_format,
-            team=task.player_teambuilder,
+            battle_format=battle_format,
+            team=get_metamon_teams(battle_format, team_split),
             max_concurrent_battles=max_concurrent,
             account_configuration=AccountConfiguration(
                 username=f"p{str(uuid.uuid4())[:15]}", password=None
             ),
         )
         opponent = ALL_BASELINES[opponent_name](
-            battle_format=task.battle_format,
-            team=task.opponent_teambuilder,
+            battle_format=battle_format,
+            team=get_metamon_teams(battle_format, team_split),
             max_concurrent_battles=max_concurrent,
             account_configuration=AccountConfiguration(
                 username=f"p{str(uuid.uuid4())[:15]}", password=None
@@ -69,7 +69,8 @@ def head2head(
     return MatchupResult(
         player_name=player_name,
         opponent_name=opponent_name,
-        task_dist_name=task_dist_name,
+        battle_format=battle_format,
+        team_split=team_split,
         win_pct=avg(all_win_rates),
         lose_pct=avg(all_lose_rates),
         tie_pct=avg(all_tie_rates),
@@ -83,22 +84,23 @@ if __name__ == "__main__":
     warnings.filterwarnings("ignore", category=DeprecationWarning)
 
     parser = ArgumentParser()
-    parser.add_argument("--task_dist")
-    parser.add_argument("--player")
-    parser.add_argument("--opponent")
-    parser.add_argument("--tasks", type=int, default=10)
+    parser.add_argument("--battle_format", required=True)
+    parser.add_argument("--team_split", type=str, default="train")
+    parser.add_argument("--player", required=True)
+    parser.add_argument("--opponent", required=True)
+    parser.add_argument("--battles", type=int, default=10)
     parser.add_argument("--concurrent", type=int, default=10)
     args = parser.parse_args()
-
     result = head2head(
-        args.player,
-        args.opponent,
-        args.task_dist,
-        n_tasks=args.tasks,
+        player_name=args.player,
+        opponent_name=args.opponent,
+        battle_format=args.battle_format,
+        team_split=args.team_split,
+        n_battles=args.battles,
         max_concurrent=args.concurrent,
         verbose=True,
     )
 
     print(
-        f"{result.player_name} vs {result.opponent_name} on {result.task_dist_name}: Wins {result.win_pct: .2f}% / Loses {result.lose_pct : .2f}% / Ties {result.tie_pct : .2f}%"
+        f"{result.player_name} vs {result.opponent_name} on {result.battle_format} with {result.team_split} teams: Wins {result.win_pct: .2f}% / Loses {result.lose_pct : .2f}% / Ties {result.tie_pct : .2f}%"
     )
