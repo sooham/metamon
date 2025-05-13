@@ -61,10 +61,7 @@ METAMON_CACHE_DIR = os.environ.get(
 )
 
 
-def make_placeholder_env(
-    observation_space: ObservationSpace,
-    reward_function: RewardFunction,
-):
+def make_placeholder_env(observation_space: ObservationSpace):
     """
     Create an environment that does nothing, but will be used to initialize the network
     """
@@ -143,7 +140,6 @@ def _create_placeholder_experiment(
     tstep_encoder_type: Type[amago.nets.tstep_encoders.TstepEncoder],
     traj_encoder_type: Type[amago.nets.traj_encoders.TrajEncoder],
     observation_space: ObservationSpace,
-    reward_function: RewardFunction,
 ):
     """
     Initialize an AMAGO experiment that will be used to load a pretrained checkpoint
@@ -153,7 +149,6 @@ def _create_placeholder_experiment(
     # before loading the correct checkpoint
     env = make_placeholder_env(
         observation_space=observation_space,
-        reward_function=reward_function,
     )
     dummy_env = lambda: env
     experiment = amago.Experiment(
@@ -294,7 +289,6 @@ class PretrainedModel:
             tstep_encoder_type=self.tstep_encoder_type,
             traj_encoder_type=self.traj_encoder_type,
             observation_space=self.observation_space,
-            reward_function=self.reward_function,
         )
         # starting the experiment will build the initial model
         experiment.start()

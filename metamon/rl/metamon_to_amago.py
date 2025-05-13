@@ -391,6 +391,11 @@ class MetamonAMAGOExperiment(amago.Experiment):
             "gradient_steps": self.grad_update_counter,
         }
 
+    def init_envs(self):
+        # with warnings.catch_warnings():
+        #    warnings.filterwarnings("ignore", category=UserWarning)
+        super().init_envs()
+
     def compute_loss(self, batch: Batch, log_step: bool):
         """
         Core computation of the actor and critic RL loss terms from a `Batch` of data.
