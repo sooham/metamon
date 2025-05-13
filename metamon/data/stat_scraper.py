@@ -29,6 +29,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
+
 def ensure_dir(file_path):
     if not os.path.exists(file_path):
         os.makedirs(file_path)
@@ -112,7 +113,11 @@ ensure_dir(args.save_dir)
 async def main():
     async with aiohttp.ClientSession() as session:
         await scrape_base(
-            session, base_url, args.save_dir, start_date=args.start_date, end_date=args.end_date
+            session,
+            base_url,
+            args.save_dir,
+            start_date=args.start_date,
+            end_date=args.end_date,
         )
 
 

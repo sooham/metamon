@@ -2,7 +2,7 @@ from functools import lru_cache
 import copy
 import re
 from dataclasses import dataclass, asdict
-from typing import Optional, List, Type
+from typing import Optional, List
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -23,8 +23,7 @@ from poke_env.player import BattleOrder, Player
 from poke_env.data import to_id_str
 
 import metamon
-from metamon.data import DATA_PATH
-from metamon.tokenizer import get_tokenizer, PokemonTokenizer, UNKNOWN_TOKEN
+from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
     Move as ReplayMove,
     Pokemon as ReplayPokemon,

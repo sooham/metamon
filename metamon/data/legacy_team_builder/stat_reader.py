@@ -3,7 +3,7 @@ import re
 import json
 from metamon.data import DATA_PATH
 from metamon.data.download_stats import download_data
-from metamon.data.team_builder.format_rules import get_valid_pokemon, Tier
+from metamon.data.legacy_team_builder.format_rules import get_valid_pokemon, Tier
 
 from poke_env.data import to_id_str
 

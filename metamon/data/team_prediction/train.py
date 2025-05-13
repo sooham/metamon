@@ -1,3 +1,12 @@
+"""
+Model-based team prediction began as part of the changes that became version 1.0.
+However, we already added an improved ReplayPredictor, and the need for the further
+(learned) improvements is unclear at this time. Therefore work on team prediction
+training is on hold and this script is mostly untested/TODO.
+
+05/13/2025
+"""
+
 import os
 import argparse
 import random

@@ -17,7 +17,7 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state impor
 )
 from metamon.data.team_prediction.predictor import TeamPredictor
 from metamon.data.team_prediction.team import TeamSet, PokemonSet
-from metamon.data.team_builder.team_builder import PokemonStatsLookupError
+from metamon.data.legacy_team_builder.team_builder import PokemonStatsLookupError
 
 
 def fill_missing_team_info(

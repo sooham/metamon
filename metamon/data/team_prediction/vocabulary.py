@@ -5,9 +5,9 @@ from collections import defaultdict
 import numpy as np
 import torch
 
-from metamon.data.tokenizer.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
+from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.data.team_prediction.team import PokemonSet
-from metamon.data.team_builder.stat_reader import PreloadedSmogonStat
+from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
 
 
 def create_vocabularies():
