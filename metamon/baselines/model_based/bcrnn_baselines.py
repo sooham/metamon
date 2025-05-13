@@ -1,12 +1,19 @@
 import os
+import sys
+import pickle
 from functools import lru_cache
 from abc import ABC, abstractmethod
 
 import torch
 from torch.distributions import Categorical
 
+import metamon
 from metamon.baselines import Baseline, register_baseline
-from metamon.interface import action_idx_to_battle_order, UniversalState
+from metamon.interface import (
+    action_idx_to_battle_order,
+    UniversalState,
+    DefaultObservationSpace,
+)
 from metamon.il.model import MetamonILModel
 
 
@@ -32,7 +39,9 @@ class BCRNNBaseline(Baseline, ABC):
         Returns None if the model selects an invalid action.
         """
         # convert Battle to the replay parser format via UniversalState
-        obs = UniversalState.from_Battle(battle).to_numpy()
+        state = UniversalState.from_Battle(battle)
+        # currently hardcoded to the default observation space used to train all existing models
+        obs = DefaultObservationSpace().state_to_obs(state)
         # tokenize, prepare for torch inference
         numerical = torch.from_numpy(obs["numbers"]).view(1, 1, -1)
         # the tokenizer used to train the model was also saved, protecting
@@ -81,8 +90,10 @@ class BCRNNBaseline(Baseline, ABC):
 
 @lru_cache(maxsize=32)
 def load_pretrained_model_to_cpu(model_filename):
+    # hack to handle models trained when tokenizers were buried in metamon/data/
+    sys.modules["metamon.data.tokenizer"] = metamon.tokenizer
     path = os.path.join(os.path.dirname(__file__), "pretrained_models", model_filename)
-    model = torch.load(path, map_location="cpu")
+    model = torch.load(path, map_location="cpu", weights_only=False)
     model.to("cpu")
     return model
 
