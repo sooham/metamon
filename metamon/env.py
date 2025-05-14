@@ -316,6 +316,8 @@ class QueueOnLocalLadder(PokeEnvWrapper):
 if __name__ == "__main__":
     from argparse import ArgumentParser
     from metamon.baselines.heuristic.basic import GymLeader
+    from metamon.interface import TokenizedObservationSpace
+    from metamon.tokenizer import get_tokenizer
 
     parser = ArgumentParser()
     parser.add_argument("--battle_format", type=str, default="gen1ou")
@@ -327,7 +329,10 @@ if __name__ == "__main__":
         battle_format=args.battle_format,
         team_set=get_metamon_teams(args.battle_format, args.team_split),
         opponent_type=GymLeader,
-        observation_space=DefaultObservationSpace(),
+        observation_space=TokenizedObservationSpace(
+            base_obs_space=DefaultObservationSpace(),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v0"),
+        ),
         reward_function=DefaultShapedReward(),
     )
 

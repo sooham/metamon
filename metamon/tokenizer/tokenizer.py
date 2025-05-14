@@ -61,16 +61,18 @@ class PokemonTokenizer:
 
 
 PREMADE_TOKEN_LISTS = {
-    "gen1fromreplays": "gen1fromreplays.json",
+    # pre-history token lists for backwards compatibility
+    # with old models before release
     "allreplays-v1": "allreplaysv1.json",
     "allreplays-v2": "allreplaysv2.json",
     "allreplays-v3": "allreplaysv3.json",
+    # post v1.0 official token lists -- now named by the observation space
+    # they are confirmed to be compatible with
+    "DefaultObservationSpace-v0": "DefaultObservationSpace-v0.json",
 }
 
 
 def get_tokenizer(choice: str) -> PokemonTokenizer:
-    # temporary version control sanity check
-    assert choice == "allreplays-v3"
     tokenizer = PokemonTokenizer()
     if choice not in PREMADE_TOKEN_LISTS:
         raise KeyError(
@@ -84,15 +86,17 @@ def get_tokenizer(choice: str) -> PokemonTokenizer:
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
-    import glob
     import tqdm
+
+    from metamon.interface import *
+    from metamon.datasets import ParsedReplayDataset
+    from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
 
     parser = ArgumentParser()
     parser.add_argument("--parsed_replay_root", required=True)
-    parser.add_argument("--online_formats", required=False, nargs="*", default=[])
-    parser.add_argument("--online_episodes", type=int, default=20)
     parser.add_argument("--start_tokens", type=str, default=None)
     parser.add_argument("--save_tokens", type=str, default=None)
+    parser.add_argument("--obs_space", type=str, default="DefaultObservationSpace")
     args = parser.parse_args()
 
     tokenizer = PokemonTokenizer()
@@ -100,38 +104,44 @@ if __name__ == "__main__":
     if args.start_tokens:
         tokenizer.load_tokens_from_disk(args.start_tokens)
 
-    filenames = glob.glob(
-        os.path.join(args.parsed_replay_root, "**/*.npz"), recursive=True
+    dset = ParsedReplayDataset(
+        dset_root=args.parsed_replay_root,
+        observation_space=eval(args.obs_space)(),
+        reward_function=DefaultShapedReward(),
+        verbose=True,
     )
 
-    print(len(tokenizer))
-    for filename in tqdm.tqdm(filenames):
-        try:
-            with np.load(filename) as replay:
-                text = replay["obs_text"]
-                lengths.append(len(text))
-                for string in text:
-                    tokenizer.tokenize(string)
-        except:
-            # os.remove(filename)
-            print(f"Failed to load: {filename}")
+    for (obs_seq, *_) in tqdm.tqdm(dset):
+        for text_obs in obs_seq["text"]:
+            tokenizer.tokenize(text_obs.tolist())
 
-    from metamon.task_distributions import TASK_DISTRIBUTIONS
-    from metamon.env import MetaShowdown
+    # catch stray names from Smogon stats
+    for gen in range(1, 5):
+        for tier in ["ou", "uu", "ubers", "nu"]:
+            format = f"gen{gen}{tier}"
+            stat = PreloadedSmogonStat(format, inclusive=True)
+            for pokemon_name_str, data in tqdm.tqdm(stat._inclusive.items()):
+                tokenizer.add_token_for(pokemon_name(pokemon_name_str))
 
-    for online_format in args.online_formats:
-        env = MetaShowdown(TASK_DISTRIBUTIONS[online_format]())
-        for ep in tqdm.tqdm(range(args.online_episodes)):
-            obs, info = env.reset()
-            done = False
-            steps = 0
-            while not done:
-                tokenizer.tokenize(obs["text"].tolist())
-                obs, reward, terminated, truncated, info = env.step(
-                    env.action_space.sample()
-                )
-                steps += 1
-                done = terminated or truncated or steps > 10
+                for ability in data["abilities"]:
+                    ability = ability.strip()
+                    if ability != "No Ability":
+                        tokenizer.add_token_for(clean_no_numbers(ability))
+
+                for move in data["moves"]:
+                    move = move.strip()
+                    if move.startswith("Hidden Power"):
+                        move = "Hidden Power"
+                    tokenizer.tokenize(clean_no_numbers(move))
+
+                for item in data["items"]:
+                    item = item.strip()
+                    if item != "Nothing":
+                        tokenizer.tokenize(clean_no_numbers(item))
+
+                for spread in data["spreads"]:
+                    nature = spread.split(":")[0].strip()
+                    tokenizer.tokenize(clean_no_numbers(nature))
 
     tokenizer.sort_tokens()
 
