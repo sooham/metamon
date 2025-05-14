@@ -1,80 +1,33 @@
-# Smogon Data
+# Metamon Data
 
-This module allows you to download or scrape pre-calculated competitive Pokémon moveset statistics from [Smogon](https://www.smogon.com/) for use in your own projects.
+This module contains the behind-the-scenes work that makes the `ParsedReplayDataset` possible. Very little of this is intended to be used externally; code is poorly documented and changes frequently. Please consider yourself warned :)
 
-## Option 1: Download Pre-Processed Movesets
 
-To quickly get started with pre-calculated movesets, simply run:
+<p align="center">
+  <img src="../../media/replay_parser_warning.png">
+</p>
 
-```bash
-python metamon/data/download_stats.py
-```
 
-This will download the latest processed moveset data directly.
+`replay_dataset/raw_replays/` contains code for importing, anonymizing, uploading/downloading Pokemon Showdown replay `json` files.
 
----
+`replay_dataset/parsed_replays/` contains the replay parser that converts Showdown replays to agent data. The replay parser has [its own README](parsed_replays/README.md).
 
-## Option 2: Scrape and Parse Smogon Data Yourself
 
-If you prefer to scrape the data manually and have more control over the dataset, follow the steps below.
+`legacy_team_builder/` is the original (paper) logic for procedurally generating (or filling in missing details of) Pokémon teams. It is still used to access Smogon usage statistics.
 
-### Prerequisites
+`team_prediction/` is the new system for predicting full teams from partially revealed teams in replays. It contains a lot of dead-end code for model-based team prediction --- which was almost completely set up before I decided we have too many replays to justify the complexity in Gen 1-4 Singles (for now). Instead, we are now defaulting to an improved prediction strategy based on the revealed teams of all historical replays.
 
-- Clone and install the [Pokémon Showdown](https://github.com/smogon/pokemon-showdown) server locally.
 
----
+The full replay process uses the scripts in an order like this:
 
-### Step 1: Scrape Data from Smogon's Stats Page
+1. `raw_replays.find_replay_links` uses the PS API to find battle ids played in a given date range.
+2. `raw_replays.replay_intake` merges/deduplicates directories of downloaded PS replays into an existing set.
+3. `raw_replays.usernames` maintains a consistent mapping from real PS usernames to "anonymous" usernames. We are trying to be polite to the players and remove NSFW usernames from the public huggingface dataset, but real usernames are easy to recover. This isn't a serious privacy issue --- we are working with screen names from public battles.
+4. `raw_replays.anonymize` uses a username mapping to "anonymize" replays and removes player chat logs from replay files.
+5. `raw_replays.upload_to_hf` pushes the anonymized replay directory to hugginface as a structured dataset.
+6. `raw_replays.download_from_hf` skips prevoius steps. It downloads the current version of the raw replay dataset and puts it back in the dir structure expected by the rest of the code.
+7. `raw_replays.download_from_hf` skips all previous steps and downloads our latest version of the parsed replay set from hugginface.
+8. `parsed_replays.replay_parser` converts PS replays to training data using `team_prediction` as a key step.
 
-Run the following command to scrape Smogon's usage stats:
 
-```bash
-python stat_scraper.py
-```
 
-By default, data is saved to the `./stats` directory.
-
-#### Optional: Specify a Date Range
-
-You can set a custom date range using the `--start_date` and `--end_date` flags:
-
-```bash
-python stat_scraper.py --start_date 2021 --end_date 2022
-```
-
-Default range: **2015 to 2024**
-
----
-
-### Step 2: Parse the Raw Data
-
-After scraping, you need to parse two components: **movesets** and **checks**.
-
-#### 1. Parse Movesets
-
-```bash
-cd metamon/data
-python create_movesets_jsons.py --smogon_stat_dir ./stats --ps_path LOCAL_POKEMONSHOWDOWN_SERVER_PATH
-```
-
-#### 2. Parse Checks
-
-```bash
-python create_checks_jsons.py --smogon_stat_dir ./stats
-```
-
-By default, the parsed JSON files will be saved in the `metamon/data` directory.  
-To customize the output path, modify the `DATA_PATH` variable in `metamon/data/__init__.py`.
-
----
-
-### Step 3: Load the Data
-
-Use the `PreloadedSmogonStat` class to load the processed data:
-
-```python
-from metamon.data.team_builder.stat_reader import PreloadedSmogonStat
-
-stats = PreloadedSmogonStat("gen8ou", inclusive=False)
-print(stats.movesets['Mimikyu'])
-```
