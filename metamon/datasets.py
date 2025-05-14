@@ -44,10 +44,23 @@ class ParsedReplayDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.refresh_files()
 
+    def parse_battle_date(self, filename: str) -> datetime:
+        # parsed replays saved by our own gym env will have hour/minute/sec
+        # while Showdown replays will not.
+        date_str = filename.split("_")[-2]
+        formats = ["%m-%d-%Y-%H:%M:%S", "%m-%d-%Y"]
+        for fmt in formats:
+            try:
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+        raise ValueError(f"Could not parse date string: {date_str}")
+
     def refresh_files(self):
         self.filenames = []
 
         def _rating_to_int(rating: str) -> int:
+            # mainly used to cast "Unrated" to 1000 (the minimum rating)
             try:
                 return int(rating)
             except ValueError:
@@ -69,7 +82,8 @@ class ParsedReplayDataset(Dataset):
                 except ValueError:
                     continue
                 rating = _rating_to_int(rating)
-                date = datetime.strptime(mm_dd_yyyy, "%m-%d-%Y")
+                # abstracted to let RL replay buffers delete the oldest battles
+                date = self.parse_battle_date(filename)
                 battle_id = (
                     battle_id.replace("[", "").replace("]", "").replace(" ", "").lower()
                 )
@@ -154,7 +168,7 @@ if __name__ == "__main__":
     from metamon.tokenizer import get_tokenizer
 
     dset = ParsedReplayDataset(
-        dset_root="/mnt/nfs_client/jake/metamon_parsed_hf_replays",
+        dset_root="/mnt/nfs_client/jake/metamon_hf_datasets/parsed-replays/",
         observation_space=TokenizedObservationSpace(
             DefaultObservationSpace(),
             tokenizer=get_tokenizer("allreplays-v3"),
