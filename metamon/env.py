@@ -114,9 +114,13 @@ class PokeEnvWrapper(OpenAIGymEnv):
         opponent_account_configuration = AccountConfiguration(
             self.opponent_username, None
         )
-        self.save_trajectories_to = save_trajectories_to
-        if self.save_trajectories_to is not None:
+        if save_trajectories_to is not None:
+            self.save_trajectories_to = os.path.join(
+                save_trajectories_to, battle_format
+            )
             os.makedirs(self.save_trajectories_to, exist_ok=True)
+        else:
+            self.save_trajectories_to = None
 
         if opponent_type is not None:
             self.metamon_opponent_name = opponent_type.__name__
@@ -211,7 +215,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
 
             if self.save_trajectories_to is not None:
                 # build a long filename that matches the format of the parsed replay dataset
-                result = "WIN" if info["win"] == 1 else "LOSS"
+                result = "WIN" if info["won"] == 1 else "LOSS"
                 battle_id = "".join(str(random.randint(0, 9)) for _ in range(10))
                 timestamp = datetime.now().strftime("%m-%d-%Y-%H:%M:%S")
                 filename = f"metamon-{self.metamon_battle_format}-{battle_id}_Unrated_{self.player_username}_vs_{self.metamon_opponent_name}_{timestamp}_{result}.json"
