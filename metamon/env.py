@@ -1,8 +1,9 @@
 import time
 import random
 import os
-import uuid
 import copy
+import json
+from datetime import datetime
 from typing import Optional, Type
 
 import numpy as np
@@ -98,16 +99,24 @@ class PokeEnvWrapper(OpenAIGymEnv):
         start_challenging: bool = True,
         start_timer_on_battle_start: bool = False,
         turn_limit: int = 1000,
+        save_trajectories_to: Optional[str] = None,
     ):
         opponent_team_set = opponent_team_set or copy.deepcopy(player_team_set)
-        random_username = lambda: f"MM-{str(uuid.uuid4())[:14]}"
-        player_username = player_username or random_username()
-        opponent_username = opponent_username or random_username()
+        random_username = (
+            lambda: f"MM-{''.join(str(random.randint(0, 9)) for _ in range(10))}"
+        )
+        self.player_username = player_username or random_username()
+        self.opponent_username = opponent_username or random_username()
 
         player_account_configuration = AccountConfiguration(
-            player_username, player_password
+            self.player_username, player_password
         )
-        opponent_account_configuration = AccountConfiguration(opponent_username, None)
+        opponent_account_configuration = AccountConfiguration(
+            self.opponent_username, None
+        )
+        self.save_trajectories_to = save_trajectories_to
+        if self.save_trajectories_to is not None:
+            os.makedirs(self.save_trajectories_to, exist_ok=True)
 
         if opponent_type is not None:
             self.metamon_opponent_name = opponent_type.__name__
@@ -156,6 +165,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
         self.valid_action_counter = 0
         self.turn_counter = 0
         self.battle_reference = self.agent.n_won_battles
+        self.trajectory = {"states": [], "actions": []}
         return super().reset(*args, **kwargs)
 
     def action_to_move(self, action: int, battle: Battle):
@@ -178,20 +188,46 @@ class PokeEnvWrapper(OpenAIGymEnv):
 
     def embed_battle(self, battle: Battle):
         universal_state = UniversalState.from_Battle(battle)
+        if self.save_trajectories_to is not None:
+            self.trajectory["states"].append(universal_state)
         return self.metamon_obs_space.state_to_obs(universal_state)
 
     def step(self, action):
         self.turn_counter += 1
         next_state, reward, terminated, truncated, info = super().step(action)
+        if self.save_trajectories_to is not None:
+            self.trajectory["actions"].append(int(action))
+
+        # enforce simple turn limit
         hit_time_limit = self.turn_counter > self.turn_limit
         terminated |= hit_time_limit
         truncated |= hit_time_limit
         if terminated or truncated:
+            # logging info
             info["valid_action_count"] = self.valid_action_counter
             info["invalid_action_count"] = self.invalid_action_counter
-            info["win_rate"] = self.agent.n_won_battles - self.battle_reference
+            info["won"] = self.agent.n_won_battles > self.battle_reference
             self.battle_reference = self.agent.n_won_battles
-            assert info["win_rate"] in [0, 1]
+
+            if self.save_trajectories_to is not None:
+                # build a long filename that matches the format of the parsed replay dataset
+                result = "WIN" if info["win"] == 1 else "LOSS"
+                battle_id = "".join(str(random.randint(0, 9)) for _ in range(10))
+                timestamp = datetime.now().strftime("%m-%d-%Y-%H:%M:%S")
+                filename = f"metamon-{self.metamon_battle_format}-{battle_id}_Unrated_{self.player_username}_vs_{self.metamon_opponent_name}_{timestamp}_{result}.json"
+                # matches the format of the parsed replay dataset
+                output_json = {
+                    "states": [s.to_dict() for s in self.trajectory["states"]],
+                    "actions": self.trajectory["actions"],
+                }
+                # conservative file writing to avoid partial writes on shutdown or interruption
+                # when launching multiple environments in parallel
+                path = os.path.join(self.save_trajectories_to, filename)
+                temp_path = path + ".tmp"
+                with open(temp_path, "w") as f:
+                    json.dump(output_json, f)
+                os.rename(temp_path, path)
+
         return next_state, reward, terminated, truncated, info
 
 
@@ -211,6 +247,7 @@ class BattleAgainstBaseline(PokeEnvWrapper):
         team_set: TeamSet,
         opponent_type: Type[Player],
         turn_limit: int = 200,
+        save_trajectories_to: Optional[str] = None,
     ):
         super().__init__(
             battle_format=battle_format,
@@ -220,6 +257,7 @@ class BattleAgainstBaseline(PokeEnvWrapper):
             opponent_team_set=team_set,
             opponent_type=opponent_type,
             turn_limit=turn_limit,
+            save_trajectories_to=save_trajectories_to,
         )
 
 
@@ -247,6 +285,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         player_username: str,
         player_avatar: Optional[str] = None,
         start_timer_on_battle_start: bool = True,
+        save_trajectories_to: Optional[str] = None,
     ):
 
         super().__init__(
@@ -260,6 +299,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
             opponent_type=None,
             start_challenging=False,
             turn_limit=float("inf"),
+            save_trajectories_to=save_trajectories_to,
         )
         self.start_laddering(n_challenges=num_battles)
 
