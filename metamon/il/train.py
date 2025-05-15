@@ -357,8 +357,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--parsed_replay_dir",
         type=str,
-        required=True,
-        help="Path to the directory of parsed replays.",
+        default=None,
+        help="Path to the directory of parsed replays. Defaults to the official huggingface version.",
     )
     parser.add_argument(
         "--wandb_username",
