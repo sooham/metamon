@@ -1,14 +1,36 @@
 import os
+import json
+import datetime
 import tarfile
+from collections import defaultdict
 
 from huggingface_hub import hf_hub_download
 
 METAMON_CACHE_DIR = os.environ.get("METAMON_CACHE_DIR", None)
+VERSION_REFERENCE_PATH = os.path.join(METAMON_CACHE_DIR, "version_reference.json")
 
 
 LATEST_RAW_REPLAY_REVISION = "v1"
 LATEST_PARSED_REPLAY_REVISION = "v1"
 LATEST_TEAMS_REVISION = "v0"
+
+
+def _update_version_reference(key: str, name: str, version: str):
+    """
+    Maintains a version_reference.json file in the METAMON_CACHE_DIR
+    that records the version of each dataset that is currently active.
+    """
+    version_reference = defaultdict(dict)
+    if os.path.exists(VERSION_REFERENCE_PATH):
+        with open(VERSION_REFERENCE_PATH, "r") as f:
+            existing_version_reference = json.load(f)
+        version_reference.update(existing_version_reference)
+
+    version_reference[key][
+        name
+    ] = f"version {version}, downloaded {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    with open(VERSION_REFERENCE_PATH, "w") as f:
+        json.dump(dict(version_reference), f)
 
 
 def download_parsed_replays(
@@ -37,7 +59,7 @@ def download_parsed_replays(
         print(f"Extracting {tar_path}...")
         tar.extractall(path=extract_path)
     os.remove(tar_path)
-
+    _update_version_reference("parsed-replays", battle_format, version)
     return extract_path
 
 
@@ -68,6 +90,7 @@ def download_teams(
         print(f"Extracting {tar_path}...")
         tar.extractall(path=extract_path)
     os.remove(tar_path)
+    _update_version_reference("teams", f"{set_name}/{battle_format}", version)
     return os.path.join(teams_dir, battle_format)
 
 
@@ -91,6 +114,7 @@ def download_raw_replays(version: str = LATEST_RAW_REPLAY_REVISION) -> str:
         output_dir=os.path.join(METAMON_CACHE_DIR, "raw-replays"),
         revision=version,
     )
+    _update_version_reference("raw-replays", "raw-replays", version)
     return os.path.join(METAMON_CACHE_DIR, "raw-replays")
 
 

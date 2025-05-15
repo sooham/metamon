@@ -318,6 +318,8 @@ def train(config, use_wandb: bool = True):
 
 
 if __name__ == "__main__":
+    from metamon.download import download_revealed_teams
+
     parser = argparse.ArgumentParser(
         description="Train TeamTransformer with optional W&B"
     )
@@ -344,7 +346,7 @@ if __name__ == "__main__":
 
     # Default hyperparameters
     sweep_defaults = {
-        "train_data_dir": "/mnt/data1/shared_pokemon_project/metamon_team_files",
+        "train_data_dir": download_revealed_teams(),
         "val_ratio": 0.1,
         "batch_size": 8,
         "num_workers": 0,
