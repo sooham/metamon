@@ -95,7 +95,7 @@ Which will run a few test battles on your local server and print a progress bar 
 Metamon provides large datasets of Pokémon team files, human battles, and other statistics that will automatically download when requested. You will need to specify a path:
 ```bash
 # add to ~/.bashrc
-export METAMON_CACHE=/path/to/plenty/of/disk/space
+export METAMON_CACHE_DIR=/path/to/plenty/of/disk/space
 ```
 
 
@@ -276,7 +276,7 @@ Datasets are stored on huggingface in three formats:
 | Name |  Battles | Description |
 |------|------|-------------|
 |**[`metamon-raw-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-raw-replays)** | 535k | Our curated set of Pokémon Showdown replay `.json` files... to save the Showdown API some download requests and to maintain an official reference of our training data. Will be regularly updated as new battles are played and collected. |
-|**[`metamon-parsed-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-replays)** | 1.05M | The RL-compatible version of the dataset as reconstructed by the [replay parser](metamon/data/replay_dataset/parsed_replays/replay_parser/). These datasets have **missing actions** (`action = -1`) where the player's choice is not revelead to spectators. Includes ~100k more trajectories than were used by the paper (because more human battles have been played). The method for predicting partially revealed teams has also been significantly improved.|
+|**[`metamon-parsed-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-replays)** | 1.05M | The RL-compatible version of the dataset as reconstructed by the [replay parser](metamon/data/replay_dataset/parsed_replays/replay_parser/README.md). These datasets have **missing actions** (`action = -1`) where the player's choice is not revelead to spectators. Includes ~100k more trajectories than were used by the paper (because more human battles have been played). The method for predicting partially revealed teams has also been significantly improved.|
 |**[`metamon-synthetic`](https://huggingface.co/datasets/jakegrigsby/metamon-synthetic)** | 5M | A set of real + self-play battles that were used to train the best models in the paper. Unfortunately, this dataset has been deprecated as part of changes that make the parsed replay dataset more future-proof. It provides `amago` trajectory files with a fixed observation space + reward function and missing actions filled by an IL model. We are working to create a new starter dataset of self-play battles.|
 
 
@@ -356,7 +356,7 @@ ___
 
 ## Data
 
-`metamon/data` contains utilities for handling Showdown replays (`data.replay_dataset.raw_replays`), converting replays into training data (`data.replay_dataset.parsed_replays`), predicting teams from partial information (`data.team_prediction`), and accessing Showdown usage statistics (`data.team_prediction.legacy_team_builder`). These modules generate our huggingface datasets, but may be useful for other things. More info in the [`data` README](data/README/.md).
+`metamon/data` contains utilities for handling Showdown replays (`data.replay_dataset.raw_replays`), converting replays into training data (`data.replay_dataset.parsed_replays`), predicting teams from partial information (`data.team_prediction`), and accessing Showdown usage statistics (`data.legacy_team_builder`). These modules generate our huggingface datasets, but may be useful for other things. More info in the [`data` README](data/README.md).
 
 
 <br>
