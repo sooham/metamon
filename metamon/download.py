@@ -78,7 +78,7 @@ def download_replay_stats(
 
 
 def download_revealed_teams(
-    version: str = LATEST_TEAMS_REVISION, force_download: bool = False
+    version: str = LATEST_PARSED_REPLAY_REVISION, force_download: bool = False
 ) -> str:
     return download_parsed_replays("revealed_teams", version, force_download)
 
@@ -95,4 +95,30 @@ def download_raw_replays(version: str = LATEST_RAW_REPLAY_REVISION) -> str:
 
 
 if __name__ == "__main__":
-    download_raw_replays()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "dataset",
+        type=str,
+        choices=["raw-replays", "parsed-replays", "revealed-teams", "replay-stats"],
+    )
+    parser.add_argument("--formats", type=str, default=None)
+    parser.add_argument("--version", type=str, default=None)
+    args = parser.parse_args()
+
+    if args.dataset == "raw-replays":
+        version = args.version or LATEST_RAW_REPLAY_REVISION
+        download_raw_replays(version=version)
+    elif args.dataset == "parsed-replays":
+        version = args.version or LATEST_PARSED_REPLAY_REVISION
+        if args.formats is None:
+            raise ValueError("Must specify at least one battle format (e.g., gen1ou)")
+        for format in args.formats:
+            download_parsed_replays(format, version=version, force_download=True)
+    elif args.dataset == "revealed-teams":
+        version = args.version or LATEST_PARSED_REPLAY_REVISION
+        download_revealed_teams(version=version, force_download=True)
+    elif args.dataset == "replay-stats":
+        version = args.version or LATEST_PARSED_REPLAY_REVISION
+        download_replay_stats(version=version, force_download=True)

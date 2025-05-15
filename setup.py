@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="metamon",
-    version="1.0.0",
+    version="1.1.0",
     author="Jake Grigsby",
     author_email="grigsby@cs.utexas.edu",
     license="MIT",

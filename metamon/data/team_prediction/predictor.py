@@ -115,19 +115,21 @@ class NaiveUsagePredictor(TeamPredictor):
         return final_team
 
 
+from metamon.download import download_replay_stats
+
+
 @lru_cache(maxsize=4)
 def load_replay_stats_by_format(format: str):
     """
     This loads large json files that are created by the `generate_replay_stats` script.
     """
+    path_to_replay_stats = download_replay_stats(format)
     pokemon_set_path = os.path.join(
-        os.path.dirname(__file__),
-        "replay_stats",
+        path_to_replay_stats,
         f"{format}_pokemon.json",
     )
     team_roster_path = os.path.join(
-        os.path.dirname(__file__),
-        "replay_stats",
+        path_to_replay_stats,
         f"{format}_team_rosters.json",
     )
     if not os.path.exists(pokemon_set_path) or not os.path.exists(team_roster_path):
@@ -436,6 +438,7 @@ class ReplayPredictor(NaiveUsagePredictor):
 if __name__ == "__main__":
     import argparse
     from metamon.data.team_prediction.dataset import TeamDataset
+    from metamon.download import download_revealed_teams
 
     parser = argparse.ArgumentParser(
         description="Predict team from partial information"
@@ -446,9 +449,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--metamon_teamfile_path",
         type=str,
-        help="Path to the metamon teamfile directory",
+        default=None,
+        help="Path to the metamon teamfile directory. Defaults to the official huggingface version.",
     )
     args = parser.parse_args()
+
+    if args.metamon_teamfile_path is None:
+        args.metamon_teamfile_path = download_revealed_teams()
 
     dataset = TeamDataset(args.metamon_teamfile_path, format=args.format)
     naive_predictor = NaiveUsagePredictor()

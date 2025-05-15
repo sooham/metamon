@@ -168,7 +168,8 @@ env = QueueOnLocalLadder(
 from metamon.datasets import ParsedReplayDataset
 
 # will download/extract large files the first time it's called.
-# converts replays to the chosen observation space / reward function.
+# examples are converted to the chosen obesrvation space / reward function
+# on-the-fly during dataloading. 
 dset = ParsedReplayDataset(
     observation_space=obs_space,
     reward_function=reward_func,
