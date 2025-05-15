@@ -282,7 +282,7 @@ class MetamonAMAGOExperiment(amago.Experiment):
         epochs: int = 100,
         train_batches_per_epoch: int = 25_000,
         val_interval: int = 1,
-        val_timesteps_per_epoch: int = 0,  # FIXME
+        val_timesteps_per_epoch: int = 200,
         ckpt_interval: int = 2,
         # optimization
         learning_rate: float = 1.5e-4,

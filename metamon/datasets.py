@@ -10,14 +10,15 @@ import numpy as np
 import tqdm
 
 from metamon.interface import ObservationSpace, RewardFunction, UniversalState
+from metamon.download import download_parsed_replays
 
 
 class ParsedReplayDataset(Dataset):
     def __init__(
         self,
-        dset_root: str,
         observation_space: ObservationSpace,
         reward_function: RewardFunction,
+        dset_root: Optional[str] = None,
         formats: Optional[List[str]] = None,
         wins_losses_both: str = "both",
         min_rating: Optional[int] = None,
@@ -27,10 +28,16 @@ class ParsedReplayDataset(Dataset):
         max_seq_len: Optional[int] = None,
         verbose: bool = False,
     ):
-        assert dset_root is not None and os.path.exists(dset_root)
         formats = formats or [
             f"gen{g}{t}" for g in range(1, 5) for t in ["ou", "uu", "nu", "ubers"]
         ]
+
+        if dset_root is None:
+            for format in formats:
+                path_to_format_data = download_parsed_replays(format)
+            dset_root = os.path.dirname(path_to_format_data)
+
+        assert dset_root is not None and os.path.exists(dset_root)
         self.observation_space = observation_space
         self.reward_function = reward_function
         self.dset_root = dset_root
@@ -168,13 +175,12 @@ if __name__ == "__main__":
     from metamon.tokenizer import get_tokenizer
 
     dset = ParsedReplayDataset(
-        dset_root="/mnt/nfs_client/jake/metamon_hf_datasets/parsed-replays/",
         observation_space=TokenizedObservationSpace(
             DefaultObservationSpace(),
             tokenizer=get_tokenizer("allreplays-v3"),
         ),
         reward_function=DefaultShapedReward(),
-        formats=["gen1ou"],
+        formats=["gen1nu"],
         verbose=True,
     )
     print(len(dset))

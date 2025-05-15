@@ -1,5 +1,6 @@
 import subprocess
 from typing import List, Tuple
+import gc
 import argparse
 import os
 import tqdm
@@ -53,6 +54,8 @@ def env_verify_team(team_str: str, format_id: str = "gen1ou") -> bool:
         env.reset()
         env.step(env.action_space.sample())
     except Exception as e:
+        del env
+        gc.collect()
         return False
     return True
 

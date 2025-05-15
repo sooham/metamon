@@ -42,6 +42,7 @@ from metamon.baselines.heuristic.basic import *
 from metamon.baselines.heuristic.kaizo import EmeraldKaizo
 from metamon.baselines.model_based.bcrnn_baselines import BaseRNN, WinsOnlyRNN, MiniRNN
 from metamon.tokenizer import PokemonTokenizer, get_tokenizer
+from metamon.download import METAMON_CACHE_DIR
 
 HEURISTIC_COMPOSITE_BASELINES = [
     RandomBaseline,
@@ -56,9 +57,11 @@ IL = [BaseRNN]
 
 WANDB_PROJECT = os.environ.get("METAMON_WANDB_PROJECT")
 WANDB_ENTITY = os.environ.get("METAMON_WANDB_ENTITY")
-METAMON_CACHE_DIR = os.environ.get(
-    "METAMON_CACHE_DIR", os.path.expanduser("~/.cache/metamon")
-)
+
+if METAMON_CACHE_DIR is None:
+    raise ValueError("Set METAMON_CACHE_DIR environment variable")
+# downloads checkpoints to the metamon cache dir where we're putting all the other data
+MODEL_DOWNLOAD_DIR = os.path.join(METAMON_CACHE_DIR, "pretrained_models")
 
 
 def make_placeholder_env(observation_space: ObservationSpace):
@@ -227,7 +230,7 @@ class PretrainedModel:
         self.is_il_model = is_il_model
         self.max_seq_len = max_seq_len
         self.agent_type = agent_type
-        self.hf_cache_dir = hf_cache_dir or METAMON_CACHE_DIR
+        self.hf_cache_dir = hf_cache_dir or MODEL_DOWNLOAD_DIR
         self.tokenizer = tokenizer
         self.observation_space = TokenizedObservationSpace(
             base_obs_space=observation_space,

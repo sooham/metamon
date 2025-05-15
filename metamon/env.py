@@ -25,9 +25,7 @@ from metamon.interface import (
     DefaultObservationSpace,
 )
 from metamon.data import DATA_PATH
-
-
-TEAM_PATH = os.path.join(os.path.dirname(__file__), "teams")
+from metamon.download import download_teams
 
 
 class TeamSet(Teambuilder):
@@ -53,8 +51,8 @@ class TeamSet(Teambuilder):
         return self.join_team(self.parse_showdown_team(team_data))
 
 
-def get_metamon_teams(battle_format: str, split: str) -> TeamSet:
-    path = os.path.join(TEAM_PATH, split, battle_format)
+def get_metamon_teams(battle_format: str, set_name: str) -> TeamSet:
+    path = download_teams(battle_format, set_name=set_name)
     if not os.path.exists(path):
         raise ValueError(
             f"Cannot locate valid team directory for format {battle_format} at path {path}"
@@ -320,12 +318,12 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--battle_format", type=str, default="gen1ou")
     parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--team_split", type=str, default="paper_replays")
+    parser.add_argument("--team_set", type=str, default="paper_replays")
     args = parser.parse_args()
 
     env = BattleAgainstBaseline(
         battle_format=args.battle_format,
-        team_set=get_metamon_teams(args.battle_format, args.team_split),
+        team_set=get_metamon_teams(args.battle_format, args.team_set),
         opponent_type=GymLeader,
         observation_space=TokenizedObservationSpace(
             base_obs_space=DefaultObservationSpace(),
