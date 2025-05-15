@@ -13,6 +13,13 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state impor
 )
 from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
 
+"""
+# TODO
+Known Bugs (fix for datasets v2):
+
+Needs to handle BackwardMarkers.FORCE_UNKNOWN
+"""
+
 
 @lru_cache
 def get_preloaded_stat(gen: int):

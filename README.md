@@ -281,17 +281,19 @@ Datasets are stored on huggingface in three formats:
 
 Parsed replays will download automatically when requested by the `ParsedReplayDataset`. Alternatively, you can download them in advance with `python -m metamon.download parsed-replays`. Use `python -m metamon.download raw-replays` to grab the unprocessed Showdown replays if needed.
 
+<br>
+
+___
 
 <br>
 
  ## Team Sets
 
- Team sets are directories of Pokémon Showdown team files that are randomly sampled between env resets:
+ Team sets are directories of Pokémon Showdown team files that are randomly sampled between env resets. They are stored on huggingface at [`jakegrigsby/metamon-teams`](https://huggingface.co/datasets/jakegrigsby/metamon-teams).
 
 ```python
 metamon.env.get_metamon_teams(battle_format : str, set_name : str)
 ```
-
 
  | `set_name` | Teams Per Battle Format | Description |
 |------|------|-------------|
@@ -300,23 +302,18 @@ metamon.env.get_metamon_teams(battle_format : str, set_name : str)
 | `"paper_replays"` | 1k | *predicted* full teams based on *revealed* teams in replays. The paper calls this the "replay set". Surpassed by the "modern_replays" set below but included for reproducibilty. Uses a simple team prediction strategy that is now defined by `data.team_prediction.predictor.NaiveUsagePredictor`|
 | `"modern_replays"` | Varies (300 - 60k) | *predicted* full teams based on *revealed* teams of recent replays (currently: since May 14th, 2024). In OverUsed tiers (where we can afford to be selective) we filter to ladder games played above 1200 ELO. Predictions use the `data.team_prediction.predictor.ReplayPredictor`. The result is a set representing the modern metagame with blanks filled by a mixture of historical trends. |
 
-
-
 You can also use your own directory of team files with, for example:
 ```python
 from metamon.env import TeamSet
 
 team_set = TeamSet("/path/to/your/team/dir", battle_format: str) # e.g. gen3ou
 ```
-But note that your files would need to have the extension `"{battle_format}_team"`.
-
-
-
+But note that your files would need to have the extension `".{battle_format}_team"`.
 
 
 <br>
 
-
+___
 
 <br>
 
@@ -324,6 +321,25 @@ But note that your files would need to have the extension `"{battle_format}_team
 ## Baselines
 
 `baselines/` contains baseline opponents that we can battle against via `BattleAgainstBasline`. `baselines/heuritics` provides more than a dozen heuristic opponents and starter code for developing new ones (or mixing ground-truth Pokémon knowledge into ML agents). `baselines/model_based` ties the simple `il` model checkpoints to `poke-env` (with CPU inference).
+
+
+Here is an overview of opponents mentioned in the paper:
+
+```python
+from metamon.baselines import ALL_BASELINES
+opponent = ALL_BASELINES[name]
+```
+
+ | `name` | Description |
+|------|-------------|
+| `BugCatcher` | An actively bad trainer that always picks the least damaging move. When forced to switch, picks the pokemon in its party with the worst type matchup vs the player.
+|`RandomBaseline`| Selects a legal move (or switch) uniformly at random and measures the most basic level of learning early in training runs.|
+|`Gen1BossAI`| emulates the decision-making of opponents in the original Pokémon Generation 1 games. It usually chooses random moves. However, it prefers using stat-boosting moves on the second turn and “super effective” moves when available. |
+| `Grunt` | A maximally offensive player that selects the move that will deal the greatest damage against the current opposing Pokémon using Pokémon’s damage equation and a type chart and selects the best matchup by type when forced to switch. Its strategy amounts to greedy one-ply search and is an improvement over a common “MaxBasePower” agent in related work.|
+| `GymLeader` | Improves upon Grunt by additionally taking into account factors such as health. It prioritizes using stat boosts when the current Pokémon is very healthy, and heal moves when unhealthy.|
+| `PokeEnvHeuristic` | The `SimpleHeuristicsPlayer` baseline provided by [`poke_env`]() with configurable difficulty (shortcuts like `EasyPokeEnvHeuristic`).|
+| `EmeraldKaizo` | An adaptation of the AI in a Pokémon Emerald ROM hack intended to be as difficult as possible. The game’s online popularity has led to a community effort to document its decision-making in extensive detail. We use this documentation to re-implement the policy. It selects actions by scoring the available options against a rule set that includes handwritten conditional statements for a large portion of the moves in the game.|
+| `BaseRNN` | A simple RNN IL policy trained on an early version of our parsed replay dataset. Runs inference on CPU.|
 
 Compare baselines with:
 
@@ -333,6 +349,7 @@ python -m metamon.compete --task_dist Gen1OU --player GymLeader --opponent Rando
 
 <br>
 
+___
 
 <br>
 

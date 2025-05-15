@@ -32,11 +32,13 @@ def write_replay_to_disk(
 
 
 def process_dataset(
-    dataset_id: str, output_dir: str, remove_from_hf_cache: bool = True
+    dataset_id: str, output_dir: str, revision: str, remove_from_hf_cache: bool = True
 ) -> None:
     print(f"Loading dataset {dataset_id}...")
     # TODO: load specific (dated) versions
-    dataset = load_dataset(dataset_id, download_mode="force_redownload")
+    dataset = load_dataset(
+        dataset_id, revision=revision, download_mode="force_redownload"
+    )
     main_split = next(iter(dataset.keys()))
     dataset = dataset[main_split]
     print(f"\nProcessing {len(dataset)} replays...")
@@ -106,6 +108,12 @@ def main():
         help="HuggingFace dataset ID (e.g., 'username/dataset-name')",
     )
     parser.add_argument(
+        "--revision",
+        type=str,
+        default="v1",
+        help="HuggingFace dataset revision",
+    )
+    parser.add_argument(
         "--output-dir", type=str, required=True, help="Directory to save replay files"
     )
     args = parser.parse_args()
@@ -114,6 +122,7 @@ def main():
     process_dataset(
         dataset_id=args.dataset_id,
         output_dir=args.output_dir,
+        revision=args.revision,
     )
     print("\nDone! ✅")
 
