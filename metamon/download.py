@@ -15,7 +15,7 @@ def download_parsed_replays(
     battle_format: str,
     version: str = LATEST_PARSED_REPLAY_REVISION,
     force_download: bool = False,
-):
+) -> str:
     if METAMON_CACHE_DIR is None:
         raise ValueError("METAMON_CACHE_DIR environment variable is not set")
 
@@ -46,7 +46,7 @@ def download_teams(
     set_name: str,
     version: str = LATEST_TEAMS_REVISION,
     force_download: bool = False,
-):
+) -> str:
     if METAMON_CACHE_DIR is None:
         raise ValueError("METAMON_CACHE_DIR environment variable is not set")
 
@@ -73,17 +73,17 @@ def download_teams(
 
 def download_replay_stats(
     version: str = LATEST_PARSED_REPLAY_REVISION, force_download: bool = False
-):
+) -> str:
     return download_parsed_replays("replay_stats", version, force_download)
 
 
 def download_revealed_teams(
     version: str = LATEST_TEAMS_REVISION, force_download: bool = False
-):
+) -> str:
     return download_parsed_replays("revealed_teams", version, force_download)
 
 
-def download_raw_replays(version: str = LATEST_RAW_REPLAY_REVISION):
+def download_raw_replays(version: str = LATEST_RAW_REPLAY_REVISION) -> str:
     from metamon.data.replay_dataset.raw_replays.download_from_hf import process_dataset
 
     process_dataset(
