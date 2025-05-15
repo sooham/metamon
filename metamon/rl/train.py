@@ -31,7 +31,7 @@ def add_cli(parser):
     parser.add_argument("--run_name", required=True)
     parser.add_argument("--obs_space", type=str, default="DefaultObservationSpace")
     parser.add_argument("--reward_function", type=str, default="DefaultShapedReward")
-    parser.add_argument("--parsed_replay_dir", required=True)
+    parser.add_argument("--parsed_replay_dir", type=str, default=None, help="Path to the parsed replay directory. Defaults to the official huggingface version.")
     parser.add_argument("--ckpt_dir", type=str, required=True)
     parser.add_argument("--ckpt", type=int, default=None)
     parser.add_argument("--batch_size_per_gpu", type=int, default=12)
@@ -118,7 +118,7 @@ if __name__ == "__main__":
             battle_format=f"gen{i}ou",
             observation_space=obs_space,
             reward_function=reward_function,
-            team_set=get_metamon_teams(f"gen{i}ou", "train"),
+            team_set=get_metamon_teams(f"gen{i}ou", "paper_variety"),
             opponent=opponent,
         )
         for i in range(1, 5)
