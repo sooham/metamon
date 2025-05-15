@@ -52,9 +52,9 @@ def download_teams(
 
     teams_dir = os.path.join(METAMON_CACHE_DIR, "teams", set_name)
     tar_path = os.path.join(teams_dir, f"{battle_format}.tar.gz")
-    extract_path = os.path.join(teams_dir)
+    extract_path = teams_dir
     if os.path.exists(extract_path) and not force_download:
-        return extract_path
+        return os.path.join(teams_dir, battle_format)
 
     hf_hub_download(
         cache_dir=os.path.join(METAMON_CACHE_DIR, "teams", set_name),
@@ -68,7 +68,7 @@ def download_teams(
         print(f"Extracting {tar_path}...")
         tar.extractall(path=extract_path)
     os.remove(tar_path)
-    return extract_path
+    return os.path.join(teams_dir, battle_format)
 
 
 def download_replay_stats(
