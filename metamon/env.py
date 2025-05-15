@@ -54,12 +54,10 @@ class TeamSet(Teambuilder):
 
 
 def get_metamon_teams(battle_format: str, split: str) -> TeamSet:
-    gen = int(battle_format[3])
-    tier = battle_format[4:]
-    path = os.path.join(TEAM_PATH, f"gen{gen}", tier, split)
+    path = os.path.join(TEAM_PATH, split, battle_format)
     if not os.path.exists(path):
         raise ValueError(
-            f"Cannot locate valid team directory for format [gen{gen}{tier} at path {path}]"
+            f"Cannot locate valid team directory for format {battle_format} at path {path}"
         )
     return TeamSet(path, battle_format)
 
@@ -322,7 +320,7 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--battle_format", type=str, default="gen1ou")
     parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--team_split", type=str, default="replays")
+    parser.add_argument("--team_split", type=str, default="paper_replays")
     args = parser.parse_args()
 
     env = BattleAgainstBaseline(

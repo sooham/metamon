@@ -226,7 +226,6 @@ class PokemonSet:
 
     @classmethod
     def default_evs(cls, gen: int):
-        # mirroring Showdown logic where EVs are assumed to be 252
         return [252] * 6 if gen <= 2 else [cls.MISSING_EV] * 6
 
     @classmethod
@@ -324,9 +323,12 @@ class PokemonSet:
             if desc != "Spe":
                 ivs += " / "
 
-        start = f"{self.name} @ {self.item}"
+        start = f"{self.name}"
+        if self.item != self.NO_ITEM:
+            start += f" @ {self.item}"
         moves = "\n".join([f"- {move}" for move in self.moves])
-        return start + f"\nAbility: {self.ability}\n{evs}\n{ivs}\n{moves}"
+        ability_str = self.ability if self.ability != self.NO_ABILITY else "No Ability"
+        return start + f"\nAbility: {ability_str}\n{evs}\n{ivs}\n{moves}"
 
     @classmethod
     def from_showdown_block(cls, block: str, gen: int):
@@ -371,6 +373,8 @@ class PokemonSet:
             if line.startswith("Ability:"):
                 if gen > 2:
                     ability = line.split(":", 1)[1].strip()
+                    if ability == "No Ability":
+                        ability = cls.NO_ABILITY
             elif line.startswith("EVs:"):
                 evs = [0] * 6 if gen > 2 else [252] * 6
                 for part in line[4:].split("/"):
@@ -400,7 +404,13 @@ class PokemonSet:
                 # if multiple options, take the first option
                 if "/" in move_raw:
                     move_raw = move_raw.split("/", 1)[0].strip()
-                moves[moves.index(cls.MISSING_MOVE)] = move_raw
+
+                if cls.MISSING_MOVE in moves:
+                    moves[moves.index(cls.MISSING_MOVE)] = move_raw
+                elif len(moves) < 4:
+                    moves.append(move_raw)
+                else:
+                    raise ValueError(f"Team has too many moves: {moves}")
 
         return cls(
             name=name,
@@ -766,8 +776,9 @@ class TeamSet:
 if __name__ == "__main__":
     import os
 
-    TEAM_DIR = os.path.join(os.path.dirname(__file__), "..", "teams")
-    TEAM_DIR = os.path.join(TEAM_DIR, "gen1", "ou", "competitive")
+    TEAM_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "teams")
+    TEAM_DIR = os.path.join(TEAM_DIR, "modern_replays", "gen1ou")
+    print(TEAM_DIR)
     team_files = []
     for root, dirs, files in os.walk(TEAM_DIR):
         for file in files:

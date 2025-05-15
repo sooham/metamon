@@ -17,7 +17,7 @@ class TeamDataset(Dataset):
     def __init__(
         self, team_file_dir: str, format: str, max_teams: Optional[int] = None
     ):
-        self.team_path = os.path.join(team_file_dir, f"{format}_teams")
+        self.team_path = os.path.join(team_file_dir, format)
         if not os.path.exists(self.team_path):
             raise ValueError(f"Team directory {self.team_path} does not exist")
         self.format = format
@@ -103,7 +103,6 @@ class FilteredTeamsFromReplaysDataset(TeamDataset):
 
             rating = _rating_to_int(rating)
             date = datetime.strptime(mm_dd_yyyy, "%m-%d-%Y")
-
             if (
                 (self.min_rating is not None and rating < self.min_rating)
                 or (self.max_rating is not None and rating > self.max_rating)
