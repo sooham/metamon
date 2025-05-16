@@ -29,8 +29,8 @@ def validate_showdown_team(
     if proc.returncode == 0:
         return True
     else:
-        # output = proc.stdout.strip().splitlines() + proc.stderr.strip().splitlines()
-        # print(output)
+        output = proc.stdout.strip().splitlines() + proc.stderr.strip().splitlines()
+        print(output)
         return False
 
 
@@ -55,7 +55,6 @@ def env_verify_team(team_str: str, format_id: str = "gen1ou") -> bool:
         env.step(env.action_space.sample())
     except Exception as e:
         del env
-        gc.collect()
         return False
     return True
 
@@ -70,13 +69,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--input-path",
         type=str,
-        default="/mnt/nfs_client/jake/metamon_hf_staging/teams/modern_replays_cleaned",
+        required=True,
         help="Path to input directory containing team files",
     )
     parser.add_argument(
         "--output-path",
         type=str,
-        default="/mnt/nfs_client/jake/metamon_hf_staging/teams/modern_replays_cleaned_verified",
+        required=True,
         help="Path to output directory for verified teams",
     )
 
@@ -93,12 +92,10 @@ if __name__ == "__main__":
                     team = TeamSet.from_showdown_file(filename, format=format)
                     team_str = team.to_str()
                 except Exception as e:
-                    print(team_str)
                     print(e)
                     continue
 
-                if not env_verify_team(team_str, format):
-                    print(team_str)
+                if not validate_showdown_team(team_str, format):
                     continue
 
                 os.makedirs(os.path.join(args.output_path, format), exist_ok=True)
