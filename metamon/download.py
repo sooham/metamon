@@ -14,7 +14,7 @@ else:
 
 LATEST_RAW_REPLAY_REVISION = "v1"
 LATEST_PARSED_REPLAY_REVISION = "v1"
-LATEST_TEAMS_REVISION = "v0"
+LATEST_TEAMS_REVISION = "v1"
 
 
 def _update_version_reference(key: str, name: str, version: str):
@@ -278,6 +278,8 @@ Available versions:
         if args.formats is None:
             raise ValueError("Must specify at least one set name (e.g., gen1ou)")
         set_names = ["competitive", "paper_variety", "paper_replays"]
+        if version > "v0":
+            set_names.append("modern_replays")
         for set_name in set_names:
             for format in args.formats:
                 if "ou" not in format and "replays" in set_name:
