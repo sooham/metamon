@@ -2,7 +2,7 @@
 
 > [!WARNING]
 > 
-> This module contains the behind-the-scenes work that makes the `ParsedReplayDataset` possible. Very little of this is intended to be used externally; code is poorly documented and changes frequently. Please consider yourself warned :)
+> This module contains the behind-the-scenes work that makes the `ParsedReplayDataset` possible. Very little of this is intended to be used externally. Please consider yourself warned :)
 
 
 <p align="center">
