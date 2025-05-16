@@ -74,9 +74,9 @@ def download_teams(
 
     teams_dir = os.path.join(METAMON_CACHE_DIR, "teams", set_name)
     tar_path = os.path.join(teams_dir, f"{battle_format}.tar.gz")
-    extract_path = teams_dir
+    extract_path = os.path.join(teams_dir, battle_format)
     if os.path.exists(extract_path) and not force_download:
-        return os.path.join(teams_dir, battle_format)
+        return extract_path
 
     hf_hub_download(
         cache_dir=os.path.join(METAMON_CACHE_DIR, "teams", set_name),
@@ -88,10 +88,10 @@ def download_teams(
     )
     with tarfile.open(tar_path) as tar:
         print(f"Extracting {tar_path}...")
-        tar.extractall(path=extract_path)
+        tar.extractall(path=os.path.dirname(extract_path))
     os.remove(tar_path)
     _update_version_reference("teams", f"{set_name}/{battle_format}", version)
-    return os.path.join(teams_dir, battle_format)
+    return extract_path
 
 
 def download_replay_stats(
@@ -146,3 +146,16 @@ if __name__ == "__main__":
     elif args.dataset == "replay-stats":
         version = args.version or LATEST_PARSED_REPLAY_REVISION
         download_replay_stats(version=version, force_download=True)
+    elif args.dataset == "teams":
+        version = args.version or LATEST_TEAMS_REVISION
+        if args.formats is None:
+            raise ValueError("Must specify at least one set name (e.g., gen1ou)")
+        set_names = ["competitive", "paper_variety", "paper_replays"]
+        for set_name in set_names:
+            for format in args.formats:
+                download_teams(
+                    battle_format=format,
+                    set_name=set_name,
+                    version=version,
+                    force_download=True,
+                )

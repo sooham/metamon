@@ -1,12 +1,12 @@
 
 <div align="center">
-    <img src="media/metamon_text_logo.png" alt="Metamon Text Logo" width="390">
+    <img src="media/metamon_text_logo.png" alt="Metamon Text Logo" width="410">
 </div>
 
 <br>
 
 <div align="center">
-    <img src="media/metamon_banner.png" alt="Metamon Banner" width="700">
+    <img src="media/metamon_banner.png" alt="Metamon Banner" width="720">
 </div>
 
 <br>
@@ -80,16 +80,16 @@ cp ../config.js config/
 
 You will need to have the PS server running in the background while using Metamon:
 ```shell
-# recommended: `screen`
-node pokemon-showdown start --no-security # no-security removes the account login of the public website
-# Press Ctrl+A+D to detach from the screen
+# in the background (`screen`, etc.)
+node pokemon-showdown start --no-security
+# no-security removes battle speed throttling and password requirements on your local server
 ```
 
 You can verify that installation has gone smoothly with:
 ```bash
+# run a few test battles on your local server and print a progress bar to the terminal
 python -m metamon.env
 ```
-Which will run a few test battles on your local server and print a progress bar to the terminal.
 
 
 Metamon provides large datasets of Pokémon team files, human battles, and other statistics that will automatically download when requested. You will need to specify a path:
@@ -101,7 +101,7 @@ export METAMON_CACHE_DIR=/path/to/plenty/of/disk/space
 
 > [!NOTE]
 >
-> `metamon` installs an old fork of [poke-env]() ([here]()). **Please do not bother the main poke-env GitHub with issues related to `poke_env` error messages you encounter while using metamon**. They've probably already fixed it!
+> `metamon` installs an old fork of [poke-env]() ([here]()). **Please don't bother the main poke-env GitHub with issues related to `poke_env` error messages you encounter while using metamon**. They've probably already fixed it!
 
 <br>
 
@@ -111,17 +111,17 @@ ____
 
 ## Quick Start
 
-The RL environment is a "batteries included" wrapper of [poke-env](). We pick (1) a set of Pokémon teams to play with, and (2) an observation space & reward function.
+The RL environment is a "batteries included" wrapper of [poke-env](). Pick a set of Pokémon teams to play with, an observation space, and a reward function:
 
 ```python
 from metamon.env import get_metamon_teams
 from metamon.interface import DefaultObservationSpace, DefaultShapedReward
 
-
-# Step 1: grab a set of human-made starter teams for Gen 1 OverUsed
+# Step 1: grab a set of human-made starter teams for Gen 1 OverUsed.
+# every `reset` will sample a new team for your agent and your opponent.
 team_set = get_metamon_teams("gen1ou", "competitive")
 
-# Step 2: pick the observation space and reward function from our paper
+# Step 2: pick the observation space and reward function from the paper
 obs_space = DefaultObservationSpace()
 reward_fn = DefaultShapedReward()
 ```
@@ -140,13 +140,12 @@ env = BattleAgainstBaseline(
     team_set=team_set,
     opponent_type=Gen1BossAI,
 )
-
 # `env` is a standard `gymnasium` environment!
 obs, info = env.reset()
 next_obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
 ```
 
-The more flexible option is to request battles on your local Showdown server and battle anyone else who is online (yourself, our pretrained agents, or other Pokémon AI projects like [Foul Play]()). If it plays Showdown, you can battle against it!
+The more flexible option is to request battles on your local Showdown server and battle anyone else who is online (yourself, our pretrained agents, or other Pokémon AI projects). If it plays Showdown, you can battle against it!
 
 ```python
 from metamon.env import QueueOnLocalLadder
@@ -187,7 +186,6 @@ env = QueueOnLocalLadder(
     .., # rest of args
     save_trajectories_to="my_data_path",
 )
-
 dset = ParsedReplayDataset(
     dset_root="my_data_path",
     observation_space=obs_space,
@@ -196,11 +194,9 @@ dset = ParsedReplayDataset(
 )
 
 # interact with the environment
-done = False
-while not done:
-    *_, terminated, truncated, _ = env.step(env.action_space.sample())
-    done = terminated | truncated
-
+terminated = False
+while not terminated:
+    *_, terminated, _, _ = env.step(env.action_space.sample())
 # find completed battles before loading examples
 dset.refresh_files()
 ```
@@ -219,6 +215,11 @@ ____
 
 We have made every checkpoint of 18 models available on huggingface at [`jakegrigsby/metamon`](https://huggingface.co/jakegrigsby/metamon/tree/main). Pretrained models can run without research GPUs, but you will need to install [`amago`](), which is an RL codebase by the same authors. Follow instructions [here]().
 
+<div align="center">
+    <img src="media/arch_v6_safe.png" alt="Figure 1" width="450">
+</div>
+
+<br>
 
 Load and run pretrained models with `metamon.rl.eval_pretrained`. For example:
 
@@ -231,7 +232,7 @@ Will run the default checkpoint of the best model for 50 battles against a set o
 Or to battle against whatever is logged onto the local Showdown server (including other pretrained models that are already waiting):
 
 ```bash
-python -m metamon.rl.eval_pretrained --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 50 --eval_type local-ladder --username <pick a unique username> --team_split replays
+python -m metamon.rl.eval_pretrained --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 50 --eval_type ladder --username <pick unique username> --team_set paper_replays
 ```
 
 Some model sizes have several variants testing different RL objectives. See `metamon/rl/eval_pretrained.py` for a complete list.
@@ -250,7 +251,12 @@ Some model sizes have several variants testing different RL objectives. See `met
 | **`SyntheticRLV1_PlusPlus`**          | SyntheticRLV1 fine-tuned on 2M extra battles against diverse opponents      |
 | **`SyntheticRLV2`**           | Final 200M actor-critic model with value classification trained on 1M human + 4M diverse self-play battles. |
 
+Here is a reference of human evals for key models according to our paper:
 
+
+<div align="center">
+    <img src="media/human_ratings.png" alt="Figure 1" width="800">
+</div>
 
 <br>
 
@@ -266,21 +272,21 @@ PS creates "replays" of battles that players can choose to upload to the website
 PS replays are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. We unlock the replay dataset for RL by "reconstructing" the point-of-view of each player. 
 
 <div align="center">
-    <img src="media/dataset.png" alt="Dataset Overview" width="700">
+    <img src="media/dataset.png" alt="Dataset Overview" width="800">
 </div>
 <br>
 
 
 Datasets are stored on huggingface in three formats:
 
-| Name |  Battles | Description |
+| Name |  Entries | Description |
 |------|------|-------------|
 |**[`metamon-raw-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-raw-replays)** | 535k | Our curated set of Pokémon Showdown replay `.json` files... to save the Showdown API some download requests and to maintain an official reference of our training data. Will be regularly updated as new battles are played and collected. |
 |**[`metamon-parsed-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-replays)** | 1.05M | The RL-compatible version of the dataset as reconstructed by the [replay parser](metamon/data/replay_dataset/parsed_replays/replay_parser/README.md). These datasets have **missing actions** (`action = -1`) where the player's choice is not revelead to spectators. Includes ~100k more trajectories than were used by the paper (because more human battles have been played). The method for predicting partially revealed teams has also been significantly improved.|
 |**[`metamon-synthetic`](https://huggingface.co/datasets/jakegrigsby/metamon-synthetic)** | 5M | A set of real + self-play battles that were used to train the best models in the paper. Unfortunately, this dataset has been deprecated as part of changes that make the parsed replay dataset more future-proof. It provides `amago` trajectory files with a fixed observation space + reward function and missing actions filled by an IL model. We are working to create a new starter dataset of self-play battles.|
 
 
-Parsed replays will download automatically when requested by the `ParsedReplayDataset`. Alternatively, you can download them in advance with `python -m metamon.download parsed-replays`. Use `python -m metamon.download raw-replays` to grab the unprocessed Showdown replays if needed.
+Parsed replays will download automatically when requested by the `ParsedReplayDataset`, but these datasets are large. You can process them in advance with `python -m metamon.download parsed-replays`. Use `python -m metamon.download raw-replays` to grab the unprocessed Showdown replays if needed.
 
 <br>
 
@@ -290,7 +296,7 @@ ___
 
  ## Team Sets
 
- Team sets are directories of Pokémon Showdown team files that are randomly sampled between env resets. They are stored on huggingface at [`jakegrigsby/metamon-teams`](https://huggingface.co/datasets/jakegrigsby/metamon-teams).
+ Team sets are dirs of PS team files that are randomly sampled between episodes. They are stored on huggingface at [`jakegrigsby/metamon-teams`](https://huggingface.co/datasets/jakegrigsby/metamon-teams) and can be downloaded in advance with `python -m metamon.download teams`
 
 ```python
 metamon.env.get_metamon_teams(battle_format : str, set_name : str)
@@ -299,9 +305,9 @@ metamon.env.get_metamon_teams(battle_format : str, set_name : str)
  | `set_name` | Teams Per Battle Format | Description |
 |------|------|-------------|
 |`"competitive"`| Varies (< 30) | Human-made teams scraped from forum threads. These are usually official "sample teams" designed by experts for beginners, but we are less selective for non-OU tiers. This is the set used for human ladder evaluations in the paper. |
-|`"paper_variety"`| 900 | Procedurally generated teams with unrealistic OOD lead-off Pokémon. The paper calls this the "variety set". Movests were generated by the legacy `data.team_prediction.predictor.NaiveUsagePredictor` strategy. |
-| `"paper_replays"` | 1k | *predicted* full teams based on *revealed* teams in replays. The paper calls this the "replay set". Surpassed by the "modern_replays" set below but included for reproducibilty. Uses a simple team prediction strategy that is now defined by `data.team_prediction.predictor.NaiveUsagePredictor`|
-| `"modern_replays"` | Varies (300 - 60k) | *predicted* full teams based on *revealed* teams of recent replays (currently: since May 14th, 2024). In OverUsed tiers (where we can afford to be selective) we filter to ladder games played above 1200 ELO. Predictions use the `data.team_prediction.predictor.ReplayPredictor`. The result is a set representing the modern metagame with blanks filled by a mixture of historical trends. |
+|`"paper_variety"`| 1k | Procedurally generated teams with unrealistic OOD lead-off Pokémon. The paper calls this the "variety set". Movests were generated by the legacy `data.team_prediction.predictor.NaiveUsagePredictor` strategy. |
+| `"paper_replays"` | 1k | *Predicted* teams from replays. The paper calls this the "replay set". Surpassed by the "modern_replays" set below but included for reproducibilty. Uses a simple team prediction strategy that is now defined by `data.team_prediction.predictor.NaiveUsagePredictor`|
+| `"modern_replays"` | Varies (300 - 50k) | *Predicted* teams based on recent replays (currently: since May 14th, 2024). In OverUsed tiers (where we can afford to be selective) we filter to ladder games played above 1200 ELO. Predictions use the `data.team_prediction.predictor.ReplayPredictor`. The result is a set representing the modern metagame with blanks filled by a mixture of historical trends. |
 
 You can also use your own directory of team files with, for example:
 ```python
@@ -335,19 +341,25 @@ opponent = ALL_BASELINES[name]
 |------|-------------|
 | `BugCatcher` | An actively bad trainer that always picks the least damaging move. When forced to switch, picks the pokemon in its party with the worst type matchup vs the player.
 |`RandomBaseline`| Selects a legal move (or switch) uniformly at random and measures the most basic level of learning early in training runs.|
-|`Gen1BossAI`| emulates the decision-making of opponents in the original Pokémon Generation 1 games. It usually chooses random moves. However, it prefers using stat-boosting moves on the second turn and “super effective” moves when available. |
-| `Grunt` | A maximally offensive player that selects the move that will deal the greatest damage against the current opposing Pokémon using Pokémon’s damage equation and a type chart and selects the best matchup by type when forced to switch. Its strategy amounts to greedy one-ply search and is an improvement over a common “MaxBasePower” agent in related work.|
+|`Gen1BossAI`| Emulates opponents in the original Pokémon Generation 1 games. Usually chooses random moves. However, it prefers using stat-boosting moves on the second turn and “super effective” moves when available. |
+| `Grunt` | A maximally offensive player that selects the move that will deal the greatest damage against the current opposing Pokémon using Pokémon’s damage equation and a type chart and selects the best matchup by type when forced to switch.|
 | `GymLeader` | Improves upon Grunt by additionally taking into account factors such as health. It prioritizes using stat boosts when the current Pokémon is very healthy, and heal moves when unhealthy.|
 | `PokeEnvHeuristic` | The `SimpleHeuristicsPlayer` baseline provided by [`poke_env`]() with configurable difficulty (shortcuts like `EasyPokeEnvHeuristic`).|
-| `EmeraldKaizo` | An adaptation of the AI in a Pokémon Emerald ROM hack intended to be as difficult as possible. The game’s online popularity has led to a community effort to document its decision-making in extensive detail. We use this documentation to re-implement the policy. It selects actions by scoring the available options against a rule set that includes handwritten conditional statements for a large portion of the moves in the game.|
+| `EmeraldKaizo` | An adaptation of the AI in a Pokémon Emerald ROM hack intended to be as difficult as possible. It selects actions by scoring the available options against a rule set that includes handwritten conditional statements for a large portion of the moves in the game.|
 | `BaseRNN` | A simple RNN IL policy trained on an early version of our parsed replay dataset. Runs inference on CPU.|
 
 Compare baselines with:
 
 ```bash
-python -m metamon.compete --task_dist Gen1OU --player GymLeader --opponent RandomBaseline --tasks 10
+python -m metamon.baselines.compete --battle_format gen2ou --player GymLeader --opponent RandomBaseline --battles 10
 ```
 
+Here is a reference for the relative strength of some heuristic baselines from the paper:
+<div align="center">
+    <img src="media/heuristic_heatmap.png" alt="Figure 1" width="380">
+</div>
+
+<br>
 <br>
 
 ___
@@ -356,7 +368,7 @@ ___
 
 ## Data
 
-`metamon/data` contains utilities for handling Showdown replays (`data.replay_dataset.raw_replays`), converting replays into training data (`data.replay_dataset.parsed_replays`), predicting teams from partial information (`data.team_prediction`), and accessing Showdown usage statistics (`data.legacy_team_builder`). These modules generate our huggingface datasets, but may be useful for other things. More info in the [`data` README](data/README.md).
+`metamon/data` contains utilities for handling Showdown replays (`data.replay_dataset.raw_replays`), converting replays into training data (`data.replay_dataset.parsed_replays`), predicting teams from partial information (`data.team_prediction`), and accessing Showdown usage statistics (`data.legacy_team_builder`). These modules generate our huggingface datasets, but may be useful for other things. More info in the [`data` README](metamon/data/README.md).
 
 
 <br>

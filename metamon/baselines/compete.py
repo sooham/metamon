@@ -85,7 +85,7 @@ if __name__ == "__main__":
 
     parser = ArgumentParser()
     parser.add_argument("--battle_format", required=True)
-    parser.add_argument("--team_split", type=str, default="train")
+    parser.add_argument("--team_split", type=str, default="paper_replays")
     parser.add_argument("--player", required=True)
     parser.add_argument("--opponent", required=True)
     parser.add_argument("--battles", type=int, default=10)
