@@ -166,6 +166,9 @@ if __name__ == "__main__":
         set_names = ["competitive", "paper_variety", "paper_replays"]
         for set_name in set_names:
             for format in args.formats:
+                if "ou" not in format and set_name == "paper_replays":
+                    # only the OU tiers have paper_replay sets
+                    continue
                 download_teams(
                     battle_format=format,
                     set_name=set_name,
