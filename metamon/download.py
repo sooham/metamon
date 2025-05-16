@@ -125,9 +125,22 @@ if __name__ == "__main__":
     parser.add_argument(
         "dataset",
         type=str,
-        choices=["raw-replays", "parsed-replays", "revealed-teams", "replay-stats"],
+        choices=[
+            "raw-replays",
+            "parsed-replays",
+            "revealed-teams",
+            "replay-stats",
+            "teams",
+        ],
     )
-    parser.add_argument("--formats", type=str, default=None)
+    parser.add_argument(
+        "--formats",
+        nargs="+",
+        type=str,
+        default=[
+            f"gen{i}{tier}" for i in range(1, 5) for tier in ["ou", "nu", "uu", "ubers"]
+        ],
+    )
     parser.add_argument("--version", type=str, default=None)
     args = parser.parse_args()
 
