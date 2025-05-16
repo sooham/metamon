@@ -1,6 +1,7 @@
 from functools import lru_cache
+import copy
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Optional, List
 from abc import ABC, abstractmethod
 
@@ -22,7 +23,7 @@ from poke_env.player import BattleOrder, Player
 from poke_env.data import to_id_str
 
 import metamon
-from metamon.data import DATA_PATH
+from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
     Move as ReplayMove,
     Pokemon as ReplayPokemon,
@@ -81,15 +82,30 @@ def consistent_move_order(moves):
     return sorted(moves, key=key)
 
 
+@lru_cache(9)
+def hidden_power_reference(gen: int) -> Move:
+    # we will map all hidden powers to this move
+    return Move(move_id="hiddenpower", gen=gen)
+
+
 @dataclass
 class UniversalMove:
+    """An object that represents a move in the backend-agnostic "Universal" format.
+
+    Rarely constructed directly. Instead, use one of the following factory methods:
+        - UniversalMove.from_Move(move) - when move is from poke-env
+        - UniversalMove.from_ReplayMove(move) - when move is from the replay parser
+        - UniversalMove.from_dict(data) - when move is a dict from the parsed replay dataset on disk
+    """
+
     name: str
     move_type: str
     category: str
     base_power: int
     accuracy: float
     priority: int
-    pp: int
+    current_pp: int
+    max_pp: int
 
     def __post_init__(self):
         for name, should_be in self.__annotations__.items():
@@ -131,7 +147,8 @@ class UniversalMove:
             base_power=0,
             accuracy=1.0,
             priority=0,
-            pp=0,
+            current_pp=0,
+            max_pp=0,
         )
 
     @classmethod
@@ -140,7 +157,8 @@ class UniversalMove:
         # a different pp tracker
         universal_move = cls.from_Move(move)
         if move is not None:
-            universal_move.pp = move.pp
+            universal_move.current_pp = move.pp
+            universal_move.max_pp = move.maximum_pp
         return universal_move
 
     @classmethod
@@ -148,19 +166,35 @@ class UniversalMove:
         if move is None:
             return cls.blank_move()
         assert isinstance(move, Move)
+        if move.id.startswith("hiddenpower"):
+            # we map every hidden power to the typeless version
+            # because the types don't show up in replays
+            reference = hidden_power_reference(move._gen)
+        else:
+            reference = move
         return cls(
-            name=move.id,
-            category=move.category.name,
-            base_power=move.base_power,
-            move_type=move.type.name,
-            priority=move.priority,
-            accuracy=move.accuracy,
-            pp=move.current_pp,
+            name=reference.id,
+            category=reference.category.name,
+            base_power=reference.base_power,
+            move_type=reference.type.name,
+            priority=reference.priority,
+            accuracy=reference.accuracy,
+            # always use `move` for pp tracking
+            current_pp=move.current_pp,
+            max_pp=move.max_pp,
         )
 
 
 @dataclass
 class UniversalPokemon:
+    """An object that represents a pokemon in the backend-agnostic "Universal" format.
+
+    Rarely constructed directly. Instead, use one of the following factory methods:
+        - UniversalPokemon.from_ReplayPokemon(pokemon) - when pokemon is from the replay parser
+        - UniversalPokemon.from_Pokemon(pokemon) - when pokemon is from poke-env
+        - UniversalPokemon.from_dict(data) - when pokemon is a dict from the parsed replay dataset on disk
+    """
+
     name: str
     hp_pct: float
     types: list[str]
@@ -193,6 +227,12 @@ class UniversalPokemon:
             ):
                 actually_is = type(self.__dict__[name])
                 raise TypeError(f"UniversalPokemon `{name}` has type {actually_is}")
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        args = data.copy()
+        args["moves"] = [UniversalMove(**m) for m in data["moves"]]
+        return cls(**args)
 
     @staticmethod
     def universal_items(item_rep: Optional[str | ReplayNothing]) -> str:
@@ -365,6 +405,14 @@ class UniversalPokemon:
 
 @dataclass
 class UniversalState:
+    """An object that represents a state in the backend-agnostic "Universal" format.
+
+    Rarely constructed directly. Instead, use one of the following factory methods:
+        - UniversalState.from_ReplayState(state) - when coming from a ReplayState object in the replay parser
+        - UniversalState.from_Battle(battle) - when coming from a Battle object in the online poke-env
+        - UniversalState.from_dict(data) - when state is a dict from the parsed replay dataset on disk
+    """
+
     format: str
     player_active_pokemon: UniversalPokemon
     opponent_active_pokemon: UniversalPokemon
@@ -477,60 +525,34 @@ class UniversalState:
             battle_lost=battle.lost if battle.lost else False,
             opponents_remaining=opponents_remaining,
         )
-
-    # fmt: on
-
-    def to_numpy(self) -> dict[str, np.ndarray]:
-        print("in universal state!!!!")
-        player_str = (
-            f"<player> {self.player_active_pokemon.get_string_features(active=True)}"
-        )
-        numerical = [
-            self.opponents_remaining / 6.0
-        ] + self.player_active_pokemon.get_numerical_features(active=True)
-
-        # consistent move order
-        move_str, move_num = "", -1
-        for move_num, move in enumerate(
-            consistent_move_order(self.player_active_pokemon.moves)
-        ):
-            move_str += f" <move> {move.get_string_features(active=True)}"
-            numerical += move.get_numerical_features(active=True)
-
-        while move_num < 3:
-            move_str += f" <move> {UniversalMove.get_pad_string(active=True)}"
-            numerical += UniversalMove.get_pad_numerical(active=True)
-            move_num += 1
-
-        # consistent switch order
-        switch_str, switch_num = "", -1
-        for switch_num, switch in enumerate(
-            consistent_pokemon_order(self.available_switches)
-        ):
-            switch_str += f" <switch> {switch.get_string_features(active=False)}"
-            numerical += switch.get_numerical_features(active=False)
-        while switch_num < 4:
-            switch_str += f" <switch> {UniversalPokemon.get_pad_string(active=False)}"
-            numerical += UniversalPokemon.get_pad_numerical(active=False)
-            switch_num += 1
-
-        force_switch = "<forcedswitch>" if self.forced_switch else "<anychoice>"
-        opponent_str = f"<opponent> {self.opponent_active_pokemon.get_string_features(active=True)}"
-        numerical += self.opponent_active_pokemon.get_numerical_features(active=True)
-        global_str = f"<conditions> {self.weather} {self.player_conditions} {self.opponent_conditions}"
-        prev_move_str = f"<player_prev> {self.player_prev_move.get_string_features(active=False)} <opp_prev> {self.opponent_prev_move.get_string_features(active=False)}"
-
-        text = np.array(
-            f"<{self.format}> {force_switch} {player_str} {move_str.strip()} {switch_str.strip()} {opponent_str} {global_str} {prev_move_str}",
-            dtype=np.str_,
-        )
-        numbers = np.array(numerical, dtype=np.float32)
-        return {"text": text, "numbers": numbers}
+    
+    def to_dict(self) -> dict:
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: dict):
+        args = data.copy()
+        # convert nested Pokemon objects
+        args["player_active_pokemon"] = UniversalPokemon.from_dict(data["player_active_pokemon"])
+        args["opponent_active_pokemon"] = UniversalPokemon.from_dict(data["opponent_active_pokemon"])
+        args["available_switches"] = [UniversalPokemon.from_dict(p) for p in data["available_switches"]]
+        # convert nested Move objects
+        args["player_prev_move"] = UniversalMove(**args["player_prev_move"])
+        args["opponent_prev_move"] = UniversalMove(**args["opponent_prev_move"])
+        # create UniversalState from the processed dict
+        return cls(**args)
 
 
 def replaystate_action_to_idx(
     state: ReplayState, action: ReplayAction
 ) -> Optional[int]:
+    """
+    Defines the discrete action space when coming from the replay parser.
+
+    The action space is defined as follows:
+    - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
+    - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
+    """
     # *can* return None, but replay parser will throw an exception if it does.
     action_idx = None
     if action is None or action.is_noop:
@@ -559,6 +581,13 @@ def replaystate_action_to_idx(
 def action_idx_to_battle_order(
     battle: Battle, action_idx: int
 ) -> Optional[BattleOrder]:
+    """
+    Defines the discrete action space when coming from the online poke-env env.
+
+    The action space is defined as follows:
+    - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
+    - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
+    """
     if action_idx > 8:
         raise ValueError(
             f"Invalid `action_idx` {action_idx}. The global action space is bounded {0, ..., 8}"
@@ -607,6 +636,10 @@ class RewardFunction(ABC):
 
 
 class DefaultShapedReward(RewardFunction):
+    """
+    The default reward function used by the paper. See the Appendix for a full description.
+    """
+
     def __call__(self, last_state: UniversalState, state: UniversalState) -> float:
         active_now = state.player_active_pokemon
         active_prev = None
@@ -658,6 +691,10 @@ class DefaultShapedReward(RewardFunction):
 
 
 class BinaryReward(RewardFunction):
+    """
+    A sparse variant of the default reward function.
+    """
+
     def __call__(self, last_state: UniversalState, state: UniversalState) -> float:
         if state.battle_won:
             return 100.0
@@ -674,6 +711,11 @@ class ObservationSpace(ABC):
         return self.__class__.__name__
 
     @property
+    def tokenizable(self) -> dict[str, int]:
+        """Return a dictionary of tokenizable keys and their expected (max) length."""
+        return {}
+
+    @property
     @abstractmethod
     def gym_space(self) -> gym.spaces.Space:
         """Return the observation space for this observation type."""
@@ -685,15 +727,16 @@ class ObservationSpace(ABC):
 
     def __call__(self, state: UniversalState) -> dict[str, np.ndarray]:
         obs = self.state_to_obs(state)
-        # Verify observation matches the defined gym space
-        if not self.gym_space.contains(obs):
-            raise ValueError(
-                f"Observation {obs} does not comply with defined gym space {self.gym_space}"
-            )
         return obs
 
 
 class DefaultObservationSpace(ObservationSpace):
+    """
+    The default observation space used by the paper. Observations become a dictionary with two keys:
+    - "numbers": A 48-dimensional vector of numerical features
+    - "text": A string of text features with inconsistent length, but a consistent number of whitespace-separated words.
+    """
+
     @property
     def gym_space(self):
         return gym.spaces.Dict(
@@ -713,6 +756,12 @@ class DefaultObservationSpace(ObservationSpace):
                 ),
             }
         )
+
+    @property
+    def tokenizable(self) -> dict[str, int]:
+        return {
+            "text": 87,
+        }
 
     def state_to_obs(self, state: UniversalState):
         player_str = (
@@ -759,3 +808,49 @@ class DefaultObservationSpace(ObservationSpace):
         )
         numbers = np.array(numerical, dtype=np.float32)
         return {"text": text, "numbers": numbers}
+
+
+class TokenizedObservationSpace(ObservationSpace):
+    """
+    An observation space that tokenizes specified keys of the default observation space by splitting text into whitespace-separated words and running them through
+    a simple vocabulary lookup, which usually has been generated by tracking unique words across the entire replay dataset. Useful for turning the text
+    features of the default observation space into an array with constant shape.
+    """
+
+    def __init__(
+        self,
+        base_obs_space: ObservationSpace,
+        tokenizer: PokemonTokenizer,
+    ):
+        self.base_obs_space = base_obs_space
+        self.tokenizer = tokenizer
+
+    @property
+    def gym_space(self):
+        tokenizable = self.base_obs_space.tokenizable
+        base_space = copy.deepcopy(self.base_obs_space.gym_space)
+        new_space_dict = {
+            key: space
+            for key, space in base_space.spaces.items()
+            if key not in tokenizable
+        }
+        for tokenizable_key, tokenizable_length in tokenizable.items():
+            low_token = min(UNKNOWN_TOKEN, 0)
+            high_token = max(UNKNOWN_TOKEN, len(self.tokenizer))
+            new_space_dict[f"{tokenizable_key}_tokens"] = gym.spaces.Box(
+                low=low_token,
+                high=high_token,
+                shape=(tokenizable_length,),
+                dtype=np.int32,
+            )
+
+        return gym.spaces.Dict(new_space_dict)
+
+    def state_to_obs(self, state: UniversalState):
+        obs = self.base_obs_space.state_to_obs(state)
+        for tokenizable_key in self.base_obs_space.tokenizable.keys():
+            base_obs_key = obs.pop(tokenizable_key)
+            obs[f"{tokenizable_key}_tokens"] = self.tokenizer.tokenize(
+                base_obs_key.tolist()
+            )
+        return obs

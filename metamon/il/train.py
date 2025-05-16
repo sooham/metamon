@@ -1,8 +1,6 @@
 import os
-import copy
-import warnings
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable
 from functools import partial
 
 import torch
@@ -13,7 +11,7 @@ from torch.nn.utils.rnn import pad_sequence
 import wandb
 import numpy as np
 from tqdm import tqdm
-from einops import repeat, rearrange
+from einops import rearrange
 import gin
 
 from metamon.il.model import (
@@ -22,35 +20,37 @@ from metamon.il.model import (
     TransformerTurnEmbedding,
     FFTurnEmbedding,
 )
-from metamon.data.replay_dataset.parsed_replays import ParsedReplayDataset
-from metamon.data.tokenizer import get_tokenizer
+from metamon.tokenizer import get_tokenizer
+from metamon.interface import (
+    TokenizedObservationSpace,
+    DefaultObservationSpace,
+    DefaultShapedReward,
+)
+from metamon.datasets import ParsedReplayDataset
 
-MAGIC_PAD_VAL = -1
+MAGIC_PAD_VAL = -1  # note we set the seq pad value to the same value as missing actions
 pad = partial(pad_sequence, batch_first=True, padding_value=MAGIC_PAD_VAL)
 
 
-def pad_collate_replay_data(samples):
-    obs_tok = pad([s[0][0] for s in samples])
-    obs_num = pad([s[0][1] for s in samples])
-    actions = pad([s[1] for s in samples])
-    rewards = pad([s[2] for s in samples])
-    obs_tok_t1 = pad([s[3][0] for s in samples])
-    obs_num_t1 = pad([s[3][1] for s in samples])
-    dones = pad([s[4] for s in samples])
-    return (obs_tok, obs_num), actions, rewards, (obs_tok_t1, obs_num_t1), dones
+def pad_collate_replay_data_for_il(samples):
+    # each sample is (obs, action, reward, done, missing_action_mask)
+    # we don't need the mission action mask because we'll ignore all -1s anyway
+    obs = {
+        k: pad([torch.from_numpy(np.array(s[0][k])) for s in samples])
+        for k in samples[0][0].keys()
+    }
+    actions = pad([torch.from_numpy(np.array(s[1])) for s in samples])
+    return obs, actions
 
 
 @dataclass
 class Run:
     gpu: int
-    dset_root: str
+    parsed_replay_dataset: ParsedReplayDataset
     run_name: str
-    formats: list[str]
-    save_dir: str = os.path.join(os.path.dirname(__file__), "logs_and_checkpoints")
-    epochs: int = 500
-    early_stopping_patience: int = 2
 
     # Logging
+    save_dir: str = "logs_and_checkpoints"
     log_to_wandb: bool = False
     wandb_project: str = None
     wandb_entity: str = None
@@ -59,21 +59,15 @@ class Run:
     ckpt_interval: int = 10
     log_interval: int = 250
 
-    # Dataset
-    wins_losses_both: str = "both"
-    max_dset_size: Optional[int] = None
-    max_seq_len: int = 64
-    tokenizer: str = "allreplays-v3"
-    numerical_features: int = 48
-    num_actions: int = 9
-
     # Optimization
     model_Cls: Callable = GRUModel
     batch_size: int = 32
-    dloader_workers: int = 6
+    dloader_workers: int = 8
     learning_rate: float = 1e-4
     grad_clip: float = 2.0
     l2_coeff: float = 1e-4
+    early_stopping_patience: int = 2
+    epochs: int = 500
 
     def start(self):
         self.DEVICE = torch.device(f"cuda:{self.gpu}" if self.gpu >= 0 else "cpu")
@@ -119,29 +113,30 @@ class Run:
             torch.save(self.policy, os.path.join(self.ckpt_dir, model_name))
 
     def init_dsets(self):
-        dset_kwargs = dict(
-            dset_root=self.dset_root,
-            max_seq_len=self.max_seq_len,
-            formats=self.formats,
-            tokenizer=get_tokenizer(self.tokenizer),
-            wins_losses_both=self.wins_losses_both,
-            max_size=self.max_dset_size,
+        train_size = int(0.9 * len(self.parsed_replay_dataset))
+        val_size = len(self.parsed_replay_dataset) - train_size
+        # Use random_split to create train/val datasets
+        self.train_dset, self.val_dset = torch.utils.data.random_split(
+            self.parsed_replay_dataset,
+            [train_size, val_size],
+            generator=torch.Generator().manual_seed(231),
         )
-        self.train_dset = ParsedReplayDataset(**dset_kwargs, dset_split="train")
-        self.val_dset = ParsedReplayDataset(**dset_kwargs, dset_split="val")
+        if self.verbose:
+            print(f"Training on {train_size:,d} battles")
+            print(f"Validating on {val_size:,d} battles")
 
         dloader_kwargs = dict(
             batch_size=self.batch_size,
             num_workers=self.dloader_workers,
-            collate_fn=pad_collate_replay_data,
             pin_memory=True,
+            collate_fn=pad_collate_replay_data_for_il,
             shuffle=True,
         )
         self.train_dloader = DataLoader(self.train_dset, **dloader_kwargs)
         self.val_dloader = DataLoader(self.val_dset, **dloader_kwargs)
 
     def init_logger(self):
-        gin_config = gin.operative_config_str() + f"\nDataset Formats: {self.formats}"
+        gin_config = gin.operative_config_str()
         config_path = os.path.join(self.save_dir, self.run_name, "config.txt")
         with open(config_path, "w") as f:
             f.write(gin_config)
@@ -170,10 +165,12 @@ class Run:
 
     def init_model(self):
         # build model, move to GPU
+        obs_space = self.parsed_replay_dataset.observation_space
+        assert isinstance(obs_space, TokenizedObservationSpace)
         self.policy = self.model_Cls(
-            tokenizer=get_tokenizer(self.tokenizer),
-            numerical_features=self.numerical_features,
-            num_actions=self.num_actions,
+            tokenizer=obs_space.tokenizer,
+            numerical_features=obs_space.gym_space["numbers"].shape[0],
+            num_actions=9,
         )
         assert isinstance(self.policy, MetamonILModel)
         self.policy.to(self.DEVICE)
@@ -198,9 +195,11 @@ class Run:
             wandb.log({f"{key}/{subkey}": val for subkey, val in log_dict.items()})
 
     def compute_loss(self, inputs, labels):
-        inputs = (x.to(self.DEVICE) for x in inputs)
+        inputs = {k: v.to(self.DEVICE) for k, v in inputs.items()}
         labels = labels.to(self.DEVICE)
-        predictions, _ = self.policy(*inputs)
+        predictions, _ = self.policy(
+            token_inputs=inputs["text_tokens"], numerical_inputs=inputs["numbers"]
+        )
         loss = F.cross_entropy(
             rearrange(predictions, "b l d -> (b l) d"),
             rearrange(labels.to(dtype=torch.long), "b l -> (b l)"),
@@ -251,7 +250,7 @@ class Run:
             train_acc = []
             train_top2_acc = []
             self.policy.train()
-            for step, (inputs, labels, _, _, _) in tqdm(
+            for step, (inputs, labels, *_) in tqdm(
                 enumerate(self.train_dloader),
                 colour="white",
                 total=len(self.train_dloader),
@@ -279,7 +278,7 @@ class Run:
 
             val_acc, val_loss, val_top2_acc = [], [], []
             self.policy.eval()
-            for step, (inputs, labels, _, _, _) in tqdm(
+            for step, (inputs, labels, *_) in tqdm(
                 enumerate(self.val_dloader), colour="red", desc=f"Epoch: {epoch} (Val)"
             ):
                 step_loss, step_acc, step_top2_acc = self.val_step(inputs, labels)
@@ -358,8 +357,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--parsed_replay_dir",
         type=str,
-        required=True,
-        help="Path to the directory of parsed replays.",
+        default=None,
+        help="Path to the directory of parsed replays. Defaults to the official huggingface version.",
     )
     parser.add_argument(
         "--wandb_username",
@@ -374,19 +373,19 @@ if __name__ == "__main__":
         default=None,
     )
     parser.add_argument(
+        "--tokenizer",
+        type=str,
+        default="allreplays-v3",
+    )
+    parser.add_argument(
         "--turn_embedding",
         choices=["transformer", "ff"],
-        default="ff",
+        default="transformer",
     )
     parser.add_argument(
-        "--max_dset_size",
+        "--max_seq_len",
         type=int,
-        default=None,
-    )
-    parser.add_argument(
-        "--learning_rate",
-        type=float,
-        default=1e-4,
+        default=64,
     )
     args = parser.parse_args()
 
@@ -398,19 +397,28 @@ if __name__ == "__main__":
     gin.bind_parameter("GRUModel.turn_embedding_Cls", turn_embedding_type)
     gin.finalize()
 
+    parsed_replay_dataset = ParsedReplayDataset(
+        dset_root=args.parsed_replay_dir,
+        observation_space=TokenizedObservationSpace(
+            tokenizer=get_tokenizer(args.tokenizer),
+            base_obs_space=DefaultObservationSpace(),
+        ),
+        reward_function=DefaultShapedReward(),
+        formats=args.formats,
+        wins_losses_both=args.wins_losses_both,
+        max_seq_len=args.max_seq_len,
+        verbose=True,
+    )
+
     enable_logging = args.wandb_project is not None and args.wandb_username is not None
     for trial in range(args.trials):
         run = Run(
-            dset_root=args.parsed_replay_dir,
-            formats=args.formats,
+            parsed_replay_dataset=parsed_replay_dataset,
             gpu=args.gpu,
             run_name=f"{args.run_name}_trial{trial+1}",
-            max_dset_size=args.max_dset_size,
             log_to_wandb=enable_logging,
             wandb_project=args.wandb_project,
             wandb_entity=args.wandb_username,
-            wins_losses_both=args.wins_losses_both,
-            learning_rate=args.learning_rate,
         )
         run.start()
         run.learn()

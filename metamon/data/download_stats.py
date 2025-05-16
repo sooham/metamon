@@ -23,6 +23,7 @@ DOWNLOAD_URL_REGISTRY = dict(
     ),
 )
 
+
 class DownloadProgressBar(tqdm):
     def update_to(self, b=1, bsize=1, tsize=None):
         if tsize is not None:
@@ -49,6 +50,7 @@ def url_is_alive(url):
         return True
     except urllib.request.HTTPError:
         return False
+
 
 def download_url(url, download_dir, fname=None, check_overwrite=True):
     """
@@ -90,6 +92,7 @@ def download_url(url, download_dir, fname=None, check_overwrite=True):
 
     with DownloadProgressBar(unit="B", unit_scale=True, miniters=1, desc=fname) as t:
         urllib.request.urlretrieve(url, filename=file_to_write, reporthook=t.update_to)
+
 
 def download_and_extract_zip(
     url,
@@ -159,8 +162,11 @@ def download_and_extract_zip(
 
     print(colored("Done.\n", "yellow"))
 
+
 def download_data():
-    ans = input("Did not find pre-calculated PS stats data. Download from server? (y/n) ")
+    ans = input(
+        "Did not find pre-calculated PS stats data. Download from server? (y/n) "
+    )
     if ans == "y":
         print("Proceeding...")
     else:
