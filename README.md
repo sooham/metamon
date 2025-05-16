@@ -100,7 +100,7 @@ export METAMON_CACHE_DIR=/path/to/plenty/of/disk/space
 
 > [!NOTE]
 >
-> `metamon` installs an old fork of [poke-env]() ([here]()). **Please don't bother the main poke-env GitHub with issues related to `poke_env` error messages you encounter while using metamon**. They've probably already fixed it!
+> `metamon` installs an old fork of [poke-env](https://github.com/hsahovic/poke-env) ([here](https://github.com/jakegrigsby/poke-env)). **Please don't bother the main poke-env GitHub with issues related to `poke_env` error messages you encounter while using metamon**. They've probably already fixed it!
 
 <br>
 
@@ -110,7 +110,7 @@ ____
 
 ## Quick Start
 
-The RL environment is a "batteries included" wrapper of [poke-env](). Pick a set of Pokémon teams to play with, an observation space, and a reward function:
+The RL environment is a "batteries included" wrapper of [poke-env](https://github.com/hsahovic/poke-env). Pick a set of Pokémon teams to play with, an observation space, and a reward function:
 
 ```python
 from metamon.env import get_metamon_teams
@@ -212,7 +212,7 @@ ____
 
 ## Pretrained Models
 
-We have made every checkpoint of 18 models available on huggingface at [`jakegrigsby/metamon`](https://huggingface.co/jakegrigsby/metamon/tree/main). Pretrained models can run without research GPUs, but you will need to install [`amago`](), which is an RL codebase by the same authors. Follow instructions [here]().
+We have made every checkpoint of 18 models available on huggingface at [`jakegrigsby/metamon`](https://huggingface.co/jakegrigsby/metamon/tree/main). Pretrained models can run without research GPUs, but you will need to install [`amago`](https://github.com/UT-Austin-RPL/amago), which is an RL codebase by the same authors. Follow instructions [here](https://github.com/UT-Austin-RPL/amago).
 
 <div align="center">
     <img src="media/arch_v6_safe.png" alt="Figure 1" width="450">
@@ -285,7 +285,7 @@ Datasets are stored on huggingface in three formats:
 |**[`metamon-synthetic`](https://huggingface.co/datasets/jakegrigsby/metamon-synthetic)** | 5M | A set of real + self-play battles that were used to train the best models in the paper. Unfortunately, this dataset has been deprecated as part of changes that make the parsed replay dataset more future-proof. It provides `amago` trajectory files with a fixed observation space + reward function and missing actions filled by an IL model. We are working to create a new starter dataset of self-play battles.|
 
 
-Parsed replays will download automatically when requested by the `ParsedReplayDataset`, but these datasets are large. You can process them in advance with `python -m metamon.download parsed-replays`. Use `python -m metamon.download raw-replays` to grab the unprocessed Showdown replays if needed.
+Parsed replays will download automatically when requested by the `ParsedReplayDataset`, but these datasets are large. See `python -m metamon.download --help` to download them in advance.
 
 <br>
 
