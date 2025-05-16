@@ -14,6 +14,71 @@ from metamon.download import download_parsed_replays
 
 
 class ParsedReplayDataset(Dataset):
+    """
+    Creates an iterable dataset of "parsed replays". Parsed replays are records of Pokémon
+    Showdown battles that have been converted to the partially observed point-of-view of a single player,
+    matching the problem our agents face in the RL environment. They are created by the
+    `metamon.data.replay_dataset.parsed_replays` module from "raw" Showdown replay logs
+    downloaded from publicly available battles.
+
+    This is a pytorch `Dataset` that returns (nested_obs, actions, rewards, dones, missing_actions) trajectory tuples,
+    where:
+    - nested_obs: lists of numpy arrays with length seq_len (arrays may have different shapes). If the observation space
+    is a dict, this becomes a dict of lists of arrays for each key....
+    - actions: A numpy array of shape (seq_len, dim)
+    - rewards: A numpy array of shape (seq_len, dim)
+    - dones: A numpy array of shape (seq_len, dim)
+    - missing_actions: A numpy array of shape (seq_len, dim)
+
+    Note that depending on the observation space, you may need a custom pad_collate_fn in the pytorch dataloader
+    to handle the variable-shaped arrays in nested_obs.
+
+    Missing actions are a bool mask where idx i = True if action i is missing (actions[i] == -1, or was originally
+    missing but has since been filled by some prediction scheme). Missing actions are caused by player choices that
+    are not revealed to spectators and do not show up in the replay logs (e.g., paralysis, sleep, flinch).
+
+    Data is stored as interface.UniversalStates and observations and rewards are created on the fly. This
+    means we no longer have to create new versions of the parsed replay dataset to experiment with different
+    observation spaces or reward functions.
+
+    Example:
+    ```python
+    dset = ParsedReplayDataset(
+        observation_space=TokenizedObservationSpace(
+            DefaultObservationSpace(),
+            tokenizer=get_tokenizer("allreplays-v3"),
+        ),
+        reward_function=DefaultShapedReward(),
+        formats=["gen1nu"],
+        verbose=True,
+    )
+
+    obs, actions, rewards, dones, missing_actions = dset[0]
+    ```
+
+    Args:
+        observation_space: The observation space to use. Must be an instance of `interface.ObservationSpace`.
+        reward_function: The reward function to use. Must be an instance of `interface.RewardFunction`.
+        dset_root: The root directory of the parsed replays. If not specified, the parsed replays will be
+            downloaded and extracted from the latest version of the huggingface dataset, but this may take minutes.
+        formats: A list of formats to load (e.g. ["gen1ou", "gen2ubers"]). Defaults to all supported formats
+            (Gen 1-4 ou, uu, nu, and ubers), but this will take a long time to download and extract the first time.
+        wins_losses_both: Whether to only load the perspective of players who won their battle, lost their
+            battle, or both. {"wins", "losses", "both"}
+        min_rating: The minimum rating of battles to load (in ELO). Note that most replays are Unrated, which
+            is mapped to 1000 ELO (the minimum rating on Showdown). In reality many of these battles were played
+            as part of tournaments and should probably not be ignored.
+        max_rating: The maximum rating of battles to load (in ELO). In Generations 1-4, ELO ratings above 1500
+            are very good.
+        min_date: The minimum date of battles to load (as a datetime). Our dataset begins in 2014. Many replays
+            from 2021-2024 are missing due to a Showdown database issue. See the raw-replay dataset README on
+            HF for a visual timeline of the dataset.
+        max_date: The maximum date of battles to load (as a datetime). The latest date available will depend on
+            the current version of the parsed replays dataset.
+        max_seq_len: The maximum sequence length to load. Trajectories are randomly sliced to this length.
+        verbose: Whether to print progress bars while loading large datasets.
+    """
+
     def __init__(
         self,
         observation_space: ObservationSpace,
@@ -117,6 +182,7 @@ class ParsedReplayDataset(Dataset):
             data = json.load(f)
         states = [UniversalState.from_dict(s) for s in data["states"]]
         obs = [self.observation_space.state_to_obs(s) for s in states]
+        # TODO: handle case where observation space is not a dict. don't have one to test yet.
         nested_obs = defaultdict(list)
         for o in obs:
             for k, v in o.items():
@@ -157,7 +223,7 @@ class ParsedReplayDataset(Dataset):
         return self.load_filename(filename)
 
     def __getitem__(self, i) -> Tuple[
-        Dict[str, np.ndarray] | np.ndarray,
+        Dict[str, list[np.ndarray]] | list[np.ndarray],
         np.ndarray,
         np.ndarray,
         np.ndarray,
