@@ -12,7 +12,7 @@
 
 `replay_dataset/raw_replays/` contains code for importing, anonymizing, uploading/downloading Pokemon Showdown replay `json` files.
 
-`replay_dataset/parsed_replays/` contains the replay parser that converts Showdown replays to agent data. The replay parser has [its own README](parsed_replays/README.md).
+`replay_dataset/parsed_replays/` contains the replay parser that converts Showdown replays to agent data. The replay parser has [its own README](replay_dataset/parsed_replays/README.md).
 
 
 `legacy_team_builder/` is the original (paper) logic for procedurally generating (or filling in missing details of) Pokémon teams. It is still used to access Smogon usage statistics.
