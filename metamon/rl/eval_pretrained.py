@@ -93,7 +93,7 @@ def make_ladder_env(
     player_team_set: TeamSet,
     observation_space: ObservationSpace,
     reward_function: RewardFunction,
-    n_challenges: int,
+    num_battles: int,
     username: str,
     avatar: str,
 ):
@@ -102,7 +102,7 @@ def make_ladder_env(
     """
     env = QueueOnLocalLadder(
         battle_format=battle_format,
-        num_battles=n_challenges,
+        num_battles=num_battles,
         observation_space=observation_space,
         reward_function=reward_function,
         player_team_set=player_team_set,
@@ -546,7 +546,7 @@ if __name__ == "__main__":
         choices=[
             "heuristic",
             "il",
-            "local-ladder",
+            "ladder",
         ],
         help="Type of evaluation to perform. 'heuristic' will run the agent against the heuristic baselines, 'il' will run the agent against the IL baselines, 'local-ladder' will run the agent on your self-hosted Showdown ladder. If you set two agents to play on the local-ladder, they will be battling each other!",
     )
@@ -556,10 +556,10 @@ if __name__ == "__main__":
         help="Path to save (amago-format) trajectories of completed battles.",
     )
     parser.add_argument(
-        "--team_split",
+        "--team_set",
         default="competitive",
-        choices=["competitive", "train", "replays", "random_lead"],
-        help="Team split strategy.",
+        choices=["competitive", "paper_variety", "paper_replays"],
+        help="Team Set.",
     )
     parser.add_argument(
         "--wait_for_input",
@@ -573,7 +573,7 @@ if __name__ == "__main__":
     for gen in args.gens:
         for format in args.formats:
             battle_format = f"gen{gen}{format.lower()}"
-            player_team_set = get_metamon_teams(battle_format, args.team_split)
+            player_team_set = get_metamon_teams(battle_format, args.team_set)
             for checkpoint in args.checkpoints:
                 agent = agent_maker.initialize_agent(
                     checkpoint=checkpoint, log=args.log_to_wandb
@@ -597,12 +597,13 @@ if __name__ == "__main__":
                         for o in IL
                     ]
                     make_envs *= 1
-                elif "ladder" in args.eval_type:
+                elif args.eval_type == "ladder":
+                    agent.env_mode = "sync"
                     make_envs = [
                         partial(
                             make_ladder_env,
                             **env_kwargs,
-                            num_battles=args.n_challenges,
+                            num_battles=args.n_challenges + 1,
                             username=args.username,
                             avatar=args.avatar,
                         )
