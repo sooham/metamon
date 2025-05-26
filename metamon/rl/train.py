@@ -1,12 +1,14 @@
 import os
+import warnings
 import multiprocessing as mp
 from functools import partial
 
 import wandb
 
 import amago
-from amago.cli_utils import *
+from amago import cli_utils
 from amago.agent import binary_filter, exp_filter
+from amago.utils import AmagoWarning
 
 from metamon.env import BattleAgainstBaseline, TeamSet, get_metamon_teams
 from metamon.interface import (
@@ -21,6 +23,7 @@ from metamon.datasets import ParsedReplayDataset
 from metamon.rl.metamon_to_amago import (
     MetamonAMAGOExperiment,
     MetamonAMAGOWrapper,
+    MetamonAMAGODataset,
     MetamonTstepEncoder,
 )
 from metamon import baselines
@@ -37,10 +40,11 @@ def add_cli(parser):
     parser.add_argument("--batch_size_per_gpu", type=int, default=12)
     parser.add_argument("--grad_accum", type=int, default=1)
     parser.add_argument("--il", action="store_true")
-    parser.add_argument("--arch_size", required=True, choices=["small", "medium", "large"])
+    parser.add_argument("--arch_size", required=True, choices=["small", "medium", "large", "synthetic"])
     parser.add_argument("--token_aug", action="store_true")
     parser.add_argument("--tokenizer", type=str, default="allreplays-v3")
     parser.add_argument("--log", action="store_true")
+    parser.add_argument("--agent_type", type=str, default="agent", choices=["agent", "multitask"])
     # fmt: on
     return parser
 
@@ -64,6 +68,8 @@ def make_baseline_env(
     """
     Battle against a built-in baseline opponent
     """
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", category=AmagoWarning)
     env = BattleAgainstBaseline(
         battle_format=battle_format,
         observation_space=observation_space,
@@ -75,32 +81,43 @@ def make_baseline_env(
 
 
 def configure(args):
+    """
+    This is all customizable. When we've trained a model we like, we can recover
+    the config from wandb or the config.txt in the checkpoint directory to set up
+    an inference checkpoint.
+    """
     config = {
-        "amago.agent.Agent.reward_multiplier": 10.0,
-        "amago.agent.Agent.offline_coeff": 1.0,
-        "amago.agent.Agent.online_coeff": 0.0,
-        "amago.agent.Agent.fake_filter": args.il,
-        "amago.agent.Agent.use_multigamma": not args.il,
-        "amago.agent.Agent.fbc_filter_func": binary_filter,
-        "amago.agent.Agent.tau": 0.004,
         "MetamonTstepEncoder.token_mask_aug": args.token_aug,
         "MetamonTstepEncoder.tokenizer": get_tokenizer(args.tokenizer),
+        # change to FlashAttention if possible (or any of the other options)
         "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.VanillaAttention,
     }
+    agent_type = cli_utils.switch_agent(
+        config=config,
+        agent=args.agent_type,
+        reward_multiplier=10.0,
+        offline_coeff=1.0,
+        online_coeff=0.0,
+        fake_filter=args.il,
+        use_multigamma=not args.il,
+        fbc_filter_func=binary_filter,
+        tau=0.004,
+        num_actions_for_value_in_critic_loss=5,
+    )
     config_file = os.path.join(
         os.path.dirname(__file__), "configs", f"{args.arch_size}.gin"
     )
-    use_config(config, [config_file])
+    cli_utils.use_config(config, [config_file])
+    return agent_type
 
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
 
-    mp.set_start_method("spawn")
     parser = ArgumentParser()
     add_cli(parser)
     args = parser.parse_args()
-    configure(args)
+    agent_type = configure(args)
 
     obs_space = TokenizedObservationSpace(
         DefaultObservationSpace(), get_tokenizer(args.tokenizer)
@@ -110,6 +127,12 @@ if __name__ == "__main__":
         dset_root=args.parsed_replay_dir,
         observation_space=obs_space,
         reward_function=reward_function,
+        formats=["gen1ou"],
+    )
+
+    amago_dataset = MetamonAMAGODataset(
+        dset_name="Metamon Parsed Replays",
+        parsed_replay_dset=parsed_replay_dataset,
     )
 
     make_envs = [
@@ -126,10 +149,11 @@ if __name__ == "__main__":
     ]
     experiment = MetamonAMAGOExperiment(
         run_name=args.run_name,
-        ckpt_dir=args.ckpt_dir,
+        agent_type=agent_type,
+        ckpt_base_dir=args.ckpt_dir,
         make_train_env=make_envs,
         make_val_env=make_envs,
-        parsed_replay_dataset=parsed_replay_dataset,
+        dataset=amago_dataset,
         log_to_wandb=args.log,
         train_batches_per_epoch=25_000 * args.grad_accum,
         batches_per_update=args.grad_accum,

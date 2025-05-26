@@ -340,7 +340,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
             turn_limit=float("inf"),
             save_trajectories_to=save_trajectories_to,
         )
-        print(f"Starting laddering with {num_battles} battles")
+        print(f"Laddering for {num_battles} battles")
         self.start_laddering(n_challenges=num_battles)
 
     def step(self, action):

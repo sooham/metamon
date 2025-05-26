@@ -598,11 +598,12 @@ if __name__ == "__main__":
                             avatar=args.avatar,
                         )
                     ]
+                    # disables AMAGO tqdm because we'll be rendering the poke-env battle bar
+                    agent.verbose = False
                 else:
                     raise ValueError(f"Invalid eval_type: {args.eval_type}")
 
                 agent.parallel_actors = len(make_envs)
-                # agent.verbose = False
 
                 # evaluate
                 results = agent.evaluate_test(

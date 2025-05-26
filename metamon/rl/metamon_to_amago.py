@@ -1,7 +1,5 @@
 import os
-import random
-import warnings
-from typing import Optional, Dict, List, Type, Callable, Iterable
+from typing import Optional, Dict, List, Type, Callable, Iterable, Any
 
 import gin
 import numpy as np
@@ -18,9 +16,12 @@ from metamon.datasets import ParsedReplayDataset
 from metamon.env import PokeEnvWrapper
 
 import amago
+
+assert amago.__version__ >= "3.1.0", "Update to the latest AMAGO version!"
 from amago.envs import AMAGOEnv
+from amago.envs.exploration import ExplorationWrapper
 from amago.nets.utils import symlog
-from amago.loading import TrajDset, RLData, Batch, MAGIC_PAD_VAL
+from amago.loading import RLData, RLDataset, Batch
 from amago.agent import Agent
 from amago.nets.traj_encoders import TformerTrajEncoder, TrajEncoder
 from amago.nets.tstep_encoders import TstepEncoder
@@ -28,6 +29,8 @@ from amago.envs.amago_env import AMAGO_ENV_LOG_PREFIX
 
 
 class MetamonAMAGOWrapper(AMAGOEnv):
+    """AMAGOEnv wrapper with success rate and valid action rate logging."""
+
     def __init__(self, metamon_env: PokeEnvWrapper):
         self.reset_counter = 0
         super().__init__(
@@ -39,8 +42,9 @@ class MetamonAMAGOWrapper(AMAGOEnv):
     def step(self, action):
         try:
             *out, info = super().step(action)
-            if "win_rate" in info:
-                info[f"{AMAGO_ENV_LOG_PREFIX} Success"] = info["win_rate"]
+            # amago will average these stats over episodes, devices, and parallel actors.
+            if "won" in info:
+                info[f"{AMAGO_ENV_LOG_PREFIX} Win Rate"] = info["won"]
             if "valid_action_count" in info and "invalid_action_count" in info:
                 info[f"{AMAGO_ENV_LOG_PREFIX} Valid Actions"] = info[
                     "valid_action_count"
@@ -70,6 +74,13 @@ class PSLadderAMAGOWrapper(MetamonAMAGOWrapper):
 
 
 def unknown_token_mask(tokens, skip_prob: float = 0.2, batch_max_prob: float = 0.33):
+    """Randomly set entries in the text component of the observation space to UNKNOWN_TOKEN.
+
+    Args:
+        skip_prob: Probability of entirely skipping the mask for any given sequence
+        batch_max_prob: For each sequence, randomly mask tokens with [0, batch_max_prob) prob
+            (if not skipped).
+    """
     B, L, tok = tokens.shape
     dev = tokens.device
     batch_mask = torch.rand(B) < (1.0 - skip_prob)  # mask tokens from this batch index
@@ -86,6 +97,12 @@ def unknown_token_mask(tokens, skip_prob: float = 0.2, batch_max_prob: float = 0
 
 @gin.configurable
 class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
+    """Token + numerical embedding for Metamon.
+
+    Fuses multi-modal input with attention and summary tokens.
+    Visualized on the README and in the paper architecture figure.
+    """
+
     def __init__(
         self,
         obs_space,
@@ -127,162 +144,100 @@ class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
         return turn_emb
 
 
-class MetamonAMAGODataset(TrajDset):
+class MetamonAMAGODataset(RLDataset):
+    """A wrapper around the ParsedReplayDataset that converts to an AMAGO RLDataset.
+
+    Args:
+        dset_name: Give the dataset an arbitrary name for logging. Defaults to class name.
+        parsed_replay_dset: The ParsedReplayDataset to wrap.
+    """
+
     def __init__(
         self,
-        items_per_epoch: int,
         parsed_replay_dset: ParsedReplayDataset,
-        selfplay_replay_dset: Optional[ParsedReplayDataset] = None,
-        max_seq_len: Optional[int] = None,
-        parsed_replay_sampling_rate: float = 1.0,
-        padded_sampling: str = "none",
+        dset_name: Optional[str] = None,
     ):
-        self.items_per_epoch = items_per_epoch
+        super().__init__(dset_name=dset_name)
         self.parsed_replay_dset = parsed_replay_dset
-        self.selfplay_replay_dset = selfplay_replay_dset
-        self.max_seq_len = max_seq_len
-        if not 0 <= parsed_replay_sampling_rate <= 1:
-            raise ValueError(
-                f"parsed_replay_sampling_rate must be between 0 and 1, got {parsed_replay_sampling_rate}"
-            )
-        self.parsed_replay_sampling_rate = parsed_replay_sampling_rate
-        self.padded_sampling = padded_sampling
-
-    def __len__(self):
-        return self.items_per_epoch
 
     @property
-    def disk_usage(self):
-        # avoid slowdowns for extremely large datasets
-        return -1
+    def save_new_trajs_to(self):
+        # disables AMAGO's trajetory saving; metamon
+        # will handle this in its own replay format.
+        return None
 
-    def clear(self, delete_protected: bool = False):
-        warnings.warn(
-            "Metamon protects against deleting replay dataset files via the AMAGO Dataset. Nothing will happen."
-        )
-        return
+    def on_end_of_collection(self, experiment) -> dict[str, Any]:
+        # TODO: implement FIFO replay buffer
+        return {}
 
-    def refresh_files(self):
-        self.parsed_replay_dset.refresh_files()
-        if self.selfplay_replay_dset is not None:
-            self.selfplay_replay_dset.refresh_files()
+    def get_description(self) -> str:
+        return f"Metamon Replay Dataset ({self.dset_name})"
 
-    def count_deletable_trajectories(self):
-        if self.selfplay_replay_dset is None:
-            return 0
-        return len(self.selfplay_replay_dset)
-
-    def count_protected_trajectories(self):
-        return len(self.parsed_replay_dset)
-
-    def count_trajectories(self):
-        return self.count_deletable_trajectories() + self.count_protected_trajectories()
-
-    def filter(self, new_size: int):
-        if self.count_deletable_trajectories() < new_size:
-            return
-        warnings.warn("Dataset FIFO filtering is not yet implemented.")
-        return
-
-    def __getitem__(self, i):
-        if (
-            self.selfplay_replay_dset is None
-            or random.random() < self.parsed_replay_sampling_rate
-        ):
-            data = self.parsed_replay_dset.random_sample()
-        else:
-            data = self.selfplay_replay_dset.random_sample()
-
+    def sample_random_trajectory(self) -> RLData:
+        data = self.parsed_replay_dset.random_sample()
         obs, actions, rewards, dones, missing_actions = data
-        rl_data = MetamonRLData(
-            obs=obs,
-            actions=actions,
-            rewards=rewards,
-            dones=dones,
-            missing_actions=missing_actions,
+        obs_torch = {k: torch.from_numpy(np.stack(v, axis=0)) for k, v in obs.items()}
+        actions_torch = F.one_hot(
+            torch.from_numpy(actions).long().clamp(min=0), num_classes=9
+        )[:-1]
+        rewards_torch = torch.from_numpy(rewards).unsqueeze(-1)
+        dones_torch = torch.from_numpy(dones).unsqueeze(-1)
+        obs_torch["missing_action_mask"] = torch.from_numpy(missing_actions).unsqueeze(
+            -1
         )
-        if self.max_seq_len is not None:
-            rl_data = rl_data.random_slice(
-                length=self.max_seq_len, padded_sampling=self.padded_sampling
-            )
+        time_idxs = torch.arange(len(missing_actions)).long().unsqueeze(-1)
+        rl_data = RLData(
+            obs=obs_torch,
+            actions=actions_torch,
+            rews=rewards_torch,
+            dones=dones_torch,
+            time_idxs=time_idxs,
+        )
         return rl_data
-
-
-class MetamonRLData(RLData):
-    def __init__(
-        self,
-        obs: Dict[str, np.ndarray],
-        actions: np.ndarray,
-        rewards: np.ndarray,
-        dones: np.ndarray,
-        missing_actions: np.ndarray,
-    ):
-        self.obs = {k: torch.from_numpy(np.array(v)) for k, v in obs.items()}
-        # a bit of a hack: put the action mask here to avoid rewriting more code
-        self.obs["missing_action_mask"] = (
-            torch.from_numpy(missing_actions).bool().unsqueeze(-1)
-        )
-
-        # 1. imitate AMAGOEnv one-hot action representation
-        # (AMAGOEnv.make_action_rep)
-        actions_one_hot = torch.zeros((len(actions), 9), dtype=torch.float32)
-        actions_one_hot[torch.arange(len(actions)), actions] = 1.0
-        self.actions = actions_one_hot[:-1, :]
-
-        # 2. imitate AMAGOEnv time index
-        self.time_idxs = torch.arange(len(actions)).long().unsqueeze(-1)
-
-        # 3. imitate AMAGO reward
-        self.rews = torch.from_numpy(rewards).float().unsqueeze(-1)
-
-        # 4. imitate AMAGO done
-        self.dones = torch.from_numpy(dones).bool().unsqueeze(-1)
-
-        blank_action = torch.zeros((1, 9), dtype=torch.float32)
-        blank_rew = torch.zeros((1, 1), dtype=torch.float32)
-        # "rl2s" are what AMAGO calls the array of (prev_action, prev_reward) values
-        # `amago.hindsight.Timestep`
-        self.rl2s = torch.cat(
-            (
-                torch.cat((blank_rew, self.rews), dim=0),
-                torch.cat((blank_action, self.actions), dim=0),
-            ),
-            dim=-1,
-        )
-
-        # used by random sampling
-        self.safe_randrange = lambda l, h: random.randrange(l, max(h, l + 1))
 
 
 @gin.configurable
 class MetamonAMAGOExperiment(amago.Experiment):
+    """
+    Verbose wrapper around the AMAGO Experiment that sets some default kwargs,
+    adds a missing action mask, and leaves room for further tweaks.
+    """
+
     def __init__(
         self,
-        # required
+        # main
         run_name: str,
-        ckpt_dir: str,
+        ckpt_base_dir: str,
         make_train_env: Iterable[Callable],
         make_val_env: Iterable[Callable],
-        parsed_replay_dataset: ParsedReplayDataset,
-        # agent
+        dataset: RLDataset,
         max_seq_len: int = 200,
         agent_type: Type[Agent] = Agent,
         tstep_encoder_type: Type[TstepEncoder] = MetamonTstepEncoder,
         traj_encoder_type: Type[TrajEncoder] = TformerTrajEncoder,
+        # environment
+        val_timesteps_per_epoch: int = 200,
+        env_mode: str = "async",
+        async_env_mp_context: str = "spawn",
+        exploration_wrapper_type: Optional[Type[ExplorationWrapper]] = None,
+        sample_actions: bool = True,
+        force_reset_train_envs_every: Optional[int] = None,
         # logging
         log_to_wandb: bool = False,
         wandb_project: str = os.environ.get("METAMON_WANDB_PROJECT"),
         wandb_entity: str = os.environ.get("METAMON_WANDB_ENTITY"),
         verbose: bool = True,
-        log_interval: int = 250,
-        # dataset
-        padded_sampling: str = "none",
+        log_interval: int = 300,
+        # replay
         dloader_workers: int = 8,
-        # learning schedule (update : data / online vs. offline)
+        padded_sampling: str = "none",
+        # schedule
         epochs: int = 100,
+        start_learning_at_epoch: int = 0,
+        start_collecting_at_epoch: int = float("inf"),
+        train_timesteps_per_epoch: int = 0,
         train_batches_per_epoch: int = 25_000,
         val_interval: int = 1,
-        val_timesteps_per_epoch: int = 200,
         ckpt_interval: int = 2,
         # optimization
         learning_rate: float = 1.5e-4,
@@ -297,41 +252,34 @@ class MetamonAMAGOExperiment(amago.Experiment):
 
         assert len(make_train_env) == len(make_val_env)
         parallel_actors = len(make_train_env)
-        self.parsed_replay_dataset = parsed_replay_dataset
 
         super().__init__(
             run_name=run_name,
             max_seq_len=max_seq_len,
-            traj_save_len=1000,
+            ckpt_base_dir=ckpt_base_dir,
+            dataset=dataset,
             tstep_encoder_type=tstep_encoder_type,
             traj_encoder_type=traj_encoder_type,
             agent_type=agent_type,
             make_train_env=make_train_env,
             make_val_env=make_val_env,
             parallel_actors=parallel_actors,
-            env_mode="async",
-            exploration_wrapper_type=None,
-            sample_actions=True,
-            force_reset_train_envs_every=None,
+            env_mode=env_mode,
+            async_env_mp_context=async_env_mp_context,
+            exploration_wrapper_type=exploration_wrapper_type,
+            sample_actions=sample_actions,
+            force_reset_train_envs_every=force_reset_train_envs_every,
             log_to_wandb=log_to_wandb,
             wandb_project=wandb_project,
             wandb_entity=wandb_entity,
             verbose=verbose,
             log_interval=log_interval,
-            # we will not be using AMAGO's dataset saving,
-            # but this establishes the checkpoint directory
-            dset_root=os.path.dirname(ckpt_dir),
-            dset_name=os.path.basename(ckpt_dir),
-            # only for the online buffer
-            dset_max_size=float("inf"),
-            # disable saving trajectories
-            save_trajs_as=None,
             padded_sampling=padded_sampling,
             dloader_workers=dloader_workers,
             epochs=epochs,
-            start_learning_at_epoch=0,
-            start_collecting_at_epoch=float("inf"),
-            train_timesteps_per_epoch=0,
+            start_learning_at_epoch=start_learning_at_epoch,
+            start_collecting_at_epoch=start_collecting_at_epoch,
+            train_timesteps_per_epoch=train_timesteps_per_epoch,
             train_batches_per_epoch=train_batches_per_epoch,
             val_interval=val_interval,
             val_timesteps_per_epoch=val_timesteps_per_epoch,
@@ -348,86 +296,20 @@ class MetamonAMAGOExperiment(amago.Experiment):
             mixed_precision=mixed_precision,
         )
 
-    def init_dsets(self):
-        """
-        Builds pytorch training dataset
-
-        Modified to point to a custom Metamon dataset instead of AMAGO's on-disk replay buffer
-        """
-        self.train_dset = MetamonAMAGODataset(
-            items_per_epoch=self.train_batches_per_epoch
-            * self.batch_size
-            * self.accelerator.num_processes,
-            parsed_replay_dset=self.parsed_replay_dataset,
-            max_seq_len=self.max_seq_len,
-            padded_sampling=self.padded_sampling,
-            # currently hardcoded to ignore new online selfplay mode
-            selfplay_replay_dset=None,
-            parsed_replay_sampling_rate=1.0,
+    def edit_actor_mask(
+        self, batch: Batch, actor_loss: torch.FloatTensor, pad_mask: torch.BoolTensor
+    ) -> torch.BoolTensor:
+        B, L, G, _ = actor_loss.shape
+        missing_action_mask = repeat(
+            ~batch.obs["missing_action_mask"][:, :-1, :], "b l 1 -> b l g 1", g=G
         )
-        return self.train_dset
+        return pad_mask & missing_action_mask
 
-    def evaluate_val(self):
-        """
-        Handles evaluation loop
-
-        Modified to get around an issue with resuming interaction of poke-env envs
-        """
-        print("Rebuilding Envs...")
-        self.init_envs()
-        self.train_envs.close()
-        del self.train_envs
-        out = super().evaluate_val()
-        self.val_envs.close()
-        del self.val_envs
-        return out
-
-    def x_axis_metrics(self):
-        """
-        Modified to remove frame/timestep counting because we are tearing down the train envs
-        """
-        return {
-            "Epoch": self.epoch,
-            "gradient_steps": self.grad_update_counter,
-        }
-
-    def init_envs(self):
-        # with warnings.catch_warnings():
-        #    warnings.filterwarnings("ignore", category=UserWarning)
-        super().init_envs()
-
-    def compute_loss(self, batch: Batch, log_step: bool):
-        """
-        Core computation of the actor and critic RL loss terms from a `Batch` of data.
-
-        Modified to also mask metamon's missing actions
-        """
-        critic_loss, actor_loss = self.policy_aclr(batch, log_step=log_step)
-        update_info = self.policy.update_info
-        B, L_1, G, _ = actor_loss.shape
-        C = len(self.policy.critics)
-        amago_pad_mask = (
-            ~((batch.rl2s == MAGIC_PAD_VAL).all(-1, keepdim=True))
-        ).float()[:, 1:, ...]
-        # amago_mask : 1.0 if valid, 0.0 if padded by the dataloader
-        metamon_missing_action_mask = (
-            ~batch.obs["missing_action_mask"][:, :-1, :]
-        ).float()
-        # metamon_missing_actions : 1.0 if action was provided, 0.0 if missing
-        combined_mask = amago_pad_mask * metamon_missing_action_mask
-        critic_state_mask = repeat(combined_mask, f"B L 1 -> B L {C} {G} 1")
-        actor_state_mask = repeat(combined_mask, f"B L 1 -> B L {G} 1")
-
-        masked_actor_loss = amago.utils.masked_avg(actor_loss, actor_state_mask)
-        if isinstance(critic_loss, torch.Tensor):
-            masked_critic_loss = amago.utils.masked_avg(critic_loss, critic_state_mask)
-        else:
-            assert critic_loss is None
-            masked_critic_loss = 0.0
-
-        return {
-            "critic_loss": masked_critic_loss,
-            "actor_loss": masked_actor_loss,
-            "seq_len": L_1 + 1,
-            "mask": combined_mask,
-        } | update_info
+    def edit_critic_mask(
+        self, batch: Batch, critic_loss: torch.FloatTensor, pad_mask: torch.BoolTensor
+    ) -> torch.BoolTensor:
+        B, L, C, G, _ = pad_mask.shape
+        missing_action_mask = repeat(
+            ~batch.obs["missing_action_mask"][:, :-1, :], "b l 1 -> b l c g 1", g=G, c=C
+        )
+        return pad_mask & missing_action_mask
