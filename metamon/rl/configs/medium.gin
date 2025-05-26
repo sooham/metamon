@@ -19,7 +19,6 @@ amago.nets.traj_encoders.TformerTrajEncoder.n_layers = 6
 amago.nets.traj_encoders.TformerTrajEncoder.n_heads = 8
 amago.nets.traj_encoders.TformerTrajEncoder.d_ff = 3072
 amago.nets.traj_encoders.TformerTrajEncoder.d_model = 768
-amago.nets.traj_encoders.TformerTrajEncoder.causal = True
 amago.nets.traj_encoders.TformerTrajEncoder.normformer_norms = True
 amago.nets.traj_encoders.TformerTrajEncoder.sigma_reparam = True
 amago.nets.traj_encoders.TformerTrajEncoder.norm = "layer"

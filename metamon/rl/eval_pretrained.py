@@ -134,11 +134,10 @@ def make_baseline_env(
 
 
 def _create_placeholder_experiment(
-    dset_root,
-    dset_name,
-    run_name,
-    max_seq_len,
-    log,
+    ckpt_base_dir: str,
+    run_name: str,
+    max_seq_len: int,
+    log: bool,
     agent_type: Type[amago.agent.Agent],
     tstep_encoder_type: Type[amago.nets.tstep_encoders.TstepEncoder],
     traj_encoder_type: Type[amago.nets.traj_encoders.TrajEncoder],
@@ -153,21 +152,22 @@ def _create_placeholder_experiment(
     env = make_placeholder_env(
         observation_space=observation_space,
     )
+    dummy_dset = amago.loading.DoNothingDataset()
     dummy_env = lambda: env
     experiment = amago.Experiment(
+        ckpt_base_dir=ckpt_base_dir,
         max_seq_len=max_seq_len,
         run_name=run_name,
-        traj_save_len=1000,
+        dataset=dummy_dset,
         make_train_env=dummy_env,
         make_val_env=dummy_env,
+        env_mode="async",
+        async_env_mp_context="spawn",
         parallel_actors=1,
         traj_encoder_type=traj_encoder_type,
         tstep_encoder_type=tstep_encoder_type,
         agent_type=agent_type,
         exploration_wrapper_type=None,
-        dset_root=dset_root,
-        dset_name=dset_name,
-        dset_max_size=float("inf"),
         epochs=0,
         start_learning_at_epoch=float("inf"),
         start_collecting_at_epoch=float("inf"),
@@ -277,14 +277,11 @@ class PretrainedModel:
             filename=f"{self.model_name}/ckpts/policy_weights/policy_epoch_{checkpoint}.pt",
             cache_dir=self.hf_cache_dir,
         )
-        base_dir = os.path.dirname(os.path.dirname(checkpoint_path))
-        full_path = Path(base_dir)
-        dset_root = str(full_path.parents[2])
-        dset_name = full_path.parents[1].name
+        model_dir = Path(os.path.dirname(os.path.dirname(checkpoint_path)))
+        ckpt_base_dir = str(model_dir.parents[1])
         # build an experiment
         experiment = _create_placeholder_experiment(
-            dset_root=dset_root,
-            dset_name=dset_name,
+            ckpt_base_dir=ckpt_base_dir,
             run_name=self.model_name,
             max_seq_len=self.max_seq_len,
             log=log,
@@ -480,8 +477,6 @@ class SyntheticRLV2(PretrainedModel):
 if __name__ == "__main__":
     from argparse import ArgumentParser
 
-    mp.set_start_method("spawn")
-
     parser = ArgumentParser()
     parser.add_argument(
         "--agent",
@@ -551,11 +546,6 @@ if __name__ == "__main__":
         help="Type of evaluation to perform. 'heuristic' will run the agent against the heuristic baselines, 'il' will run the agent against the IL baselines, 'local-ladder' will run the agent on your self-hosted Showdown ladder. If you set two agents to play on the local-ladder, they will be battling each other!",
     )
     parser.add_argument(
-        "--save_trajs_to",
-        default=None,
-        help="Path to save (amago-format) trajectories of completed battles.",
-    )
-    parser.add_argument(
         "--team_set",
         default="competitive",
         choices=["competitive", "paper_variety", "paper_replays"],
@@ -608,18 +598,18 @@ if __name__ == "__main__":
                             avatar=args.avatar,
                         )
                     ]
+                    # disables AMAGO tqdm because we'll be rendering the poke-env battle bar
+                    agent.verbose = False
                 else:
                     raise ValueError(f"Invalid eval_type: {args.eval_type}")
 
                 agent.parallel_actors = len(make_envs)
-                agent.verbose = False
 
                 # evaluate
                 results = agent.evaluate_test(
                     make_envs,
                     # sets upper bound on total timesteps
                     timesteps=args.n_challenges * 250,
-                    save_trajs_to=args.save_trajs_to,
                     # terminates after n_challenges
                     episodes=args.n_challenges,
                 )

@@ -214,6 +214,9 @@ ____
 
 We have made every checkpoint of 18 models available on huggingface at [`jakegrigsby/metamon`](https://huggingface.co/jakegrigsby/metamon/tree/main). Pretrained models can run without research GPUs, but you will need to install [`amago`](https://github.com/UT-Austin-RPL/amago), which is an RL codebase by the same authors. Follow instructions [here](https://github.com/UT-Austin-RPL/amago).
 
+> [!TIP]
+> See the `amago` [documentation](https://ut-austin-rpl.github.io/amago/) for help with training hyperparameters and customization.
+
 <div align="center">
     <img src="media/arch_v6_safe.png" alt="Figure 1" width="450">
 </div>
