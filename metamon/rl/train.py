@@ -127,7 +127,6 @@ if __name__ == "__main__":
         dset_root=args.parsed_replay_dir,
         observation_space=obs_space,
         reward_function=reward_function,
-        formats=["gen1ou"],
     )
 
     amago_dataset = MetamonAMAGODataset(
