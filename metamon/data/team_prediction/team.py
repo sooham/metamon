@@ -10,6 +10,7 @@ import unicodedata
 from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
     Pokemon,
     Nothing,
+    BackwardMarkers,
 )
 from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
 
@@ -265,13 +266,19 @@ class PokemonSet:
         # maintaining the replay parser's distinction between "known to be None" and "unrevealed"
         if pokemon.gen == 1 or pokemon.had_item == Nothing.NO_ITEM:
             item = cls.NO_ITEM
-        elif pokemon.had_item is None:
+        elif (
+            pokemon.had_item is None
+            or pokemon.had_item == BackwardMarkers.FORCE_UNKNOWN
+        ):
             item = cls.MISSING_ITEM
         else:
             item = pokemon.had_item
         if pokemon.gen <= 2 or pokemon.had_ability == Nothing.NO_ABILITY:
             ability = cls.NO_ABILITY
-        elif pokemon.had_ability is None:
+        elif (
+            pokemon.had_ability is None
+            or pokemon.had_ability == BackwardMarkers.FORCE_UNKNOWN
+        ):
             ability = cls.MISSING_ABILITY
         else:
             ability = pokemon.had_ability

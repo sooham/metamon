@@ -12,6 +12,7 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state impor
     Pokemon,
     Turn,
     Winner,
+    BackwardMarkers,
     get_pokedex_and_moves,
     unknown,
 )
@@ -69,6 +70,13 @@ def fill_missing_team_info(
         else:
             raise BackwardException(f"Could not find match for {p.name}")
         p.fill_from_PokemonSet(match)
+        if (
+            p.had_item == BackwardMarkers.FORCE_UNKNOWN
+            or p.had_ability == BackwardMarkers.FORCE_UNKNOWN
+        ):
+            raise BackwardException(
+                f"Leaked BackwardMarkers.FORCE_UNKNOWN for {p.had_item} or {p.had_ability} with predicted match {match}"
+            )
 
     return poke_list, revealed_team
 
