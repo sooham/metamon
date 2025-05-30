@@ -12,8 +12,8 @@ if METAMON_CACHE_DIR is not None:
 else:
     VERSION_REFERENCE_PATH = None
 
-LATEST_RAW_REPLAY_REVISION = "v1"
-LATEST_PARSED_REPLAY_REVISION = "v1"
+LATEST_RAW_REPLAY_REVISION = "v2"
+LATEST_PARSED_REPLAY_REVISION = "v2"
 LATEST_TEAMS_REVISION = "v1"
 
 
@@ -152,7 +152,7 @@ def download_raw_replays(version: str = LATEST_RAW_REPLAY_REVISION) -> str:
     Download the "raw" (unpprocessed) replays. We maintain a dataset of replays downloaded from Pokémon Showdown for convenience. Our versions are also stripped of player usernames and in-game chat logs.
 
     Args:
-        version: Version of the dataset to download. Corresponds to revisions on the Hugging Face Hub. Defaults to the latest version.
+        version: Version of the dataset to download. Corresponds to revisions / git tags on the Hugging Face Hub. Defaults to the latest version.
     """
     from metamon.data.replay_dataset.raw_replays.download_from_hf import process_dataset
 

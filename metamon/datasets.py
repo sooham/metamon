@@ -5,7 +5,9 @@ from typing import Optional, Dict, Tuple, List
 from datetime import datetime
 from collections import defaultdict
 
+
 from torch.utils.data import Dataset
+import lz4.frame
 import numpy as np
 import tqdm
 
@@ -14,10 +16,10 @@ from metamon.download import download_parsed_replays
 
 
 class ParsedReplayDataset(Dataset):
-    """
-    Creates an iterable dataset of "parsed replays". Parsed replays are records of Pokémon
-    Showdown battles that have been converted to the partially observed point-of-view of a single player,
-    matching the problem our agents face in the RL environment. They are created by the
+    """An iterable dataset of "parsed replays"
+
+    Parsed replays are records of Pokémon Showdown battles that have been converted to the partially observed
+    point-of-view of a single player, matching the problem our agents face in the RL environment. They are created by the
     `metamon.data.replay_dataset.parsed_replays` module from "raw" Showdown replay logs
     downloaded from publicly available battles.
 
@@ -42,19 +44,19 @@ class ParsedReplayDataset(Dataset):
     observation spaces or reward functions.
 
     Example:
-    ```python
-    dset = ParsedReplayDataset(
-        observation_space=TokenizedObservationSpace(
-            DefaultObservationSpace(),
-            tokenizer=get_tokenizer("allreplays-v3"),
-        ),
-        reward_function=DefaultShapedReward(),
-        formats=["gen1nu"],
-        verbose=True,
-    )
+        ```python
+        dset = ParsedReplayDataset(
+            observation_space=TokenizedObservationSpace(
+                DefaultObservationSpace(),
+                tokenizer=get_tokenizer("allreplays-v3"),
+            ),
+            reward_function=DefaultShapedReward(),
+            formats=["gen1nu"],
+            verbose=True,
+        )
 
-    obs, actions, rewards, dones, missing_actions = dset[0]
-    ```
+        obs, actions, rewards, dones, missing_actions = dset[0]
+        ```
 
     Args:
         observation_space: The observation space to use. Must be an instance of `interface.ObservationSpace`.
@@ -132,7 +134,7 @@ class ParsedReplayDataset(Dataset):
         self.filenames = []
 
         def _rating_to_int(rating: str) -> int:
-            # mainly used to cast "Unrated" to 1000 (the minimum rating)
+            # cast "Unrated" to 1000 (the minimum rating)
             try:
                 return int(rating)
             except ValueError:
@@ -145,12 +147,18 @@ class ParsedReplayDataset(Dataset):
         for format in self.formats:
             path = os.path.join(self.dset_root, format)
             for filename in bar(os.listdir(path), desc=f"Finding {format} battles"):
-                if not filename.endswith(".json"):
+                if not (filename.endswith(".json") or filename.endswith(".json.lz4")):
                     continue
                 try:
-                    battle_id, rating, p1_name, _, p2_name, mm_dd_yyyy, result = (
-                        filename[:-5].split("_")
-                    )
+                    (
+                        battle_id,
+                        rating,
+                        p1_name,
+                        _,
+                        p2_name,
+                        mm_dd_yyyy,
+                        result,
+                    ) = filename[:-5].split("_")
                 except ValueError:
                     continue
                 rating = _rating_to_int(rating)
@@ -178,8 +186,16 @@ class ParsedReplayDataset(Dataset):
         return len(self.filenames)
 
     def load_filename(self, filename: str):
-        with open(filename, "r") as f:
-            data = json.load(f)
+        if filename.endswith(".json.lz4"):
+            # compressed (v2 format)
+            with lz4.frame.open(filename, "rb") as f:
+                data = json.loads(f.read().decode("utf-8"))
+        elif filename.endswith(".json"):
+            # uncompressed (v1 format)
+            with open(filename, "r") as f:
+                data = json.load(f)
+        else:
+            raise ValueError(f"Unknown file extension: {filename}")
         states = [UniversalState.from_dict(s) for s in data["states"]]
         obs = [self.observation_space.state_to_obs(s) for s in states]
         # TODO: handle case where observation space is not a dict. don't have one to test yet.
@@ -187,7 +203,8 @@ class ParsedReplayDataset(Dataset):
         for o in obs:
             for k, v in o.items():
                 nested_obs[k].append(v)
-        actions = np.array(data["actions"], dtype=np.int32)
+        # NOTE: the replay parser currently leaves a blank (-1) final action
+        actions = np.array(data["actions"][:-1], dtype=np.int32)
         missing_actions = actions == -1
         rewards = np.array(
             [
@@ -201,18 +218,18 @@ class ParsedReplayDataset(Dataset):
 
         if self.max_seq_len is not None:
             # s s s s s s s s
-            # a a a a a a a a
-            #   r r r r r r r
-            #   d d d d d d d
+            # a a a a a a a
+            # r r r r r r r
+            # d d d d d d d
             safe_start = random.randint(0, max(len(actions) - self.max_seq_len, 0))
             actions = actions[safe_start : safe_start + self.max_seq_len]
-            rewards = rewards[safe_start + 1 : safe_start + 1 + self.max_seq_len]
-            dones = dones[safe_start + 1 : safe_start + 1 + self.max_seq_len]
+            rewards = rewards[safe_start : safe_start + self.max_seq_len]
+            dones = dones[safe_start : safe_start + self.max_seq_len]
             missing_actions = missing_actions[
                 safe_start : safe_start + self.max_seq_len
             ]
             nested_obs = {
-                k: v[safe_start : safe_start + self.max_seq_len]
+                k: v[safe_start : safe_start + 1 + self.max_seq_len]
                 for k, v in nested_obs.items()
             }
 
@@ -222,7 +239,9 @@ class ParsedReplayDataset(Dataset):
         filename = random.choice(self.filenames)
         return self.load_filename(filename)
 
-    def __getitem__(self, i) -> Tuple[
+    def __getitem__(
+        self, i
+    ) -> Tuple[
         Dict[str, list[np.ndarray]] | list[np.ndarray],
         np.ndarray,
         np.ndarray,
@@ -246,12 +265,13 @@ if __name__ == "__main__":
             tokenizer=get_tokenizer("allreplays-v3"),
         ),
         reward_function=DefaultShapedReward(),
-        formats=["gen1nu"],
+        dset_root="/mnt/nfs_client/jake/metamon_scratchpad/improved_may_parsed_replays",
+        max_seq_len=10,
         verbose=True,
     )
     print(len(dset))
     obs, actions, rewards, dones, missing_actions = dset[0]
     dset.refresh_files()
-    obs, actions, rewards, dones, missing_actions = dset[0]
-    print(len(dset))
-    breakpoint()
+
+    for i in tqdm.tqdm(range(len(dset))):
+        obs, actions, rewards, dones, missing_actions = dset[i]
