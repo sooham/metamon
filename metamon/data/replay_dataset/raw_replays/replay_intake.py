@@ -428,18 +428,21 @@ def main():
         help="Only process replays matching these formats (e.g., gen1ou gen1ubers). Default: process all formats",
     )
     parser.add_argument(
-        "--target-dir",
+        "--target_dir",
         type=str,
+        required=True,
         help="Target directory to copy valid replays into an organized structure",
     )
     parser.add_argument(
         "--processes",
         type=int,
+        default=1,
         help="Number of processes to use for parallel processing. Default: number of CPU cores minus 1",
     )
     parser.add_argument(
-        "--save-time-series",
+        "--save_time_series",
         type=str,
+        required=True,
         help="Path to save monthly time series data for each format (as JSON)",
     )
     args = parser.parse_args()

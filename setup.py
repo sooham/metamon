@@ -16,6 +16,7 @@ setup(
         "wandb",
         "einops",
         "tqdm",
+        "lz4",
         "accelerate>=1.0",
         "termcolor",
         "huggingface_hub",
