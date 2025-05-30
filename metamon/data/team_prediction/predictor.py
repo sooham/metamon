@@ -5,7 +5,7 @@ import json
 from abc import ABC, abstractmethod
 from functools import lru_cache
 from collections import deque
-from typing import Set, List, Tuple
+from typing import Tuple, Optional, List, Set
 import numpy as np
 
 from metamon.data.legacy_team_builder.team_builder import (
@@ -14,11 +14,12 @@ from metamon.data.legacy_team_builder.team_builder import (
 )
 from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
 from metamon.data.team_prediction.team import TeamSet, PokemonSet, Roster
+from metamon import download
 
 
 class TeamPredictor(ABC):
-    def __init__(self):
-        pass
+    def __init__(self, replay_stats_dir: Optional[str] = None):
+        self.replay_stats_dir = replay_stats_dir
 
     def predict(self, team: TeamSet) -> TeamSet:
         copy_team = copy.deepcopy(team)
@@ -115,21 +116,19 @@ class NaiveUsagePredictor(TeamPredictor):
         return final_team
 
 
-from metamon.download import download_replay_stats
-
-
-@lru_cache(maxsize=4)
-def load_replay_stats_by_format(format: str):
+@lru_cache(maxsize=16)
+def load_replay_stats_by_format(format: str, replay_stats_dir: Optional[str] = None):
     """
     This loads large json files that are created by the `generate_replay_stats` script.
     """
-    path_to_replay_stats = download_replay_stats(format)
+    if replay_stats_dir is None:
+        replay_stats_dir = download.download_replay_stats(format)
     pokemon_set_path = os.path.join(
-        path_to_replay_stats,
+        replay_stats_dir,
         f"{format}_pokemon.json",
     )
     team_roster_path = os.path.join(
-        path_to_replay_stats,
+        replay_stats_dir,
         f"{format}_team_rosters.json",
     )
     if not os.path.exists(pokemon_set_path) or not os.path.exists(team_roster_path):
@@ -181,7 +180,10 @@ class ReplayPredictor(NaiveUsagePredictor):
         top_k_consistent_movesets: int = 15,
         top_k_scored_teams: int = 10,
         top_k_scored_movesets: int = 3,
+        replay_stats_dir: Optional[str] = None,
     ):
+        assert not isinstance(top_k_consistent_teams, str)
+        super().__init__(replay_stats_dir)
         self.stat_format = None
         self.top_k_consistent_teams = top_k_consistent_teams
         self.top_k_consistent_movesets = top_k_consistent_movesets
@@ -190,7 +192,9 @@ class ReplayPredictor(NaiveUsagePredictor):
 
     def _load_data(self, format: str):
         self.smogon_stat = PreloadedSmogonStat(format, verbose=False, inclusive=True)
-        self.pokemon_sets, self.team_rosters = load_replay_stats_by_format(format)
+        self.pokemon_sets, self.team_rosters = load_replay_stats_by_format(
+            format, replay_stats_dir=self.replay_stats_dir
+        )
 
     def _sample_from_top_k(self, choices, probs: List[float], k: int) -> float:
         """
@@ -459,7 +463,7 @@ if __name__ == "__main__":
 
     dataset = TeamDataset(args.metamon_teamfile_path, format=args.format)
     naive_predictor = NaiveUsagePredictor()
-    improved_predictor = ReplayPredictor()
+    improved_predictor = ReplayPredictor(replay_stats_dir="replay_stats")
 
     for team, _, _ in dataset:
         naive_team = naive_predictor.predict(team)

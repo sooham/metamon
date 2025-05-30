@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 import numpy as np
+import lz4.frame
 from metamon import interface
 from metamon.data.replay_dataset.parsed_replays.replay_parser import backward, forward
 from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import (
@@ -130,14 +131,13 @@ class ReplayParser:
         filename = f"{replay.gameid}_{replay.rating}_{player_username}_vs_{opponenent_username}_{time_played.strftime('%m-%d-%Y')}_{won}"
         if self.output_dir is not None:
             path = self.output_dir
-            if not os.path.exists(path):
-                os.makedirs(path)
+            os.makedirs(path, exist_ok=True)
             output_json = {
                 "states": [state.to_dict() for state in universal_states],
                 "actions": action_idxs,
             }
-            with open(os.path.join(path, f"{filename}.json"), "w") as f:
-                json.dump(output_json, f)
+            with lz4.frame.open(os.path.join(path, f"{filename}.json.lz4"), "wb") as f:
+                f.write(json.dumps(output_json).encode("utf-8"))
 
         if self.team_output_dir is not None:
             path = self.team_output_dir

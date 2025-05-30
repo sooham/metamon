@@ -41,7 +41,10 @@ def fill_missing_team_info(
     )
 
     # 2. Predict the team
-    predicted_team = team_predictor.predict(revealed_team)
+    try:
+        predicted_team = team_predictor.predict(revealed_team)
+    except Exception as e:
+        raise BackwardException(f"Error predicting team: {e}")
     if not revealed_team.is_consistent_with(predicted_team):
         raise InconsistentTeamPrediction(revealed_team, predicted_team)
 
