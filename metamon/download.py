@@ -65,13 +65,11 @@ def download_parsed_replays(
     """
     if METAMON_CACHE_DIR is None:
         raise ValueError("METAMON_CACHE_DIR environment variable is not set")
-
     parsed_replay_dir = os.path.join(METAMON_CACHE_DIR, "parsed-replays")
     tar_path = os.path.join(parsed_replay_dir, f"{battle_format}.tar.gz")
-    extract_path = os.path.join(parsed_replay_dir, battle_format)
-    if os.path.exists(extract_path) and not force_download:
-        return extract_path
-
+    out_path = os.path.join(parsed_replay_dir, battle_format)
+    if os.path.exists(out_path) and not force_download:
+        return out_path
     hf_hub_download(
         cache_dir=os.path.join(METAMON_CACHE_DIR, "parsed-replays"),
         repo_id="jakegrigsby/metamon-parsed-replays",
@@ -82,10 +80,14 @@ def download_parsed_replays(
     )
     with tarfile.open(tar_path) as tar:
         print(f"Extracting {tar_path}...")
+        if version > "v1":
+            extract_path = parsed_replay_dir
+        else:
+            extract_path = out_path
         tar.extractall(path=extract_path)
     os.remove(tar_path)
     _update_version_reference("parsed-replays", battle_format, version)
-    return extract_path
+    return out_path
 
 
 def download_teams(

@@ -122,7 +122,7 @@ def load_replay_stats_by_format(format: str, replay_stats_dir: Optional[str] = N
     This loads large json files that are created by the `generate_replay_stats` script.
     """
     if replay_stats_dir is None:
-        replay_stats_dir = download.download_replay_stats(format)
+        replay_stats_dir = download.download_replay_stats()
     pokemon_set_path = os.path.join(
         replay_stats_dir,
         f"{format}_pokemon.json",
@@ -131,10 +131,6 @@ def load_replay_stats_by_format(format: str, replay_stats_dir: Optional[str] = N
         replay_stats_dir,
         f"{format}_team_rosters.json",
     )
-    if not os.path.exists(pokemon_set_path) or not os.path.exists(team_roster_path):
-        raise FileNotFoundError(
-            f"Stat files not found for format {format}. To use ReplayPredictor, you must first run `python -m metamon.data.team_prediction.generate_replay_stats`"
-        )
     with open(pokemon_set_path, "r") as f:
         pokemon_sets = json.load(f)
     with open(team_roster_path, "r") as f:
