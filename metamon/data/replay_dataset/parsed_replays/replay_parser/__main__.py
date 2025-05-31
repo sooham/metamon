@@ -49,6 +49,11 @@ if __name__ == "__main__":
         help="Number of parallel parser processes to run",
     )
     parser.add_argument(
+        "--replay_stats_dir",
+        default=None,
+        help="Directory for existing replay team statistics. If not provided, will default to the official version in the cached parsed replay dataset from hf.",
+    )
+    parser.add_argument(
         "--output_dir",
         default=None,
         help="Directory for output .npz files. `None` runs w/o saving to disk. Data will be saved to {--output_dir}/gen{gen}{format}",
@@ -93,7 +98,9 @@ if __name__ == "__main__":
         replay_output_dir=output_dir,
         team_output_dir=team_output_dir,
         verbose=args.verbose,
-        team_predictor=eval(args.team_predictor)(),
+        team_predictor=eval(args.team_predictor)(
+            replay_stats_dir=args.replay_stats_dir
+        ),
     )
     if args.processes > 1:
         random.shuffle(filenames)

@@ -80,10 +80,16 @@ class Move(PEMove):
         # in an attempt to handle `choice` messages that give names in a case/space insensitive format,
         # we'll go from the name parsed from the replay --> poke_env id --> poke_env's official move name
         name = _one_hidden_power(name)
-        self.lookup_name = to_id_str(name)
+        lookup_name = to_id_str(name)
+
+        # manual spelling changes between replays and move reference data
+        if lookup_name == "vicegrip":
+            lookup_name = "visegrip"
+        self.lookup_name = lookup_name
         try:
             super().__init__(move_id=self.lookup_name, gen=gen)
             self.charge_move = bool(self.entry["flags"].get("charge"))
+            # note we're taking the name as it would appear after poke-env data lookup
             self.name = self.entry["name"]
         except:
             raise MovedexMissingEntry(name, self.lookup_name)

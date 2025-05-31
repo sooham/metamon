@@ -7,7 +7,7 @@ from tqdm import tqdm
 from typing import Optional
 from functools import lru_cache
 
-from metamon.data.tokenizer import get_tokenizer
+from metamon.tokenizer import get_tokenizer
 
 POKEMON_WORDS = [
     word for word in get_tokenizer("allreplays-v3").all_words if "<" not in word
@@ -58,6 +58,7 @@ class UsernameMap:
         anon_username = self.generate_username()
         while anon_username in self.used_anon_names:
             anon_username = self.generate_username()
+        print(f"Adding {real_username} -> {anon_username}")
         self.used_anon_names.add(anon_username)
         self.real_to_anon[real_username] = anon_username
         self.anon_to_real[anon_username] = real_username
@@ -146,6 +147,11 @@ def main():
         description="Build username mapping from replay files"
     )
     parser.add_argument("input_dir", help="Directory containing replay JSON files")
+    parser.add_argument(
+        "--existing_usernames",
+        help="Path to existing usernames JSON",
+        default=OFFICIAL_USERNAMES,
+    )
     parser.add_argument("output_file", help="Path to save username mapping JSON")
     parser.add_argument(
         "--workers",
@@ -177,7 +183,7 @@ def main():
         for i in range(0, len(replay_files), batch_size)
     ]
 
-    print(f"Processing files using {args.workers} workers...")
+    print(f"Finding all usernames in replays using {args.workers} workers...")
     all_usernames = set()
     with mp.Pool(args.workers) as pool:
         for batch_usernames in tqdm(
@@ -188,18 +194,14 @@ def main():
             all_usernames.update(batch_usernames)
 
     print(f"\nFound {len(all_usernames)} unique usernames")
-    print("Building username mapping...")
-    mapping = UsernameMap()
+    print(f"Loading existing usernames from {args.existing_usernames}...")
+    mapping = UsernameMap.load_from_file(args.existing_usernames)
+    print(f"Loaded {len(mapping)} existing usernames.")
+    print(f"Press any key to continue...")
+    input()
     for username in sorted(all_usernames):
         mapping.add_username(username)
-
-    if os.path.exists(args.output_file):
-        existing_mapping = UsernameMap.load_from_file(args.output_file)
-        mapping.merge_with_mapping(existing_mapping)
-        print(
-            f"Merging {len(existing_mapping)} existing usernames with {len(mapping)} discovered usernames for a total of {len(mapping)} usernames"
-        )
-
+    print(f"We now have {len(mapping)} usernames")
     dirname = os.path.dirname(args.output_file)
     if dirname:
         os.makedirs(dirname, exist_ok=True)

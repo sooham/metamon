@@ -109,30 +109,38 @@ def plot_format_subplots(data: dict, fig: plt.Figure) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Plot replay time series data")
-    parser.add_argument("json_path", type=str, help="Path to time series JSON file")
+    parser.add_argument(
+        "json_paths", type=str, nargs="+", help="Path(s) to time series JSON file"
+    )
+    parser.add_argument("--output", type=str, help="Output figure names")
     args = parser.parse_args()
 
     # Load data
-    data = load_time_series(args.json_path)
+    all_data = {}
+    for json_path in args.json_paths:
+        data = load_time_series(json_path)
+        for tier, tier_data in data.items():
+            if tier not in all_data:
+                all_data[tier] = []
+            all_data[tier].extend(tier_data)
 
     # Set style
     plt.style.use("seaborn-v0_8-darkgrid")
 
     # Create figure for aggregate plot
     fig1, ax1 = plt.subplots(figsize=(12, 6))
-    plot_aggregate_time_series(data, ax1)
+    plot_aggregate_time_series(all_data, ax1)
     fig1.tight_layout()
 
     # Create figure for format subplots
     fig2 = plt.figure(figsize=(15, 10))
-    plot_format_subplots(data, fig2)
+    plot_format_subplots(all_data, fig2)
     fig2.tight_layout()
 
     # Save plots
-    name = args.json_path.replace(".json", "")
-    fig1.savefig(f"{name}_aggregate.png", bbox_inches="tight", dpi=300)
-    fig2.savefig(f"{name}_by_format.png", bbox_inches="tight", dpi=300)
-    print(f"Saved plots to {name}_aggregate.png and {name}_by_format.png")
+    fig1.savefig(f"{args.output}_aggregate.png", bbox_inches="tight", dpi=300)
+    fig2.savefig(f"{args.output}_by_format.png", bbox_inches="tight", dpi=300)
+    print(f"Saved plots to {args.output}_aggregate.png and {args.output}_by_format.png")
     plt.close()
 
 

@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Optional, Type
 
 import numpy as np
+import lz4.frame
 import gymnasium as gym
 from poke_env import (
     AccountConfiguration,
@@ -255,14 +256,15 @@ class PokeEnvWrapper(OpenAIGymEnv):
                 # matches the format of the parsed replay dataset
                 output_json = {
                     "states": [s.to_dict() for s in self.trajectory["states"]],
-                    "actions": self.trajectory["actions"],
+                    # NOTE: the replay parser leaves a blank (-1) final action; matched here
+                    "actions": self.trajectory["actions"] + [-1],
                 }
                 # conservative file writing to avoid partial writes on shutdown or interruption
                 # when launching multiple environments in parallel
                 path = os.path.join(self.save_trajectories_to, filename)
                 temp_path = path + ".tmp"
-                with open(temp_path, "w") as f:
-                    json.dump(output_json, f)
+                with lz4.frame.open(temp_path, "wb") as f:
+                    f.write(json.dumps(output_json).encode("utf-8"))
                 os.rename(temp_path, path)
 
         return next_state, reward, terminated, truncated, info
@@ -326,7 +328,6 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         start_timer_on_battle_start: bool = True,
         save_trajectories_to: Optional[str] = None,
     ):
-
         super().__init__(
             battle_format=battle_format,
             observation_space=observation_space,

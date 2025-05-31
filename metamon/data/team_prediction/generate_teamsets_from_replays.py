@@ -1,12 +1,38 @@
 import os
 import tqdm
+from multiprocessing import Pool, cpu_count
+from itertools import islice
 
 from metamon.data.team_prediction.dataset import FilteredTeamsFromReplaysDataset
 from metamon.data.team_prediction.predictor import ReplayPredictor
 
 
-def main(args):
+def chunk_dataset(dataset, chunk_size):
+    iterator = iter(dataset)
+    while chunk := list(islice(iterator, chunk_size)):
+        yield chunk
+
+
+def process_chunk(args):
+    chunk, format_name, output_dir, offset = args
     predictor = ReplayPredictor()
+    success_count = 0
+
+    for i, result in tqdm.tqdm(enumerate(chunk), total=len(chunk)):
+        try:
+            team, *_ = result
+            predicted_team = predictor.predict(team)
+            output = os.path.join(output_dir, f"team_{i + offset}.{format_name}_team")
+            predicted_team.write_to_file(output)
+            success_count += 1
+        except Exception as e:
+            print(f"Error generating teamset: {e}")
+            continue
+
+    return success_count
+
+
+def main(args):
     for format in args.formats:
         os.makedirs(os.path.join(args.base_output_dir, format), exist_ok=True)
         team_dataset = FilteredTeamsFromReplaysDataset(
@@ -16,18 +42,29 @@ def main(args):
             min_rating=args.min_rating,
             format=format,
         )
-        print(f"Found {len(team_dataset)} teams for format {format}")
-        for i, result in enumerate(tqdm.tqdm(team_dataset, desc="Generating teamsets")):
-            try:
-                team, *_ = result
-                predicted_team = predictor.predict(team)
-                output = os.path.join(
-                    args.base_output_dir, format, f"team_{i}.{format}_team"
+        total_teams = len(team_dataset)
+        print(f"Found {total_teams} teams for format {format}")
+
+        num_processes = min(args.num_processes, total_teams)
+        chunk_size = max(1, total_teams // (num_processes * 4))
+        chunks = list(chunk_dataset(team_dataset, chunk_size))
+        chunk_args = [
+            (chunk, format, os.path.join(args.base_output_dir, format), i * chunk_size)
+            for i, chunk in enumerate(chunks)
+        ]
+        with Pool(processes=num_processes) as pool:
+            results = list(
+                tqdm.tqdm(
+                    pool.imap(process_chunk, chunk_args),
+                    total=len(chunks),
+                    desc=f"Generating teamsets for {format}",
                 )
-                predicted_team.write_to_file(output)
-            except Exception as e:
-                print(f"Error generating teamset for team {i}: {e}")
-                continue
+            )
+
+        total_success = sum(results)
+        print(
+            f"Successfully generated {total_success}/{total_teams} teamsets for {format}"
+        )
 
 
 if __name__ == "__main__":
@@ -45,14 +82,14 @@ if __name__ == "__main__":
         type=str,
         required=False,
         default=None,
-        help="Minimum date to include replays from (MM-DD-YYYY)",
+        help="Minimum date of replays to include (MM-DD-YYYY)",
     )
     parser.add_argument(
         "--max_date",
         type=str,
         required=False,
         default=None,
-        help="Maximum date to include replays from (YYYY-MM-DD)",
+        help="Maximum date of replays to include (MM-DD-YYYY)",
     )
     parser.add_argument(
         "--min_rating",
@@ -75,6 +112,13 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Path to the directory to save the generated teamsets",
+    )
+    parser.add_argument(
+        "--num_processes",
+        type=int,
+        required=False,
+        default=cpu_count(),
+        help="Number of processes to use for parallel processing",
     )
     args = parser.parse_args()
     main(args)
