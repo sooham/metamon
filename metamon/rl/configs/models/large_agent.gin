@@ -1,6 +1,12 @@
 import amago.nets.actor_critic
 import amago.nets.traj_encoders
 import amago.agent
+import amago.experiment
+
+experiment.Experiment.agent_type = @agent.Agent
+experiment.Experiment.tstep_encoder_type = @MetamonTstepEncoder
+experiment.Experiment.traj_encoder_type = @traj_encoders.TformerTrajEncoder
+experiment.Experiment.max_seq_len = 128
 
 # actor
 Agent.actor_type = @actor_critic.Actor
