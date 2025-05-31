@@ -30,6 +30,7 @@ from metamon.rl.metamon_to_amago import (
     PSLadderAMAGOWrapper,
     MetamonAMAGOWrapper,
     MetamonTstepEncoder,
+    MetamonAMAGOExperiment,
 )
 from metamon.interface import (
     ObservationSpace,
@@ -133,7 +134,7 @@ def make_baseline_env(
     return MetamonAMAGOWrapper(env)
 
 
-def _create_placeholder_experiment(
+def create_placeholder_experiment(
     ckpt_base_dir: str,
     run_name: str,
     log: bool,
@@ -150,7 +151,7 @@ def _create_placeholder_experiment(
     )
     dummy_dset = amago.loading.DoNothingDataset()
     dummy_env = lambda: env
-    experiment = amago.Experiment(
+    experiment = MetamonAMAGOExperiment(
         # assumes that positional args
         # agent_type, tstep_encoder_type,
         # traj_encoder_type, and max_seq_len
@@ -266,7 +267,7 @@ class PretrainedModel:
         model_dir = Path(os.path.dirname(os.path.dirname(checkpoint_path)))
         ckpt_base_dir = str(model_dir.parents[1])
         # build an experiment
-        experiment = _create_placeholder_experiment(
+        experiment = create_placeholder_experiment(
             ckpt_base_dir=ckpt_base_dir,
             run_name=self.model_name,
             log=log,

@@ -6,13 +6,13 @@ import amago.experiment
 MetamonAMAGOExperiment.agent_type = @agent.MultiTaskAgent
 MetamonAMAGOExperiment.tstep_encoder_type = @MetamonTstepEncoder
 MetamonAMAGOExperiment.traj_encoder_type = @traj_encoders.TformerTrajEncoder
-MetamonAMAGOExperiment.max_seq_len = 128
+MetamonAMAGOExperiment.max_seq_len = 200
 
 # actor
 Agent.actor_type = @actor_critic.Actor
 actor_critic.Actor.activation = "leaky_relu"
 actor_critic.Actor.n_layers = 2
-actor_critic.Actor.d_hidden = 512
+actor_critic.Actor.d_hidden = 400
 
 # critic
 MultiTaskAgent.critic_type = @actor_critic.NCriticsTwoHot
@@ -26,21 +26,22 @@ actor_critic.NCriticsTwoHot.min_return = -1100
 actor_critic.NCriticsTwoHot.max_return = 1100
 actor_critic.NCriticsTwoHot.use_symlog = False
 
+
 # local metamon architectures
 MetamonTstepEncoder.extra_emb_dim = 18
-MetamonTstepEncoder.d_model = 160
-MetamonTstepEncoder.n_layers = 5
-MetamonTstepEncoder.n_heads = 8
-MetamonTstepEncoder.scratch_tokens = 11
+MetamonTstepEncoder.d_model = 100
+MetamonTstepEncoder.n_layers = 3
+MetamonTstepEncoder.n_heads = 5
+MetamonTstepEncoder.scratch_tokens = 6
 MetamonTstepEncoder.numerical_tokens = 6
-MetamonTstepEncoder.token_mask_aug = True
+MetamonTstepEncoder.token_mask_aug = False
 MetamonTstepEncoder.dropout = .05
 
 # amago transformer
-traj_encoders.TformerTrajEncoder.n_layers = 9
-traj_encoders.TformerTrajEncoder.n_heads = 20
-traj_encoders.TformerTrajEncoder.d_ff = 5120
-traj_encoders.TformerTrajEncoder.d_model = 1280
+traj_encoders.TformerTrajEncoder.n_layers = 6
+traj_encoders.TformerTrajEncoder.n_heads = 8
+traj_encoders.TformerTrajEncoder.d_ff = 3072
+traj_encoders.TformerTrajEncoder.d_model = 768
 traj_encoders.TformerTrajEncoder.normformer_norms = True
 traj_encoders.TformerTrajEncoder.sigma_reparam = True
 traj_encoders.TformerTrajEncoder.norm = "layer"
