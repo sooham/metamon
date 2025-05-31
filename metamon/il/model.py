@@ -37,7 +37,6 @@ class MetamonILModel(nn.Module, ABC):
         pass
 
 
-@gin.configurable
 class TokenEmbedding(nn.Module):
     """
     Map integer tokens to a sequence of vector representations.
@@ -47,7 +46,7 @@ class TokenEmbedding(nn.Module):
     this layer as an initialization for online RL policies.
     """
 
-    def __init__(self, tokenizer: PokemonTokenizer, emb_dim: int = 32):
+    def __init__(self, tokenizer: PokemonTokenizer, emb_dim: int):
         super().__init__()
         self.tokenizer = tokenizer
         self.vocab_size = len(tokenizer) + 1
@@ -60,7 +59,6 @@ class TokenEmbedding(nn.Module):
         return text_emb
 
 
-@gin.configurable
 class MultiModalEmbedding(nn.Module):
     """
     Take the text embedding and add on a representation of the numerical
@@ -75,8 +73,8 @@ class MultiModalEmbedding(nn.Module):
         token_emb_dim: int,
         numerical_d_inp: int,
         output_dim: int,
-        numerical_tokens: int = 6,
-        dropout: float = 0.05,
+        numerical_tokens: int,
+        dropout: float,
     ):
         super().__init__()
         self.text_emb = nn.Linear(token_emb_dim, output_dim)
@@ -116,7 +114,6 @@ class FixedPosEmb(nn.Module):
         return emb
 
 
-@gin.configurable
 class TimestepTransformer(nn.Module):
     """
     Take the multimodal sequence, add on a few blank ("scratch") tokens
@@ -126,11 +123,11 @@ class TimestepTransformer(nn.Module):
 
     def __init__(
         self,
-        scratch_tokens: int = 2,
-        d_model: int = 256,
-        n_heads: int = 8,
-        n_layers: int = 3,
-        dropout: float = 0.05,
+        scratch_tokens: int,
+        d_model: int,
+        n_heads: int,
+        n_layers: int,
+        dropout: float,
     ):
         super().__init__()
         self.scratch_tokens = scratch_tokens
@@ -209,18 +206,18 @@ class TurnEmbedding(nn.Module, ABC):
         pass
 
 
-@gin.configurable
 class TransformerTurnEmbedding(TurnEmbedding):
     def __init__(
         self,
         tokenizer: PokemonTokenizer,
         token_embedding_dim: int,
         numerical_features: int,
-        scratch_tokens: int = 4,
-        d_model: int = 100,
-        n_heads: int = 5,
-        n_layers: int = 3,
-        dropout: float = 0.05,
+        numerical_tokens: int,
+        scratch_tokens: int,
+        d_model: int,
+        n_heads: int,
+        n_layers: int,
+        dropout: float,
     ):
         super().__init__(
             tokenizer,
@@ -238,6 +235,8 @@ class TransformerTurnEmbedding(TurnEmbedding):
             token_emb_dim=self.token_embedding.output_dim,
             numerical_d_inp=self.numerical_features,
             output_dim=self.tformer_embedding.d_model,
+            numerical_tokens=numerical_tokens,
+            dropout=dropout,
         )
 
     @property
