@@ -302,7 +302,7 @@ class SmallIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-il",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=True,
         )
 
@@ -311,7 +311,7 @@ class SmallILFA(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-il-fa",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=True,
         )
 
@@ -320,7 +320,7 @@ class SmallRL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=False,
         )
 
@@ -329,7 +329,7 @@ class SmallRL_ExtremeFilter(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-exp-extreme",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=False,
         )
 
@@ -338,7 +338,7 @@ class SmallRL_BinaryFilter(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-binary",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=False,
         )
 
@@ -347,7 +347,7 @@ class SmallRL_Aug(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-aug",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=False,
         )
 
@@ -356,7 +356,7 @@ class SmallRL_MaxQ(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-maxq",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=False,
         )
 
@@ -365,7 +365,7 @@ class MediumIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-il",
-            gin_config="medium.gin",
+            gin_config="models/medium_agent.gin",
             is_il_model=True,
         )
 
@@ -374,7 +374,7 @@ class MediumRL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl",
-            gin_config="medium.gin",
+            gin_config="models/medium_agent.gin",
             is_il_model=False,
         )
 
@@ -383,7 +383,7 @@ class MediumRL_Aug(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl-aug",
-            gin_config="medium.gin",
+            gin_config="models/medium_agent.gin",
             is_il_model=False,
         )
 
@@ -392,7 +392,7 @@ class MediumRL_MaxQ(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl-maxq",
-            gin_config="medium.gin",
+            gin_config="models/medium_agent.gin",
             is_il_model=False,
         )
 
@@ -400,8 +400,8 @@ class MediumRL_MaxQ(PretrainedModel):
 class LargeRL(PretrainedModel):
     def __init__(self):
         super().__init__(
-            model_name="large-rl-aug",
-            gin_config="large.gin",
+            model_name="large-rl",
+            gin_config="models/large_agent.gin",
             is_il_model=False,
             max_seq_len=128,
         )
@@ -411,7 +411,7 @@ class LargeIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="large-il",
-            gin_config="large.gin",
+            gin_config="models/large_agent.gin",
             is_il_model=True,
             max_seq_len=128,
         )
@@ -421,7 +421,7 @@ class SyntheticRLV0(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v0",
-            gin_config="synthetic.gin",
+            gin_config="models/synthetic_agent.gin",
             is_il_model=False,
             max_seq_len=128,
         )
@@ -431,7 +431,7 @@ class SyntheticRLV1(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1",
-            gin_config="synthetic.gin",
+            gin_config="models/synthetic_agent.gin",
             is_il_model=False,
             max_seq_len=128,
         )
@@ -443,7 +443,7 @@ class SyntheticRLV1_SelfPlay(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1+sp",
-            gin_config="synthetic.gin",
+            gin_config="models/synthetic_agent.gin",
             is_il_model=False,
             max_seq_len=128,
         )
@@ -455,7 +455,7 @@ class SyntheticRLV1_PlusPlus(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1++",
-            gin_config="synthetic.gin",
+            gin_config="models/synthetic_agent.gin",
             is_il_model=False,
             max_seq_len=128,
         )
@@ -467,7 +467,7 @@ class SyntheticRLV2(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v2",
-            gin_config="synthetic.gin",
+            gin_config="models/synthetic_multitaskagent.gin",
             is_il_model=False,
             max_seq_len=128,
             agent_type=amago.agent.MultiTaskAgent,

@@ -113,7 +113,9 @@ class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
         n_layers: int = 3,
         n_heads: int = 5,
         scratch_tokens: int = 4,
+        numerical_tokens: int = 6,
         token_mask_aug: bool = False,
+        dropout: float = 0.05,
     ):
         super().__init__(obs_space=obs_space, rl2_space=rl2_space)
         self.token_mask_aug = token_mask_aug
@@ -122,10 +124,12 @@ class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
             tokenizer=tokenizer,
             token_embedding_dim=d_model,
             numerical_features=48 + extra_emb_dim,
+            numerical_tokens=numerical_tokens,
+            scratch_tokens=scratch_tokens,
             d_model=d_model,
             n_heads=n_heads,
             n_layers=n_layers,
-            scratch_tokens=scratch_tokens,
+            dropout=dropout,
         )
 
     @property
