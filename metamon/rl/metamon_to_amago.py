@@ -176,14 +176,20 @@ class MetamonAMAGODataset(RLDataset):
     def sample_random_trajectory(self) -> RLData:
         data = self.parsed_replay_dset.random_sample()
         obs, actions, rewards, dones, missing_acts = data
-        obs_torch = {k: torch.from_numpy(np.stack(v, axis=0)) for k, v in obs.items()}
+        # amago expects discrete actions to be one-hot encoded
         actions_torch = F.one_hot(
             torch.from_numpy(actions).long().clamp(min=0), num_classes=9
         )
+        # a bit of a hack: make the action mask (which is the same size as actions)
+        # one timestep longer to match the size of observations, then put it in the amago
+        # observation dict, let the network ignore it, and make it accessible to
+        # mask the actor/critic loss later on.
+        missing_acts = np.concatenate([missing_acts, np.ones(1, dtype=bool)], axis=0)
+        obs_torch = {k: torch.from_numpy(np.stack(v, axis=0)) for k, v in obs.items()}
+        obs_torch["missing_action_mask"] = torch.from_numpy(missing_acts).unsqueeze(-1)
         rewards_torch = torch.from_numpy(rewards).unsqueeze(-1)
         dones_torch = torch.from_numpy(dones).unsqueeze(-1)
-        obs_torch["missing_action_mask"] = torch.from_numpy(missing_acts).unsqueeze(-1)
-        time_idxs = torch.arange(len(missing_acts) + 1).long().unsqueeze(-1)
+        time_idxs = torch.arange(len(actions) + 1).long().unsqueeze(-1)
         rl_data = RLData(
             obs=obs_torch,
             actions=actions_torch,
@@ -204,8 +210,11 @@ class MetamonAMAGOExperiment(amago.Experiment):
         self, batch: Batch, actor_loss: torch.FloatTensor, pad_mask: torch.BoolTensor
     ) -> torch.BoolTensor:
         B, L, G, _ = actor_loss.shape
+        # missing_action_mask is one timestep too long to match the size of observations
+        # True where the action is missing, False where it's provided.
+        # pad_mask is True where the timestep should count towards loss, False where it shouldn't.
         missing_action_mask = repeat(
-            ~batch.obs["missing_action_mask"], "b l 1 -> b l g 1", g=G
+            ~batch.obs["missing_action_mask"][:, :-1], "b l 1 -> b l g 1", g=G
         )
         return pad_mask & missing_action_mask
 
@@ -214,6 +223,6 @@ class MetamonAMAGOExperiment(amago.Experiment):
     ) -> torch.BoolTensor:
         B, L, C, G, _ = pad_mask.shape
         missing_action_mask = repeat(
-            ~batch.obs["missing_action_mask"], "b l 1 -> b l c g 1", g=G, c=C
+            ~batch.obs["missing_action_mask"][:, :-1], "b l 1 -> b l c g 1", g=G, c=C
         )
         return pad_mask & missing_action_mask

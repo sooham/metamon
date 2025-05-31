@@ -77,19 +77,19 @@ def make_baseline_env(
         reward_function=reward_function,
         team_set=team_set,
         opponent_type=opponent,
+        turn_limit=100,
     )
+    print("Made env")
     return MetamonAMAGOWrapper(env)
 
 
 def configure(args):
     """
-    This is all customizable. When we've trained a model we like, we can recover
-    the config from wandb or the config.txt in the checkpoint directory to set up
-    an inference checkpoint.
+    Setup gin configuration with overrides for command line args or anything else
     """
     config = {
         "MetamonTstepEncoder.tokenizer": get_tokenizer(args.tokenizer),
-        "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.VanillaAttention,
+        "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
     }
     if args.il:
         # NOTE: would break for a custom agent, but ultimately just creates some wasted params that aren't trained
@@ -121,6 +121,8 @@ if __name__ == "__main__":
         dset_root=args.parsed_replay_dir,
         observation_space=obs_space,
         reward_function=reward_function,
+        # amago will handle sequence lengths
+        max_seq_len=None,
         verbose=True,
     )
     amago_dataset = MetamonAMAGODataset(
@@ -137,7 +139,7 @@ if __name__ == "__main__":
             team_set=get_metamon_teams(f"gen{i}ou", "paper_variety"),
             opponent=opponent,
         )
-        for i in range(4, 5)
+        for i in range(1, 5)
         for opponent in live_opponents
     ]
     experiment = MetamonAMAGOExperiment(
@@ -149,7 +151,7 @@ if __name__ == "__main__":
         # tstep_encoder_type = should be set in the gin file
         # traj_encoder_type = should be set in the gin file
         # agent_type = should be set in the gin file
-        val_timesteps_per_epoch=200,
+        val_timesteps_per_epoch=300,
         ## environment ##
         make_train_env=make_envs,
         make_val_env=make_envs,
@@ -167,7 +169,7 @@ if __name__ == "__main__":
         log_interval=300,
         ## replay ##
         padded_sampling="none",
-        dloader_workers=8,
+        dloader_workers=10,
         ## learning schedule ##
         epochs=100,
         start_learning_at_epoch=0,
