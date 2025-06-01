@@ -39,6 +39,7 @@ def add_cli(parser):
     parser.add_argument("--parsed_replay_dir", type=str, default=None, help="Path to the parsed replay directory. Defaults to the official huggingface version.")
     parser.add_argument("--ckpt_dir", type=str, required=True, help="Path to save checkpoints. Find checkpoints under {ckpt_dir}/{run_name}/ckpts/")
     parser.add_argument("--ckpt", type=int, default=None, help="Resume training from an existing run with this run_name. Provide the epoch checkpoint to load.")
+    parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. In offline RL model, an epoch is an arbitrary interval (here: 25k) of training steps on a fixed dataset.")
     parser.add_argument("--batch_size_per_gpu", type=int, default=12, help="Batch size per GPU. Total batch size is batch_size_per_gpu * num_gpus.")
     parser.add_argument("--grad_accum", type=int, default=1, help="Number of gradient accumulations per update.")
     parser.add_argument("--il", action="store_true", help="Overrides amago settings to use imitation learning.")
@@ -158,6 +159,7 @@ if __name__ == "__main__":
         env_mode="async",
         async_env_mp_context="spawn",
         parallel_actors=len(make_envs),
+        # no exploration
         exploration_wrapper_type=None,
         sample_actions=True,
         force_reset_train_envs_every=None,
@@ -171,7 +173,8 @@ if __name__ == "__main__":
         padded_sampling="none",
         dloader_workers=10,
         ## learning schedule ##
-        epochs=100,
+        epochs=args.epochs,
+        # entirely offline RL
         start_learning_at_epoch=0,
         start_collecting_at_epoch=float("inf"),
         train_timesteps_per_epoch=0,
@@ -181,11 +184,6 @@ if __name__ == "__main__":
         ## optimization ##
         batch_size=args.batch_size_per_gpu,
         batches_per_update=args.grad_accum,
-        learning_rate=1.5e-4,
-        critic_loss_weight=10.0,
-        lr_warmup_steps=1000,
-        grad_clip=1.5,
-        l2_coeff=1e-4,
         mixed_precision="no",
     )
 
