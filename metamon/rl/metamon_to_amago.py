@@ -1,5 +1,4 @@
-import os
-from typing import Optional, Dict, List, Type, Callable, Iterable, Any
+from typing import Optional, Any
 
 import gin
 import numpy as np
@@ -15,17 +14,21 @@ from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.datasets import ParsedReplayDataset
 from metamon.env import PokeEnvWrapper
 
-import amago
 
-assert amago.__version__ >= "3.1.0", "Update to the latest AMAGO version!"
-from amago.envs import AMAGOEnv
-from amago.envs.exploration import ExplorationWrapper
-from amago.nets.utils import symlog
-from amago.loading import RLData, RLDataset, Batch
-from amago.agent import Agent
-from amago.nets.traj_encoders import TformerTrajEncoder, TrajEncoder
-from amago.nets.tstep_encoders import TstepEncoder
-from amago.envs.amago_env import AMAGO_ENV_LOG_PREFIX
+try:
+    import amago
+except ImportError:
+    raise ImportError(
+        "Must install `amago` RL package. Visit: https://ut-austin-rpl.github.io/amago/ "
+    )
+else:
+    assert (
+        hasattr(amago, "__version__") and amago.__version__ >= "3.1.0"
+    ), "Update to the latest AMAGO version!"
+    from amago.envs import AMAGOEnv
+    from amago.nets.utils import symlog
+    from amago.loading import RLData, RLDataset, Batch
+    from amago.envs.amago_env import AMAGO_ENV_LOG_PREFIX
 
 
 class MetamonAMAGOWrapper(AMAGOEnv):
@@ -113,19 +116,24 @@ class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
         n_layers: int = 3,
         n_heads: int = 5,
         scratch_tokens: int = 4,
+        numerical_tokens: int = 6,
         token_mask_aug: bool = False,
+        dropout: float = 0.05,
     ):
         super().__init__(obs_space=obs_space, rl2_space=rl2_space)
         self.token_mask_aug = token_mask_aug
         self.extra_emb = nn.Linear(rl2_space.shape[-1], extra_emb_dim)
+        base_numerical_features = obs_space["numbers"].shape[0]
         self.turn_embedding = TransformerTurnEmbedding(
             tokenizer=tokenizer,
             token_embedding_dim=d_model,
-            numerical_features=48 + extra_emb_dim,
+            numerical_features=base_numerical_features + extra_emb_dim,
+            numerical_tokens=numerical_tokens,
+            scratch_tokens=scratch_tokens,
             d_model=d_model,
             n_heads=n_heads,
             n_layers=n_layers,
-            scratch_tokens=scratch_tokens,
+            dropout=dropout,
         )
 
     @property
@@ -175,17 +183,21 @@ class MetamonAMAGODataset(RLDataset):
 
     def sample_random_trajectory(self) -> RLData:
         data = self.parsed_replay_dset.random_sample()
-        obs, actions, rewards, dones, missing_actions = data
-        obs_torch = {k: torch.from_numpy(np.stack(v, axis=0)) for k, v in obs.items()}
+        obs, actions, rewards, dones, missing_acts = data
+        # amago expects discrete actions to be one-hot encoded
         actions_torch = F.one_hot(
             torch.from_numpy(actions).long().clamp(min=0), num_classes=9
-        )[:-1]
+        )
+        # a bit of a hack: make the action mask (which is the same size as actions)
+        # one timestep longer to match the size of observations, then put it in the amago
+        # observation dict, let the network ignore it, and make it accessible to
+        # mask the actor/critic loss later on.
+        missing_acts = np.concatenate([missing_acts, np.ones(1, dtype=bool)], axis=0)
+        obs_torch = {k: torch.from_numpy(np.stack(v, axis=0)) for k, v in obs.items()}
+        obs_torch["missing_action_mask"] = torch.from_numpy(missing_acts).unsqueeze(-1)
         rewards_torch = torch.from_numpy(rewards).unsqueeze(-1)
         dones_torch = torch.from_numpy(dones).unsqueeze(-1)
-        obs_torch["missing_action_mask"] = torch.from_numpy(missing_actions).unsqueeze(
-            -1
-        )
-        time_idxs = torch.arange(len(missing_actions)).long().unsqueeze(-1)
+        time_idxs = torch.arange(len(actions) + 1).long().unsqueeze(-1)
         rl_data = RLData(
             obs=obs_torch,
             actions=actions_torch,
@@ -199,109 +211,29 @@ class MetamonAMAGODataset(RLDataset):
 @gin.configurable
 class MetamonAMAGOExperiment(amago.Experiment):
     """
-    Verbose wrapper around the AMAGO Experiment that sets some default kwargs,
-    adds a missing action mask, and leaves room for further tweaks.
+    Adds actions masking to the main AMAGO experiment, and leaves room for further tweaks.
     """
 
-    def __init__(
-        self,
-        # main
-        run_name: str,
-        ckpt_base_dir: str,
-        make_train_env: Iterable[Callable],
-        make_val_env: Iterable[Callable],
-        dataset: RLDataset,
-        max_seq_len: int = 200,
-        agent_type: Type[Agent] = Agent,
-        tstep_encoder_type: Type[TstepEncoder] = MetamonTstepEncoder,
-        traj_encoder_type: Type[TrajEncoder] = TformerTrajEncoder,
-        # environment
-        val_timesteps_per_epoch: int = 200,
-        env_mode: str = "async",
-        async_env_mp_context: str = "spawn",
-        exploration_wrapper_type: Optional[Type[ExplorationWrapper]] = None,
-        sample_actions: bool = True,
-        force_reset_train_envs_every: Optional[int] = None,
-        # logging
-        log_to_wandb: bool = False,
-        wandb_project: str = os.environ.get("METAMON_WANDB_PROJECT"),
-        wandb_entity: str = os.environ.get("METAMON_WANDB_ENTITY"),
-        verbose: bool = True,
-        log_interval: int = 300,
-        # replay
-        dloader_workers: int = 8,
-        padded_sampling: str = "none",
-        # schedule
-        epochs: int = 100,
-        start_learning_at_epoch: int = 0,
-        start_collecting_at_epoch: int = float("inf"),
-        train_timesteps_per_epoch: int = 0,
-        train_batches_per_epoch: int = 25_000,
-        val_interval: int = 1,
-        ckpt_interval: int = 2,
-        # optimization
-        learning_rate: float = 1.5e-4,
-        batches_per_update: int = 1,
-        batch_size: int = 32,
-        critic_loss_weight: float = 10.0,
-        lr_warmup_steps: int = 1000,
-        grad_clip=1.5,
-        l2_coeff=1e-4,
-        mixed_precision: str = "no",
-    ):
+    def init_envs(self):
+        out = super().init_envs()
+        amago.utils.call_async_env(self.val_envs, "take_long_break")
+        return out
 
-        assert len(make_train_env) == len(make_val_env)
-        parallel_actors = len(make_train_env)
-
-        super().__init__(
-            run_name=run_name,
-            max_seq_len=max_seq_len,
-            ckpt_base_dir=ckpt_base_dir,
-            dataset=dataset,
-            tstep_encoder_type=tstep_encoder_type,
-            traj_encoder_type=traj_encoder_type,
-            agent_type=agent_type,
-            make_train_env=make_train_env,
-            make_val_env=make_val_env,
-            parallel_actors=parallel_actors,
-            env_mode=env_mode,
-            async_env_mp_context=async_env_mp_context,
-            exploration_wrapper_type=exploration_wrapper_type,
-            sample_actions=sample_actions,
-            force_reset_train_envs_every=force_reset_train_envs_every,
-            log_to_wandb=log_to_wandb,
-            wandb_project=wandb_project,
-            wandb_entity=wandb_entity,
-            verbose=verbose,
-            log_interval=log_interval,
-            padded_sampling=padded_sampling,
-            dloader_workers=dloader_workers,
-            epochs=epochs,
-            start_learning_at_epoch=start_learning_at_epoch,
-            start_collecting_at_epoch=start_collecting_at_epoch,
-            train_timesteps_per_epoch=train_timesteps_per_epoch,
-            train_batches_per_epoch=train_batches_per_epoch,
-            val_interval=val_interval,
-            val_timesteps_per_epoch=val_timesteps_per_epoch,
-            ckpt_interval=ckpt_interval,
-            always_save_latest=True,
-            always_load_latest=False,
-            batch_size=batch_size,
-            batches_per_update=batches_per_update,
-            learning_rate=learning_rate,
-            critic_loss_weight=critic_loss_weight,
-            lr_warmup_steps=lr_warmup_steps,
-            grad_clip=grad_clip,
-            l2_coeff=l2_coeff,
-            mixed_precision=mixed_precision,
-        )
+    def evaluate_val(self):
+        amago.utils.call_async_env(self.val_envs, "resume_from_break")
+        out = super().evaluate_val()
+        amago.utils.call_async_env(self.val_envs, "take_long_break")
+        return out
 
     def edit_actor_mask(
         self, batch: Batch, actor_loss: torch.FloatTensor, pad_mask: torch.BoolTensor
     ) -> torch.BoolTensor:
         B, L, G, _ = actor_loss.shape
+        # missing_action_mask is one timestep too long to match the size of observations
+        # True where the action is missing, False where it's provided.
+        # pad_mask is True where the timestep should count towards loss, False where it shouldn't.
         missing_action_mask = repeat(
-            ~batch.obs["missing_action_mask"][:, :-1, :], "b l 1 -> b l g 1", g=G
+            ~batch.obs["missing_action_mask"][:, :-1], "b l 1 -> b l g 1", g=G
         )
         return pad_mask & missing_action_mask
 
@@ -310,6 +242,6 @@ class MetamonAMAGOExperiment(amago.Experiment):
     ) -> torch.BoolTensor:
         B, L, C, G, _ = pad_mask.shape
         missing_action_mask = repeat(
-            ~batch.obs["missing_action_mask"][:, :-1, :], "b l 1 -> b l c g 1", g=G, c=C
+            ~batch.obs["missing_action_mask"][:, :-1], "b l 1 -> b l c g 1", g=G, c=C
         )
         return pad_mask & missing_action_mask

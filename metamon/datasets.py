@@ -239,9 +239,7 @@ class ParsedReplayDataset(Dataset):
         filename = random.choice(self.filenames)
         return self.load_filename(filename)
 
-    def __getitem__(
-        self, i
-    ) -> Tuple[
+    def __getitem__(self, i) -> Tuple[
         Dict[str, list[np.ndarray]] | list[np.ndarray],
         np.ndarray,
         np.ndarray,

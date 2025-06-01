@@ -7,7 +7,6 @@ import wandb
 
 import amago
 from amago import cli_utils
-from amago.agent import binary_filter, exp_filter
 from amago.utils import AmagoWarning
 
 from metamon.env import BattleAgainstBaseline, TeamSet, get_metamon_teams
@@ -15,8 +14,8 @@ from metamon.interface import (
     ObservationSpace,
     RewardFunction,
     TokenizedObservationSpace,
-    DefaultObservationSpace,
-    DefaultShapedReward,
+    ALL_OBSERVATION_SPACES,
+    ALL_REWARD_FUNCTIONS,
 )
 from metamon.tokenizer import get_tokenizer
 from metamon.datasets import ParsedReplayDataset
@@ -24,27 +23,30 @@ from metamon.rl.metamon_to_amago import (
     MetamonAMAGOExperiment,
     MetamonAMAGOWrapper,
     MetamonAMAGODataset,
-    MetamonTstepEncoder,
 )
 from metamon import baselines
 
 
+WANDB_PROJECT = os.environ.get("METAMON_WANDB_PROJECT")
+WANDB_ENTITY = os.environ.get("METAMON_WANDB_ENTITY")
+
+
 def add_cli(parser):
     # fmt: off
-    parser.add_argument("--run_name", required=True)
+    parser.add_argument("--run_name", required=True, help="Give the run a name to identify logs and checkpoints.")
     parser.add_argument("--obs_space", type=str, default="DefaultObservationSpace")
     parser.add_argument("--reward_function", type=str, default="DefaultShapedReward")
     parser.add_argument("--parsed_replay_dir", type=str, default=None, help="Path to the parsed replay directory. Defaults to the official huggingface version.")
-    parser.add_argument("--ckpt_dir", type=str, required=True)
-    parser.add_argument("--ckpt", type=int, default=None)
-    parser.add_argument("--batch_size_per_gpu", type=int, default=12)
-    parser.add_argument("--grad_accum", type=int, default=1)
-    parser.add_argument("--il", action="store_true")
-    parser.add_argument("--arch_size", required=True, choices=["small", "medium", "large", "synthetic"])
-    parser.add_argument("--token_aug", action="store_true")
-    parser.add_argument("--tokenizer", type=str, default="allreplays-v3")
-    parser.add_argument("--log", action="store_true")
-    parser.add_argument("--agent_type", type=str, default="agent", choices=["agent", "multitask"])
+    parser.add_argument("--ckpt_dir", type=str, required=True, help="Path to save checkpoints. Find checkpoints under {ckpt_dir}/{run_name}/ckpts/")
+    parser.add_argument("--ckpt", type=int, default=None, help="Resume training from an existing run with this run_name. Provide the epoch checkpoint to load.")
+    parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. In offline RL model, an epoch is an arbitrary interval (here: 25k) of training steps on a fixed dataset.")
+    parser.add_argument("--batch_size_per_gpu", type=int, default=12, help="Batch size per GPU. Total batch size is batch_size_per_gpu * num_gpus.")
+    parser.add_argument("--grad_accum", type=int, default=1, help="Number of gradient accumulations per update.")
+    parser.add_argument("--il", action="store_true", help="Overrides amago settings to use imitation learning.")
+    parser.add_argument("--model_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the model architecture). See provided rl/configs/models/)")
+    parser.add_argument("--train_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the training or hparams).")
+    parser.add_argument("--tokenizer", type=str, default="DefaultObservationSpace-v0", help="The tokenizer to use for the text observation space. See metamon.tokenizer for options.")
+    parser.add_argument("--log", action="store_true", help="Log to wandb.")
     # fmt: on
     return parser
 
@@ -76,39 +78,31 @@ def make_baseline_env(
         reward_function=reward_function,
         team_set=team_set,
         opponent_type=opponent,
+        turn_limit=100,
     )
+    print("Made env")
     return MetamonAMAGOWrapper(env)
 
 
 def configure(args):
     """
-    This is all customizable. When we've trained a model we like, we can recover
-    the config from wandb or the config.txt in the checkpoint directory to set up
-    an inference checkpoint.
+    Setup gin configuration with overrides for command line args or anything else
     """
     config = {
-        "MetamonTstepEncoder.token_mask_aug": args.token_aug,
         "MetamonTstepEncoder.tokenizer": get_tokenizer(args.tokenizer),
-        # change to FlashAttention if possible (or any of the other options)
-        "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.VanillaAttention,
+        "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
     }
-    agent_type = cli_utils.switch_agent(
-        config=config,
-        agent=args.agent_type,
-        reward_multiplier=10.0,
-        offline_coeff=1.0,
-        online_coeff=0.0,
-        fake_filter=args.il,
-        use_multigamma=not args.il,
-        fbc_filter_func=binary_filter,
-        tau=0.004,
-        num_actions_for_value_in_critic_loss=5,
-    )
-    config_file = os.path.join(
-        os.path.dirname(__file__), "configs", f"{args.arch_size}.gin"
-    )
-    cli_utils.use_config(config, [config_file])
-    return agent_type
+    if args.il:
+        # NOTE: would break for a custom agent, but ultimately just creates some wasted params that aren't trained
+        config.update(
+            {
+                "amago.agent.Agent.use_multigamma": False,
+                "amago.agent.MultiTaskAgent.use_multigamma": False,
+                "amago.agent.Agent.fake_filter": True,
+                "amago.agent.MultiTaskAgent.fake_filter": True,
+            }
+        )
+    cli_utils.use_config(config, [args.model_gin_config, args.train_gin_config])
 
 
 if __name__ == "__main__":
@@ -117,18 +111,21 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     add_cli(parser)
     args = parser.parse_args()
-    agent_type = configure(args)
+    configure(args)
 
+    # metamon dataset
     obs_space = TokenizedObservationSpace(
-        DefaultObservationSpace(), get_tokenizer(args.tokenizer)
+        ALL_OBSERVATION_SPACES[args.obs_space](), get_tokenizer(args.tokenizer)
     )
-    reward_function = DefaultShapedReward()
+    reward_function = ALL_REWARD_FUNCTIONS[args.reward_function]()
     parsed_replay_dataset = ParsedReplayDataset(
         dset_root=args.parsed_replay_dir,
         observation_space=obs_space,
         reward_function=reward_function,
+        # amago will handle sequence lengths
+        max_seq_len=None,
+        verbose=True,
     )
-
     amago_dataset = MetamonAMAGODataset(
         dset_name="Metamon Parsed Replays",
         parsed_replay_dset=parsed_replay_dataset,
@@ -147,16 +144,47 @@ if __name__ == "__main__":
         for opponent in live_opponents
     ]
     experiment = MetamonAMAGOExperiment(
+        ## required ##
         run_name=args.run_name,
-        agent_type=agent_type,
         ckpt_base_dir=args.ckpt_dir,
+        # max_seq_len = should be set in the gin file
+        dataset=amago_dataset,
+        # tstep_encoder_type = should be set in the gin file
+        # traj_encoder_type = should be set in the gin file
+        # agent_type = should be set in the gin file
+        val_timesteps_per_epoch=300,
+        ## environment ##
         make_train_env=make_envs,
         make_val_env=make_envs,
-        dataset=amago_dataset,
+        env_mode="async",
+        async_env_mp_context="spawn",
+        parallel_actors=len(make_envs),
+        # no exploration
+        exploration_wrapper_type=None,
+        sample_actions=True,
+        force_reset_train_envs_every=None,
+        ## logging ##
         log_to_wandb=args.log,
+        wandb_project=WANDB_PROJECT,
+        wandb_entity=WANDB_ENTITY,
+        verbose=True,
+        log_interval=300,
+        ## replay ##
+        padded_sampling="none",
+        dloader_workers=10,
+        ## learning schedule ##
+        epochs=args.epochs,
+        # entirely offline RL
+        start_learning_at_epoch=0,
+        start_collecting_at_epoch=float("inf"),
+        train_timesteps_per_epoch=0,
         train_batches_per_epoch=25_000 * args.grad_accum,
-        batches_per_update=args.grad_accum,
+        val_interval=1,
+        ckpt_interval=2,
+        ## optimization ##
         batch_size=args.batch_size_per_gpu,
+        batches_per_update=args.grad_accum,
+        mixed_precision="no",
     )
 
     experiment.start()

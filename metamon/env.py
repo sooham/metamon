@@ -34,7 +34,7 @@ class TeamSet(Teambuilder):
     A simple wrapper around poke-env's Teambuilder that randomly samples a team from a directory of team files.
 
     Args:
-        team_file_dir: The directory containing the team files. Team files are just text files in the standard Showdown export format. See https://pokepast.es/syntax.html for details.
+        team_file_dir: The directory containing the team files (searched recursively). Team files are just text files in the standard Showdown export format. See https://pokepast.es/syntax.html for details.
         battle_format: The battle format of the team files (e.g. "gen1ou", "gen2ubers", etc.). Note that we assume files have a matching extension (e.g. "any_name.gen1ou_team").
     """
 
@@ -113,7 +113,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
             See https://play.pokemonshowdown.com/sprites/trainers/ for a list of options.
         start_challenging: Whether to start challenging the opponent immediately. This is a poke-env detail handled by the other wrappers.
         start_timer_on_battle_start: Start the time increment controls that prevent infinite battles from inactive players.
-        turn_limit: The maximum number of turns in a battle. Note that Showdown already sets a limit of 1000.
+        turn_limit: The maximum number of turns in a battle. Note that Showdown already enforces a limit of 1000 regardless of this setting.
         save_trajectories_to: The directory to save the trajectories to. Data is saved in the same format as the parsed replay dataset.
     """
 
@@ -182,6 +182,9 @@ class PokeEnvWrapper(OpenAIGymEnv):
             avatar=_check_avatar(player_avatar),
             start_timer_on_battle_start=start_timer_on_battle_start,
             start_challenging=start_challenging,
+            # TODO: need to re-check these settings for online RL
+            ping_interval=None,
+            open_timeout=None,
             ping_timeout=None,
         )
 
@@ -268,6 +271,13 @@ class PokeEnvWrapper(OpenAIGymEnv):
                 os.rename(temp_path, path)
 
         return next_state, reward, terminated, truncated, info
+
+    def take_long_break(self):
+        self.close(purge=False)
+        self.reset_battles()
+
+    def resume_from_break(self):
+        self.start_challenging()
 
 
 class BattleAgainstBaseline(PokeEnvWrapper):

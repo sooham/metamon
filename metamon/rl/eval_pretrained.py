@@ -18,7 +18,7 @@ from huggingface_hub import hf_hub_download
 import torch
 import numpy as np
 import amago
-from amago.cli_utils import *
+from amago import cli_utils
 
 from metamon.env import (
     BattleAgainstBaseline,
@@ -29,11 +29,13 @@ from metamon.env import (
 from metamon.rl.metamon_to_amago import (
     PSLadderAMAGOWrapper,
     MetamonAMAGOWrapper,
-    MetamonTstepEncoder,
+    MetamonAMAGOExperiment,
 )
 from metamon.interface import (
     ObservationSpace,
     RewardFunction,
+    ALL_OBSERVATION_SPACES,
+    ALL_REWARD_FUNCTIONS,
     DefaultObservationSpace,
     DefaultShapedReward,
     TokenizedObservationSpace,
@@ -84,6 +86,12 @@ def make_placeholder_env(observation_space: ObservationSpace):
             }
             return obs, {}
 
+        def take_long_break(self):
+            pass
+
+        def resume_from_break(self):
+            pass
+
     env = _PlaceholderShowdown()
     return MetamonAMAGOWrapper(env)
 
@@ -133,14 +141,10 @@ def make_baseline_env(
     return MetamonAMAGOWrapper(env)
 
 
-def _create_placeholder_experiment(
+def create_placeholder_experiment(
     ckpt_base_dir: str,
     run_name: str,
-    max_seq_len: int,
     log: bool,
-    agent_type: Type[amago.agent.Agent],
-    tstep_encoder_type: Type[amago.nets.tstep_encoders.TstepEncoder],
-    traj_encoder_type: Type[amago.nets.traj_encoders.TrajEncoder],
     observation_space: ObservationSpace,
 ):
     """
@@ -154,9 +158,12 @@ def _create_placeholder_experiment(
     )
     dummy_dset = amago.loading.DoNothingDataset()
     dummy_env = lambda: env
-    experiment = amago.Experiment(
+    experiment = MetamonAMAGOExperiment(
+        # assumes that positional args
+        # agent_type, tstep_encoder_type,
+        # traj_encoder_type, and max_seq_len
+        # are set in the gin file
         ckpt_base_dir=ckpt_base_dir,
-        max_seq_len=max_seq_len,
         run_name=run_name,
         dataset=dummy_dset,
         make_train_env=dummy_env,
@@ -164,9 +171,6 @@ def _create_placeholder_experiment(
         env_mode="async",
         async_env_mp_context="spawn",
         parallel_actors=1,
-        traj_encoder_type=traj_encoder_type,
-        tstep_encoder_type=tstep_encoder_type,
-        agent_type=agent_type,
         exploration_wrapper_type=None,
         epochs=0,
         start_learning_at_epoch=float("inf"),
@@ -207,14 +211,6 @@ class PretrainedModel:
         model_name: str,
         # whether the model is an IL model (vs RL) (IL expects slightly less params)
         is_il_model: bool,
-        # max sequence length for the model
-        max_seq_len: int = 200,
-        # type of agent to use
-        agent_type: Type[amago.agent.Agent] = amago.agent.Agent,
-        # type of tstep encoder to use (defaults to custom MetamonTstepEncoder)
-        tstep_encoder_type: Type[amago.nets.tstep_encoders.TstepEncoder] = MetamonTstepEncoder,
-        # type of traj encoder to use (defaults to amago Transformer)
-        traj_encoder_type: Type[amago.nets.traj_encoders.TrajEncoder] = amago.nets.traj_encoders.TformerTrajEncoder,
         # tokenize the text component of the observation space
         tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
         # use original paper observation space and reward function
@@ -228,8 +224,6 @@ class PretrainedModel:
         self.model_name = model_name
         self.gin_config = os.path.join(os.path.dirname(__file__), "configs", gin_config)
         self.is_il_model = is_il_model
-        self.max_seq_len = max_seq_len
-        self.agent_type = agent_type
         self.hf_cache_dir = hf_cache_dir or MODEL_DOWNLOAD_DIR
         self.tokenizer = tokenizer
         self.observation_space = TokenizedObservationSpace(
@@ -237,8 +231,6 @@ class PretrainedModel:
             tokenizer=tokenizer,
         )
         self.reward_function = reward_function
-        self.traj_encoder_type = traj_encoder_type
-        self.tstep_encoder_type = tstep_encoder_type
         os.makedirs(self.hf_cache_dir, exist_ok=True)
 
     @property
@@ -246,7 +238,6 @@ class PretrainedModel:
         has_gpu = torch.cuda.is_available()
         try:
             import flash_attn
-
             has_flash_attn = True
         except ImportError:
             has_flash_attn = False
@@ -256,10 +247,13 @@ class PretrainedModel:
             attn_type = amago.nets.transformer.VanillaAttention
             red_warning("Warning: Using unofficial VanillaAttention implementation")
         return {
-            # some of these settings are not actually necessary for inference
-            "amago.agent.Agent.reward_multiplier": 10.0,
+            # NOTE: assumes the pretrained models in this file are using
+            # built-in agents we know about and can change the settings for...
             "amago.agent.Agent.fake_filter": self.is_il_model,
+            "amago.agent.MultiTaskAgent.fake_filter": self.is_il_model,
             "amago.agent.Agent.use_multigamma": not self.is_il_model,
+            "amago.agent.MultiTaskAgent.use_multigamma": not self.is_il_model,
+            # attention and tokenizer
             "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": attn_type,
             "MetamonTstepEncoder.tokenizer": self.tokenizer,
             # skip cpu-intensive init, because we're going to be replacing the weights
@@ -269,7 +263,7 @@ class PretrainedModel:
 
     def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False) -> amago.Experiment:
         # use the base config and the gin file to configure the model
-        use_config(self.base_config, [self.gin_config], finalize=False)
+        cli_utils.use_config(self.base_config, [self.gin_config], finalize=False)
         checkpoint = checkpoint or self.DEFAULT_CKPT
         # Download checkpoint from HF Hub
         checkpoint_path = hf_hub_download(
@@ -280,14 +274,10 @@ class PretrainedModel:
         model_dir = Path(os.path.dirname(os.path.dirname(checkpoint_path)))
         ckpt_base_dir = str(model_dir.parents[1])
         # build an experiment
-        experiment = _create_placeholder_experiment(
+        experiment = create_placeholder_experiment(
             ckpt_base_dir=ckpt_base_dir,
             run_name=self.model_name,
-            max_seq_len=self.max_seq_len,
             log=log,
-            agent_type=self.agent_type,
-            tstep_encoder_type=self.tstep_encoder_type,
-            traj_encoder_type=self.traj_encoder_type,
             observation_space=self.observation_space,
         )
         # starting the experiment will build the initial model
@@ -302,7 +292,7 @@ class SmallIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-il",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=True,
         )
 
@@ -311,7 +301,7 @@ class SmallILFA(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-il-fa",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=True,
         )
 
@@ -320,7 +310,7 @@ class SmallRL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=False,
         )
 
@@ -329,7 +319,7 @@ class SmallRL_ExtremeFilter(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-exp-extreme",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=False,
         )
 
@@ -338,7 +328,7 @@ class SmallRL_BinaryFilter(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-binary",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=False,
         )
 
@@ -347,7 +337,7 @@ class SmallRL_Aug(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-aug",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=False,
         )
 
@@ -356,7 +346,7 @@ class SmallRL_MaxQ(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-maxq",
-            gin_config="small.gin",
+            gin_config="models/small_agent.gin",
             is_il_model=False,
         )
 
@@ -365,7 +355,7 @@ class MediumIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-il",
-            gin_config="medium.gin",
+            gin_config="models/medium_agent.gin",
             is_il_model=True,
         )
 
@@ -374,7 +364,7 @@ class MediumRL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl",
-            gin_config="medium.gin",
+            gin_config="models/medium_agent.gin",
             is_il_model=False,
         )
 
@@ -383,7 +373,7 @@ class MediumRL_Aug(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl-aug",
-            gin_config="medium.gin",
+            gin_config="models/medium_agent.gin",
             is_il_model=False,
         )
 
@@ -392,7 +382,7 @@ class MediumRL_MaxQ(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl-maxq",
-            gin_config="medium.gin",
+            gin_config="models/medium_agent.gin",
             is_il_model=False,
         )
 
@@ -400,10 +390,9 @@ class MediumRL_MaxQ(PretrainedModel):
 class LargeRL(PretrainedModel):
     def __init__(self):
         super().__init__(
-            model_name="large-rl-aug",
-            gin_config="large.gin",
+            model_name="large-rl",
+            gin_config="models/large_agent.gin",
             is_il_model=False,
-            max_seq_len=128,
         )
 
 
@@ -411,9 +400,8 @@ class LargeIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="large-il",
-            gin_config="large.gin",
+            gin_config="models/large_agent.gin",
             is_il_model=True,
-            max_seq_len=128,
         )
 
 
@@ -421,9 +409,8 @@ class SyntheticRLV0(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v0",
-            gin_config="synthetic.gin",
+            gin_config="models/synthetic_agent.gin",
             is_il_model=False,
-            max_seq_len=128,
         )
 
 
@@ -431,9 +418,8 @@ class SyntheticRLV1(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1",
-            gin_config="synthetic.gin",
+            gin_config="models/synthetic_agent.gin",
             is_il_model=False,
-            max_seq_len=128,
         )
 
 
@@ -443,9 +429,8 @@ class SyntheticRLV1_SelfPlay(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1+sp",
-            gin_config="synthetic.gin",
+            gin_config="models/synthetic_agent.gin",
             is_il_model=False,
-            max_seq_len=128,
         )
 
 
@@ -455,9 +440,8 @@ class SyntheticRLV1_PlusPlus(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1++",
-            gin_config="synthetic.gin",
+            gin_config="models/synthetic_agent.gin",
             is_il_model=False,
-            max_seq_len=128,
         )
 
 
@@ -467,10 +451,8 @@ class SyntheticRLV2(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v2",
-            gin_config="synthetic.gin",
+            gin_config="models/synthetic_multitaskagent.gin",
             is_il_model=False,
-            max_seq_len=128,
-            agent_type=amago.agent.MultiTaskAgent,
         )
 
 
