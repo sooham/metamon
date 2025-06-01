@@ -206,6 +206,17 @@ class MetamonAMAGOExperiment(amago.Experiment):
     Adds actions masking to the main AMAGO experiment, and leaves room for further tweaks.
     """
 
+    def init_envs(self):
+        out = super().init_envs()
+        amago.utils.call_async_env(self.val_envs, "take_long_break")
+        return out
+
+    def evaluate_val(self):
+        amago.utils.call_async_env(self.val_envs, "resume_from_break")
+        out = super().evaluate_val()
+        amago.utils.call_async_env(self.val_envs, "take_long_break")
+        return out
+
     def edit_actor_mask(
         self, batch: Batch, actor_loss: torch.FloatTensor, pad_mask: torch.BoolTensor
     ) -> torch.BoolTensor:
