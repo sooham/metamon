@@ -1,5 +1,4 @@
-import os
-from typing import Optional, Dict, List, Type, Callable, Iterable, Any
+from typing import Optional, Any
 
 import gin
 import numpy as np
@@ -15,13 +14,21 @@ from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.datasets import ParsedReplayDataset
 from metamon.env import PokeEnvWrapper
 
-import amago
 
-assert amago.__version__ >= "3.1.0", "Update to the latest AMAGO version!"
-from amago.envs import AMAGOEnv
-from amago.nets.utils import symlog
-from amago.loading import RLData, RLDataset, Batch
-from amago.envs.amago_env import AMAGO_ENV_LOG_PREFIX
+try:
+    import amago
+except ImportError:
+    raise ImportError(
+        "Must install `amago` RL package. Visit: https://ut-austin-rpl.github.io/amago/ "
+    )
+else:
+    assert (
+        hasattr(amago, "__version__") and amago.__version__ >= "3.1.0"
+    ), "Update to the latest AMAGO version!"
+    from amago.envs import AMAGOEnv
+    from amago.nets.utils import symlog
+    from amago.loading import RLData, RLDataset, Batch
+    from amago.envs.amago_env import AMAGO_ENV_LOG_PREFIX
 
 
 class MetamonAMAGOWrapper(AMAGOEnv):
@@ -116,10 +123,11 @@ class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
         super().__init__(obs_space=obs_space, rl2_space=rl2_space)
         self.token_mask_aug = token_mask_aug
         self.extra_emb = nn.Linear(rl2_space.shape[-1], extra_emb_dim)
+        base_numerical_features = obs_space["numbers"].shape[0]
         self.turn_embedding = TransformerTurnEmbedding(
             tokenizer=tokenizer,
             token_embedding_dim=d_model,
-            numerical_features=48 + extra_emb_dim,
+            numerical_features=base_numerical_features + extra_emb_dim,
             numerical_tokens=numerical_tokens,
             scratch_tokens=scratch_tokens,
             d_model=d_model,

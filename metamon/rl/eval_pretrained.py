@@ -29,12 +29,13 @@ from metamon.env import (
 from metamon.rl.metamon_to_amago import (
     PSLadderAMAGOWrapper,
     MetamonAMAGOWrapper,
-    MetamonTstepEncoder,
     MetamonAMAGOExperiment,
 )
 from metamon.interface import (
     ObservationSpace,
     RewardFunction,
+    ALL_OBSERVATION_SPACES,
+    ALL_REWARD_FUNCTIONS,
     DefaultObservationSpace,
     DefaultShapedReward,
     TokenizedObservationSpace,
@@ -84,6 +85,12 @@ def make_placeholder_env(observation_space: ObservationSpace):
                 for key, value in self.observation_space.items()
             }
             return obs, {}
+
+        def take_long_break(self):
+            pass
+
+        def resume_from_break(self):
+            pass
 
     env = _PlaceholderShowdown()
     return MetamonAMAGOWrapper(env)

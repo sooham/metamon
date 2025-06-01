@@ -14,8 +14,8 @@ from metamon.interface import (
     ObservationSpace,
     RewardFunction,
     TokenizedObservationSpace,
-    DefaultObservationSpace,
-    DefaultShapedReward,
+    ALL_OBSERVATION_SPACES,
+    ALL_REWARD_FUNCTIONS,
 )
 from metamon.tokenizer import get_tokenizer
 from metamon.datasets import ParsedReplayDataset
@@ -114,9 +114,9 @@ if __name__ == "__main__":
 
     # metamon dataset
     obs_space = TokenizedObservationSpace(
-        DefaultObservationSpace(), get_tokenizer(args.tokenizer)
+        ALL_OBSERVATION_SPACES[args.obs_space](), get_tokenizer(args.tokenizer)
     )
-    reward_function = DefaultShapedReward()
+    reward_function = ALL_REWARD_FUNCTIONS[args.reward_function]()
     parsed_replay_dataset = ParsedReplayDataset(
         dset_root=args.parsed_replay_dir,
         observation_space=obs_space,
