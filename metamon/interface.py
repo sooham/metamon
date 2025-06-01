@@ -845,12 +845,12 @@ class DefaultAddPowerPoints(DefaultObservationSpace):
     has two clear problems:
 
     1. It makes sleep/freeze clause needlessly high-stakes --- it's surprising how good the
-        models are at following the rules, but there are situations where it can't know if
-        it successfully slept/froze the opponent when immediately switched out, so seq2seq
-        memory can't help.
+        models are at following the rules, but there are situations where they can't know if
+        they successfully slept/froze the opponent when immediately switched out, so seq2seq
+        memory can't do anything to help.
 
     2. It does not include PP counts because they are inaccurate in replays. However,
-        models are clearly good enough to get into PP stalls and this behavior is hard to learn.
+        models are clearly good enough to get into PP stalls, and this behavior is hard to learn.
 
     Of these, #2 is easily fixed with this observation space that adds 4 more numerical features.
     PP counts are still impossible to get perfect, so we discretize to {no pp, low pp, pp ok}
@@ -858,24 +858,14 @@ class DefaultAddPowerPoints(DefaultObservationSpace):
 
     @property
     def gym_space(self):
-        return gym.spaces.Dict(
-            {
-                "numbers": gym.spaces.Box(
-                    low=-10.0,
-                    high=10.0,
-                    # adding 4 pp warnings,
-                    shape=(48 + 4,),
-                    dtype=np.float32,
-                ),
-                "text": gym.spaces.Text(
-                    max_length=900,
-                    min_length=800,
-                    charset=set(string.ascii_lowercase)
-                    | set(str(n) for n in range(0, 10))
-                    | {"<", ">"},
-                ),
-            }
+        base_space = super().gym_space
+        base_space["numbers"] = gym.spaces.Box(
+            low=-10.0,
+            high=10.0,
+            shape=(48 + 4,),
+            dtype=np.float32,
         )
+        return base_space
 
     def _get_move_numerical_features(
         self, move: UniversalMove, active: np.bool
