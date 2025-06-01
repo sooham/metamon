@@ -1,6 +1,7 @@
 import os
 import json
 import datetime
+import shutil
 import tarfile
 from collections import defaultdict
 
@@ -18,9 +19,9 @@ LATEST_TEAMS_REVISION = "v2"
 
 
 def _update_version_reference(key: str, name: str, version: str):
-    """
-    Maintains a version_reference.json file in the METAMON_CACHE_DIR
-    that records the version of each dataset that is currently active.
+    """Maintains a version_reference.json file in the METAMON_CACHE_DIR.
+
+    Records the version of each dataset that is currently active.
     """
     if VERSION_REFERENCE_PATH is None:
         return
@@ -39,9 +40,7 @@ def _update_version_reference(key: str, name: str, version: str):
 
 
 def get_active_dataset_versions() -> dict:
-    """
-    Get the current version of a dataset
-    """
+    """Get the current version of a dataset."""
     with open(VERSION_REFERENCE_PATH, "r") as f:
         version_reference = json.load(f)
     return version_reference
@@ -52,13 +51,14 @@ def download_parsed_replays(
     version: str = LATEST_PARSED_REPLAY_REVISION,
     force_download: bool = False,
 ) -> str:
-    """
-    Download the parsed replays for a given battle format.
+    """Download the parsed replays for a given battle format.
 
     Args:
         battle_format: Showdown battle format (e.g. "gen1ou")
-        version: Version of the dataset to download. Corresponds to revisions on the Hugging Face Hub. Defaults to the latest version.
-        force_download: If True, download the dataset even if a previous version already exists in the cache.
+        version: Version of the dataset to download. Corresponds to revisions on the
+            Hugging Face Hub. Defaults to the latest version.
+        force_download: If True, download the dataset even if a previous version
+            already exists in the cache.
 
     Returns:
         The path to the dataset on disk.
@@ -68,8 +68,11 @@ def download_parsed_replays(
     parsed_replay_dir = os.path.join(METAMON_CACHE_DIR, "parsed-replays")
     tar_path = os.path.join(parsed_replay_dir, f"{battle_format}.tar.gz")
     out_path = os.path.join(parsed_replay_dir, battle_format)
-    if os.path.exists(out_path) and not force_download:
-        return out_path
+    if os.path.exists(out_path):
+        if not force_download:
+            return out_path
+        print(f"Clearing existing dataset at {out_path}...")
+        shutil.rmtree(out_path)
     hf_hub_download(
         cache_dir=os.path.join(METAMON_CACHE_DIR, "parsed-replays"),
         repo_id="jakegrigsby/metamon-parsed-replays",
@@ -96,14 +99,18 @@ def download_teams(
     version: str = LATEST_TEAMS_REVISION,
     force_download: bool = False,
 ) -> str:
-    """
-    Download the teams for a given battle format and set name.
+    """Download the teams for a given battle format and set name.
 
     Args:
         battle_format: Showdown battle format (e.g. "gen1ou")
         set_name: Name of the team set to download.
-        version: Version of the dataset to download. Corresponds to revisions on the Hugging Face Hub. Defaults to the latest version.
-        force_download: If True, download the dataset even if a previous version already exists in the cache.
+        version: Version of the dataset to download. Corresponds to revisions on the
+            Hugging Face Hub. Defaults to the latest version.
+        force_download: If True, download the dataset even if a previous version
+            already exists in the cache.
+
+    Returns:
+        The path to the dataset on disk.
     """
     if METAMON_CACHE_DIR is None:
         raise ValueError("METAMON_CACHE_DIR environment variable is not set")
@@ -111,9 +118,11 @@ def download_teams(
     teams_dir = os.path.join(METAMON_CACHE_DIR, "teams", set_name)
     tar_path = os.path.join(teams_dir, f"{battle_format}.tar.gz")
     extract_path = os.path.join(teams_dir, battle_format)
-    if os.path.exists(extract_path) and not force_download:
-        return extract_path
-
+    if os.path.exists(extract_path):
+        if not force_download:
+            return extract_path
+        print(f"Clearing existing dataset at {extract_path}...")
+        shutil.rmtree(extract_path)
     hf_hub_download(
         cache_dir=os.path.join(METAMON_CACHE_DIR, "teams", set_name),
         repo_id="jakegrigsby/metamon-teams",
@@ -133,12 +142,19 @@ def download_teams(
 def download_replay_stats(
     version: str = LATEST_PARSED_REPLAY_REVISION, force_download: bool = False
 ) -> str:
-    """
-    Download the "replay stats" for a given version. Replay stats are json statistics generated from the revealed teams of the current replay dataset. They are used to predict team sets.
+    """Download the "replay stats" for a given version.
+
+    Replay stats are json statistics generated from the revealed teams of the current
+    replay dataset. They are used to predict team sets.
 
     Args:
-        version: Version of the dataset to download. Corresponds to revisions on the Hugging Face Hub. Defaults to the latest version.
-        force_download: If True, download the dataset even if a previous version already exists in the cache.
+        version: Version of the dataset to download. Corresponds to revisions on the
+            Hugging Face Hub. Defaults to the latest version.
+        force_download: If True, download the dataset even if a previous version
+            already exists in the cache.
+
+    Returns:
+        The path to the dataset on disk.
     """
     return download_parsed_replays("replay_stats", version, force_download)
 
@@ -150,11 +166,17 @@ def download_revealed_teams(
 
 
 def download_raw_replays(version: str = LATEST_RAW_REPLAY_REVISION) -> str:
-    """
-    Download the "raw" (unpprocessed) replays. We maintain a dataset of replays downloaded from Pokémon Showdown for convenience. Our versions are also stripped of player usernames and in-game chat logs.
+    """Download the "raw" (unprocessed) replays.
+
+    We maintain a dataset of replays downloaded from Pokémon Showdown for convenience.
+    Our versions are also stripped of player usernames and in-game chat logs.
 
     Args:
-        version: Version of the dataset to download. Corresponds to revisions / git tags on the Hugging Face Hub. Defaults to the latest version.
+        version: Version of the dataset to download. Corresponds to revisions / git tags
+            on the Hugging Face Hub. Defaults to the latest version.
+
+    Returns:
+        The path to the dataset on disk.
     """
     from metamon.data.replay_dataset.raw_replays.download_from_hf import process_dataset
 
