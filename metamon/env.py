@@ -30,12 +30,18 @@ from metamon.download import download_teams
 
 
 class TeamSet(Teambuilder):
-    """
-    A simple wrapper around poke-env's Teambuilder that randomly samples a team from a directory of team files.
+    """Sample from a directory of Showdown team files.
+
+    A simple wrapper around poke-env's Teambuilder that randomly samples a team from a
+    directory of team files.
 
     Args:
-        team_file_dir: The directory containing the team files (searched recursively). Team files are just text files in the standard Showdown export format. See https://pokepast.es/syntax.html for details.
-        battle_format: The battle format of the team files (e.g. "gen1ou", "gen2ubers", etc.). Note that we assume files have a matching extension (e.g. "any_name.gen1ou_team").
+        team_file_dir: The directory containing the team files (searched recursively).
+            Team files are just text files in the standard Showdown export format. See
+            https://pokepast.es/syntax.html for details.
+        battle_format: The battle format of the team files (e.g. "gen1ou", "gen2ubers",
+            etc.). Note that we assume files have a matching extension (e.g.
+            "any_name.gen1ou_team").
     """
 
     def __init__(self, team_file_dir: str, battle_format: str):
@@ -89,32 +95,46 @@ def _check_avatar(avatar: str):
 
 
 class PokeEnvWrapper(OpenAIGymEnv):
-    """
-    A thin wrapper around poke-env's OpenAIGymEnv that handles the observation space, action
-    space, and reward function while adding some basic conveniences.
+    """A thin wrapper around poke-env's OpenAIGymEnv that handles the observation space,
+    action space, and reward function while adding some basic conveniences.
 
     Args:
-        battle_format: The battle format of the team files (e.g. "gen1ou", "gen2ubers", etc.).
-        observation_space: The observation space to use. Must be an instance of `interface.ObservationSpace`.
-        reward_function: The reward function to use. Must be an instance of `interface.RewardFunction`.
-        player_team_set: The team set to use for the player. Must be an instance of `TeamSet` or a poke-env TeamBuilder.
-        opponent_type: The type of opponent to use. Must be a callable that creates a `poke_env.player.Player`.
-            All the `metamon.baselines` implement this.
-        opponent_team_set: The team set to use for the opponent. Must be an instance of `TeamSet` or a poke-env TeamBuilder.
-            If the opponent set is not specified, the opponent plays with the same team set (but an independently sampled team) as the player.
-        player_username: The username to use for the player. If not specified, a random username will be generated.
-            It is important for this to be unique across parallel environments.
-        player_password: The password to use for the player. This is usually not needed on the local server.
-        opponent_username: The username to use for the opponent. If not specified, a random username will be generated.
-            It is important for this to be unique across parallel environments.
+        battle_format: The battle format of the team files (e.g. "gen1ou", "gen2ubers",
+            etc.).
+        observation_space: The observation space to use. Must be an instance of
+            `interface.ObservationSpace`.
+        reward_function: The reward function to use. Must be an instance of
+            `interface.RewardFunction`.
+        player_team_set: The team set to use for the player. Must be an instance of
+            `TeamSet` or a poke-env TeamBuilder.
+        opponent_type: The type of opponent to use. Must be a callable that creates a
+            `poke_env.player.Player`. All the `metamon.baselines` implement this.
+        opponent_team_set: The team set to use for the opponent. Must be an instance of
+            `TeamSet` or a poke-env TeamBuilder. If the opponent set is not specified,
+            the opponent plays with the same team set (but an independently sampled team)
+            as the player.
+        player_username: The username to use for the player. If not specified, a random
+            username will be generated. It is important for this to be unique across
+            parallel environments.
+        player_password: The password to use for the player. This is usually not needed
+            on the local server.
+        opponent_username: The username to use for the opponent. If not specified, a
+            random username will be generated. It is important for this to be unique
+            across parallel environments.
         player_avatar: The avatar for the player when viewing battles in your browser.
-            See https://play.pokemonshowdown.com/sprites/trainers/ for a list of options.
-        opponent_avatar: The avatar for the opponent when viewing battles in your browser.
-            See https://play.pokemonshowdown.com/sprites/trainers/ for a list of options.
-        start_challenging: Whether to start challenging the opponent immediately. This is a poke-env detail handled by the other wrappers.
-        start_timer_on_battle_start: Start the time increment controls that prevent infinite battles from inactive players.
-        turn_limit: The maximum number of turns in a battle. Note that Showdown already enforces a limit of 1000 regardless of this setting.
-        save_trajectories_to: The directory to save the trajectories to. Data is saved in the same format as the parsed replay dataset.
+            See https://play.pokemonshowdown.com/sprites/trainers/ for a list of
+            options.
+        opponent_avatar: The avatar for the opponent when viewing battles in your
+            browser. See https://play.pokemonshowdown.com/sprites/trainers/ for a list
+            of options.
+        start_challenging: Whether to start challenging the opponent immediately. This
+            is a poke-env detail handled by the other wrappers.
+        start_timer_on_battle_start: Start the time increment controls that prevent
+            infinite battles from inactive players.
+        turn_limit: The maximum number of turns in a battle. Note that Showdown already
+            enforces a limit of 1000 regardless of this setting.
+        save_trajectories_to: The directory to save the trajectories to. Data is saved
+            in the same format as the parsed replay dataset.
     """
 
     def __init__(

@@ -95,7 +95,8 @@ class UniversalMove:
     Rarely constructed directly. Instead, use one of the following factory methods:
         - UniversalMove.from_Move(move) - when move is from poke-env
         - UniversalMove.from_ReplayMove(move) - when move is from the replay parser
-        - UniversalMove.from_dict(data) - when move is a dict from the parsed replay dataset on disk
+        - UniversalMove.from_dict(data) - when move is a dict from the parsed replay
+            dataset on disk
     """
 
     name: str
@@ -165,9 +166,11 @@ class UniversalPokemon:
     """An object that represents a pokemon in the backend-agnostic "Universal" format.
 
     Rarely constructed directly. Instead, use one of the following factory methods:
-        - UniversalPokemon.from_ReplayPokemon(pokemon) - when pokemon is from the replay parser
+        - UniversalPokemon.from_ReplayPokemon(pokemon) - when pokemon is from the replay
+            parser
         - UniversalPokemon.from_Pokemon(pokemon) - when pokemon is from poke-env
-        - UniversalPokemon.from_dict(data) - when pokemon is a dict from the parsed replay dataset on disk
+        - UniversalPokemon.from_dict(data) - when pokemon is a dict from the parsed
+            replay dataset on disk
     """
 
     name: str
@@ -293,11 +296,6 @@ class UniversalPokemon:
         status = cls.universal_status(pokemon.status)
         effect = cls.universal_effects(pokemon.effects)
         types = cls.universal_types(pokemon.type)
-
-        # TODO: some confusion over whether to use `had_name` or `name`.
-        # `name` makes more sense b/c it's updated with form change, but
-        # from what I can tell poke-env never adjusts the equiv. `species`
-        # prop, which would be more similar to `had_name`.
         name = clean_name(pokemon.had_name)
 
         return cls(
@@ -343,9 +341,12 @@ class UniversalState:
     """An object that represents a state in the backend-agnostic "Universal" format.
 
     Rarely constructed directly. Instead, use one of the following factory methods:
-        - UniversalState.from_ReplayState(state) - when coming from a ReplayState object in the replay parser
-        - UniversalState.from_Battle(battle) - when coming from a Battle object in the online poke-env
-        - UniversalState.from_dict(data) - when state is a dict from the parsed replay dataset on disk
+        - UniversalState.from_ReplayState(state) - when coming from a ReplayState
+            object in the replay parser
+        - UniversalState.from_Battle(battle) - when coming from a Battle object in the
+            online poke-env
+        - UniversalState.from_dict(data) - when state is a dict from the parsed replay
+            dataset on disk
     """
 
     format: str
@@ -481,12 +482,11 @@ class UniversalState:
 def replaystate_action_to_idx(
     state: ReplayState, action: ReplayAction
 ) -> Optional[int]:
-    """
-    Defines the discrete action space when coming from the replay parser.
+    """Defines the discrete action space when coming from the replay parser.
 
     The action space is defined as follows:
-    - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
-    - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
+        - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
+        - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
     """
     # *can* return None, but replay parser will throw an exception if it does.
     action_idx = None
@@ -516,12 +516,11 @@ def replaystate_action_to_idx(
 def action_idx_to_battle_order(
     battle: Battle, action_idx: int
 ) -> Optional[BattleOrder]:
-    """
-    Defines the discrete action space when coming from the online poke-env env.
+    """Defines the discrete action space when coming from the online poke-env env.
 
     The action space is defined as follows:
-    - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
-    - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
+        - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
+        - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
     """
     if action_idx > 8:
         raise ValueError(
@@ -571,8 +570,9 @@ class RewardFunction(ABC):
 
 
 class DefaultShapedReward(RewardFunction):
-    """
-    The default reward function used by the paper. See the Appendix for a full description.
+    """The default reward function used by the paper.
+
+    See the Appendix for a full description.
     """
 
     def __call__(self, last_state: UniversalState, state: UniversalState) -> float:
@@ -626,9 +626,7 @@ class DefaultShapedReward(RewardFunction):
 
 
 class BinaryReward(RewardFunction):
-    """
-    A sparse variant of the default reward function.
-    """
+    """A sparse variant of the default reward function."""
 
     def __call__(self, last_state: UniversalState, state: UniversalState) -> float:
         if state.battle_won:
@@ -672,10 +670,12 @@ class ObservationSpace(ABC):
 
 
 class DefaultObservationSpace(ObservationSpace):
-    """
-    The default observation space used by the paper. Observations become a dictionary with two keys:
-    - "numbers": A 48-dimensional vector of numerical features
-    - "text": A string of text features with inconsistent length, but a consistent number of whitespace-separated words.
+    """The default observation space used by the paper.
+
+    Observations become a dictionary with two keys:
+        - "numbers": A 48-dimensional vector of numerical features
+        - "text": A string of text features with inconsistent length, but a consistent
+            number of whitespace-separated words.
     """
 
     @property
@@ -890,10 +890,12 @@ ALL_OBSERVATION_SPACES = {
 
 
 class TokenizedObservationSpace(ObservationSpace):
-    """
-    An observation space that tokenizes specified keys of the default observation space by splitting text into whitespace-separated words and running them through
-    a simple vocabulary lookup, which usually has been generated by tracking unique words across the entire replay dataset. Useful for turning the text
-    features of the default observation space into an array with constant shape.
+    """An observation space that tokenizes specified keys of the default observation space.
+
+    Splits text into whitespace-separated words and runs them through a simple
+    vocabulary lookup, which usually has been generated by tracking unique words across
+    the entire replay dataset. Useful for turning the text features of the default
+    observation space into an array with constant shape.
     """
 
     def __init__(
