@@ -85,6 +85,12 @@ def make_placeholder_env(observation_space: ObservationSpace):
             }
             return obs, {}
 
+        def take_long_break(self):
+            pass
+
+        def resume_from_break(self):
+            pass
+
     env = _PlaceholderShowdown()
     return MetamonAMAGOWrapper(env)
 

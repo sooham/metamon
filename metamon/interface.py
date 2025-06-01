@@ -113,31 +113,6 @@ class UniversalMove:
                 actually_is = type(self.__dict__[name])
                 raise TypeError(f"UniversalMove `{name}` has type {actually_is}")
 
-    def get_string_features(self, active: bool) -> str:
-        out = clean_name(self.name)
-        if active:
-            out += f" {clean_name(self.move_type)} {clean_name(self.category)}"
-        return out
-
-    @staticmethod
-    def get_pad_string(active: bool) -> str:
-        out = "<blank>"
-        if active:
-            out += " <blank> <blank>"
-        return out
-
-    def get_numerical_features(self, active: bool) -> list[float]:
-        if not active:
-            return []
-        # notably missing PP, which (for now) is too unreliable across replay parser vs. poke-env vs. actual pokemon showdown
-        return [self.base_power / 200.0, self.accuracy, self.priority / 5.0]
-
-    @staticmethod
-    def get_pad_numerical(active: bool) -> list[float]:
-        if not active:
-            return []
-        return [-2.0] * 3
-
     @classmethod
     def blank_move(cls):
         return cls(
@@ -197,7 +172,7 @@ class UniversalPokemon:
 
     name: str
     hp_pct: float
-    types: list[str]
+    types: str
     item: str
     ability: str
     lvl: int
@@ -298,46 +273,6 @@ class UniversalPokemon:
 
         assert len(type_strs) == 2
         return " ".join(sorted(type_strs))
-
-    def get_moveset_string(self) -> str:
-        out = ""
-        move_num = -1
-        for move_num, move in enumerate(consistent_move_order(self.moves)):
-            out += f" {move.get_string_features(active=False)}"
-        while move_num < 3:
-            out += f" {UniversalMove.get_pad_string(active=False)}"
-            move_num += 1
-        return out.strip()
-
-    def get_string_features(self, active: bool) -> str:
-        out = f"{self.name} {self.item} {self.ability}"
-        if active:
-            out += f" {self.types} {self.effect} {self.status}"
-        else:
-            out += f" <moveset> {self.get_moveset_string()}"
-        return out.strip()
-
-    @staticmethod
-    def get_pad_string(active: bool) -> str:
-        blanks = 3 + (4 if active else 5)
-        return " ".join(["<blank>"] * blanks)
-
-    def get_numerical_features(self, active: bool) -> list[float]:
-        out = [self.hp_pct]
-        if active:
-            stat = lambda s: getattr(self, f"base_{s}") / 255.0
-            boost = lambda b: getattr(self, f"{b}_boost") / 6.0
-            out.append(self.lvl / 100.0)
-            out += map(stat, ["atk", "spa", "def", "spd", "spe", "hp"])
-            out += map(
-                boost, ["atk", "spa", "def", "spd", "spe", "accuracy", "evasion"]
-            )
-        return out
-
-    @staticmethod
-    def get_pad_numerical(active: bool) -> list[float]:
-        blanks = 1 + (14 if active else 0)
-        return [-2.0] * blanks
 
     @classmethod
     def from_ReplayPokemon(cls, pokemon: ReplayPokemon):
@@ -763,50 +698,139 @@ class DefaultObservationSpace(ObservationSpace):
             "text": 87,
         }
 
-    def state_to_obs(self, state: UniversalState):
-        player_str = (
-            f"<player> {state.player_active_pokemon.get_string_features(active=True)}"
+    def _get_move_string_features(self, move: UniversalMove, active: bool) -> list[str]:
+        out = [clean_name(move.name)]
+        if active:
+            out += [clean_name(move.move_type), clean_name(move.category)]
+        return out
+
+    def _get_move_pad_string(self, active: bool) -> list[str]:
+        out = ["<blank>"]
+        if active:
+            out += ["<blank>", "<blank>"]
+        return out
+
+    def _get_move_numerical_features(
+        self, move: UniversalMove, active: bool
+    ) -> list[float]:
+        if not active:
+            return []
+        # notably missing PP, which (for now) is too unreliable across replay parser vs. poke-env vs. actual pokemon showdown
+        return [move.base_power / 200.0, move.accuracy, move.priority / 5.0]
+
+    def _get_move_pad_numerical(self, active: bool) -> list[float]:
+        if not active:
+            return []
+        return [-2.0] * 3
+
+    def _get_pokemon_string_features(
+        self, pokemon: UniversalPokemon, active: bool
+    ) -> list[str]:
+        out = [pokemon.name, pokemon.item, pokemon.ability]
+        if active:
+            out += [pokemon.types, pokemon.effect, pokemon.status]
+        else:
+            out += ["<moveset>"]
+            move_num = -1
+            for move_num, move in enumerate(consistent_move_order(pokemon.moves)):
+                out += self._get_move_string_features(move, active=False)
+            while move_num < 3:
+                out += self._get_move_pad_string(active=False)
+                move_num += 1
+        return out
+
+    def _get_pokemon_pad_string(self, active: bool) -> list[str]:
+        blanks = 3 + (4 if active else 5)
+        return ["<blank>"] * blanks
+
+    def _get_pokemon_numerical_features(
+        self, pokemon: UniversalPokemon, active: bool
+    ) -> list[float]:
+        out = [pokemon.hp_pct]
+        if active:
+            stat = lambda s: getattr(pokemon, f"base_{s}") / 255.0
+            boost = lambda b: getattr(pokemon, f"{b}_boost") / 6.0
+            out.append(pokemon.lvl / 100.0)
+            out += map(stat, ["atk", "spa", "def", "spd", "spe", "hp"])
+            out += map(
+                boost, ["atk", "spa", "def", "spd", "spe", "accuracy", "evasion"]
+            )
+        return out
+
+    def _get_pokemon_pad_numerical(self, active: bool) -> list[float]:
+        blanks = 1 + (14 if active else 0)
+        return [-2.0] * blanks
+
+    def state_to_obs(self, state: UniversalState) -> dict[str, np.ndarray]:
+        player_str = ["<player>"] + self._get_pokemon_string_features(
+            state.player_active_pokemon, active=True
         )
         numerical = [
             state.opponents_remaining / 6.0
-        ] + state.player_active_pokemon.get_numerical_features(active=True)
+        ] + self._get_pokemon_numerical_features(
+            state.player_active_pokemon, active=True
+        )
 
         # consistent move order
-        move_str, move_num = "", -1
+        move_str, move_num = [], -1
         for move_num, move in enumerate(
             consistent_move_order(state.player_active_pokemon.moves)
         ):
-            move_str += f" <move> {move.get_string_features(active=True)}"
-            numerical += move.get_numerical_features(active=True)
+            move_str += ["<move>"] + self._get_move_string_features(move, active=True)
+            numerical += self._get_move_numerical_features(move, active=True)
 
         while move_num < 3:
-            move_str += f" <move> {UniversalMove.get_pad_string(active=True)}"
-            numerical += UniversalMove.get_pad_numerical(active=True)
+            move_str += ["<move>"] + self._get_move_pad_string(active=True)
+            numerical += self._get_move_pad_numerical(active=True)
             move_num += 1
 
         # consistent switch order
-        switch_str, switch_num = "", -1
+        switch_str, switch_num = [], -1
         for switch_num, switch in enumerate(
             consistent_pokemon_order(state.available_switches)
         ):
-            switch_str += f" <switch> {switch.get_string_features(active=False)}"
-            numerical += switch.get_numerical_features(active=False)
+            switch_str += ["<switch>"] + self._get_pokemon_string_features(
+                switch, active=False
+            )
+            numerical += self._get_pokemon_numerical_features(switch, active=False)
         while switch_num < 4:
-            switch_str += f" <switch> {UniversalPokemon.get_pad_string(active=False)}"
-            numerical += UniversalPokemon.get_pad_numerical(active=False)
+            switch_str += ["<switch>"] + self._get_pokemon_pad_string(active=False)
+            numerical += self._get_pokemon_pad_numerical(active=False)
             switch_num += 1
 
         force_switch = "<forcedswitch>" if state.forced_switch else "<anychoice>"
-        opponent_str = f"<opponent> {state.opponent_active_pokemon.get_string_features(active=True)}"
-        numerical += state.opponent_active_pokemon.get_numerical_features(active=True)
-        global_str = f"<conditions> {state.weather} {state.player_conditions} {state.opponent_conditions}"
-        prev_move_str = f"<player_prev> {state.player_prev_move.get_string_features(active=False)} <opp_prev> {state.opponent_prev_move.get_string_features(active=False)}"
-
-        text = np.array(
-            f"<{state.format}> {force_switch} {player_str} {move_str.strip()} {switch_str.strip()} {opponent_str} {global_str} {prev_move_str}",
-            dtype=np.str_,
+        opponent_str = ["<opponent>"] + self._get_pokemon_string_features(
+            state.opponent_active_pokemon, active=True
         )
+        numerical += self._get_pokemon_numerical_features(
+            state.opponent_active_pokemon, active=True
+        )
+        global_str = ["<conditions>"] + [
+            state.weather,
+            state.player_conditions,
+            state.opponent_conditions,
+        ]
+        prev_move_str = (
+            ["<player_prev>"]
+            + self._get_move_string_features(state.player_prev_move, active=False)
+            + ["<opp_prev>"]
+            + self._get_move_string_features(state.opponent_prev_move, active=False)
+        )
+        full_text_list = (
+            [f"<{state.format}>", force_switch]
+            + player_str
+            + move_str
+            + switch_str
+            + opponent_str
+            + global_str
+            + prev_move_str
+        )
+        # length should be 85 (type features have 2 words --> final word length of 87)
+        text = " ".join(full_text_list)
+        assert len(text.split(" ")) == 87
+        text = np.array(text, dtype=np.str_)
         numbers = np.array(numerical, dtype=np.float32)
+        assert numbers.shape == (48,)
         return {"text": text, "numbers": numbers}
 
 
