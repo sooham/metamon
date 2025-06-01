@@ -638,6 +638,12 @@ class BinaryReward(RewardFunction):
         return 0.0
 
 
+ALL_REWARD_FUNCTIONS = {
+    "DefaultShapedReward": DefaultShapedReward,
+    "BinaryReward": BinaryReward,
+}
+
+
 class ObservationSpace(ABC):
     def __init__(self, *args, **kwargs):
         pass
@@ -827,11 +833,70 @@ class DefaultObservationSpace(ObservationSpace):
         )
         # length should be 85 (type features have 2 words --> final word length of 87)
         text = " ".join(full_text_list)
-        assert len(text.split(" ")) == 87
         text = np.array(text, dtype=np.str_)
         numbers = np.array(numerical, dtype=np.float32)
-        assert numbers.shape == (48,)
         return {"text": text, "numbers": numbers}
+
+
+class DefaultAddPowerPoints(DefaultObservationSpace):
+    """Adds PowerPoint (PP) features to the active Pokémon's moves.
+
+    After months of real ladder evals, the DefaultObservationSpace used by the paper
+    has two clear problems:
+
+    1. It makes sleep/freeze clause needlessly high-stakes --- it's surprising how good the
+        models are at following the rules, but there are situations where it can't know if
+        it successfully slept/froze the opponent when immediately switched out, so seq2seq
+        memory can't help.
+
+    2. It does not include PP counts because they are inaccurate in replays. However,
+        models are clearly good enough to get into PP stalls and this behavior is hard to learn.
+
+    Of these, #2 is easily fixed with this observation space that adds 4 more numerical features.
+    PP counts are still impossible to get perfect, so we discretize to {no pp, low pp, pp ok}
+    """
+
+    @property
+    def gym_space(self):
+        return gym.spaces.Dict(
+            {
+                "numbers": gym.spaces.Box(
+                    low=-10.0,
+                    high=10.0,
+                    # adding 4 pp warnings,
+                    shape=(48 + 4,),
+                    dtype=np.float32,
+                ),
+                "text": gym.spaces.Text(
+                    max_length=900,
+                    min_length=800,
+                    charset=set(string.ascii_lowercase)
+                    | set(str(n) for n in range(0, 10))
+                    | {"<", ">"},
+                ),
+            }
+        )
+
+    def _get_move_numerical_features(
+        self, move: UniversalMove, active: np.bool
+    ) -> list[float]:
+        out = super()._get_move_numerical_features(move, active)
+        if active:
+            pp_ratio = move.current_pp / move.max_pp
+            pp_warning = (pp_ratio >= 0.5) + (pp_ratio >= 0.25) + (pp_ratio > 0)
+            out.append(float(pp_warning))
+        return out
+
+    def _get_move_pad_numerical(self, active: bool) -> list[float]:
+        if not active:
+            return []
+        return [-2.0] * 4
+
+
+ALL_OBSERVATION_SPACES = {
+    "DefaultObservationSpace": DefaultObservationSpace,
+    "DefaultAddPowerPoints": DefaultAddPowerPoints,
+}
 
 
 class TokenizedObservationSpace(ObservationSpace):

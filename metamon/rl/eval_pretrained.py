@@ -29,12 +29,13 @@ from metamon.env import (
 from metamon.rl.metamon_to_amago import (
     PSLadderAMAGOWrapper,
     MetamonAMAGOWrapper,
-    MetamonTstepEncoder,
     MetamonAMAGOExperiment,
 )
 from metamon.interface import (
     ObservationSpace,
     RewardFunction,
+    ALL_OBSERVATION_SPACES,
+    ALL_REWARD_FUNCTIONS,
     DefaultObservationSpace,
     DefaultShapedReward,
     TokenizedObservationSpace,
