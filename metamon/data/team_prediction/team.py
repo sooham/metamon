@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 import unicodedata
 
-from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
+from metamon.data.replay_dataset.replay_parser.replay_state import (
     Pokemon,
     Nothing,
     BackwardMarkers,

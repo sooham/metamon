@@ -6,7 +6,7 @@ from enum import Enum, auto
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import *
+from metamon.data.replay_dataset.replay_parser.exceptions import *
 
 from poke_env.data import to_id_str
 from poke_env.data.gen_data import GenData

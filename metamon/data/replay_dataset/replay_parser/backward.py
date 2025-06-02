@@ -2,9 +2,9 @@ import copy
 import re
 from typing import List
 
-from metamon.data.replay_dataset.parsed_replays.replay_parser import checks, forward
-from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import *
-from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
+from metamon.data.replay_dataset.replay_parser import checks, forward
+from metamon.data.replay_dataset.replay_parser.exceptions import *
+from metamon.data.replay_dataset.replay_parser.replay_state import (
     Action,
     Boosts,
     Move,
