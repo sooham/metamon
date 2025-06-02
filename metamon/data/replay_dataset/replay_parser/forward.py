@@ -3,9 +3,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
 
-from metamon.data.replay_dataset.parsed_replays.replay_parser import checks
-from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import *
-from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
+from metamon.data.replay_dataset.replay_parser import checks
+from metamon.data.replay_dataset.replay_parser.exceptions import *
+from metamon.data.replay_dataset.replay_parser.replay_state import (
     Action,
     BackwardMarkers,
     Boosts,
@@ -15,7 +15,7 @@ from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state impor
     Turn,
     Winner,
 )
-from metamon.data.replay_dataset.parsed_replays.replay_parser.str_parsing import *
+from metamon.data.replay_dataset.replay_parser.str_parsing import *
 
 from poke_env.data import to_id_str
 from poke_env.environment import STACKABLE_CONDITIONS
