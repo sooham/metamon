@@ -156,17 +156,22 @@ class MetamonAMAGODataset(RLDataset):
     """A wrapper around the ParsedReplayDataset that converts to an AMAGO RLDataset.
 
     Args:
-        dset_name: Give the dataset an arbitrary name for logging. Defaults to class name.
         parsed_replay_dset: The ParsedReplayDataset to wrap.
+        dset_name: Give the dataset an arbitrary name for logging. Defaults to class name.
+        refresh_files_every_epoch: Whether to find newly written replay files at the end of each epoch.
+            This imitates the behavior of the main AMAGO disk replay buffer. Would be necessary for
+            online RL. Defaults to False.
     """
 
     def __init__(
         self,
         parsed_replay_dset: ParsedReplayDataset,
         dset_name: Optional[str] = None,
+        refresh_files_every_epoch: bool = False,
     ):
         super().__init__(dset_name=dset_name)
         self.parsed_replay_dset = parsed_replay_dset
+        self.refresh_files_every_epoch = refresh_files_every_epoch
 
     @property
     def save_new_trajs_to(self):
@@ -176,7 +181,9 @@ class MetamonAMAGODataset(RLDataset):
 
     def on_end_of_collection(self, experiment) -> dict[str, Any]:
         # TODO: implement FIFO replay buffer
-        return {}
+        if self.refresh_files_every_epoch:
+            self.parsed_replay_dset.refresh_files()
+        return {"Num Replays": len(self.parsed_replay_dset)}
 
     def get_description(self) -> str:
         return f"Metamon Replay Dataset ({self.dset_name})"
@@ -187,7 +194,7 @@ class MetamonAMAGODataset(RLDataset):
         # amago expects discrete actions to be one-hot encoded
         actions_torch = F.one_hot(
             torch.from_numpy(actions).long().clamp(min=0), num_classes=9
-        )
+        ).float()
         # a bit of a hack: make the action mask (which is the same size as actions)
         # one timestep longer to match the size of observations, then put it in the amago
         # observation dict, let the network ignore it, and make it accessible to

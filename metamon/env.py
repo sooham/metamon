@@ -222,6 +222,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
         return self.choose_random_move(battle)
 
     def reset(self, *args, **kwargs):
+        self.metamon_obs_space.reset()
         self.invalid_action_counter = 0
         self.valid_action_counter = 0
         self.turn_counter = 0
@@ -383,7 +384,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
 if __name__ == "__main__":
     from argparse import ArgumentParser
     from metamon.baselines.heuristic.basic import GymLeader
-    from metamon.interface import TokenizedObservationSpace
+    from metamon.interface import TokenizedObservationSpace, DefaultPlusObservationSpace
     from metamon.tokenizer import get_tokenizer
 
     parser = ArgumentParser()
@@ -396,11 +397,10 @@ if __name__ == "__main__":
         battle_format=args.battle_format,
         team_set=get_metamon_teams(args.battle_format, args.team_set),
         opponent_type=GymLeader,
-        # observation_space=TokenizedObservationSpace(
-        #    base_obs_space=DefaultObservationSpace(),
-        #    tokenizer=get_tokenizer("DefaultObservationSpace-v0"),
-        # ),
-        observation_space=DefaultObservationSpace(),
+        observation_space=TokenizedObservationSpace(
+            DefaultPlusObservationSpace(),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v0"),
+        ),
         reward_function=DefaultShapedReward(),
     )
 
