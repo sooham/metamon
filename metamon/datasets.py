@@ -263,8 +263,7 @@ if __name__ == "__main__":
             tokenizer=get_tokenizer("allreplays-v3"),
         ),
         reward_function=DefaultShapedReward(),
-        dset_root="/mnt/nfs_client/jake/metamon_scratchpad/improved_may_parsed_replays",
-        max_seq_len=10,
+        formats=["gen1ou"],
         verbose=True,
     )
     print(len(dset))

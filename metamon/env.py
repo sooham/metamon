@@ -396,10 +396,11 @@ if __name__ == "__main__":
         battle_format=args.battle_format,
         team_set=get_metamon_teams(args.battle_format, args.team_set),
         opponent_type=GymLeader,
-        observation_space=TokenizedObservationSpace(
-            base_obs_space=DefaultObservationSpace(),
-            tokenizer=get_tokenizer("DefaultObservationSpace-v0"),
-        ),
+        # observation_space=TokenizedObservationSpace(
+        #    base_obs_space=DefaultObservationSpace(),
+        #    tokenizer=get_tokenizer("DefaultObservationSpace-v0"),
+        # ),
+        observation_space=DefaultObservationSpace(),
         reward_function=DefaultShapedReward(),
     )
 
