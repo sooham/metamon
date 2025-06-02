@@ -358,7 +358,7 @@ opponent = ALL_BASELINES[name]
 |`Gen1BossAI`| Emulates opponents in the original Pokémon Generation 1 games. Usually chooses random moves. However, it prefers using stat-boosting moves on the second turn and “super effective” moves when available. |
 | `Grunt` | A maximally offensive player that selects the move that will deal the greatest damage against the current opposing Pokémon using Pokémon’s damage equation and a type chart and selects the best matchup by type when forced to switch.|
 | `GymLeader` | Improves upon Grunt by additionally taking into account factors such as health. It prioritizes using stat boosts when the current Pokémon is very healthy, and heal moves when unhealthy.|
-| `PokeEnvHeuristic` | The `SimpleHeuristicsPlayer` baseline provided by [`poke_env`]() with configurable difficulty (shortcuts like `EasyPokeEnvHeuristic`).|
+| `PokeEnvHeuristic` | The `SimpleHeuristicsPlayer` baseline provided by `poke-env` with configurable difficulty (shortcuts like `EasyPokeEnvHeuristic`).|
 | `EmeraldKaizo` | An adaptation of the AI in a Pokémon Emerald ROM hack intended to be as difficult as possible. It selects actions by scoring the available options against a rule set that includes handwritten conditional statements for a large portion of the moves in the game.|
 | `BaseRNN` | A simple RNN IL policy trained on an early version of our parsed replay dataset. Runs inference on CPU.|
 
