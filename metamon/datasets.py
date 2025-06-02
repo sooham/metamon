@@ -196,7 +196,11 @@ class ParsedReplayDataset(Dataset):
                 data = json.load(f)
         else:
             raise ValueError(f"Unknown file extension: {filename}")
+
         states = [UniversalState.from_dict(s) for s in data["states"]]
+        # reset the observation space, then call once on each state, which lets
+        # any history-dependent features behave as they would in an online battle
+        self.observation_space.reset()
         obs = [self.observation_space.state_to_obs(s) for s in states]
         # TODO: handle case where observation space is not a dict. don't have one to test yet.
         nested_obs = defaultdict(list)
@@ -263,7 +267,6 @@ if __name__ == "__main__":
             tokenizer=get_tokenizer("allreplays-v3"),
         ),
         reward_function=DefaultShapedReward(),
-        formats=["gen1ou"],
         verbose=True,
     )
     print(len(dset))

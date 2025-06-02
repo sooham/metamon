@@ -644,10 +644,15 @@ ALL_REWARD_FUNCTIONS = {
 
 class ObservationSpace(ABC):
     def __init__(self, *args, **kwargs):
+        self.reset()
         pass
 
     def __name__(self) -> str:
         return self.__class__.__name__
+
+    def reset(self):
+        """Clear any internal state (between battles)."""
+        pass
 
     @property
     def tokenizable(self) -> dict[str, int]:
@@ -838,23 +843,28 @@ class DefaultObservationSpace(ObservationSpace):
         return {"text": text, "numbers": numbers}
 
 
-class DefaultAddPowerPoints(DefaultObservationSpace):
-    """Adds PowerPoint (PP) features to the active Pokémon's moves.
+class DefaultPlusObservationSpace(DefaultObservationSpace):
+    """Adds PP, the opponent's revealed roster, and edge case sleep/freeze flags to DefaultObservationSpace.
 
-    After months of real ladder evals, the DefaultObservationSpace used by the paper
-    has two clear problems:
+    The DefaultObservationSpace used by the paper makes Pokémon more long-term-memory-intensive
+    than it strictly needs to be:
 
-    1. It makes sleep/freeze clause needlessly high-stakes --- it's surprising how good the
-        models are at following the rules, but there are situations where they can't know if
-        they successfully slept/froze the opponent when immediately switched out, so seq2seq
-        memory can't do anything to help.
+    1. Sleep/freeze clause relies on remembering our move and the opponent active Pokémon's status
+        at previous timesteps.
 
-    2. It does not include PP counts because they are inaccurate in replays. However,
-        models are clearly good enough to get into PP stalls, and this behavior is hard to learn.
+    2. PP counts can only be inferred by recalling prev_move features at previous timesteps.
 
-    Of these, #2 is easily fixed with this observation space that adds 4 more numerical features.
-    PP counts are still impossible to get perfect, so we discretize to {no pp, low pp, pp ok}
+    3. The opponent's full team must be inferred from recalling the active Pokémon at previous
+        timesteps.
+
+    This observation space moves some of that information into every timestep.
     """
+
+    def reset(self):
+        # reset the history-dependent features at the start of each battle
+        self.any_opponent_asleep = False
+        self.any_opponent_frozen = False
+        self.revealed_opponents = set()
 
     @property
     def gym_space(self):
@@ -862,10 +872,18 @@ class DefaultAddPowerPoints(DefaultObservationSpace):
         base_space["numbers"] = gym.spaces.Box(
             low=-10.0,
             high=10.0,
-            shape=(48 + 4,),
+            # adds 4 PP features + 2 sleep/freeze flags
+            shape=(48 + 6,),
             dtype=np.float32,
         )
         return base_space
+
+    @property
+    def tokenizable(self) -> dict[str, int]:
+        # adds 6 new tokens for the revealed roster
+        return {
+            "text": 87 + 6,
+        }
 
     def _get_move_numerical_features(
         self, move: UniversalMove, active: np.bool
@@ -873,6 +891,9 @@ class DefaultAddPowerPoints(DefaultObservationSpace):
         out = super()._get_move_numerical_features(move, active)
         if active:
             pp_ratio = move.current_pp / move.max_pp
+            # there's a reason the original obs space doesn't have PP counts ---
+            # they are not accurate in replays. Compromise by discretizing to
+            # "low pp" warnings that would minimize off-by-one shift:
             pp_warning = (pp_ratio >= 0.5) + (pp_ratio >= 0.25) + (pp_ratio > 0)
             out.append(float(pp_warning))
         return out
@@ -882,10 +903,37 @@ class DefaultAddPowerPoints(DefaultObservationSpace):
             return []
         return [-2.0] * 4
 
+    def state_to_obs(self, state: UniversalState):
+        # get default observation + PP features
+        obs = super().state_to_obs(state)
+
+        opponent = state.opponent_active_pokemon
+        # (sleep/freeze clause only activates when *we* put the opponent to sleep/freeze,
+        # which is not what's being tracked here, but this covers the main failure case
+        # and the subtlety has been learnable without this feature.)
+        self.any_opponent_asleep |= opponent.status == "slp"
+        self.any_opponent_frozen |= opponent.status == "frz"
+        new_features = [
+            self.any_opponent_asleep,
+            self.any_opponent_frozen,
+        ]
+        obs["numbers"] = np.concatenate([obs["numbers"], new_features])
+
+        # add a list of revealed opponents padded to length 6 while reusing
+        # the existing <blank> token to avoid making a new vocabulary.
+        self.revealed_opponents.add(opponent.name)
+        revealed = [opp_name for opp_name in sorted(self.revealed_opponents)]
+        while len(revealed) < 6:
+            revealed.append("<blank>")
+        obs["text"] = np.array(
+            obs["text"].item() + " " + " ".join(revealed[:6]), dtype=np.str_
+        )
+        return obs
+
 
 ALL_OBSERVATION_SPACES = {
     "DefaultObservationSpace": DefaultObservationSpace,
-    "DefaultAddPowerPoints": DefaultAddPowerPoints,
+    "DefaultPlusObservationSpace": DefaultPlusObservationSpace,
 }
 
 
