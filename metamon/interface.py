@@ -954,6 +954,9 @@ class TokenizedObservationSpace(ObservationSpace):
         self.base_obs_space = base_obs_space
         self.tokenizer = tokenizer
 
+    def reset(self):
+        self.base_obs_space.reset()
+
     @property
     def gym_space(self):
         tokenizable = self.base_obs_space.tokenizable
