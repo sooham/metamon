@@ -104,6 +104,7 @@ def make_ladder_env(
     num_battles: int,
     username: str,
     avatar: str,
+    save_trajectories_to: Optional[str] = None,
 ):
     """
     Battle on the local Showdown ladder
@@ -116,6 +117,7 @@ def make_ladder_env(
         player_team_set=player_team_set,
         player_username=username,
         player_avatar=avatar,
+        save_trajectories_to=save_trajectories_to,
     )
     return PSLadderAMAGOWrapper(env)
 
@@ -126,6 +128,7 @@ def make_baseline_env(
     observation_space: ObservationSpace,
     reward_function: RewardFunction,
     opponent_type: Type[Player],
+    save_trajectories_to: Optional[str] = None,
 ):
     """
     Battle against a built-in baseline opponent
@@ -137,6 +140,7 @@ def make_baseline_env(
         team_set=player_team_set,
         opponent_type=opponent_type,
         turn_limit=200,
+        save_trajectories_to=save_trajectories_to,
     )
     return MetamonAMAGOWrapper(env)
 
@@ -300,7 +304,7 @@ class SmallIL(PretrainedModel):
 class SmallILFA(PretrainedModel):
     def __init__(self):
         super().__init__(
-            model_name="small-il-fa",
+            model_name="small-il-filled-actions",
             gin_config="models/small_agent.gin",
             is_il_model=True,
         )
@@ -530,8 +534,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--team_set",
         default="competitive",
-        choices=["competitive", "paper_variety", "paper_replays"],
+        choices=["competitive", "paper_variety", "paper_replays", "modern_replays"],
         help="Team Set.",
+    )
+    parser.add_argument(
+        "--save_trajectories_to",
+        default=None,
+        help="Save replays (in the parsed replay format) to a directory.",
     )
     parser.add_argument(
         "--wait_for_input",
@@ -556,6 +565,7 @@ if __name__ == "__main__":
                     player_team_set=player_team_set,
                     observation_space=agent_maker.observation_space,
                     reward_function=agent_maker.reward_function,
+                    save_trajectories_to=args.save_trajectories_to,
                 )
                 if args.eval_type == "heuristic":
                     make_envs = [

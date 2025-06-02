@@ -26,9 +26,8 @@ The full replay process uses the scripts in an order like this:
 2. `raw_replays.replay_intake` merges/deduplicates directories of downloaded PS replays into an existing set.
 3. `raw_replays.usernames` maintains a consistent mapping from real PS usernames to "anonymous" usernames. We are trying to be polite to the players and remove NSFW usernames from the public huggingface dataset, but real usernames are easy to recover. This isn't a serious privacy issue --- we are working with screen names from public battles.
 4. `raw_replays.anonymize` uses a username mapping to "anonymize" replays and removes player chat logs from replay files.
-5. `raw_replays.upload_to_hf` pushes the anonymized replay directory to hugginface as a structured dataset.
+5. `raw_replays.upload_to_hf` pushes the anonymized replay directory to huggingface as a structured dataset.
 6. `raw_replays.download_from_hf` skips prevoius steps. It downloads the current version of the raw replay dataset and puts it back in the dir structure expected by the rest of the code.
-7. `raw_replays.download_from_hf` skips all previous steps and downloads our latest version of the parsed replay set from hugginface.
 8. `parsed_replays.replay_parser` converts PS replays to training data using `team_prediction` as a key step.
 
 
