@@ -40,6 +40,19 @@ Metamon is the codebase behind ["Human-Level Competetitive Pokémon via Scalable
     <img src="media/figure1.png" alt="Figure 1" width="700">
 </div>
 
+<br>
+
+
+### Table of Contents
+
+- [Quick Start](#quick-start)
+- [Pretrained Models](#pretrained-models)
+- [Battle Datasets](#battle-datasets)
+- [Team Sets](#team-sets)
+- [Baselines](#baselines)
+- [Observation Spaces & Reward Functions](#observation-spaces--reward-functions)
+- [Extra](#extra)
+
 
 
 <br>
@@ -400,7 +413,7 @@ Reward functions assign scalar reward based on consecutive states (R(s, s')). `D
  <br>
 
 
-## Data
+## Extra
 
 `metamon/data` contains utilities for handling Showdown replays (`data.replay_dataset.raw_replays`), converting replays into training data (`data.replay_dataset.parsed_replays`), predicting teams from partial information (`data.team_prediction`), and accessing Showdown usage statistics (`data.legacy_team_builder`). These modules generate our huggingface datasets, but may be useful for other things. More info in the [`data` README](metamon/data/README.md).
 

@@ -844,7 +844,7 @@ class DefaultObservationSpace(ObservationSpace):
 
 
 class DefaultPlusObservationSpace(DefaultObservationSpace):
-    """Adds PP, the opponent's revealed roster, and edge case sleep/freeze flags to DefaultObservationSpace.
+    """Adds PP, the opponent's revealed party, and edge case sleep/freeze flags to DefaultObservationSpace.
 
     The DefaultObservationSpace used by the paper makes Pokémon more long-term-memory-intensive
     than it strictly needs to be:
@@ -880,7 +880,7 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
 
     @property
     def tokenizable(self) -> dict[str, int]:
-        # adds 6 new tokens for the revealed roster
+        # adds 6 new tokens for the revealed party
         return {
             "text": 87 + 6,
         }
