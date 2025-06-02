@@ -11,13 +11,13 @@ from typing import Optional
 import numpy as np
 import lz4.frame
 from metamon import interface
-from metamon.data.replay_dataset.parsed_replays.replay_parser import backward, forward
-from metamon.data.replay_dataset.parsed_replays.replay_parser.exceptions import (
+from metamon.data.replay_dataset.replay_parser import backward, forward
+from metamon.data.replay_dataset.replay_parser.exceptions import (
     BackwardException,
     ForwardException,
     InvalidActionIndex,
 )
-from metamon.data.replay_dataset.parsed_replays.replay_parser.replay_state import (
+from metamon.data.replay_dataset.replay_parser.replay_state import (
     Action,
     ReplayState,
 )

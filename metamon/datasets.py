@@ -20,7 +20,7 @@ class ParsedReplayDataset(Dataset):
 
     Parsed replays are records of Pokémon Showdown battles that have been converted to the partially observed
     point-of-view of a single player, matching the problem our agents face in the RL environment. They are created by the
-    `metamon.data.replay_dataset.parsed_replays` module from "raw" Showdown replay logs
+    `metamon.data.replay_dataset.replay_parser` module from "raw" Showdown replay logs
     downloaded from publicly available battles.
 
     This is a pytorch `Dataset` that returns (nested_obs, actions, rewards, dones, missing_actions) trajectory tuples,
