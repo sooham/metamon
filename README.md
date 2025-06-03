@@ -73,12 +73,15 @@ conda activate metamon
 Then, install with:
 
 ```shell
-git clone git@github.com:UT-Austin-RPL/metamon.git
+git clone --recursive git@github.com:UT-Austin-RPL/metamon.git
 cd metamon
 pip install -e .
 ```
 
-To install [Pokémon Showdown](https://pokemonshowdown.com/) (PS), you will need a modern version of `npm` / Node.js (instructions [here](https://nodejs.org/en/download/package-manager)). This repo comes packaged with the specific commit that we used during the project (though newer versions should be fine!)
+To install [Pokémon Showdown](https://pokemonshowdown.com/) (PS), you will need a modern version of `npm` / Node.js (instructions [here](https://nodejs.org/en/download/package-manager)). This repo comes packaged with the specific commit that we used during the project.
+
+> [!IMPORTANT]
+> Use the showdown version that comes with `metamon` (`metamon/server`). Our poke-env fork breaks on newer versions. We are working on a fix.
 
 ```shell
 cd server/pokemon-showdown
