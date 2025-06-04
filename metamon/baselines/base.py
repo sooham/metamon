@@ -526,7 +526,7 @@ class Baseline(Player, ABC):
 
         stab = 1.0
         if move.type in user.types:
-            stab = 2.0 if user.terastallized else 1.5
+            stab = 2.0 if user.is_terastallized else 1.5
 
         burn = (
             0.5

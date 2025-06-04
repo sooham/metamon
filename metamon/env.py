@@ -204,7 +204,6 @@ class PokeEnvWrapper(OpenAIGymEnv):
             start_challenging=start_challenging,
             # TODO: need to re-check these settings for online RL
             ping_interval=None,
-            open_timeout=None,
             ping_timeout=None,
         )
 
