@@ -119,6 +119,7 @@ def make_ladder_env(
         player_avatar=avatar,
         save_trajectories_to=save_trajectories_to,
     )
+    print("Made Ladder Env")
     return PSLadderAMAGOWrapper(env)
 
 
@@ -142,6 +143,7 @@ def make_baseline_env(
         turn_limit=200,
         save_trajectories_to=save_trajectories_to,
     )
+    print("Made Baseline Env")
     return MetamonAMAGOWrapper(env)
 
 

@@ -9,6 +9,7 @@ from typing import Optional, Type
 import numpy as np
 import lz4.frame
 import gymnasium as gym
+
 from poke_env import (
     AccountConfiguration,
     LocalhostServerConfiguration,
@@ -27,6 +28,7 @@ from metamon.interface import (
 )
 from metamon.data import DATA_PATH
 from metamon.download import download_teams
+from metamon.pokemon.metamon_player import MetamonPlayer
 
 
 class TeamSet(Teambuilder):
@@ -154,6 +156,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
         start_timer_on_battle_start: bool = False,
         turn_limit: int = 1000,
         save_trajectories_to: Optional[str] = None,
+        battle_backend: str = "poke-env",
     ):
         opponent_team_set = opponent_team_set or copy.deepcopy(player_team_set)
         random_username = (
@@ -194,7 +197,18 @@ class PokeEnvWrapper(OpenAIGymEnv):
         self.metamon_obs_space = observation_space
         self.turn_limit = turn_limit
         self.metamon_battle_format = battle_format
+
+        if battle_backend == "poke-env":
+            player_class = Player
+        elif battle_backend == "metamon":
+            player_class = MetamonPlayer
+        else:
+            raise ValueError(
+                f"Invalid battle backend: {battle_backend}. Options are 'poke-env' or 'metamon'."
+            )
+
         super().__init__(
+            player_class=player_class,
             battle_format=battle_format,
             server_configuration=self.server_configuration,
             account_configuration=player_account_configuration,
@@ -319,6 +333,7 @@ class BattleAgainstBaseline(PokeEnvWrapper):
         opponent_type: Type[Player],
         turn_limit: int = 200,
         save_trajectories_to: Optional[str] = None,
+        battle_backend: str = "poke-env",
     ):
         super().__init__(
             battle_format=battle_format,
@@ -329,6 +344,7 @@ class BattleAgainstBaseline(PokeEnvWrapper):
             opponent_type=opponent_type,
             turn_limit=turn_limit,
             save_trajectories_to=save_trajectories_to,
+            battle_backend=battle_backend,
         )
 
 
@@ -357,6 +373,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         player_avatar: Optional[str] = None,
         start_timer_on_battle_start: bool = True,
         save_trajectories_to: Optional[str] = None,
+        battle_backend: str = "poke-env",
     ):
         super().__init__(
             battle_format=battle_format,
@@ -370,6 +387,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
             start_challenging=False,
             turn_limit=float("inf"),
             save_trajectories_to=save_trajectories_to,
+            battle_backend=battle_backend,
         )
         print(f"Laddering for {num_battles} battles")
         self.start_laddering(n_challenges=num_battles)
@@ -383,6 +401,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
 if __name__ == "__main__":
     from argparse import ArgumentParser
     from metamon.baselines.heuristic.basic import GymLeader
+    from metamon.baselines.model_based.bcrnn_baselines import BaseRNN
     from metamon.interface import TokenizedObservationSpace, DefaultPlusObservationSpace
     from metamon.tokenizer import get_tokenizer
 
@@ -390,6 +409,12 @@ if __name__ == "__main__":
     parser.add_argument("--battle_format", type=str, default="gen1ou")
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--team_set", type=str, default="paper_replays")
+    parser.add_argument(
+        "--battle_backend",
+        type=str,
+        default="poke-env",
+        choices=["poke-env", "metamon"],
+    )
     args = parser.parse_args()
 
     env = BattleAgainstBaseline(
@@ -401,6 +426,7 @@ if __name__ == "__main__":
             tokenizer=get_tokenizer("DefaultObservationSpace-v0"),
         ),
         reward_function=DefaultShapedReward(),
+        battle_backend=args.battle_backend,
     )
 
     start = time.time()
