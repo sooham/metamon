@@ -8,6 +8,7 @@ import poke_env.environment as pe
 
 
 class MetamonBackendBattle(pe.AbstractBattle):
+
     def __init__(
         self,
         battle_tag: str,
@@ -16,67 +17,31 @@ class MetamonBackendBattle(pe.AbstractBattle):
         save_replays: Union[str, bool],
         gen: int,
     ):
-        self.battle_tag = battle_tag
-        self.username = username
-        self.logger = logger
-        self.save_replays = save_replays
+        self._battle_tag = battle_tag
+        self._username = username
+        self._logger = logger
+        self._save_replays = save_replays
 
     def _finish_battle(self):
-        if self._save_replays:
-            if self._save_replays is True:
-                folder = "replays"
-            else:
-                folder = str(self._save_replays)
-
-            if not os.path.exists(folder):
-                os.mkdir(folder)
-
-            with open(
-                os.path.join(
-                    folder, f"{self._player_username} - {self.battle_tag}.html"
-                ),
-                "w+",
-                encoding="utf-8",
-            ) as f:
-                formatted_replay = REPLAY_TEMPLATE
-                formatted_replay = formatted_replay.replace(
-                    "{BATTLE_TAG}", f"{self.battle_tag}"
-                )
-                formatted_replay = formatted_replay.replace(
-                    "{PLAYER_USERNAME}", f"{self._player_username}"
-                )
-                formatted_replay = formatted_replay.replace(
-                    "{OPPONENT_USERNAME}", f"{self._opponent_username}"
-                )
-                replay_log = f">{self.battle_tag}" + "\n".join(
-                    ["|".join(split_message) for split_message in self._replay_data]
-                )
-                formatted_replay = formatted_replay.replace("{REPLAY_LOG}", replay_log)
-                f.write(formatted_replay)
-
-        self._finished = True
+        super()._finish_battle()
 
     def parse_message(self, split_message: List[str]):
         raise NotImplementedError
 
-    @abstractmethod
     def parse_request(self, request: Dict[str, Any]):
-        pass
+        raise NotImplementedError
 
     @property
-    @abstractmethod
     def active_pokemon(self) -> Any:
-        pass
+        raise NotImplementedError
 
     @property
-    @abstractmethod
     def all_active_pokemons(self) -> List[Optional[pe.Pokemon]]:
-        pass
+        raise NotImplementedError
 
     @property
-    @abstractmethod
     def available_moves(self) -> Any:
-        pass
+        raise NotImplementedError
 
     @property
     def available_switches(self) -> Any:
@@ -90,6 +55,9 @@ class MetamonBackendBattle(pe.AbstractBattle):
         """
         raise NotImplementedError
 
+    def clear_all_boosts(self):
+        pass
+
     @property
     def dynamax_turns_left(self) -> Optional[int]:
         """
@@ -97,6 +65,9 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :rtype: int, optional
         """
         return None
+
+    def end_illusion(self):
+        pass
 
     @property
     def fields(self) -> Dict[pe.Field, int]:
@@ -308,6 +279,9 @@ class MetamonBackendBattle(pe.AbstractBattle):
         """
         raise NotImplementedError
 
+    def switch(self, pokemon_str: str, details: str, hp_status: str):
+        pass
+
     @property
     def team(self) -> Dict[str, pe.Pokemon]:
         """
@@ -329,14 +303,12 @@ class MetamonBackendBattle(pe.AbstractBattle):
         raise NotImplementedError
 
     @property
-    @abstractmethod
     def trapped(self) -> Any:
-        pass
+        raise NotImplementedError
 
     @trapped.setter
-    @abstractmethod
     def trapped(self, value: Any):
-        pass
+        raise NotImplementedError
 
     @property
     def turn(self) -> int:
@@ -347,7 +319,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         raise NotImplementedError
 
     @property
-    def weather(self) -> Dict[Weather, int]:
+    def weather(self) -> Dict[pe.Weather, int]:
         """
         :return: A Dict mapping the battle's weather (if any) to its starting turn
         :rtype: Dict[Weather, int]
@@ -379,3 +351,35 @@ class MetamonBackendBattle(pe.AbstractBattle):
     @property
     def reviving(self) -> bool:
         raise NotImplementedError
+
+    @property
+    def maybe_trapped(self) -> Any:
+        raise NotImplementedError
+
+    @property
+    def can_dynamax(self) -> bool:
+        raise NotImplementedError
+
+    @property
+    def can_mega_evolve(self) -> bool:
+        raise NotImplementedError
+
+    @property
+    def can_z_move(self) -> bool:
+        raise NotImplementedError
+
+    @property
+    def can_tera(self) -> bool:
+        raise NotImplementedError
+
+    @property
+    def opponent_active_pokemon(self) -> Any:
+        raise NotImplementedError
+
+    @property
+    def opponent_can_dynamax(self) -> bool:
+        raise NotImplementedError
+
+    # @opponent_can_dynamax.setter
+    # def opponent_can_dynamax(self, value: bool) -> Any:
+    #     self._opponent_can_dynamax = value
