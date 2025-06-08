@@ -264,6 +264,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         p._item = pokemon.active_item
         p._status = pokemon.status
         p._temporary_ability = pokemon.active_ability
+        p._previous_move = pokemon.last_used_move
         return p
 
     @property
