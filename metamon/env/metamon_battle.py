@@ -24,6 +24,16 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
 
 
 class MetamonBackendBattle(pe.AbstractBattle):
+    """Replace poke-env's Showdown protocol/sim interpreter with Metamon's verison.
+
+    A hacky version of the poke-env Battle object that lets the Metamon replay parser
+    do all the showdown sim protocol interpretation. Creates an online env
+    that replicates all the offline verisons's behavior... with the notable improvement
+    of having access to the Showdown move request messages.
+
+    Notes:
+        - Do not try to access attributes that the metamon.interface does not use.
+    """
 
     def __init__(
         self,
@@ -59,28 +69,21 @@ class MetamonBackendBattle(pe.AbstractBattle):
         self._maybe_trapped: bool = False
         self._trapped: bool = False
 
-    def _finish_battle(self):
-        super()._finish_battle()
+    @property
+    def _current_turn(self) -> Turn:
+        return self._mm_battle.flattened_turnlist[-1]
 
     def parse_message(self, split_message: List[str]):
+        """
+        Completely outsource all PS sim protocol messages to built-in
+        Metamon replay parser.
+        """
         forward.parse_row(self._mm_battle, split_message[1:])
 
-    @property
-    def _turn(self) -> int:
-        cur_turn = self._mm_battle.flattened_turnlist[-1]
-        return cur_turn
-
-    @property
-    def _prev_turn(self) -> int:
-        # TODO: this alignment is giving me a headache.
-        cur_turn = self._mm_battle.flattened_turnlist[-2]
-        return cur_turn
-
-    @_turn.setter
-    def _turn(self, value: Turn):
-        pass
-
     def parse_request(self, request: Dict[str, Any]):
+        """
+        Battle boilerplate, then call _update_turn_from_request
+        """
         self._wait = request.get("wait", False)
         side = request["side"]
         if side["pokemon"]:
@@ -121,103 +124,125 @@ class MetamonBackendBattle(pe.AbstractBattle):
         self._update_turn_from_request(request)
 
     def _update_turn_from_request(self, request: Dict[str, Any]):
-        p1 = self.player_role == "p1"
-        t = self._turn
-
-        self._available_switches = []
+        """
+        The main advantage that the online version has over the offline
+        (replay parser) version: we can get free info from Showdown's move
+        request messages. Use this to discover the entire player's team
+        on the first turn, valid/invalid moves, and PP counts.
+        """
         self._available_moves = []
+        self._available_switches = []
 
         active_pokemon = None
         side = request.get("side", False)
         if side and not self.trapped and not self.reviving:
-            request_pokemon = side.get("pokemon", False)
-            if request_pokemon:
-                for poke in request_pokemon:
-                    ident = poke["ident"]
-                    # TODO: replace with regex
-                    if ident.startswith("p1") and p1:
-                        ident = ident.replace("p1: ", "").replace("p1a: ", "")
-                    elif ident.startswith("p2") and not p1:
-                        ident = ident.replace("p2: ", "").replace("p2a: ", "")
-                    else:
-                        continue
-                    poke_list = t.get_pokemon(p1)
-                    known_names = {p.name: p for p in poke_list if p is not None}
-                    if ident not in known_names:
-                        # introduce a new Pokemon before it's discovered by the battle
-                        # (hopefully all at once on the first turn). this logic follows
-                        # what would happen on a `switch` protocol message in the replay parser.
-                        try:
-                            insert_at = poke_list.index(None)
-                        except:
-                            breakpoint()
-                        name, lvl = Pokemon.identify_from_details(poke["details"])
-                        metamon_p = Pokemon(name=name, lvl=lvl, gen=self._gen)
-                        if poke["baseAbility"] != "noability":
-                            breakpoint()
-                        if poke["item"] != "":
-                            # this is going to put the item name in an unusual all
-                            # lowercase format, but we'll eventually normalize everything
-                            # to that... i think it'll be fine.
-                            if metamon_p.had_item is None:
-                                metamon_p.had_item = poke["item"]
-                            metamon_p.active_item = poke["item"]
-                        for move in poke["moves"]:
-                            metamon_p.reveal_move(Move(move, gen=self._gen))
-                        poke_list[insert_at] = metamon_p
-                    else:
-                        metamon_p = known_names[ident]
-                    if poke["active"]:
-                        active_pokemon = metamon_p
-                    else:
-                        self._available_switches.append(metamon_p)
+            active_pokemon = self._update_turn_from_side_request(side)
+
+        if self.reviving:
+            breakpoint()
 
         active = request.get("active", False)
-        if active and not self.trapped and not self.reviving:
-            active_moves = active[0]["moves"]
-            known_moves = {m.lookup_name: m for m in active_pokemon.moves.values()}
-            for active_move in active_moves:
-                move_id = cleanup_move_id(active_move["id"])
-                move_name = active_move["move"]
-                disabled = active_move.get("disabled", False)
-                if move_name.startswith("hiddenpower"):
-                    move_name = "hiddenpower"
-                if move_id in known_moves:
-                    # update PP counts from requests --- bailing us out of the main
-                    # thing the replay parser can't do well.
-                    known_moves[move_id].set_pp(active_move["pp"])
-                    self._available_moves.append((known_moves[move_id], disabled))
-                elif move_name in {"recharge", "struggle"}:
-                    # when these happen, the agent's observation is going to be
-                    # its base moveset. However, the replay parser has a special case
-                    # to handle Struggle with action index 0. On recharge, none of its
-                    # moves are going to be considered valid (because this list will
-                    # only be Recharge). There will also be no valid switches. Therefore,
-                    # it will default on every action index and the only option the env
-                    # will pick is Recharge.
-                    # need to use poke-env Move to dodge the missing name lookup for "Recharge"
-                    move = Move(move_name, gen=self._gen)
-                    move.set_pp(active_move["pp"])
-                    self._available_moves.append((move, disabled))
+        if (
+            active
+            and active_pokemon is not None
+            and not self.trapped
+            and not self.reviving
+        ):
+            self._update_turn_from_active_request(active[0], active_pokemon)
+
+    def _update_turn_from_side_request(
+        self, side_request: Dict[str, Any]
+    ) -> Optional[Pokemon]:
+        """
+        Update the turn from a "side" request, and create self.available_switches
+        """
+        p1 = self.player_role == "p1"
+        t = self._current_turn
+        active_pokemon = None
+        request_pokemon = side_request.get("pokemon", False)
+        if request_pokemon:
+            for poke in request_pokemon:
+                ident = poke["ident"].replace("p1: ", "").replace("p2: ", "")
+                poke_list = t.get_pokemon(p1)
+                known_names = {p.name: p for p in poke_list if p is not None}
+                if ident not in known_names:
+                    # discover a new Pokemon before it's discovered by the battle;
+                    # mirrors logic in sim protocol "switch"
+                    insert_at = poke_list.index(None)
+                    name, lvl = Pokemon.identify_from_details(poke["details"])
+                    metamon_p = Pokemon(name=name, lvl=lvl, gen=self._gen)
+                    if poke["baseAbility"] != "noability":
+                        if metamon_p.had_ability is None:
+                            metamon_p.had_ability = poke["baseAbility"]
+                        if metamon_p.active_ability is None:
+                            metamon_p.active_ability = poke["baseAbility"]
+                    if poke["item"] != "":
+                        if metamon_p.had_item is None:
+                            metamon_p.had_item = poke["item"]
+                        metamon_p.active_item = poke["item"]
+                    for move in poke["moves"]:
+                        metamon_p.reveal_move(Move(move, gen=self._gen))
+                    poke_list[insert_at] = metamon_p
                 else:
-                    plausible_reasons_to_discover = {
-                        "copycat",
-                        "metronome",
-                        "mefirst",
-                        "mirrormove",
-                        "assist",
-                        "transform",
-                        "mimic",
-                    }
-                    if not plausible_reasons_to_discover.intersection(known_moves):
-                        breakpoint()
-                    move = Move(move_name, gen=self._gen)
-                    move.set_pp(active_move["pp"])
-                    self._available_moves.append((move, disabled))
+                    metamon_p = known_names[ident]
+
+                # build available_switches
+                if poke["active"]:
+                    active_pokemon = metamon_p
+                else:
+                    self._available_switches.append(metamon_p)
+        return active_pokemon
+
+    def _update_turn_from_active_request(
+        self, active_request: Dict[str, Any], active_pokemon: Pokemon
+    ) -> None:
+        """
+        Update the turn from an "active" request, and create self.available_moves
+        """
+        active_moves = active_request["moves"]
+        known_moves = {m.lookup_name: m for m in active_pokemon.moves.values()}
+        for active_move in active_moves:
+            move_id = cleanup_move_id(active_move["id"])
+            move_name = active_move["move"]
+            disabled = active_move.get("disabled", False)
+            if move_id in known_moves:
+                # update PP counts from requests --- bailing us out of the main
+                # thing the replay parser can't do well.
+                known_moves[move_id].set_pp(active_move["pp"])
+                self._available_moves.append((known_moves[move_id], disabled))
+            elif move_id in {"recharge", "struggle"}:
+                # when these happen, the agent's observation is going to be
+                # its base moveset. However, the replay parser has a special case
+                # to handle Struggle with action index 0. On recharge, none of its
+                # moves are going to be considered valid (because this list will
+                # only be Recharge). There will also be no valid switches. Therefore,
+                # it will default on every action index and the only option the env
+                # will pick is Recharge.
+                move = Move(move_name, gen=self._gen)
+                move.set_pp(active_move["pp"])
+                self._available_moves.append((move, disabled))
+            else:
+                plausible_reasons_to_discover = {
+                    "copycat",
+                    "metronome",
+                    "mefirst",
+                    "mirrormove",
+                    "assist",
+                    "transform",
+                    "mimic",
+                }
+                if not plausible_reasons_to_discover.intersection(known_moves):
+                    raise ForwardException(
+                        f"Unknown move {move_name} discovered with known_moves: {known_moves}"
+                    )
+                move = Move(move_name, gen=self._gen)
+                move.set_pp(active_move.get("pp", move.max_pp))
+                self._available_moves.append((move, disabled))
 
     def _convert_pokemon(self, pokemon: Pokemon) -> pe.Pokemon:
         # an ugly alternative to adding a `update_from_metamon` equivalent
         # in poke_env.environment.Pokemon.
+        p1 = self.player_role == "p1"
         p = pe.Pokemon(gen=self._gen)
         p._base_stats = pokemon.base_stats
         p._type_1 = pokemon.type[0]
@@ -229,8 +254,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         p._name = pokemon.name
         p._species = pokemon.name
         p._active = (
-            pokemon.unique_id
-            == self._prev_turn.get_active_pokemon(self.player_role == "p1")[0].unique_id
+            pokemon.unique_id == self._current_turn.get_active_pokemon(p1)[0].unique_id
         )
         p._boosts = pokemon.boosts.to_dict()
         p._current_hp = pokemon.current_hp
@@ -243,7 +267,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
     @property
     def active_pokemon(self) -> Any:
         p1 = self.player_role == "p1"
-        metamon_p = self._prev_turn.get_active_pokemon(p1)[0]
+        metamon_p = self._current_turn.get_active_pokemon(p1)[0]
         pe_p = self._convert_pokemon(metamon_p)
         return pe_p
 
@@ -292,7 +316,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :return: A Dict mapping fields to the turn they have been activated.
         :rtype: Dict[Field, int]
         """
-        return self._prev_turn.battle_field
+        return self._current_turn.battle_field
 
     @property
     def finished(self) -> bool:
@@ -362,7 +386,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
     @property
     def opponent_active_pokemon(self) -> Any:
         p1 = self.player_role == "p1"
-        metamon_p = self._prev_turn.get_active_pokemon(not p1)[0]
+        metamon_p = self._current_turn.get_active_pokemon(not p1)[0]
         pe_p = self._convert_pokemon(metamon_p)
         return pe_p
 
@@ -407,7 +431,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :rtype: Dict[SideCondition, int]
         """
         p1 = self.player_role == "p1"
-        return self._prev_turn.get_conditions(not p1)
+        return self._current_turn.get_conditions(not p1)
 
     @property
     def opponent_team(self) -> Dict[str, pe.Pokemon]:
@@ -418,7 +442,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :rtype: Dict[str, Pokemon]
         """
         p1 = self.player_role == "p1"
-        metamon_team = self._prev_turn.get_team_dict(not p1)
+        metamon_team = self._current_turn.get_team_dict(not p1)
         pe_team = {
             k: self._convert_pokemon(v)
             for k, v in metamon_team.items()
@@ -514,7 +538,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
             - the turn where the SideCondition was setup otherwise
         :rtype: Dict[SideCondition, int]
         """
-        return self._prev_turn.get_conditions(self.player_role == "p1")
+        return self._current_turn.get_conditions(self.player_role == "p1")
 
     def switch(self, pokemon_str: str, details: str, hp_status: str):
         pass
@@ -526,8 +550,8 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :rtype: Dict[str, Pokemon]
         """
         p1 = self.player_role == "p1"
-        metamon_team = self._prev_turn.get_team_dict(p1)
-        metamon_active = self._prev_turn.get_active_pokemon(p1)[0]
+        metamon_team = self._current_turn.get_team_dict(p1)
+        metamon_active = self._current_turn.get_active_pokemon(p1)[0]
         pe_team = {}
         total_active = 0
         for k, v in metamon_team.items():
@@ -536,7 +560,9 @@ class MetamonBackendBattle(pe.AbstractBattle):
             if pe_p._active:
                 total_active += 1
             if total_active > 1:
-                breakpoint()
+                raise ForwardException(
+                    f"Multiple active Pokemon in team: {metamon_team}"
+                )
             pe_team[k] = pe_p
         return pe_team
 
@@ -551,7 +577,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :rtype: int
         """
         p1 = self.player_role == "p1"
-        return len(self._prev_turn.get_pokemon(p1))
+        return len(self._current_turn.get_pokemon(p1))
 
     @property
     def trapped(self) -> Any:
@@ -567,7 +593,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :return: The current battle turn.
         :rtype: int
         """
-        return self._prev_turn.turn_number
+        return self._current_turn.turn_number
 
     @property
     def weather(self) -> Dict[pe.Weather, int]:
@@ -578,10 +604,10 @@ class MetamonBackendBattle(pe.AbstractBattle):
         # NOTE: we don't implement this turn counting system
         # and don't reccomend using it in observations. It will
         # always say the weather started on the current turn.
-        weather = self._prev_turn.weather
+        weather = self._current_turn.weather
         if weather == Nothing.NO_WEATHER:
             return {}
-        return {weather: self._prev_turn.turn_number}
+        return {weather: self._current_turn.turn_number}
 
     @property
     def won(self) -> Optional[bool]:

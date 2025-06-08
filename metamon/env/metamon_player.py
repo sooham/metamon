@@ -90,7 +90,6 @@ class MetamonPlayer(Player):
                 if hasattr(self.ps_client, "websocket"):
                     await self.ps_client.send_message(f"/leave {battle.battle_tag}")
             elif split_message[1] == "error":
-                breakpoint()
                 self.logger.log(
                     25, "Error message received: %s", "|".join(split_message)
                 )

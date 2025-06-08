@@ -105,6 +105,7 @@ def make_ladder_env(
     username: str,
     avatar: str,
     save_trajectories_to: Optional[str] = None,
+    battle_backend: str = "poke-env",
 ):
     """
     Battle on the local Showdown ladder
@@ -118,6 +119,7 @@ def make_ladder_env(
         player_username=username,
         player_avatar=avatar,
         save_trajectories_to=save_trajectories_to,
+        battle_backend=battle_backend,
     )
     print("Made Ladder Env")
     return PSLadderAMAGOWrapper(env)
@@ -130,6 +132,7 @@ def make_baseline_env(
     reward_function: RewardFunction,
     opponent_type: Type[Player],
     save_trajectories_to: Optional[str] = None,
+    battle_backend: str = "poke-env",
 ):
     """
     Battle against a built-in baseline opponent
@@ -142,6 +145,7 @@ def make_baseline_env(
         opponent_type=opponent_type,
         turn_limit=200,
         save_trajectories_to=save_trajectories_to,
+        battle_backend=battle_backend,
     )
     print("Made Baseline Env")
     return MetamonAMAGOWrapper(env)
@@ -549,6 +553,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Wait for user input before starting.",
     )
+    parser.add_argument(
+        "--battle_backend",
+        type=str,
+        default="poke-env",
+        choices=["poke-env", "metamon"],
+    )
     args = parser.parse_args()
 
     agent_maker = eval(args.agent)()
@@ -568,6 +578,7 @@ if __name__ == "__main__":
                     observation_space=agent_maker.observation_space,
                     reward_function=agent_maker.reward_function,
                     save_trajectories_to=args.save_trajectories_to,
+                    battle_backend=args.battle_backend,
                 )
                 if args.eval_type == "heuristic":
                     make_envs = [
