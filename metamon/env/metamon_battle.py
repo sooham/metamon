@@ -162,20 +162,22 @@ class MetamonBackendBattle(pe.AbstractBattle):
         request_pokemon = side_request.get("pokemon", False)
         if request_pokemon:
             for poke in request_pokemon:
-                ident = poke["ident"].replace("p1: ", "").replace("p2: ", "")
+                details = poke["details"]
+                name, lvl = Pokemon.identify_from_details(details)
                 poke_list = t.get_pokemon(p1)
                 known_names = {p.name: p for p in poke_list if p is not None}
-                if ident not in known_names:
+                if name not in known_names:
                     # discover a new Pokemon before it's discovered by the battle;
                     # mirrors logic in sim protocol "switch"
-                    insert_at = poke_list.index(None)
-                    name, lvl = Pokemon.identify_from_details(poke["details"])
+                    try:
+                        insert_at = poke_list.index(None)
+                    except:
+                        breakpoint()
                     metamon_p = Pokemon(name=name, lvl=lvl, gen=self._gen)
                     if poke["baseAbility"] != "noability":
                         if metamon_p.had_ability is None:
                             metamon_p.had_ability = poke["baseAbility"]
-                        if metamon_p.active_ability is None:
-                            metamon_p.active_ability = poke["baseAbility"]
+                        metamon_p.active_ability = poke["baseAbility"]
                     if poke["item"] != "":
                         if metamon_p.had_item is None:
                             metamon_p.had_item = poke["item"]
@@ -184,7 +186,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
                         metamon_p.reveal_move(Move(move, gen=self._gen))
                     poke_list[insert_at] = metamon_p
                 else:
-                    metamon_p = known_names[ident]
+                    metamon_p = known_names[name]
 
                 # build available_switches
                 if poke["active"]:
@@ -219,7 +221,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
                 # it will default on every action index and the only option the env
                 # will pick is Recharge.
                 move = Move(move_name, gen=self._gen)
-                move.set_pp(active_move["pp"])
+                move.set_pp(active_move.get("pp", move.current_pp))
                 self._available_moves.append((move, disabled))
             else:
                 plausible_reasons_to_discover = {

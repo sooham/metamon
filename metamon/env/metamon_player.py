@@ -157,6 +157,7 @@ class MetamonPlayer(Player):
                 else:
                     self.logger.critical("Unexpected error message: %s", split_message)
             elif split_message[1] == "turn":
+                # cut the turnlist to save memory
                 battle._mm_battle.turnlist = battle._mm_battle.turnlist[-2:]
                 await self._handle_battle_request(battle)
             elif split_message[1] == "teampreview":
