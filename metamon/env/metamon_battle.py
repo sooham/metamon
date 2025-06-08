@@ -167,11 +167,12 @@ class MetamonBackendBattle(pe.AbstractBattle):
             known_moves = active_pokemon.moves
             for active_move in active_moves:
                 move_name = active_move["move"]
+                disabled = active_move.get("disabled", False)
                 if move_name in known_moves:
                     # update PP counts from requests --- bailing us out of the main
                     # thing the replay parser can't do well.
                     known_moves[move_name]._current_pp = active_move["pp"]
-                    self._available_moves.append(known_moves[move_name])
+                    self._available_moves.append((known_moves[move_name], disabled))
                 elif move_name in {"Recharge", "Struggle"}:
                     # when these happen, the agent's observation is going to be
                     # its base moveset. However, the replay parser has a special case
@@ -180,8 +181,10 @@ class MetamonBackendBattle(pe.AbstractBattle):
                     # only be Recharge). There will also be no valid switches. Therefore,
                     # it will default on every action index and the only option the env
                     # will pick is Recharge.
-                    breakpoint()
-                    self._available_moves.append(Move(move_name, gen=self._gen))
+                    # need to use poke-env Move to dodge the missing name lookup for "Recharge"
+                    self._available_moves.append(
+                        (pe.Move(move_name, gen=self._gen), disabled)
+                    )
                 else:
                     breakpoint()
                     pass
@@ -228,7 +231,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
 
     @property
     def available_moves(self) -> Any:
-        return self._available_moves
+        return [m for m, disabled in self._available_moves if not disabled]
 
     @property
     def available_switches(self) -> Any:
