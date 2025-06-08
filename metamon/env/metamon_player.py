@@ -7,7 +7,7 @@ from poke_env.environment import AbstractBattle
 from poke_env.data import GenData
 from poke_env.exceptions import ShowdownException
 
-from metamon.pokemon.metamon_battle import MetamonBackendBattle
+from metamon.env.metamon_battle import MetamonBackendBattle
 
 
 class MetamonPlayer(Player):
@@ -65,11 +65,15 @@ class MetamonPlayer(Player):
             battle = await self._get_battle(split_messages[0][0])
 
         for split_message in split_messages[1:]:
+            print(f"handling battle message: {split_message}")
+            # let the metamon replay parser see every message
             if len(split_message) <= 1:
                 continue
-            elif split_message[1] == "":
+            elif split_message[0] == "":
                 battle.parse_message(split_message)
-            elif split_message[1] in self.MESSAGES_TO_IGNORE:
+
+            # handle Player-level behavior for some message types
+            if split_message[1] in self.MESSAGES_TO_IGNORE:
                 pass
             elif split_message[1] == "request":
                 if split_message[2]:
@@ -78,8 +82,7 @@ class MetamonPlayer(Player):
                     if battle.move_on_next_request:
                         await self._handle_battle_request(battle)
                         battle.move_on_next_request = False
-
-            if split_message[1] == "win" or split_message[1] == "tie":
+            elif split_message[1] == "win" or split_message[1] == "tie":
                 await self._battle_count_queue.get()
                 self._battle_count_queue.task_done()
                 self._battle_finished_callback(battle)
@@ -88,6 +91,7 @@ class MetamonPlayer(Player):
                 if hasattr(self.ps_client, "websocket"):
                     await self.ps_client.send_message(f"/leave {battle.battle_tag}")
             elif split_message[1] == "error":
+                breakpoint()
                 self.logger.log(
                     25, "Error message received: %s", "|".join(split_message)
                 )
@@ -155,12 +159,15 @@ class MetamonPlayer(Player):
                 else:
                     self.logger.critical("Unexpected error message: %s", split_message)
             elif split_message[1] == "turn":
-                battle.parse_message(split_message)
                 await self._handle_battle_request(battle)
             elif split_message[1] == "teampreview":
-                battle.parse_message(split_message)
                 await self._handle_battle_request(battle, from_teampreview_request=True)
             elif split_message[1] == "bigerror":
                 self.logger.warning("Received 'bigerror' message: %s", split_message)
             elif split_message[1] == "uhtml" and split_message[2] == "otsrequest":
                 await self._handle_ots_request(battle.battle_tag)
+
+    @staticmethod
+    def choose_random_move(battle: MetamonBackendBattle):
+        # default version demands built-in Battle/DoubleBattle types
+        return Player.choose_random_singles_move(battle)

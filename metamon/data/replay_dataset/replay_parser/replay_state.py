@@ -1,7 +1,7 @@
 import copy
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from enum import Enum, auto
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -73,6 +73,9 @@ class Boosts:
 
     def get_boost(self, s: str):
         return getattr(self, f"{s}_")
+
+    def to_dict(self):
+        return {k[:-1]: v for k, v in asdict(self).items()}
 
 
 class Move(PEMove):
@@ -247,7 +250,9 @@ class Pokemon:
             return self.moves[move_name].pp
 
     def reveal_move(self, move: Move):
-        if move.name == "Struggle":
+        if move.name in {"Struggle", "Recharge"}:
+            if move.name == "Recharge":
+                breakpoint()
             return
 
         if self.transformed_into is not None:
@@ -467,6 +472,29 @@ class Turn:
     is_force_switch: bool = False
     subturns: List = field(default_factory=list)
 
+    def get_active_pokemon(self, p1: bool) -> Optional[Pokemon]:
+        return self.active_pokemon_1 if p1 else self.active_pokemon_2
+
+    def get_pokemon(self, p1: bool) -> Optional[Pokemon]:
+        return self.pokemon_1 if p1 else self.pokemon_2
+
+    def get_switches(self, p1: bool) -> List[Pokemon]:
+        return self.available_switches_1 if p1 else self.available_switches_2
+
+    def get_team_dict(self, p1: bool) -> List[Optional[Pokemon]]:
+        role = "p1" if p1 else "p2"
+        pokemon = self.pokemon_1 if p1 else self.pokemon_2
+        return {f"{role} {p.name}": p for p in pokemon if p is not None}
+
+    def get_moves(self, p1: bool) -> List[Optional[Action]]:
+        return self.moves_1 if p1 else self.moves_2
+
+    def get_conditions(self, p1: bool) -> Dict[PESideCondition, int]:
+        return self.conditions_1 if p1 else self.conditions_2
+
+    def get_available_switches(self, p1: bool) -> List[Pokemon]:
+        return self.available_switches_1 if p1 else self.available_switches_2
+
     def on_end_of_turn(self):
         for pokemon in self.all_pokemon:
             if pokemon:
@@ -561,6 +589,7 @@ class Turn:
             raise RareValueError(f"Unknown player: {sub_str}")
 
     def get_active_pokemon_from_str(self, s: str) -> List[Optional[Pokemon]]:
+        # TODO: why was this needed?
         sub_str = s[0:2]
         if sub_str == "p1":
             return self.active_pokemon_1

@@ -29,8 +29,8 @@ from poke_env.environment import Weather as PEWeather
 @dataclass
 class ParsedReplay:
     gameid: str
-    format: str
     time_played: datetime
+    format: Optional[str] = None
     ratings: List[Optional[int | str]] = field(default_factory=lambda: [None, None])
     players: List[Optional[str]] = field(default_factory=lambda: [None, None])
     gen: Optional[int] = None
@@ -146,6 +146,7 @@ REPLAY_IGNORES = {
     "hint",
     "html",
     "-hitcount",
+    "init",
     "inactive",  # battle timer
     "inactiveoff",  # battle timer
     "j",
@@ -165,12 +166,14 @@ REPLAY_IGNORES = {
     "-primal",  # based soley on action
     "raw",
     "rated",
+    "request",
     "-resisted",
     "start",
     "-supereffective",
     "-singlemove",
     "seed",
     "teampreview",
+    "title",
     "tier",
     "t:",  # timer
     "upkeep",
@@ -185,12 +188,12 @@ def parse_row(replay: ParsedReplay, row: List[str]):
     https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
     
     and https://github.com/hsahovic/poke-env/blob/master/src/poke_env/environment/abstract_battle.py
-
-    When in doubt, match the poke-env version to cut "sim2sim" offline/online gap.
     """
     curr_turn = replay.turnlist[-1]
 
     name, *data = row
+
+    print(name, data)
 
     if name in REPLAY_IGNORES:
         return
@@ -200,6 +203,10 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         replay.gen = int(data[0])
         if replay.gen >= 5:
             raise SoftLockedGen(replay.gen)
+    
+    elif name == "tier":
+        # |tier|TIER
+        replay.format = data[0]
 
     elif name == "player":
         # |player|PLAYER|USERNAME|AVATAR|RATING
@@ -224,11 +231,14 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         size = int(size)
         if size != 6:
             raise UnusualTeamSize(size)
-        blank_team = [None] * size
+        assert len(curr_turn.pokemon_1) == 6
+        assert len(curr_turn.pokemon_2) == 6
         if player == "p1":
-            curr_turn.pokemon_1 = blank_team
+            while len(curr_turn.pokemon_1) > size:
+                curr_turn.pokemon_1.remove(None)
         elif player == "p2":
-            curr_turn.pokemon_2 = blank_team
+            while len(curr_turn.pokemon_2) > size:
+                curr_turn.pokemon_2.remove(None)
 
     elif name == "turn":
         # |turn|NUMBER
@@ -833,6 +843,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
     elif name == "-mustrecharge":
         # |-mustrecharge|POKEMON
         # the action labels default to None, so we do nothing here.
+        # TODO: revisit recharge.
         pass
 
     elif name == "cant":
