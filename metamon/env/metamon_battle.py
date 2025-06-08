@@ -12,6 +12,7 @@ from metamon.data.replay_dataset.replay_parser.exceptions import ForwardExceptio
 from metamon.data.replay_dataset.replay_parser.replay_state import (
     Action,
     ReplayState,
+    cleanup_move_id,
 )
 from metamon.data.replay_dataset.replay_parser.replay_state import (
     Pokemon,
@@ -57,7 +58,6 @@ class MetamonBackendBattle(pe.AbstractBattle):
         self._force_switch: bool = False
         self._maybe_trapped: bool = False
         self._trapped: bool = False
-        self._turn = self._mm_battle.turnlist[-1]
 
     def _finish_battle(self):
         super()._finish_battle()
@@ -67,7 +67,14 @@ class MetamonBackendBattle(pe.AbstractBattle):
 
     @property
     def _turn(self) -> int:
-        return self._mm_battle.turnlist[-1]
+        cur_turn = self._mm_battle.flattened_turnlist[-1]
+        return cur_turn
+
+    @property
+    def _prev_turn(self) -> int:
+        # TODO: this alignment is giving me a headache.
+        cur_turn = self._mm_battle.flattened_turnlist[-2]
+        return cur_turn
 
     @_turn.setter
     def _turn(self, value: Turn):
@@ -116,14 +123,13 @@ class MetamonBackendBattle(pe.AbstractBattle):
     def _update_turn_from_request(self, request: Dict[str, Any]):
         p1 = self.player_role == "p1"
         t = self._turn
-        print(request.keys())
 
         self._available_switches = []
         self._available_moves = []
 
         active_pokemon = None
         side = request.get("side", False)
-        if side:
+        if side and not self.trapped and not self.reviving:
             request_pokemon = side.get("pokemon", False)
             if request_pokemon:
                 for poke in request_pokemon:
@@ -150,7 +156,12 @@ class MetamonBackendBattle(pe.AbstractBattle):
                         if poke["baseAbility"] != "noability":
                             breakpoint()
                         if poke["item"] != "":
-                            breakpoint()
+                            # this is going to put the item name in an unusual all
+                            # lowercase format, but we'll eventually normalize everything
+                            # to that... i think it'll be fine.
+                            if metamon_p.had_item is None:
+                                metamon_p.had_item = poke["item"]
+                            metamon_p.active_item = poke["item"]
                         for move in poke["moves"]:
                             metamon_p.reveal_move(Move(move, gen=self._gen))
                         poke_list[insert_at] = metamon_p
@@ -162,18 +173,21 @@ class MetamonBackendBattle(pe.AbstractBattle):
                         self._available_switches.append(metamon_p)
 
         active = request.get("active", False)
-        if active:
+        if active and not self.trapped and not self.reviving:
             active_moves = active[0]["moves"]
-            known_moves = active_pokemon.moves
+            known_moves = {m.lookup_name: m for m in active_pokemon.moves.values()}
             for active_move in active_moves:
+                move_id = cleanup_move_id(active_move["id"])
                 move_name = active_move["move"]
                 disabled = active_move.get("disabled", False)
-                if move_name in known_moves:
+                if move_name.startswith("hiddenpower"):
+                    move_name = "hiddenpower"
+                if move_id in known_moves:
                     # update PP counts from requests --- bailing us out of the main
                     # thing the replay parser can't do well.
-                    known_moves[move_name]._current_pp = active_move["pp"]
-                    self._available_moves.append((known_moves[move_name], disabled))
-                elif move_name in {"Recharge", "Struggle"}:
+                    known_moves[move_id].set_pp(active_move["pp"])
+                    self._available_moves.append((known_moves[move_id], disabled))
+                elif move_name in {"recharge", "struggle"}:
                     # when these happen, the agent's observation is going to be
                     # its base moveset. However, the replay parser has a special case
                     # to handle Struggle with action index 0. On recharge, none of its
@@ -182,16 +196,24 @@ class MetamonBackendBattle(pe.AbstractBattle):
                     # it will default on every action index and the only option the env
                     # will pick is Recharge.
                     # need to use poke-env Move to dodge the missing name lookup for "Recharge"
-                    self._available_moves.append(
-                        (pe.Move(move_name, gen=self._gen), disabled)
-                    )
+                    move = Move(move_name, gen=self._gen)
+                    move.set_pp(active_move["pp"])
+                    self._available_moves.append((move, disabled))
                 else:
-                    breakpoint()
-                    pass
-                    # this is the tricky part. what do we do with info about
-                    # mimic/transform the replay parser clearly can't keep track of.
-                    # also need to match poke-env behavior where Recharge is our only option
-                    # without overriding the pokemon's available moves
+                    plausible_reasons_to_discover = {
+                        "copycat",
+                        "metronome",
+                        "mefirst",
+                        "mirrormove",
+                        "assist",
+                        "transform",
+                        "mimic",
+                    }
+                    if not plausible_reasons_to_discover.intersection(known_moves):
+                        breakpoint()
+                    move = Move(move_name, gen=self._gen)
+                    move.set_pp(active_move["pp"])
+                    self._available_moves.append((move, disabled))
 
     def _convert_pokemon(self, pokemon: Pokemon) -> pe.Pokemon:
         # an ugly alternative to adding a `update_from_metamon` equivalent
@@ -208,7 +230,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         p._species = pokemon.name
         p._active = (
             pokemon.unique_id
-            == self._turn.get_active_pokemon(self.player_role == "p1")[0].unique_id
+            == self._prev_turn.get_active_pokemon(self.player_role == "p1")[0].unique_id
         )
         p._boosts = pokemon.boosts.to_dict()
         p._current_hp = pokemon.current_hp
@@ -221,7 +243,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
     @property
     def active_pokemon(self) -> Any:
         p1 = self.player_role == "p1"
-        metamon_p = self._turn.get_active_pokemon(p1)[0]
+        metamon_p = self._prev_turn.get_active_pokemon(p1)[0]
         pe_p = self._convert_pokemon(metamon_p)
         return pe_p
 
@@ -270,7 +292,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :return: A Dict mapping fields to the turn they have been activated.
         :rtype: Dict[Field, int]
         """
-        return self._turn.battle_field
+        return self._prev_turn.battle_field
 
     @property
     def finished(self) -> bool:
@@ -340,7 +362,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
     @property
     def opponent_active_pokemon(self) -> Any:
         p1 = self.player_role == "p1"
-        metamon_p = self._turn.get_active_pokemon(not p1)[0]
+        metamon_p = self._prev_turn.get_active_pokemon(not p1)[0]
         pe_p = self._convert_pokemon(metamon_p)
         return pe_p
 
@@ -385,7 +407,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :rtype: Dict[SideCondition, int]
         """
         p1 = self.player_role == "p1"
-        return self._turn.get_conditions(not p1)
+        return self._prev_turn.get_conditions(not p1)
 
     @property
     def opponent_team(self) -> Dict[str, pe.Pokemon]:
@@ -396,7 +418,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :rtype: Dict[str, Pokemon]
         """
         p1 = self.player_role == "p1"
-        metamon_team = self._turn.get_team_dict(not p1)
+        metamon_team = self._prev_turn.get_team_dict(not p1)
         pe_team = {
             k: self._convert_pokemon(v)
             for k, v in metamon_team.items()
@@ -492,7 +514,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
             - the turn where the SideCondition was setup otherwise
         :rtype: Dict[SideCondition, int]
         """
-        return self._turn.get_conditions(self.player_role == "p1")
+        return self._prev_turn.get_conditions(self.player_role == "p1")
 
     def switch(self, pokemon_str: str, details: str, hp_status: str):
         pass
@@ -504,8 +526,8 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :rtype: Dict[str, Pokemon]
         """
         p1 = self.player_role == "p1"
-        metamon_team = self._turn.get_team_dict(p1)
-        metamon_active = self._turn.get_active_pokemon(p1)[0]
+        metamon_team = self._prev_turn.get_team_dict(p1)
+        metamon_active = self._prev_turn.get_active_pokemon(p1)[0]
         pe_team = {}
         total_active = 0
         for k, v in metamon_team.items():
@@ -529,7 +551,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :rtype: int
         """
         p1 = self.player_role == "p1"
-        return len(self._turn.get_pokemon(p1))
+        return len(self._prev_turn.get_pokemon(p1))
 
     @property
     def trapped(self) -> Any:
@@ -545,7 +567,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         :return: The current battle turn.
         :rtype: int
         """
-        return self._turn.turn_number
+        return self._prev_turn.turn_number
 
     @property
     def weather(self) -> Dict[pe.Weather, int]:
@@ -556,10 +578,10 @@ class MetamonBackendBattle(pe.AbstractBattle):
         # NOTE: we don't implement this turn counting system
         # and don't reccomend using it in observations. It will
         # always say the weather started on the current turn.
-        weather = self._turn.weather
+        weather = self._prev_turn.weather
         if weather == Nothing.NO_WEATHER:
             return {}
-        return {weather: self._turn.turn_number}
+        return {weather: self._prev_turn.turn_number}
 
     @property
     def won(self) -> Optional[bool]:

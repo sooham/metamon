@@ -138,6 +138,7 @@ REPLAY_IGNORES = {
     "chat",
     "clearpoke",
     "debug",
+    "deinit",
     "error",
     "-fieldactivate",  # redundant
     "gametype",
@@ -192,8 +193,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
     curr_turn = replay.turnlist[-1]
 
     name, *data = row
-
-    print(name, data)
 
     if name in REPLAY_IGNORES:
         return

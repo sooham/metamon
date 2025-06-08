@@ -40,6 +40,17 @@ def _one_hidden_power(move_name: str) -> str:
         return move_name
 
 
+def cleanup_move_id(move_id: str) -> str:
+    move_id = _one_hidden_power(move_id)
+    if move_id == "vicegrip":
+        return "visegrip"
+    elif move_id.startswith("return"):
+        return "return"
+    elif move_id.startswith("frustration"):
+        return "frustration"
+    else:
+        return move_id
+
 @dataclass
 class Boosts:
     atk_: int = 0
@@ -83,22 +94,22 @@ class Move(PEMove):
         # in an attempt to handle `choice` messages that give names in a case/space insensitive format,
         # we'll go from the name parsed from the replay --> poke_env id --> poke_env's official move name
         name = _one_hidden_power(name)
-        lookup_name = to_id_str(name)
-
-        # manual spelling changes between replays and move reference data
-        if lookup_name == "vicegrip":
-            lookup_name = "visegrip"
+        lookup_name = cleanup_move_id(to_id_str(name))
         self.lookup_name = lookup_name
         try:
             super().__init__(move_id=self.lookup_name, gen=gen)
-            self.charge_move = bool(self.entry["flags"].get("charge"))
-            # note we're taking the name as it would appear after poke-env data lookup
-            self.name = self.entry["name"]
+            self.charge_move = bool(self.entry.get("flags", {}).get("charge", False))
+            self.name = self.entry.get("name", name)
         except:
+            breakpoint()
             raise MovedexMissingEntry(name, self.lookup_name)
         self.gen_ = gen
         self.pp = self.current_pp  # split from poke-env PP counter
         self.maximum_pp = self.pp
+    
+    def set_pp(self, pp: int):
+        self.pp = pp
+        self._current_pp = pp
 
     def __deepcopy__(self, memo):
         # poke-env stores a ton of data in each Move. it is faster

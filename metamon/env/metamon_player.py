@@ -65,7 +65,6 @@ class MetamonPlayer(Player):
             battle = await self._get_battle(split_messages[0][0])
 
         for split_message in split_messages[1:]:
-            print(f"handling battle message: {split_message}")
             # let the metamon replay parser see every message
             if len(split_message) <= 1:
                 continue
@@ -159,6 +158,7 @@ class MetamonPlayer(Player):
                 else:
                     self.logger.critical("Unexpected error message: %s", split_message)
             elif split_message[1] == "turn":
+                battle._mm_battle.turnlist = battle._mm_battle.turnlist[-2:]
                 await self._handle_battle_request(battle)
             elif split_message[1] == "teampreview":
                 await self._handle_battle_request(battle, from_teampreview_request=True)
