@@ -172,6 +172,8 @@ class MetamonBackendBattle(pe.AbstractBattle):
         """
         Reveal information about (our team's) pokemon from a "side" request
         """
+
+        # update condition from request
         current_hp, max_hp, status = self._parse_condition_from_side_request(
             poke["condition"]
         )
@@ -181,6 +183,8 @@ class MetamonBackendBattle(pe.AbstractBattle):
             metamon_p.current_hp = current_hp
         if max_hp is not None:
             metamon_p.max_hp = max_hp
+
+        # update ability from request
         if poke["baseAbility"] == "noability":
             if metamon_p.had_ability is None:
                 metamon_p.had_ability = Nothing.NO_ABILITY
@@ -189,6 +193,8 @@ class MetamonBackendBattle(pe.AbstractBattle):
             if metamon_p.had_ability is None:
                 metamon_p.had_ability = poke["baseAbility"]
             metamon_p.active_ability = poke["baseAbility"]
+
+        # update item from request
         if poke["item"] == "":
             if metamon_p.had_item is None:
                 metamon_p.had_item = Nothing.NO_ITEM
@@ -197,6 +203,8 @@ class MetamonBackendBattle(pe.AbstractBattle):
             if metamon_p.had_item is None:
                 metamon_p.had_item = poke["item"]
             metamon_p.active_item = poke["item"]
+
+        # discover initial moveset from request
         if not metamon_p.had_moves:
             for move in poke["moves"]:
                 metamon_p.reveal_move(Move(move, gen=self._gen))
@@ -241,18 +249,20 @@ class MetamonBackendBattle(pe.AbstractBattle):
         Update the turn from an "active" request, and create self.available_moves
         """
         active_moves = active_request["moves"]
-        known_moves = {m.lookup_name: m for m in active_pokemon.moves.values()}
+        known_active_moves = {m.lookup_name: m for m in active_pokemon.moves.values()}
+        override_active_moves = True
+        available_moves = []
         for active_move in active_moves:
             move_id = cleanup_move_id(active_move["id"])
             move_name = active_move["move"]
             disabled = active_move.get("disabled", False)
-            if move_id in known_moves:
+            if move_id in known_active_moves:
                 # update PP counts from requests --- bailing us out of the main
                 # thing the replay parser can't do well.
-                known_moves[move_id].set_pp(
-                    active_move.get("pp", known_moves[move_id].pp)
+                known_active_moves[move_id].set_pp(
+                    active_move.get("pp", known_active_moves[move_id].pp)
                 )
-                move = known_moves[move_id]
+                move = known_active_moves[move_id]
             elif move_id in {"recharge", "struggle"}:
                 # when these happen, the agent's observation is going to be
                 # its base moveset. However, the replay parser has a special case
@@ -263,7 +273,13 @@ class MetamonBackendBattle(pe.AbstractBattle):
                 # will pick is Recharge.
                 move = Move(move_name, gen=self._gen)
                 move.set_pp(active_move.get("pp", move.pp))
+                # the replay parser never lists Recharge/Struggle as the Pokemon's
+                # current moveset.
+                override_active_moves = False
             else:
+                known_had_moves = {
+                    m.lookup_name: m for m in active_pokemon.had_moves.values()
+                }
                 plausible_reasons_to_discover = {
                     "copycat",
                     "metronome",
@@ -273,15 +289,24 @@ class MetamonBackendBattle(pe.AbstractBattle):
                     "transform",
                     "mimic",
                 }
-                if not plausible_reasons_to_discover.intersection(known_moves):
-                    breakpoint()
+                if not plausible_reasons_to_discover.intersection(known_had_moves):
                     raise ForwardException(
-                        f"Unknown move {move_name} discovered with known_moves: {known_moves}"
+                        f"Unknown move {move_name} (lookup_name: {move_id}) discovered with known_had_moves: {known_had_moves}, known_active_moves: {known_active_moves}"
                     )
                 move = Move(move_name, gen=self._gen)
                 move.set_pp(active_move.get("pp", move.max_pp))
-            if not disabled:
-                self._available_moves.append(move)
+            available_moves.append((move, disabled))
+
+        if override_active_moves:
+            # use request to update the sim's moveset directly
+            # (helpful for handling Mimic/Transform cases where the
+            # replay parser normally fails.)
+            if len(available_moves) < 4:
+                breakpoint()
+            active_pokemon.moves = {m.entry["name"]: m for m, _ in available_moves}
+
+        # outward-facing Battle.available_moves needs to remove "disabled" moves
+        self._available_moves = [m for m, disabled in available_moves if not disabled]
 
     def _convert_pokemon(self, pokemon: Pokemon) -> pe.Pokemon:
         # an ugly alternative to adding a `update_from_metamon` equivalent
