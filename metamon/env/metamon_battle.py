@@ -53,6 +53,9 @@ class MetamonBackendBattle(pe.AbstractBattle):
         )
 
         # Turn choice attributes
+        self.in_teampreview: bool = False
+        self._teampreview = False
+        self._wait: bool = False
         self._available_moves: List[Move] = []
         self._available_switches: List[Pokemon] = []
         self._can_dynamax: bool = False
@@ -60,7 +63,6 @@ class MetamonBackendBattle(pe.AbstractBattle):
         self._can_tera: Optional[pe.PokemonType] = None
         self._can_z_move: bool = False
         self._opponent_can_dynamax = True
-        self._move_on_next_request = False
         self._opponent_can_mega_evolve = True
         self._opponent_can_z_move = True
         self._player_role = None
@@ -98,8 +100,6 @@ class MetamonBackendBattle(pe.AbstractBattle):
         )
         self._trapped = False
         self._force_switch = request.get("forceSwitch", [False])[0]
-        if self._force_switch:
-            self._move_on_next_request = True
         self._last_request = request
         self._teampreview = request.get("teamPreview", False)
         if self._teampreview:
@@ -172,6 +172,9 @@ class MetamonBackendBattle(pe.AbstractBattle):
             if metamon_p.had_item is None:
                 metamon_p.had_item = poke["item"]
             metamon_p.active_item = poke["item"]
+        if not metamon_p.had_moves:
+            for move in poke["moves"]:
+                metamon_p.reveal_move(Move(move, gen=self._gen))
 
     def _update_turn_from_side_request(
         self, side_request: Dict[str, Any]
@@ -194,8 +197,6 @@ class MetamonBackendBattle(pe.AbstractBattle):
                     # mirrors logic in sim protocol "switch"
                     insert_at = poke_list.index(None)
                     metamon_p = Pokemon(name=name, lvl=lvl, gen=self._gen)
-                    for move in poke["moves"]:
-                        metamon_p.reveal_move(Move(move, gen=self._gen))
                     poke_list[insert_at] = metamon_p
                 else:
                     metamon_p = known_names[name]
@@ -641,19 +642,6 @@ class MetamonBackendBattle(pe.AbstractBattle):
         elif p1:
             return winner == Winner.PLAYER_1
         return winner == Winner.PLAYER_2
-
-    @property
-    def move_on_next_request(self) -> bool:
-        """
-        :return: Wheter the next received request should yield a move order directly.
-            This can happen when a switch is forced, or an error is encountered.
-        :rtype: bool
-        """
-        return self._move_on_next_request
-
-    @move_on_next_request.setter
-    def move_on_next_request(self, value: bool):
-        self._move_on_next_request = value
 
     @property
     def reviving(self) -> bool:
