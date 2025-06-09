@@ -138,9 +138,6 @@ class MetamonBackendBattle(pe.AbstractBattle):
         if side and not self.trapped and not self.reviving:
             active_pokemon = self._update_turn_from_side_request(side)
 
-        if self.reviving:
-            breakpoint()
-
         active = request.get("active", False)
         if (
             active
@@ -150,12 +147,41 @@ class MetamonBackendBattle(pe.AbstractBattle):
         ):
             self._update_turn_from_active_request(active[0], active_pokemon)
 
+    def _parse_condition_from_side_request(
+        self, condition: str
+    ) -> Tuple[int, int, Optional[pe.Status]]:
+        current_hp, max_hp, status = None, None, None
+
+        condition = condition.strip()
+        words = condition.split(" ")
+        hp_part = words[0]
+        if "/" in hp_part:
+            current_hp, max_hp = hp_part.split("/")
+            current_hp, max_hp = int(current_hp), int(max_hp)
+        elif hp_part == "0":
+            current_hp, max_hp = 0, 0
+        if len(words) == 2:
+            status_part = words[1]
+            status = pe.Status[status_part.upper()]
+        else:
+            status = None
+        return current_hp, max_hp, status
+
     def _update_pokemon_from_side_request(
         self, poke: Dict[str, Any], metamon_p: Pokemon
     ):
         """
-        Update the turn from a "side" request, and create self.available_switches
+        Reveal information about (our team's) pokemon from a "side" request
         """
+        current_hp, max_hp, status = self._parse_condition_from_side_request(
+            poke["condition"]
+        )
+        if status is not None:
+            metamon_p.status = status
+        if current_hp is not None:
+            metamon_p.current_hp = current_hp
+        if max_hp is not None:
+            metamon_p.max_hp = max_hp
         if poke["baseAbility"] == "noability":
             if metamon_p.had_ability is None:
                 metamon_p.had_ability = Nothing.NO_ABILITY
@@ -205,7 +231,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
                 # build available_switches
                 if poke["active"]:
                     active_pokemon = metamon_p
-                else:
+                elif metamon_p.status != pe.Status.FNT:
                     self._available_switches.append(metamon_p)
         return active_pokemon
 
@@ -227,7 +253,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
                 known_moves[move_id].set_pp(
                     active_move.get("pp", known_moves[move_id].pp)
                 )
-                self._available_moves.append((known_moves[move_id], disabled))
+                move = known_moves[move_id]
             elif move_id in {"recharge", "struggle"}:
                 # when these happen, the agent's observation is going to be
                 # its base moveset. However, the replay parser has a special case
@@ -238,7 +264,6 @@ class MetamonBackendBattle(pe.AbstractBattle):
                 # will pick is Recharge.
                 move = Move(move_name, gen=self._gen)
                 move.set_pp(active_move.get("pp", move.pp))
-                self._available_moves.append((move, disabled))
             else:
                 plausible_reasons_to_discover = {
                     "copycat",
@@ -255,7 +280,8 @@ class MetamonBackendBattle(pe.AbstractBattle):
                     )
                 move = Move(move_name, gen=self._gen)
                 move.set_pp(active_move.get("pp", move.max_pp))
-                self._available_moves.append((move, disabled))
+            if not disabled:
+                self._available_moves.append(move)
 
     def _convert_pokemon(self, pokemon: Pokemon) -> pe.Pokemon:
         # an ugly alternative to adding a `update_from_metamon` equivalent
@@ -296,15 +322,11 @@ class MetamonBackendBattle(pe.AbstractBattle):
 
     @property
     def available_moves(self) -> Any:
-        return [m for m, disabled in self._available_moves if not disabled]
+        return self._available_moves
 
     @property
     def available_switches(self) -> Any:
-        pe_switches = [
-            self._convert_pokemon(p)
-            for p in self._available_switches
-            if p.status != pe.Status.FNT
-        ]
+        pe_switches = [self._convert_pokemon(p) for p in self._available_switches]
         return pe_switches
 
     @property
