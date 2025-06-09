@@ -150,6 +150,29 @@ class MetamonBackendBattle(pe.AbstractBattle):
         ):
             self._update_turn_from_active_request(active[0], active_pokemon)
 
+    def _update_pokemon_from_side_request(
+        self, poke: Dict[str, Any], metamon_p: Pokemon
+    ):
+        """
+        Update the turn from a "side" request, and create self.available_switches
+        """
+        if poke["baseAbility"] == "noability":
+            if metamon_p.had_ability is None:
+                metamon_p.had_ability = Nothing.NO_ABILITY
+            metamon_p.active_ability = Nothing.NO_ABILITY
+        else:
+            if metamon_p.had_ability is None:
+                metamon_p.had_ability = poke["baseAbility"]
+            metamon_p.active_ability = poke["baseAbility"]
+        if poke["item"] == "":
+            if metamon_p.had_item is None:
+                metamon_p.had_item = Nothing.NO_ITEM
+            metamon_p.active_item = Nothing.NO_ITEM
+        else:
+            if metamon_p.had_item is None:
+                metamon_p.had_item = poke["item"]
+            metamon_p.active_item = poke["item"]
+
     def _update_turn_from_side_request(
         self, side_request: Dict[str, Any]
     ) -> Optional[Pokemon]:
@@ -169,24 +192,14 @@ class MetamonBackendBattle(pe.AbstractBattle):
                 if name not in known_names:
                     # discover a new Pokemon before it's discovered by the battle;
                     # mirrors logic in sim protocol "switch"
-                    try:
-                        insert_at = poke_list.index(None)
-                    except:
-                        breakpoint()
+                    insert_at = poke_list.index(None)
                     metamon_p = Pokemon(name=name, lvl=lvl, gen=self._gen)
-                    if poke["baseAbility"] != "noability":
-                        if metamon_p.had_ability is None:
-                            metamon_p.had_ability = poke["baseAbility"]
-                        metamon_p.active_ability = poke["baseAbility"]
-                    if poke["item"] != "":
-                        if metamon_p.had_item is None:
-                            metamon_p.had_item = poke["item"]
-                        metamon_p.active_item = poke["item"]
                     for move in poke["moves"]:
                         metamon_p.reveal_move(Move(move, gen=self._gen))
                     poke_list[insert_at] = metamon_p
                 else:
                     metamon_p = known_names[name]
+                self._update_pokemon_from_side_request(poke, metamon_p)
 
                 # build available_switches
                 if poke["active"]:
@@ -210,7 +223,9 @@ class MetamonBackendBattle(pe.AbstractBattle):
             if move_id in known_moves:
                 # update PP counts from requests --- bailing us out of the main
                 # thing the replay parser can't do well.
-                known_moves[move_id].set_pp(active_move["pp"])
+                known_moves[move_id].set_pp(
+                    active_move.get("pp", known_moves[move_id].pp)
+                )
                 self._available_moves.append((known_moves[move_id], disabled))
             elif move_id in {"recharge", "struggle"}:
                 # when these happen, the agent's observation is going to be
@@ -221,7 +236,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
                 # it will default on every action index and the only option the env
                 # will pick is Recharge.
                 move = Move(move_name, gen=self._gen)
-                move.set_pp(active_move.get("pp", move.current_pp))
+                move.set_pp(active_move.get("pp", move.pp))
                 self._available_moves.append((move, disabled))
             else:
                 plausible_reasons_to_discover = {
@@ -252,7 +267,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         p._ability = pokemon.had_ability
         p._level = pokemon.lvl
         p._max_hp = pokemon.max_hp
-        p._moves = pokemon.moves
+        p._moves = {m.lookup_name: m for m in pokemon.moves.values()}
         p._name = pokemon.name
         p._species = pokemon.name
         p._active = (

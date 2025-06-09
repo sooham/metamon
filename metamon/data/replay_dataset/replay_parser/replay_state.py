@@ -51,6 +51,7 @@ def cleanup_move_id(move_id: str) -> str:
     else:
         return move_id
 
+
 @dataclass
 class Boosts:
     atk_: int = 0
@@ -106,7 +107,7 @@ class Move(PEMove):
         self.gen_ = gen
         self.pp = self.current_pp  # split from poke-env PP counter
         self.maximum_pp = self.pp
-    
+
     def set_pp(self, pp: int):
         self.pp = pp
         self._current_pp = pp
@@ -116,6 +117,7 @@ class Move(PEMove):
         # to remake the object than copy it.
         new = self.__class__(name=self.name, gen=self.gen_)
         new.pp = self.pp
+        new._current_pp = self.pp
         self.maximum_pp = self.maximum_pp
         memo[id(self)] = new
         return new
@@ -262,8 +264,6 @@ class Pokemon:
 
     def reveal_move(self, move: Move):
         if move.name in {"Struggle", "Recharge"}:
-            if move.name == "Recharge":
-                breakpoint()
             return
 
         if self.transformed_into is not None:

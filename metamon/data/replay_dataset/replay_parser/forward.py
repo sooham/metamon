@@ -110,7 +110,6 @@ class SpecialCategories:
         "Petal Dance",
         "Ice Ball",
     }
-
     GEN1_PP_ROLLOVERS = {"Bind", "Wrap", "Fire Spin", "Clamp"}
 
     # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_restore_HP
