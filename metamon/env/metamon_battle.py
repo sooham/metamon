@@ -51,7 +51,6 @@ class MetamonBackendBattle(pe.AbstractBattle):
         self._mm_battle = forward.ParsedReplay(
             gameid=battle_tag, time_played=datetime.now(), gen=gen
         )
-
         # Turn choice attributes
         self.in_teampreview: bool = False
         self._teampreview = False
@@ -275,6 +274,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
                     "mimic",
                 }
                 if not plausible_reasons_to_discover.intersection(known_moves):
+                    breakpoint()
                     raise ForwardException(
                         f"Unknown move {move_name} discovered with known_moves: {known_moves}"
                     )

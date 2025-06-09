@@ -586,12 +586,10 @@ class DefaultShapedReward(RewardFunction):
                 active_prev = pokemon
                 break
         assert active_prev is not None
-
         hp_gain = active_now.hp_pct - active_prev.hp_pct
         took_status = float(
             active_now.status != "nostatus" and active_prev.status == "nostatus"
         )
-
         opp_now = state.opponent_active_pokemon
         opp_prev = last_state.opponent_active_pokemon
         if opp_now.name == opp_prev.name:
@@ -601,21 +599,18 @@ class DefaultShapedReward(RewardFunction):
             )
         else:
             damage_done, gave_status = 0.0, 0.0
-
         lost_pokemon = float(
             len(last_state.available_switches) > len(state.available_switches)
         )
         removed_pokemon = float(
             last_state.opponents_remaining > state.opponents_remaining
         )
-
         if state.battle_won:
             victory = 1.0
         elif state.battle_lost:
             victory = -1.0
         else:
             victory = 0.0
-
         reward = (
             1.0 * (damage_done + hp_gain)
             + 0.5 * (gave_status - took_status)
