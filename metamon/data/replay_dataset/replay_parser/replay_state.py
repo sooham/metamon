@@ -102,7 +102,6 @@ class Move(PEMove):
             self.charge_move = bool(self.entry.get("flags", {}).get("charge", False))
             self.name = self.entry.get("name", name)
         except:
-            breakpoint()
             raise MovedexMissingEntry(name, self.lookup_name)
         self.gen_ = gen
         self.pp = self.current_pp  # split from poke-env PP counter

@@ -128,6 +128,7 @@ class SpecialCategories:
 REPLAY_IGNORES = {
     "",
     "-anim",
+    "askreg",
     "badge",
     "bigerror",  # usually auto-tie warnings
     "c",
@@ -227,8 +228,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         # |teamsize|PLAYER|NUMBER
         player, size = data
         size = int(size)
-        if size != 6:
-            raise UnusualTeamSize(size)
         assert len(curr_turn.pokemon_1) == 6
         assert len(curr_turn.pokemon_2) == 6
         if player == "p1":
@@ -237,6 +236,8 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         elif player == "p2":
             while len(curr_turn.pokemon_2) > size:
                 curr_turn.pokemon_2.remove(None)
+        if size != 6:
+            raise UnusualTeamSize(size)
 
     elif name == "turn":
         # |turn|NUMBER
@@ -387,7 +388,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                     from_move = parse_move_from_extra(extra_from_message)
                     probably_repeat_move = from_move.lower() == move_name.lower()
                     if from_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY | SpecialCategories.MOVE_OVERRIDE:
-                        if override_risk:
+                        if override_risk and len(pokemon.had_moves) < 4:
                             raise CalledForeignConsecutive(row)
                         if from_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                             pokemon.reveal_move(move)
@@ -401,7 +402,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                 probably_item = ability_or_move in ({pokemon.had_item, pokemon.active_item} | SpecialCategories.MOVE_IGNORE_ITEMS)
                 if not (probably_repeat_move or probably_item):
                     if ability_or_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY | SpecialCategories.MOVE_OVERRIDE:
-                        if override_risk:
+                        if override_risk and len(pokemon.had_moves) < 4:
                             raise CalledForeignConsecutive(row)
                         if ability_or_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                             pokemon.reveal_move(move)

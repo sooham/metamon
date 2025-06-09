@@ -40,7 +40,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         battle_tag: str,
         username: str,
         logger: Logger,
-        save_replays: Union[str, bool],
+        save_replays: str | bool,
         gen: int,
     ):
         self._battle_tag = battle_tag
@@ -301,8 +301,6 @@ class MetamonBackendBattle(pe.AbstractBattle):
             # use request to update the sim's moveset directly
             # (helpful for handling Mimic/Transform cases where the
             # replay parser normally fails.)
-            if len(available_moves) < 4:
-                breakpoint()
             active_pokemon.moves = {m.entry["name"]: m for m, _ in available_moves}
 
         # outward-facing Battle.available_moves needs to remove "disabled" moves

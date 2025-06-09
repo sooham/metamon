@@ -53,7 +53,9 @@ class MetamonPlayer(Player):
             raise ShowdownException()
 
     async def _handle_battle_message(self, split_messages: List[List[str]]):
-        # Battle messages can be multiline
+        """
+        Override the default battle message handling logic to use our own MetamonBackendBattle.
+        """
         if (
             len(split_messages) > 1
             and len(split_messages[1]) > 1
