@@ -42,6 +42,7 @@ def add_cli(parser):
     parser.add_argument("--model_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the model architecture). See provided rl/configs/models/)")
     parser.add_argument("--train_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the training or hparams).")
     parser.add_argument("--tokenizer", type=str, default="DefaultObservationSpace-v0", help="The tokenizer to use for the text observation space. See metamon.tokenizer for options.")
+    parser.add_argument("--dloader_workers", type=int, default=10, help="Number of workers for the data loader.")
     parser.add_argument("--log", action="store_true", help="Log to wandb.")
     # fmt: on
     return parser
@@ -146,7 +147,7 @@ if __name__ == "__main__":
         log_interval=300,
         ## replay ##
         padded_sampling="none",
-        dloader_workers=10,
+        dloader_workers=args.dloader_workers,
         ## learning schedule ##
         epochs=args.epochs,
         # entirely offline RL
