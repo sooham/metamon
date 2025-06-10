@@ -267,11 +267,8 @@ if __name__ == "__main__":
             tokenizer=get_tokenizer("allreplays-v3"),
         ),
         reward_function=DefaultShapedReward(),
+        formats=["gen1ou"],
         verbose=True,
     )
-    print(len(dset))
-    obs, actions, rewards, dones, missing_actions = dset[0]
-    dset.refresh_files()
-
-    for i in tqdm.tqdm(range(len(dset))):
+    for i in tqdm.tqdm(range(2000)):
         obs, actions, rewards, dones, missing_actions = dset[i]
