@@ -376,7 +376,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tokenizer",
         type=str,
-        default="allreplays-v3",
+        default="DefaultObservationSpace-v0",
     )
     parser.add_argument(
         "--turn_embedding",
@@ -388,20 +388,15 @@ if __name__ == "__main__":
         type=int,
         default=64,
     )
+    parser.add_argument(
+        "--model_config",
+        type=str,
+        required=True,
+        help="Path to `.gin` configuration file for the model's hyperparameters.",
+    )
     args = parser.parse_args()
 
-    if args.turn_embedding == "transformer":
-        turn_embedding_type = TransformerTurnEmbedding
-    elif args.turn_embedding == "ff":
-        turn_embedding_type = FFTurnEmbedding
-
-    config = {
-        "GRUModel.turn_embedding_Cls": turn_embedding_type,
-    }
-
-    gin.bind_parameter("GRUModel.turn_embedding_Cls", turn_embedding_type)
-    gin.finalize()
-
+    gin.parse_config_file(args.model_config)
     parsed_replay_dataset = ParsedReplayDataset(
         dset_root=args.parsed_replay_dir,
         observation_space=TokenizedObservationSpace(
