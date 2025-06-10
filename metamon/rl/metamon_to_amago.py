@@ -1,18 +1,27 @@
-from typing import Optional, Any
+from typing import Optional, Any, Type
+import os
+import warnings
 
 import gin
 import numpy as np
-import amago
+import gymnasium as gym
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import repeat
+import einops
+import poke_env
 
-import metamon
+
+from metamon.interface import ObservationSpace, RewardFunction
 from metamon.il.model import TransformerTurnEmbedding
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.datasets import ParsedReplayDataset
-from metamon.env import PokeEnvWrapper
+from metamon.env import (
+    PokeEnvWrapper,
+    BattleAgainstBaseline,
+    TeamSet,
+    QueueOnLocalLadder,
+)
 
 
 try:
@@ -29,6 +38,150 @@ else:
     from amago.nets.utils import symlog
     from amago.loading import RLData, RLDataset, Batch
     from amago.envs.amago_env import AMAGO_ENV_LOG_PREFIX
+
+
+def make_placeholder_env(observation_space: ObservationSpace) -> AMAGOEnv:
+    """
+    Create an environment that does nothing. Can be used to initialize a policy
+    """
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", category=amago.utils.AmagoWarning)
+
+    class _PlaceholderShowdown(gym.Env):
+        def __init__(self):
+            super().__init__()
+            self.observation_space = observation_space.gym_space
+            self.action_space = gym.spaces.Discrete(9)
+            self.metamon_battle_format = "PlaceholderShowdown"
+            self.metamon_opponent_name = "PlaceholderOpponent"
+
+        def reset(self, *args, **kwargs):
+            obs = {
+                key: np.zeros(value.shape, dtype=value.dtype)
+                for key, value in self.observation_space.items()
+            }
+            return obs, {}
+
+        def take_long_break(self):
+            pass
+
+        def resume_from_break(self):
+            pass
+
+    penv = _PlaceholderShowdown()
+    return MetamonAMAGOWrapper(penv)
+
+
+def make_ladder_env(
+    battle_format: str,
+    player_team_set: TeamSet,
+    observation_space: ObservationSpace,
+    reward_function: RewardFunction,
+    num_battles: int,
+    username: str,
+    avatar: str,
+    save_trajectories_to: Optional[str] = None,
+    battle_backend: str = "poke-env",
+):
+    """
+    Battle on the local Showdown ladder
+    """
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", category=amago.utils.AmagoWarning)
+    menv = QueueOnLocalLadder(
+        battle_format=battle_format,
+        num_battles=num_battles,
+        observation_space=observation_space,
+        reward_function=reward_function,
+        player_team_set=player_team_set,
+        player_username=username,
+        player_avatar=avatar,
+        save_trajectories_to=save_trajectories_to,
+        battle_backend=battle_backend,
+    )
+    print("Made Ladder Env")
+    return PSLadderAMAGOWrapper(menv)
+
+
+def make_baseline_env(
+    battle_format: str,
+    player_team_set: TeamSet,
+    observation_space: ObservationSpace,
+    reward_function: RewardFunction,
+    opponent_type: Type[poke_env.Player],
+    save_trajectories_to: Optional[str] = None,
+    battle_backend: str = "poke-env",
+):
+    """
+    Battle against a built-in baseline opponent
+    """
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", category=amago.utils.AmagoWarning)
+    menv = BattleAgainstBaseline(
+        battle_format=battle_format,
+        observation_space=observation_space,
+        reward_function=reward_function,
+        team_set=player_team_set,
+        opponent_type=opponent_type,
+        turn_limit=200,
+        save_trajectories_to=save_trajectories_to,
+        battle_backend=battle_backend,
+    )
+    print("Made Baseline Env")
+    return MetamonAMAGOWrapper(menv)
+
+
+def make_placeholder_experiment(
+    ckpt_base_dir: str,
+    run_name: str,
+    log: bool,
+    observation_space: ObservationSpace,
+):
+    """
+    Initialize an AMAGO experiment that will be used to load a pretrained checkpoint
+    and manage agent/env interaction.
+    """
+    # the environment is only used to initialize the network
+    # before loading the correct checkpoint
+    penv = make_placeholder_env(
+        observation_space=observation_space,
+    )
+    dummy_dset = amago.loading.DoNothingDataset()
+    dummy_env = lambda: penv
+    experiment = MetamonAMAGOExperiment(
+        # assumes that positional args
+        # agent_type, tstep_encoder_type,
+        # traj_encoder_type, and max_seq_len
+        # are set in the gin file
+        ckpt_base_dir=ckpt_base_dir,
+        run_name=run_name,
+        dataset=dummy_dset,
+        make_train_env=dummy_env,
+        make_val_env=dummy_env,
+        env_mode="async",
+        async_env_mp_context="spawn",
+        parallel_actors=1,
+        exploration_wrapper_type=None,
+        epochs=0,
+        start_learning_at_epoch=float("inf"),
+        start_collecting_at_epoch=float("inf"),
+        train_timesteps_per_epoch=0,
+        stagger_traj_file_lengths=False,
+        train_batches_per_epoch=0,
+        val_interval=None,
+        val_timesteps_per_epoch=0,
+        ckpt_interval=None,
+        always_save_latest=False,
+        always_load_latest=False,
+        log_interval=1,
+        batch_size=1,
+        dloader_workers=0,
+        log_to_wandb=log,
+        wandb_project=os.environ.get("METAMON_WANDB_PROJECT"),
+        wandb_entity=os.environ.get("METAMON_WANDB_ENTITY"),
+        verbose=True,
+    )
+    return experiment
 
 
 class MetamonAMAGOWrapper(AMAGOEnv):
@@ -240,7 +393,7 @@ class MetamonAMAGOExperiment(amago.Experiment):
         # missing_action_mask is one timestep too long to match the size of observations
         # True where the action is missing, False where it's provided.
         # pad_mask is True where the timestep should count towards loss, False where it shouldn't.
-        missing_action_mask = repeat(
+        missing_action_mask = einops.repeat(
             ~batch.obs["missing_action_mask"][:, :-1], "b l 1 -> b l g 1", g=G
         )
         return pad_mask & missing_action_mask
@@ -249,7 +402,7 @@ class MetamonAMAGOExperiment(amago.Experiment):
         self, batch: Batch, critic_loss: torch.FloatTensor, pad_mask: torch.BoolTensor
     ) -> torch.BoolTensor:
         B, L, C, G, _ = pad_mask.shape
-        missing_action_mask = repeat(
+        missing_action_mask = einops.repeat(
             ~batch.obs["missing_action_mask"][:, :-1], "b l 1 -> b l c g 1", g=G, c=C
         )
         return pad_mask & missing_action_mask
