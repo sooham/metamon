@@ -92,8 +92,8 @@ def make_placeholder_env(observation_space: ObservationSpace):
         def resume_from_break(self):
             pass
 
-    env = _PlaceholderShowdown()
-    return MetamonAMAGOWrapper(env)
+    penv = _PlaceholderShowdown()
+    return MetamonAMAGOWrapper(penv)
 
 
 def make_ladder_env(
@@ -110,7 +110,7 @@ def make_ladder_env(
     """
     Battle on the local Showdown ladder
     """
-    env = QueueOnLocalLadder(
+    menv = QueueOnLocalLadder(
         battle_format=battle_format,
         num_battles=num_battles,
         observation_space=observation_space,
@@ -122,7 +122,7 @@ def make_ladder_env(
         battle_backend=battle_backend,
     )
     print("Made Ladder Env")
-    return PSLadderAMAGOWrapper(env)
+    return PSLadderAMAGOWrapper(menv)
 
 
 def make_baseline_env(
@@ -137,7 +137,7 @@ def make_baseline_env(
     """
     Battle against a built-in baseline opponent
     """
-    env = BattleAgainstBaseline(
+    menv = BattleAgainstBaseline(
         battle_format=battle_format,
         observation_space=observation_space,
         reward_function=reward_function,
@@ -148,7 +148,7 @@ def make_baseline_env(
         battle_backend=battle_backend,
     )
     print("Made Baseline Env")
-    return MetamonAMAGOWrapper(env)
+    return MetamonAMAGOWrapper(menv)
 
 
 def create_placeholder_experiment(
@@ -163,11 +163,11 @@ def create_placeholder_experiment(
     """
     # the environment is only used to initialize the network
     # before loading the correct checkpoint
-    env = make_placeholder_env(
+    penv = make_placeholder_env(
         observation_space=observation_space,
     )
     dummy_dset = amago.loading.DoNothingDataset()
-    dummy_env = lambda: env
+    dummy_env = lambda: penv
     experiment = MetamonAMAGOExperiment(
         # assumes that positional args
         # agent_type, tstep_encoder_type,
@@ -270,19 +270,22 @@ class PretrainedModel:
             # with a checkpoint anyway.... If you get an error about this, pull `amago`.
             "amago.nets.transformer.SigmaReparam.fast_init": True,
         }
-
-    def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False) -> amago.Experiment:
-        # use the base config and the gin file to configure the model
-        cli_utils.use_config(self.base_config, [self.gin_config], finalize=False)
-        checkpoint = checkpoint or self.DEFAULT_CKPT
+    
+    def get_path_to_checkpoint(self, checkpoint: int) -> str:
         # Download checkpoint from HF Hub
         checkpoint_path = hf_hub_download(
             repo_id=self.HF_REPO_ID,
             filename=f"{self.model_name}/ckpts/policy_weights/policy_epoch_{checkpoint}.pt",
             cache_dir=self.hf_cache_dir,
         )
-        model_dir = Path(os.path.dirname(os.path.dirname(checkpoint_path)))
-        ckpt_base_dir = str(model_dir.parents[1])
+        return checkpoint_path
+
+    def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False) -> amago.Experiment:
+        # use the base config and the gin file to configure the model
+        cli_utils.use_config(self.base_config, [self.gin_config], finalize=False)
+        checkpoint = checkpoint or self.DEFAULT_CKPT
+        ckpt_path = self.get_path_to_checkpoint(checkpoint or self.DEFAULT_CKPT)
+        ckpt_base_dir = str(Path(ckpt_path).parents[2])
         # build an experiment
         experiment = create_placeholder_experiment(
             ckpt_base_dir=ckpt_base_dir,
@@ -294,8 +297,30 @@ class PretrainedModel:
         experiment.start()
         if checkpoint > 0:
             # replace the weights with the pretrained checkpoint
-            experiment.load_checkpoint(checkpoint, resume_training_state=False)
+            experiment.load_checkpoint_from_path(ckpt_path, is_accelerate_state=False)
         return experiment
+
+
+class LocalPretrainedModel(PretrainedModel):
+    """
+    Evaluate a model from a custom training run.
+
+    Args:
+        amago_run_path: Path to the AMAGO run directory containing a config.txt,
+            ckpts/, and wandb logs.
+    """
+
+    def __init__(self, amago_run_path: str, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.amago_run_path = amago_run_path
+
+    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+        return os.path.join(
+            self.amago_run_path,
+            "ckpts",
+            "policy_weights",
+            f"policy_epoch_{checkpoint}.pt",
+        )
 
 
 class SmallIL(PretrainedModel):
@@ -481,6 +506,7 @@ if __name__ == "__main__":
             "SmallRL_BinaryFilter",
             "SmallRL_Aug",
             "SmallRL_MaxQ",
+            "SmallRLPostPaper",
             "MediumIL",
             "MediumRL",
             "MediumRL_Aug",
@@ -500,26 +526,38 @@ if __name__ == "__main__":
         type=int,
         nargs="+",
         default=1,
-        help="Specify the generations to evaluate.",
+        help="Specify the Pokémon generations to evaluate.",
     )
     parser.add_argument(
-        "--log_to_wandb", action="store_true", help="Log results to Weights & Biases."
+        "--log_to_wandb",
+        action="store_true",
+        help="Log results to Weights & Biases.",
     )
     parser.add_argument(
         "--formats",
         nargs="+",
         default="ou",
         choices=["ubers", "ou", "uu", "nu"],
-        help="Specify the battle formats.",
+        help="Specify the battle format/tier.",
     )
     parser.add_argument(
-        "--username", default="Metamon", help="Username for the Showdown server."
+        "--username",
+        default="Metamon",
+        help="Username for the Showdown server.",
     )
     parser.add_argument(
-        "--n_challenges", type=int, default=10, help="Number of battles to run."
+        "--n_challenges",
+        type=int,
+        default=10,
+        help=(
+            "Number of battles to run before returning eval stats. "
+            "Note this is the total sample size across all parallel actors."
+        ),
     )
     parser.add_argument(
-        "--avatar", default="red-gen1main", help="Avatar to use for the battles."
+        "--avatar",
+        default="red-gen1main",
+        help="Avatar to use for the battles.",
     )
     parser.add_argument(
         "--checkpoints",
@@ -530,12 +568,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--eval_type",
-        choices=[
-            "heuristic",
-            "il",
-            "ladder",
-        ],
-        help="Type of evaluation to perform. 'heuristic' will run the agent against the heuristic baselines, 'il' will run the agent against the IL baselines, 'local-ladder' will run the agent on your self-hosted Showdown ladder. If you set two agents to play on the local-ladder, they will be battling each other!",
+        choices=["heuristic", "il", "ladder"],
+        help=(
+            "Type of evaluation to perform. 'heuristic' will run against 6 "
+            "heuristic baselines, 'il' will run against a BCRNN baseline, "
+            "'ladder' will queue the agent for battles on your self-hosted Showdown ladder."
+        ),
     )
     parser.add_argument(
         "--team_set",
@@ -558,6 +596,12 @@ if __name__ == "__main__":
         type=str,
         default="poke-env",
         choices=["poke-env", "metamon"],
+        help=(
+            "Method for interpreting Showdown's requests and simulator messages. "
+            "poke-env is the default. metamon is an experimental option that aims to "
+            "remove sim2sim gap by reusing the code that generates our huggingface "
+            "replay dataset."
+        ),
     )
     args = parser.parse_args()
 

@@ -318,6 +318,8 @@ class MetamonBackendBattle(pe.AbstractBattle):
         p._level = pokemon.lvl
         p._max_hp = pokemon.max_hp
         p._moves = {m.lookup_name: m for m in pokemon.moves.values()}
+        for m in p._moves.values():
+            m.set_pp(m.pp)
         p._name = pokemon.name
         p._species = pokemon.name
         p._active = (

@@ -116,7 +116,7 @@ export METAMON_CACHE_DIR=/path/to/plenty/of/disk/space
 
 > [!NOTE]
 >
-> `metamon` currently relies on (and should automatically install) an old fork of [poke-env](https://github.com/hsahovic/poke-env) ([here](https://github.com/jakegrigsby/poke-env)). Don't let other packages update `poke-env` in metamon's venv.
+> `metamon` relies on (and should automatically install) a fork of [poke-env](https://github.com/hsahovic/poke-env) ([here](https://github.com/UT-Austin-RPL/poke-env)). Don't let other packages update `poke-env` in metamon's venv.
 
 <br>
 
