@@ -1,7 +1,7 @@
 import copy
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from enum import Enum, auto
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -40,6 +40,18 @@ def _one_hidden_power(move_name: str) -> str:
         return move_name
 
 
+def cleanup_move_id(move_id: str) -> str:
+    move_id = _one_hidden_power(move_id)
+    if move_id == "vicegrip":
+        return "visegrip"
+    elif move_id.startswith("return"):
+        return "return"
+    elif move_id.startswith("frustration"):
+        return "frustration"
+    else:
+        return move_id
+
+
 @dataclass
 class Boosts:
     atk_: int = 0
@@ -74,34 +86,37 @@ class Boosts:
     def get_boost(self, s: str):
         return getattr(self, f"{s}_")
 
+    def to_dict(self):
+        return {k[:-1]: v for k, v in asdict(self).items()}
+
 
 class Move(PEMove):
     def __init__(self, name: str, gen: int):
         # in an attempt to handle `choice` messages that give names in a case/space insensitive format,
         # we'll go from the name parsed from the replay --> poke_env id --> poke_env's official move name
         name = _one_hidden_power(name)
-        lookup_name = to_id_str(name)
-
-        # manual spelling changes between replays and move reference data
-        if lookup_name == "vicegrip":
-            lookup_name = "visegrip"
+        lookup_name = cleanup_move_id(to_id_str(name))
         self.lookup_name = lookup_name
         try:
             super().__init__(move_id=self.lookup_name, gen=gen)
-            self.charge_move = bool(self.entry["flags"].get("charge"))
-            # note we're taking the name as it would appear after poke-env data lookup
-            self.name = self.entry["name"]
+            self.charge_move = bool(self.entry.get("flags", {}).get("charge", False))
+            self.name = self.entry.get("name", name)
         except:
             raise MovedexMissingEntry(name, self.lookup_name)
         self.gen_ = gen
         self.pp = self.current_pp  # split from poke-env PP counter
         self.maximum_pp = self.pp
 
+    def set_pp(self, pp: int):
+        self.pp = pp
+        self._current_pp = pp
+
     def __deepcopy__(self, memo):
         # poke-env stores a ton of data in each Move. it is faster
         # to remake the object than copy it.
         new = self.__class__(name=self.name, gen=self.gen_)
         new.pp = self.pp
+        new._current_pp = self.pp
         self.maximum_pp = self.maximum_pp
         memo[id(self)] = new
         return new
@@ -247,7 +262,7 @@ class Pokemon:
             return self.moves[move_name].pp
 
     def reveal_move(self, move: Move):
-        if move.name == "Struggle":
+        if move.name in {"Struggle", "Recharge"}:
             return
 
         if self.transformed_into is not None:
@@ -467,6 +482,29 @@ class Turn:
     is_force_switch: bool = False
     subturns: List = field(default_factory=list)
 
+    def get_active_pokemon(self, p1: bool) -> Optional[Pokemon]:
+        return self.active_pokemon_1 if p1 else self.active_pokemon_2
+
+    def get_pokemon(self, p1: bool) -> Optional[Pokemon]:
+        return self.pokemon_1 if p1 else self.pokemon_2
+
+    def get_switches(self, p1: bool) -> List[Pokemon]:
+        return self.available_switches_1 if p1 else self.available_switches_2
+
+    def get_team_dict(self, p1: bool) -> List[Optional[Pokemon]]:
+        role = "p1" if p1 else "p2"
+        pokemon = self.pokemon_1 if p1 else self.pokemon_2
+        return {f"{role} {p.name}": p for p in pokemon if p is not None}
+
+    def get_moves(self, p1: bool) -> List[Optional[Action]]:
+        return self.moves_1 if p1 else self.moves_2
+
+    def get_conditions(self, p1: bool) -> Dict[PESideCondition, int]:
+        return self.conditions_1 if p1 else self.conditions_2
+
+    def get_available_switches(self, p1: bool) -> List[Pokemon]:
+        return self.available_switches_1 if p1 else self.available_switches_2
+
     def on_end_of_turn(self):
         for pokemon in self.all_pokemon:
             if pokemon:
@@ -561,6 +599,7 @@ class Turn:
             raise RareValueError(f"Unknown player: {sub_str}")
 
     def get_active_pokemon_from_str(self, s: str) -> List[Optional[Pokemon]]:
+        # TODO: why was this needed?
         sub_str = s[0:2]
         if sub_str == "p1":
             return self.active_pokemon_1

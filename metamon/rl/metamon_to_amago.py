@@ -53,7 +53,8 @@ class MetamonAMAGOWrapper(AMAGOEnv):
                     "valid_action_count"
                 ] / (info["valid_action_count"] + info["invalid_action_count"])
             return *out, info
-        except:
+        except Exception as e:
+            print(e)
             print("Force resetting due to long-tail error")
             self.reset()
             next_state, reward, terminated, truncated, info = self.step(action)

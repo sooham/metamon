@@ -81,7 +81,7 @@ pip install -e .
 To install [Pokémon Showdown](https://pokemonshowdown.com/) (PS), you will need a modern version of `npm` / Node.js (instructions [here](https://nodejs.org/en/download/package-manager)). This repo comes packaged with the specific commit that we used during the project.
 
 > [!IMPORTANT]
-> Use the showdown version that comes with `metamon` (`metamon/server`). Our poke-env fork breaks on newer versions. We are working on a fix.
+> Now updated to handle [breaking changes](https://github.com/smogon/pokemon-showdown/pull/11105) to Pokémon Showdown. Use a June 2025 Showdown commit (or later). The version that downloads with `metamon` (`metamon/server`) is always supported. Team Sets are not yet fully validated for this version. Fix in progress.
 
 ```shell
 cd server/pokemon-showdown
@@ -116,7 +116,7 @@ export METAMON_CACHE_DIR=/path/to/plenty/of/disk/space
 
 > [!NOTE]
 >
-> `metamon` currently relies on (and should automatically install) an old fork of [poke-env](https://github.com/hsahovic/poke-env) ([here](https://github.com/jakegrigsby/poke-env)). Don't let other packages update `poke-env` in metamon's venv.
+> `metamon` relies on (and should automatically install) a fork of [poke-env](https://github.com/hsahovic/poke-env) ([here](https://github.com/UT-Austin-RPL/poke-env)). Don't let other packages update `poke-env` in metamon's venv.
 
 <br>
 

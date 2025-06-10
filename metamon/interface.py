@@ -529,8 +529,8 @@ def action_idx_to_battle_order(
 
     # we'll only submit an action if it's valid, but we pick from a longer list determined
     # by rules that are easier to keep track of elsewhere
-    valid_moves = battle.available_moves
-    valid_switches = battle.available_switches
+    valid_moves = {m.id for m in battle.available_moves}
+    valid_switches = {p.name for p in battle.available_switches}
     move_options = consistent_move_order(list(battle.active_pokemon.moves.values()))
     switch_options = consistent_pokemon_order(
         [p for p in list(battle.team.values()) if not p.fainted and not p.active]
@@ -541,7 +541,7 @@ def action_idx_to_battle_order(
         # pick one of up to 4 available moves
         if action_idx < len(move_options):
             selected_move = move_options[action_idx]
-            if selected_move in valid_moves:
+            if selected_move.id in valid_moves:
                 order = Player.create_order(selected_move)
 
     elif 4 <= action_idx <= 8:
@@ -549,7 +549,7 @@ def action_idx_to_battle_order(
         action_idx -= 4
         if action_idx < len(switch_options):
             selected_switch = switch_options[action_idx]
-            if selected_switch in valid_switches:
+            if selected_switch.name in valid_switches:
                 order = Player.create_order(selected_switch)
 
     # Q: "what happens when we pick an invalid action? (order = None)"
@@ -586,12 +586,10 @@ class DefaultShapedReward(RewardFunction):
                 active_prev = pokemon
                 break
         assert active_prev is not None
-
         hp_gain = active_now.hp_pct - active_prev.hp_pct
         took_status = float(
             active_now.status != "nostatus" and active_prev.status == "nostatus"
         )
-
         opp_now = state.opponent_active_pokemon
         opp_prev = last_state.opponent_active_pokemon
         if opp_now.name == opp_prev.name:
@@ -601,21 +599,18 @@ class DefaultShapedReward(RewardFunction):
             )
         else:
             damage_done, gave_status = 0.0, 0.0
-
         lost_pokemon = float(
             len(last_state.available_switches) > len(state.available_switches)
         )
         removed_pokemon = float(
             last_state.opponents_remaining > state.opponents_remaining
         )
-
         if state.battle_won:
             victory = 1.0
         elif state.battle_lost:
             victory = -1.0
         else:
             victory = 0.0
-
         reward = (
             1.0 * (damage_done + hp_gain)
             + 0.5 * (gave_status - took_status)

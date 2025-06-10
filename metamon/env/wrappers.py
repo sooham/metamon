@@ -9,6 +9,7 @@ from typing import Optional, Type
 import numpy as np
 import lz4.frame
 import gymnasium as gym
+
 from poke_env import (
     AccountConfiguration,
     LocalhostServerConfiguration,
@@ -27,6 +28,7 @@ from metamon.interface import (
 )
 from metamon.data import DATA_PATH
 from metamon.download import download_teams
+from metamon.env.metamon_player import MetamonPlayer
 
 
 class TeamSet(Teambuilder):
@@ -154,6 +156,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
         start_timer_on_battle_start: bool = False,
         turn_limit: int = 1000,
         save_trajectories_to: Optional[str] = None,
+        battle_backend: str = "poke-env",
     ):
         opponent_team_set = opponent_team_set or copy.deepcopy(player_team_set)
         random_username = (
@@ -194,7 +197,18 @@ class PokeEnvWrapper(OpenAIGymEnv):
         self.metamon_obs_space = observation_space
         self.turn_limit = turn_limit
         self.metamon_battle_format = battle_format
+
+        if battle_backend == "poke-env":
+            player_class = Player
+        elif battle_backend == "metamon":
+            player_class = MetamonPlayer
+        else:
+            raise ValueError(
+                f"Invalid battle backend: {battle_backend}. Options are 'poke-env' or 'metamon'."
+            )
+
         super().__init__(
+            player_class=player_class,
             battle_format=battle_format,
             server_configuration=self.server_configuration,
             account_configuration=player_account_configuration,
@@ -204,7 +218,6 @@ class PokeEnvWrapper(OpenAIGymEnv):
             start_challenging=start_challenging,
             # TODO: need to re-check these settings for online RL
             ping_interval=None,
-            open_timeout=None,
             ping_timeout=None,
         )
 
@@ -320,6 +333,7 @@ class BattleAgainstBaseline(PokeEnvWrapper):
         opponent_type: Type[Player],
         turn_limit: int = 200,
         save_trajectories_to: Optional[str] = None,
+        battle_backend: str = "poke-env",
     ):
         super().__init__(
             battle_format=battle_format,
@@ -330,6 +344,7 @@ class BattleAgainstBaseline(PokeEnvWrapper):
             opponent_type=opponent_type,
             turn_limit=turn_limit,
             save_trajectories_to=save_trajectories_to,
+            battle_backend=battle_backend,
         )
 
 
@@ -358,6 +373,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         player_avatar: Optional[str] = None,
         start_timer_on_battle_start: bool = True,
         save_trajectories_to: Optional[str] = None,
+        battle_backend: str = "poke-env",
     ):
         super().__init__(
             battle_format=battle_format,
@@ -371,6 +387,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
             start_challenging=False,
             turn_limit=float("inf"),
             save_trajectories_to=save_trajectories_to,
+            battle_backend=battle_backend,
         )
         print(f"Laddering for {num_battles} battles")
         self.start_laddering(n_challenges=num_battles)
@@ -379,52 +396,3 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         next_state, reward, terminated, truncated, info = super().step(action)
         self.render()
         return next_state, reward, terminated, truncated, info
-
-
-if __name__ == "__main__":
-    from argparse import ArgumentParser
-    from metamon.baselines.heuristic.basic import GymLeader
-    from metamon.interface import TokenizedObservationSpace, DefaultPlusObservationSpace
-    from metamon.tokenizer import get_tokenizer
-
-    parser = ArgumentParser()
-    parser.add_argument("--battle_format", type=str, default="gen1ou")
-    parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--team_set", type=str, default="paper_replays")
-    args = parser.parse_args()
-
-    env = BattleAgainstBaseline(
-        battle_format=args.battle_format,
-        team_set=get_metamon_teams(args.battle_format, args.team_set),
-        opponent_type=GymLeader,
-        observation_space=TokenizedObservationSpace(
-            DefaultPlusObservationSpace(),
-            tokenizer=get_tokenizer("DefaultObservationSpace-v0"),
-        ),
-        reward_function=DefaultShapedReward(),
-    )
-
-    start = time.time()
-    counter = 0
-    for ep in range(args.episodes):
-        print(f"Episode {ep}")
-        inner_start = time.time()
-        state, info = env.reset()
-        done = False
-        return_ = 0.0
-        timesteps = 0
-        while not done:
-            env.render()
-            state, reward, terminated, truncated, info = env.step(
-                env.action_space.sample()
-            )
-            return_ += reward
-            done = terminated or truncated
-            timesteps += 1
-            counter += 1
-        print(
-            f"Episode {ep}:: Timesteps: {timesteps}, Total Return: {return_ : .2f}, FPS: {timesteps / (time.time() - inner_start) : .2f}, Invalid Action: {info['invalid_action_count']}, Valid Actions: {info['valid_action_count']}"
-        )
-
-    end = time.time()
-    print(f"{counter / (end - start) : .2f} Steps Per Second")

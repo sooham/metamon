@@ -29,8 +29,8 @@ from poke_env.environment import Weather as PEWeather
 @dataclass
 class ParsedReplay:
     gameid: str
-    format: str
     time_played: datetime
+    format: Optional[str] = None
     ratings: List[Optional[int | str]] = field(default_factory=lambda: [None, None])
     players: List[Optional[str]] = field(default_factory=lambda: [None, None])
     gen: Optional[int] = None
@@ -110,7 +110,6 @@ class SpecialCategories:
         "Petal Dance",
         "Ice Ball",
     }
-
     GEN1_PP_ROLLOVERS = {"Bind", "Wrap", "Fire Spin", "Clamp"}
 
     # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_restore_HP
@@ -129,6 +128,7 @@ class SpecialCategories:
 REPLAY_IGNORES = {
     "",
     "-anim",
+    "askreg",
     "badge",
     "bigerror",  # usually auto-tie warnings
     "c",
@@ -138,6 +138,7 @@ REPLAY_IGNORES = {
     "chat",
     "clearpoke",
     "debug",
+    "deinit",
     "error",
     "-fieldactivate",  # redundant
     "gametype",
@@ -146,6 +147,7 @@ REPLAY_IGNORES = {
     "hint",
     "html",
     "-hitcount",
+    "init",
     "inactive",  # battle timer
     "inactiveoff",  # battle timer
     "j",
@@ -165,12 +167,14 @@ REPLAY_IGNORES = {
     "-primal",  # based soley on action
     "raw",
     "rated",
+    "request",
     "-resisted",
     "start",
     "-supereffective",
     "-singlemove",
     "seed",
     "teampreview",
+    "title",
     "tier",
     "t:",  # timer
     "upkeep",
@@ -185,8 +189,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
     https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
     
     and https://github.com/hsahovic/poke-env/blob/master/src/poke_env/environment/abstract_battle.py
-
-    When in doubt, match the poke-env version to cut "sim2sim" offline/online gap.
     """
     curr_turn = replay.turnlist[-1]
 
@@ -200,6 +202,10 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         replay.gen = int(data[0])
         if replay.gen >= 5:
             raise SoftLockedGen(replay.gen)
+    
+    elif name == "tier":
+        # |tier|TIER
+        replay.format = data[0]
 
     elif name == "player":
         # |player|PLAYER|USERNAME|AVATAR|RATING
@@ -222,13 +228,16 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         # |teamsize|PLAYER|NUMBER
         player, size = data
         size = int(size)
+        assert len(curr_turn.pokemon_1) == 6
+        assert len(curr_turn.pokemon_2) == 6
+        if player == "p1":
+            while len(curr_turn.pokemon_1) > size:
+                curr_turn.pokemon_1.remove(None)
+        elif player == "p2":
+            while len(curr_turn.pokemon_2) > size:
+                curr_turn.pokemon_2.remove(None)
         if size != 6:
             raise UnusualTeamSize(size)
-        blank_team = [None] * size
-        if player == "p1":
-            curr_turn.pokemon_1 = blank_team
-        elif player == "p2":
-            curr_turn.pokemon_2 = blank_team
 
     elif name == "turn":
         # |turn|NUMBER
@@ -379,7 +388,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                     from_move = parse_move_from_extra(extra_from_message)
                     probably_repeat_move = from_move.lower() == move_name.lower()
                     if from_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY | SpecialCategories.MOVE_OVERRIDE:
-                        if override_risk:
+                        if override_risk and len(pokemon.had_moves) < 4:
                             raise CalledForeignConsecutive(row)
                         if from_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                             pokemon.reveal_move(move)
@@ -393,7 +402,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                 probably_item = ability_or_move in ({pokemon.had_item, pokemon.active_item} | SpecialCategories.MOVE_IGNORE_ITEMS)
                 if not (probably_repeat_move or probably_item):
                     if ability_or_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY | SpecialCategories.MOVE_OVERRIDE:
-                        if override_risk:
+                        if override_risk and len(pokemon.had_moves) < 4:
                             raise CalledForeignConsecutive(row)
                         if ability_or_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                             pokemon.reveal_move(move)
@@ -833,6 +842,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
     elif name == "-mustrecharge":
         # |-mustrecharge|POKEMON
         # the action labels default to None, so we do nothing here.
+        # TODO: revisit recharge.
         pass
 
     elif name == "cant":
