@@ -195,7 +195,8 @@ class Run:
             wandb.log({f"{key}/{subkey}": val for subkey, val in log_dict.items()})
 
     def compute_loss(self, inputs, labels):
-        inputs = {k: v.to(self.DEVICE) for k, v in inputs.items()}
+        # the last observation does not have an action (label)
+        inputs = {k: v[:, :-1, ...].to(self.DEVICE) for k, v in inputs.items()}
         labels = labels.to(self.DEVICE)
         predictions, _ = self.policy(
             token_inputs=inputs["text_tokens"], numerical_inputs=inputs["numbers"]
@@ -393,6 +394,10 @@ if __name__ == "__main__":
         turn_embedding_type = TransformerTurnEmbedding
     elif args.turn_embedding == "ff":
         turn_embedding_type = FFTurnEmbedding
+
+    config = {
+        "GRUModel.turn_embedding_Cls": turn_embedding_type,
+    }
 
     gin.bind_parameter("GRUModel.turn_embedding_Cls", turn_embedding_type)
     gin.finalize()
