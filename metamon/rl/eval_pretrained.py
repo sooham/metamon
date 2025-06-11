@@ -64,7 +64,7 @@ class PretrainedModel:
     """
 
     HF_REPO_ID = "jakegrigsby/metamon"
-    DEFAULT_CKPT = 40  # a.k.a. 1M grad steps
+    DEFAULT_CKPT = 40  # a.k.a. 1M grad steps w/ default settings
 
     # fmt: off
     def __init__(

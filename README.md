@@ -439,6 +439,27 @@ python train.py --run_name any_name_here --model_gin_config configs/models/small
 
 Larger training runs take *days* to complete and [can use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). We think it's likely that faster hparams can reach similar performance, and are working on it!
 
+
+#### Evaluate
+The easiest way to eval a new model is to go in and add a `LocalPretrainedModel` to `rl/eval_pretrained.py`. 
+
+Let's say the training command was: `python train.py --run_name psyduck_is_ubers --model_gin_config gigantic_agent.gin --ckpt_dir /my_metamon_ckpts/`. We'd add:
+
+```python
+# metamon/rl/evaluate_pretrained.py
+class PsyduckIsUbers(LocalPretrainedModel):
+    def __init__(self):
+        super().__init__(
+            # absolute path to where amago saves the run's outputs
+            amago_run_path="/my_metamon_ckpts/psyduck_is_ubers/",
+            # relative path within rl/configs/ to the model hparams
+            gin_config="models/gigantic_agent.gin",
+            # if the training command had --il in it...
+            is_il_model=False,
+        )
+```
+And now we can evaluate it just like any of the huggingface models.
+
 #### Customize
 
 Customize the agent architecture by creating new `rl/configs/models/` `.gin` files. Customize the RL hyperparameters by creating new `rl/configs/training/` files. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/configuration.html) to a lot more information about configuring training runs. `amago` is modular and you can swap just about any piece of the agent with your own ideas. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/customization.html) to more information about custom components.
