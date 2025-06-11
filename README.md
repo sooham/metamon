@@ -45,13 +45,14 @@ Metamon is the codebase behind ["Human-Level Competetitive Pokémon via Scalable
 
 ### Table of Contents
 
-- [Quick Start](#quick-start)
-- [Pretrained Models](#pretrained-models)
-- [Battle Datasets](#battle-datasets)
-- [Team Sets](#team-sets)
-- [Baselines](#baselines)
-- [Observation Spaces & Reward Functions](#observation-spaces--reward-functions)
-- [Extra](#extra)
+0. [Quick Start](#quick-start)
+1. [Pretrained Models](#pretrained-models)
+2. [Battle Datasets](#battle-datasets)
+3. [Team Sets](#team-sets)
+4. [Baselines](#baselines)
+5. [Observation & Rewards](#observation-spaces--reward-functions)
+6. [Training](#training)
+7. [Extra](#extra)
 
 
 
@@ -412,6 +413,53 @@ words across the entire replay dataset, with an unknown token for rare cases we 
 Reward functions assign scalar reward based on consecutive states (R(s, s')). `DefaultShapedReward` is the shaped reward used by the paper. `BinaryReward` removes the smaller shaping terms and simply provides +/- 100 for win/loss. Any new reward functions would be added to `metamon.interface.ALL_REWARD_FUNCTIONS`, and you can implement your own by inheriting from `metamon.interface.RewardFunction`.
 
 ---
+
+ <br>
+
+ ## Training
+
+ We trained all of our main RL **& IL** models with [`amago`](https://ut-austin-rpl.github.io/amago/index.html). Everything you need to train your own model on metamon data and evaluate against Pokémon baselines is provided in **`metamon/rl/`**.
+
+#### Configure `wandb` logging (optional):
+```shell
+cd metamon/rl/
+export METAMON_WANDB_PROJECT="my_wandb_project_name"
+export METAMON_WANDB_ENTITY="my_wandb_username"
+```
+
+#### Basic Training Run
+
+See `python train.py --help` for options. The training script currently implements *offline RL on the human battle dataset*. We are working on reintroducing self-play datasets and extending to online RL on the local ladder. 
+
+We might retrain the "`SmallIL`" model like this: 
+```
+python train.py --run_name any_name_here --model_gin_config configs/models/small_agent.gin --ckpt_dir /pick/a/ckpt/dir --train_gin_config configs/training/base_offline.gin --il --log
+```
+"`SmallRL`" would be the same command without `--il`.
+
+Larger training runs take *days* to complete and [can use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). We think it's likely that faster hparams can reach similar performance, and are working on it!
+
+#### Customize
+
+Customize the agent architecture by creating new `rl/configs/models/` `.gin` files. Customize the RL hyperparameters by creating new `rl/configs/training/` files. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/configuration.html) to a lot more information about configuring training runs. `amago` is modular and you can swap just about any piece of the agent with your own ideas. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/customization.html) to more information about custom components.
+
+
+#### Standalone Toy `il` (Deprecated)
+
+<details>
+
+`il/` is old toy code that does basic behavior cloning with RNNs. We used it to train early learning-based baselines (`BaseRNN`, `WinsOnlyRNN`, and `MiniRNN`) that you can play against with the `BattleAgainstBaseline` env. We may add more of these as the dataset grows/improves and more architectures are tried. Playing around with this code might be an easier way to get started, but note that the main `rl/train` script can also be configured to do RNN BC... but faster and on multiple GPUs.
+
+Get started with something like:
+```shell
+cd metamon/il/
+python train.py --run_name any_name_will_do --model_config configs/transformer_embedding.gin  --gpu 0
+```
+
+</details>
+
+
+ ---
 
  <br>
 

@@ -270,5 +270,5 @@ if __name__ == "__main__":
         formats=["gen1ou"],
         verbose=True,
     )
-    for i in tqdm.tqdm(range(2000)):
+    for i in tqdm.tqdm(range(min(2000, len(dset)))):
         obs, actions, rewards, dones, missing_actions = dset[i]
