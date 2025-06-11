@@ -108,12 +108,6 @@ class UniversalMove:
     current_pp: int
     max_pp: int
 
-    def __post_init__(self):
-        for name, should_be in self.__annotations__.items():
-            if not isinstance(self.__dict__[name], should_be):
-                actually_is = type(self.__dict__[name])
-                raise TypeError(f"UniversalMove `{name}` has type {actually_is}")
-
     @classmethod
     def blank_move(cls):
         return cls(
@@ -198,19 +192,10 @@ class UniversalPokemon:
     base_spe: int
     base_hp: int
 
-    def __post_init__(self):
-        for name, should_be in self.__annotations__.items():
-            if should_be in {str, bool, int, float} and not isinstance(
-                self.__dict__[name], should_be
-            ):
-                actually_is = type(self.__dict__[name])
-                raise TypeError(f"UniversalPokemon `{name}` has type {actually_is}")
-
     @classmethod
     def from_dict(cls, data: dict):
-        args = data.copy()
-        args["moves"] = [UniversalMove(**m) for m in data["moves"]]
-        return cls(**args)
+        data["moves"] = [UniversalMove(**m) for m in data["moves"]]
+        return cls(**data)
 
     @staticmethod
     def universal_items(item_rep: Optional[str | ReplayNothing]) -> str:
@@ -467,16 +452,15 @@ class UniversalState:
     
     @classmethod
     def from_dict(cls, data: dict):
-        args = data.copy()
         # convert nested Pokemon objects
-        args["player_active_pokemon"] = UniversalPokemon.from_dict(data["player_active_pokemon"])
-        args["opponent_active_pokemon"] = UniversalPokemon.from_dict(data["opponent_active_pokemon"])
-        args["available_switches"] = [UniversalPokemon.from_dict(p) for p in data["available_switches"]]
+        data["player_active_pokemon"] = UniversalPokemon.from_dict(data["player_active_pokemon"])
+        data["opponent_active_pokemon"] = UniversalPokemon.from_dict(data["opponent_active_pokemon"])
+        data["available_switches"] = [UniversalPokemon.from_dict(p) for p in data["available_switches"]]
         # convert nested Move objects
-        args["player_prev_move"] = UniversalMove(**args["player_prev_move"])
-        args["opponent_prev_move"] = UniversalMove(**args["opponent_prev_move"])
+        data["player_prev_move"] = UniversalMove(**data["player_prev_move"])
+        data["opponent_prev_move"] = UniversalMove(**data["opponent_prev_move"])
         # create UniversalState from the processed dict
-        return cls(**args)
+        return cls(**data)
 
 
 def replaystate_action_to_idx(

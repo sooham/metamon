@@ -195,7 +195,8 @@ class Run:
             wandb.log({f"{key}/{subkey}": val for subkey, val in log_dict.items()})
 
     def compute_loss(self, inputs, labels):
-        inputs = {k: v.to(self.DEVICE) for k, v in inputs.items()}
+        # the last observation does not have an action (label)
+        inputs = {k: v[:, :-1, ...].to(self.DEVICE) for k, v in inputs.items()}
         labels = labels.to(self.DEVICE)
         predictions, _ = self.policy(
             token_inputs=inputs["text_tokens"], numerical_inputs=inputs["numbers"]
@@ -375,7 +376,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tokenizer",
         type=str,
-        default="allreplays-v3",
+        default="DefaultObservationSpace-v0",
     )
     parser.add_argument(
         "--turn_embedding",
@@ -387,16 +388,15 @@ if __name__ == "__main__":
         type=int,
         default=64,
     )
+    parser.add_argument(
+        "--model_config",
+        type=str,
+        required=True,
+        help="Path to `.gin` configuration file for the model's hyperparameters.",
+    )
     args = parser.parse_args()
 
-    if args.turn_embedding == "transformer":
-        turn_embedding_type = TransformerTurnEmbedding
-    elif args.turn_embedding == "ff":
-        turn_embedding_type = FFTurnEmbedding
-
-    gin.bind_parameter("GRUModel.turn_embedding_Cls", turn_embedding_type)
-    gin.finalize()
-
+    gin.parse_config_file(args.model_config)
     parsed_replay_dataset = ParsedReplayDataset(
         dset_root=args.parsed_replay_dir,
         observation_space=TokenizedObservationSpace(

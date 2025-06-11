@@ -1,18 +1,13 @@
 import os
-import warnings
-import multiprocessing as mp
 from functools import partial
 
 import wandb
 
 import amago
 from amago import cli_utils
-from amago.utils import AmagoWarning
 
-from metamon.env import BattleAgainstBaseline, TeamSet, get_metamon_teams
+from metamon.env import get_metamon_teams
 from metamon.interface import (
-    ObservationSpace,
-    RewardFunction,
     TokenizedObservationSpace,
     ALL_OBSERVATION_SPACES,
     ALL_REWARD_FUNCTIONS,
@@ -21,8 +16,9 @@ from metamon.tokenizer import get_tokenizer
 from metamon.datasets import ParsedReplayDataset
 from metamon.rl.metamon_to_amago import (
     MetamonAMAGOExperiment,
-    MetamonAMAGOWrapper,
     MetamonAMAGODataset,
+    make_baseline_env,
+    make_placeholder_env,
 )
 from metamon import baselines
 
@@ -46,6 +42,7 @@ def add_cli(parser):
     parser.add_argument("--model_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the model architecture). See provided rl/configs/models/)")
     parser.add_argument("--train_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the training or hparams).")
     parser.add_argument("--tokenizer", type=str, default="DefaultObservationSpace-v0", help="The tokenizer to use for the text observation space. See metamon.tokenizer for options.")
+    parser.add_argument("--dloader_workers", type=int, default=10, help="Number of workers for the data loader.")
     parser.add_argument("--log", action="store_true", help="Log to wandb.")
     # fmt: on
     return parser
@@ -58,30 +55,6 @@ live_opponents = [
     baselines.heuristic.basic.GymLeader,
     baselines.heuristic.kaizo.EmeraldKaizo,
 ]
-
-
-def make_baseline_env(
-    battle_format: str,
-    observation_space: ObservationSpace,
-    reward_function: RewardFunction,
-    team_set: TeamSet,
-    opponent,
-):
-    """
-    Battle against a built-in baseline opponent
-    """
-    warnings.filterwarnings("ignore", category=UserWarning)
-    warnings.filterwarnings("ignore", category=AmagoWarning)
-    env = BattleAgainstBaseline(
-        battle_format=battle_format,
-        observation_space=observation_space,
-        reward_function=reward_function,
-        team_set=team_set,
-        opponent_type=opponent,
-        turn_limit=100,
-    )
-    print("Made env")
-    return MetamonAMAGOWrapper(env)
 
 
 def configure(args):
@@ -131,16 +104,19 @@ if __name__ == "__main__":
         parsed_replay_dset=parsed_replay_dataset,
     )
 
+    # validation environments (evaluated throughout training)
     make_envs = [
         partial(
             make_baseline_env,
             battle_format=f"gen{i}ou",
             observation_space=obs_space,
             reward_function=reward_function,
-            team_set=get_metamon_teams(f"gen{i}ou", "paper_variety"),
-            opponent=opponent,
+            player_team_set=get_metamon_teams(f"gen{i}ou", "competitive"),
+            opponent_type=opponent,
         )
-        for i in range(1, 5)
+        for i in range(
+            1, 4
+        )  # TODO: gen4ou teams are illegal after updating to latest Showdown due to tiering change.
         for opponent in live_opponents
     ]
     experiment = MetamonAMAGOExperiment(
@@ -154,7 +130,7 @@ if __name__ == "__main__":
         # agent_type = should be set in the gin file
         val_timesteps_per_epoch=300,
         ## environment ##
-        make_train_env=make_envs,
+        make_train_env=partial(make_placeholder_env, obs_space),
         make_val_env=make_envs,
         env_mode="async",
         async_env_mp_context="spawn",
@@ -171,7 +147,7 @@ if __name__ == "__main__":
         log_interval=300,
         ## replay ##
         padded_sampling="none",
-        dloader_workers=10,
+        dloader_workers=args.dloader_workers,
         ## learning schedule ##
         epochs=args.epochs,
         # entirely offline RL

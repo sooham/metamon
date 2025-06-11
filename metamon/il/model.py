@@ -206,18 +206,19 @@ class TurnEmbedding(nn.Module, ABC):
         pass
 
 
+@gin.configurable
 class TransformerTurnEmbedding(TurnEmbedding):
     def __init__(
         self,
         tokenizer: PokemonTokenizer,
         token_embedding_dim: int,
         numerical_features: int,
-        numerical_tokens: int,
-        scratch_tokens: int,
-        d_model: int,
-        n_heads: int,
-        n_layers: int,
-        dropout: float,
+        numerical_tokens: int = gin.REQUIRED,
+        scratch_tokens: int = gin.REQUIRED,
+        d_model: int = gin.REQUIRED,
+        n_heads: int = gin.REQUIRED,
+        n_layers: int = gin.REQUIRED,
+        dropout: float = gin.REQUIRED,
     ):
         super().__init__(
             tokenizer,
@@ -257,9 +258,9 @@ class FFTurnEmbedding(TurnEmbedding):
         tokenizer: PokemonTokenizer,
         token_embedding_dim: int,
         numerical_features: int,
-        d_hidden: int = 2048,
-        d_emb: int = 400,
-        dropout: float = 0.05,
+        d_hidden: int = gin.REQUIRED,
+        d_emb: int = gin.REQUIRED,
+        dropout: float = gin.REQUIRED,
     ):
         super().__init__(
             tokenizer,
@@ -299,12 +300,12 @@ class GRUModel(MetamonILModel):
         self,
         tokenizer: PokemonTokenizer,
         numerical_features: int,
-        token_embedding_dim: int = 64,
-        num_actions: int = 9,
-        turn_embedding_Cls: Type[TurnEmbedding] = TransformerTurnEmbedding,
-        rnn_d_hidden: int = 512,
-        rnn_layers: int = 2,
-        rnn_dropout: float = 0.05,
+        num_actions: int,
+        token_embedding_dim: int = gin.REQUIRED,
+        turn_embedding_Cls: Type[TurnEmbedding] = gin.REQUIRED,
+        rnn_d_hidden: int = gin.REQUIRED,
+        rnn_layers: int = gin.REQUIRED,
+        rnn_dropout: float = gin.REQUIRED,
     ):
         super().__init__(
             tokenizer=tokenizer,

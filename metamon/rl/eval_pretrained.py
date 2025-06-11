@@ -20,16 +20,11 @@ import numpy as np
 import amago
 from amago import cli_utils
 
-from metamon.env import (
-    BattleAgainstBaseline,
-    QueueOnLocalLadder,
-    get_metamon_teams,
-    TeamSet,
-)
+from metamon.env import get_metamon_teams
 from metamon.rl.metamon_to_amago import (
-    PSLadderAMAGOWrapper,
-    MetamonAMAGOWrapper,
-    MetamonAMAGOExperiment,
+    make_placeholder_experiment,
+    make_baseline_env,
+    make_ladder_env,
 )
 from metamon.interface import (
     ObservationSpace,
@@ -57,151 +52,10 @@ HEURISTIC_COMPOSITE_BASELINES = [
 
 IL = [BaseRNN]
 
-WANDB_PROJECT = os.environ.get("METAMON_WANDB_PROJECT")
-WANDB_ENTITY = os.environ.get("METAMON_WANDB_ENTITY")
-
 if METAMON_CACHE_DIR is None:
     raise ValueError("Set METAMON_CACHE_DIR environment variable")
 # downloads checkpoints to the metamon cache dir where we're putting all the other data
 MODEL_DOWNLOAD_DIR = os.path.join(METAMON_CACHE_DIR, "pretrained_models")
-
-
-def make_placeholder_env(observation_space: ObservationSpace):
-    """
-    Create an environment that does nothing, but will be used to initialize the network
-    """
-
-    class _PlaceholderShowdown(gym.Env):
-        def __init__(self):
-            super().__init__()
-            self.observation_space = observation_space.gym_space
-            self.action_space = gym.spaces.Discrete(9)
-            self.metamon_battle_format = "PlaceholderShowdown"
-            self.metamon_opponent_name = "PlaceholderOpponent"
-
-        def reset(self, *args, **kwargs):
-            obs = {
-                key: np.zeros(value.shape, dtype=value.dtype)
-                for key, value in self.observation_space.items()
-            }
-            return obs, {}
-
-        def take_long_break(self):
-            pass
-
-        def resume_from_break(self):
-            pass
-
-    penv = _PlaceholderShowdown()
-    return MetamonAMAGOWrapper(penv)
-
-
-def make_ladder_env(
-    battle_format: str,
-    player_team_set: TeamSet,
-    observation_space: ObservationSpace,
-    reward_function: RewardFunction,
-    num_battles: int,
-    username: str,
-    avatar: str,
-    save_trajectories_to: Optional[str] = None,
-    battle_backend: str = "poke-env",
-):
-    """
-    Battle on the local Showdown ladder
-    """
-    menv = QueueOnLocalLadder(
-        battle_format=battle_format,
-        num_battles=num_battles,
-        observation_space=observation_space,
-        reward_function=reward_function,
-        player_team_set=player_team_set,
-        player_username=username,
-        player_avatar=avatar,
-        save_trajectories_to=save_trajectories_to,
-        battle_backend=battle_backend,
-    )
-    print("Made Ladder Env")
-    return PSLadderAMAGOWrapper(menv)
-
-
-def make_baseline_env(
-    battle_format: str,
-    player_team_set: TeamSet,
-    observation_space: ObservationSpace,
-    reward_function: RewardFunction,
-    opponent_type: Type[Player],
-    save_trajectories_to: Optional[str] = None,
-    battle_backend: str = "poke-env",
-):
-    """
-    Battle against a built-in baseline opponent
-    """
-    menv = BattleAgainstBaseline(
-        battle_format=battle_format,
-        observation_space=observation_space,
-        reward_function=reward_function,
-        team_set=player_team_set,
-        opponent_type=opponent_type,
-        turn_limit=200,
-        save_trajectories_to=save_trajectories_to,
-        battle_backend=battle_backend,
-    )
-    print("Made Baseline Env")
-    return MetamonAMAGOWrapper(menv)
-
-
-def create_placeholder_experiment(
-    ckpt_base_dir: str,
-    run_name: str,
-    log: bool,
-    observation_space: ObservationSpace,
-):
-    """
-    Initialize an AMAGO experiment that will be used to load a pretrained checkpoint
-    and manage agent/env interaction.
-    """
-    # the environment is only used to initialize the network
-    # before loading the correct checkpoint
-    penv = make_placeholder_env(
-        observation_space=observation_space,
-    )
-    dummy_dset = amago.loading.DoNothingDataset()
-    dummy_env = lambda: penv
-    experiment = MetamonAMAGOExperiment(
-        # assumes that positional args
-        # agent_type, tstep_encoder_type,
-        # traj_encoder_type, and max_seq_len
-        # are set in the gin file
-        ckpt_base_dir=ckpt_base_dir,
-        run_name=run_name,
-        dataset=dummy_dset,
-        make_train_env=dummy_env,
-        make_val_env=dummy_env,
-        env_mode="async",
-        async_env_mp_context="spawn",
-        parallel_actors=1,
-        exploration_wrapper_type=None,
-        epochs=0,
-        start_learning_at_epoch=float("inf"),
-        start_collecting_at_epoch=float("inf"),
-        train_timesteps_per_epoch=0,
-        stagger_traj_file_lengths=False,
-        train_batches_per_epoch=0,
-        val_interval=None,
-        val_timesteps_per_epoch=0,
-        ckpt_interval=None,
-        always_save_latest=False,
-        always_load_latest=False,
-        log_interval=1,
-        batch_size=1,
-        dloader_workers=0,
-        log_to_wandb=log,
-        wandb_project=WANDB_PROJECT,
-        wandb_entity=WANDB_ENTITY,
-        verbose=True,
-    )
-    return experiment
 
 
 class PretrainedModel:
@@ -210,7 +64,7 @@ class PretrainedModel:
     """
 
     HF_REPO_ID = "jakegrigsby/metamon"
-    DEFAULT_CKPT = 40  # a.k.a. 1M grad steps
+    DEFAULT_CKPT = 40  # a.k.a. 1M grad steps w/ default settings
 
     # fmt: off
     def __init__(
@@ -287,7 +141,7 @@ class PretrainedModel:
         ckpt_path = self.get_path_to_checkpoint(checkpoint or self.DEFAULT_CKPT)
         ckpt_base_dir = str(Path(ckpt_path).parents[2])
         # build an experiment
-        experiment = create_placeholder_experiment(
+        experiment = make_placeholder_experiment(
             ckpt_base_dir=ckpt_base_dir,
             run_name=self.model_name,
             log=log,
