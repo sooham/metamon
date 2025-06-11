@@ -418,7 +418,7 @@ Reward functions assign scalar reward based on consecutive states (R(s, s')). `D
 
  ## Training
 
- We trained all of our main RL **& IL** models with [`amago`](https://ut-austin-rpl.github.io/amago/index.html). Everything you need to train your own model on metamon data and evaluate against Pokémon baselines is provided in **`metamon/rl/`**.
+We trained all of our main RL **& IL** models with [`amago`](https://ut-austin-rpl.github.io/amago/index.html). Everything you need to train your own model on metamon data and evaluate against Pokémon baselines is provided in **`metamon/rl/`**.
 
 #### Configure `wandb` logging (optional):
 ```shell
@@ -446,7 +446,7 @@ The easiest way to eval a new model is to go in and add a `LocalPretrainedModel`
 Let's say the training command was: `python train.py --run_name psyduck_is_ubers --model_gin_config gigantic_agent.gin --ckpt_dir /my_metamon_ckpts/`. We'd add:
 
 ```python
-# metamon/rl/evaluate_pretrained.py
+# metamon/rl/eval_pretrained.py
 class PsyduckIsUbers(LocalPretrainedModel):
     def __init__(self):
         super().__init__(
