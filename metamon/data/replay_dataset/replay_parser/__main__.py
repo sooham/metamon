@@ -10,7 +10,9 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
 
     parser = ArgumentParser()
-    parser.add_argument("--gen", type=int, choices=list(range(1, 5)), required=True)
+    parser.add_argument(
+        "--gen", type=int, choices=list(range(1, 5)) + [9], required=True
+    )
     parser.add_argument(
         "--raw_replay_dir", required=True, help="Path to raw replay dataset folder."
     )
@@ -84,7 +86,6 @@ if __name__ == "__main__":
         filenames = filenames[: args.end_after]
     if args.max is not None:
         filenames = filenames[: args.max]
-
     battle_format = f"gen{args.gen}{args.format.lower()}"
     output_dir = (
         os.path.join(args.output_dir, battle_format) if args.output_dir else None

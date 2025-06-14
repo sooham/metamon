@@ -145,6 +145,7 @@ class Pokemon:
         except KeyError:
             raise PokedexMissingEntry(name, self.lookup_name)
         self.type = pokedex_info["types"]
+        self.had_type = copy.deepcopy(self.type)
         self.base_stats = pokedex_info["baseStats"]
 
         # poke-env will assign an abilty as "known" when there
@@ -196,6 +197,7 @@ class Pokemon:
         self.moves = copy.deepcopy(self.had_moves)
         self.active_ability = self.had_ability
         self.move_change_to_from = {}
+        self.type = copy.deepcopy(self.had_type)
 
     def on_end_of_turn(self):
         # "within-turn state" is reset
@@ -361,6 +363,7 @@ class Pokemon:
         https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md#identifying-pok%C3%A9mon
         """
         name = s.replace(", shiny", "")  # chop off shiny
+        name = re.sub(r",\s*tera:.*$", "", name)  # chop off tera info
         name = re.sub(r",\s*[MF]$", "", name)  # chop off extra gender info
         # find level (only provided when not lvl 100)
         match = re.search(r", L\d{1,3}", name)
@@ -447,6 +450,7 @@ class Action:
     target: Optional[Pokemon]
     is_noop: bool = False
     is_switch: bool = False
+    is_tera: bool = False
 
     def __repr__(self):
         return f"Action: {self.name}"
@@ -637,6 +641,7 @@ class Turn:
         is_switch: Optional[bool] = None,
         user: Optional[Pokemon] = None,
         target: Optional[Pokemon] = None,
+        is_tera: Optional[bool] = None,
     ):
         # "p1a", "p2a", ...
         if s[1] == "1":
@@ -655,11 +660,12 @@ class Turn:
         if moves_list[index] is None:
             # create new Action
             moves_list[index] = Action(
-                name=move_name,
+                name=move_name or None,
                 is_noop=is_noop or False,
                 is_switch=is_switch or False,
-                user=user,
-                target=target,
+                user=user or None,
+                target=target or None,
+                is_tera=is_tera or False,
             )
         else:
             # adjust existing Action
@@ -673,6 +679,8 @@ class Turn:
                 moves_list[index].target = target
             if is_noop is not None:
                 moves_list[index].is_noop = is_noop
+            if is_tera is not None:
+                moves_list[index].is_tera = is_tera
 
     def __repr__(self) -> str:
         poke_1_str = "\n\t\t".join([str(x) for x in self.pokemon_1])

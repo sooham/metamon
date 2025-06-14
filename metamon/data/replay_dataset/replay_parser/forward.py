@@ -91,14 +91,14 @@ class SpecialCategories:
 
     # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_call_other_moves
     MOVE_OVERRIDE = {
-        "Metronome",
-        "Me First",
-        "Copycat",
-        "Nature Power",
-        "Magic Coat",
-        "Mirror Move",
         "Assist",
+        "Copycat",
+        "Me First",
+        "Metronome",
+        "Mirror Move",
+        "Nature Power",
         "Snatch",
+        "Magic Coat",
     }
     MOVE_OVERRIDE_BUT_REVEAL_ANYWAY = {"Sleep Talk"}
     MOVE_IGNORE_ITEMS = {"Custap Berry"}
@@ -115,6 +115,9 @@ class SpecialCategories:
     # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_restore_HP
     RESTORES_PP = {"Lunar Dance"}
     RESTORES_STATUS = {"Healing Wish", "Lunar Dance"}
+
+    # approved to ignore in `move` [from] ability: messages
+    KNOWN_MOVE_ABILITY_REVEALS = {"Magic Bounce", "Dancer"}
 
     ABILITY_STEALS_ABILITY = {"Trace"}
 
@@ -200,7 +203,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
     if name == "gen":
         # |gen|GENNUM
         replay.gen = int(data[0])
-        if replay.gen >= 5:
+        if not (replay.gen <= 4 or replay.gen == 9):
             raise SoftLockedGen(replay.gen)
     
     elif name == "tier":
@@ -324,18 +327,21 @@ def parse_row(replay: ParsedReplay, row: List[str]):
 
         # id switch in
         poke_name, lvl = Pokemon.identify_from_details(data[1])
-        known_names = [p.name if p else None for p in poke_list]
-        known_first_names = [p.had_name if p else None for p in poke_list]
-        if poke_name in known_names:
+        # match against names up to a forme change
+        lookup_poke_name = poke_name.split("-")[0]
+        lookup_known_names = [p.name.split("-")[0] if p else None for p in poke_list]
+        lookup_known_first_names = [p.had_name.split("-")[0] if p else None for p in poke_list]
+        if lookup_poke_name in lookup_known_names:
             # previously identified pokemon
-            poke = poke_list[known_names.index(poke_name)]
-        elif poke_name in known_first_names:
+            poke = poke_list[lookup_known_names.index(lookup_poke_name)]
+        elif lookup_poke_name in lookup_known_first_names:
             # previously identified, but known by name that has been changing (forms)
-            poke = poke_list[known_first_names.index(poke_name)]
+            poke = poke_list[lookup_known_first_names.index(lookup_poke_name)]
         else:
             # discovered by switching in
             poke = Pokemon(name=poke_name, lvl=lvl, gen=replay.gen)
-            if None not in poke_list: raise CantIDSwitchIn(data[1], poke_list)
+            if None not in poke_list: 
+                raise CantIDSwitchIn(data[1], poke_list)
             insert_at = poke_list.index(None)
             poke_list[insert_at] = poke
         active_poke_list[switch_slot] = poke
@@ -379,11 +385,9 @@ def parse_row(replay: ParsedReplay, row: List[str]):
             # fishing for "moves called by moves that call other moves", which should be prevented
             # from being incorrectly added to a pokemon's true moveset.
             override_risk = move_name in SpecialCategories.CONSECUTIVE_MOVES or move.charge_move
-
-            if "[from]move:" in extra_from_message or "[from]ability:" in extra_from_message:
+            if "move:" in extra_from_message or "ability:" in extra_from_message:
                 # MODERN REPLAY VERSION
-                is_move = "[from]move" in extra_from_message
-                is_ability = "[from]ability" in extra_from_message
+                _, is_ability, is_move, _ = parse_from_effect_of([extra_from_message])
                 if is_move:
                     from_move = parse_move_from_extra(extra_from_message)
                     probably_repeat_move = from_move.lower() == move_name.lower()
@@ -394,7 +398,10 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                             pokemon.reveal_move(move)
                         return
                 elif is_ability:
-                    raise UnimplementedMoveFromMoveAbility(data)
+                    if is_ability in SpecialCategories.KNOWN_MOVE_ABILITY_REVEALS:
+                        pass
+                    else:
+                        raise UnimplementedMoveFromMoveAbility(data)
             else:
                 # OLD REPLAY VERSION
                 ability_or_move = parse_extra(extra_from_message)
@@ -409,7 +416,10 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                         return
                 probably_ability = ability_or_move.lower() not in {"lockedmove", "pursuit"} and not probably_item and not probably_repeat_move
                 if probably_ability:
-                    raise UnimplementedMoveFromMoveAbility(data)
+                    if ability_or_move in SpecialCategories.KNOWN_MOVE_ABILITY_REVEALS:
+                        pass
+                    else:
+                        raise UnimplementedMoveFromMoveAbility(data)
 
 
         # how much PP is used?
@@ -723,7 +733,16 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         elif pokemon.had_item is None:
             pokemon.had_item = item
 
-    elif name == "-terastallize" or name == "-zpower" or name == "-mega":
+    elif name == "-terastallize":
+        pokemon = curr_turn.get_pokemon_from_str(data[0])
+        poke_str = data[0][:3]
+        curr_turn.set_move_attribute(
+            s=poke_str,
+            is_tera=True,
+        )
+        pokemon.type = [data[1]]
+
+    elif name == "-zpower" or name == "-mega":
         raise SoftLockedGen(replay.gen)
 
     elif name == "-transform":
