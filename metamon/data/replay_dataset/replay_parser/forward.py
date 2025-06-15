@@ -508,7 +508,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                     switch_team, switch_slot = curr_turn.player_id_to_action_idx(data[0])
                     for subturn in curr_turn.subturns:
                         if subturn.matches_slot(switch_team, switch_slot):
-                            breakpoint()
                             if subturn.unfilled:
                                 subturn.fill_turn(curr_turn.create_subturn(True))
                             else:
@@ -569,7 +568,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
             cur_hp, max_hp = parse_hp_fraction(data[1])
             pokemon.current_hp = cur_hp
             pokemon.max_hp = max_hp
-
 
     
     elif name == "-sethp":
@@ -746,7 +744,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         if "end" in name:
             pokemon.active_item = Nothing.NO_ITEM
             if item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT:
-                breakpoint()
                 curr_turn.mark_forced_switch(data[0])
         else:
             pokemon.active_item = item
@@ -908,7 +905,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
     elif name == "-mustrecharge":
         # |-mustrecharge|POKEMON
         # the action labels default to None, so we do nothing here.
-        # TODO: revisit recharge.
         pass
 
     elif name == "cant":
@@ -923,6 +919,18 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
         if found_ability:
             pokemon.reveal_ability(found_ability)
+        
+        # try to chase down our only indicator that a forced switch will fail?
+        this_team, _ = curr_turn.player_id_to_action_idx(data[0])
+        # look at the other team's moves on this turn
+        opponent_moves = curr_turn.get_moves(p1=this_team == 2)
+        for opp_slot, opp_move in enumerate(opponent_moves):
+            if (opp_move is not None and 
+                opp_move.name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT and 
+                opp_move.target == pokemon):
+                # if they targeted this pokemon with a move that would normally
+                # force a switch, the move failed, and we should remove the subturn...
+                curr_turn.remove_empty_subturn(team=3-this_team, slot=opp_slot)
 
     elif name == "detailschange" or name == "-formechange":
         # |detailschange|POKEMON|DETAILS|HP STATUS or |-formechange|POKEMON|SPECIES|HP STATUS
