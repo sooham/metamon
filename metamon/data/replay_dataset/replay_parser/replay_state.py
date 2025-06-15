@@ -131,11 +131,12 @@ class Move(PEMove):
 class Pokemon:
     def __init__(self, name: str, lvl: int, gen: int):
         # basic info
-        self.name = name
-        self.had_name = name
+        self.name: str = name
+        self.had_name: str = name
+        self.nickname: Optional[str] = None
         self.unique_id: str = str(uuid.uuid4())
-        self.lvl = lvl
-        self.gen = gen
+        self.lvl: int = lvl
+        self.gen: int = gen
 
         # pokedex lookup
         pokedex = GenData.from_gen(gen).pokedex
@@ -144,23 +145,23 @@ class Pokemon:
             pokedex_info = pokedex[self.lookup_name]
         except KeyError:
             raise PokedexMissingEntry(name, self.lookup_name)
-        self.type = pokedex_info["types"]
-        self.had_type = copy.deepcopy(self.type)
-        self.base_stats = pokedex_info["baseStats"]
+        self.type: List[str] = pokedex_info["types"]
+        self.had_type: List[str] = copy.deepcopy(self.type)
+        self.base_stats: Dict[str, int] = pokedex_info["baseStats"]
 
         # poke-env will assign an abilty as "known" when there
         # is only one option for a pokemon. showdown displays the
         # full list of "Possible Abilities" but waits to assign
         # until the ability is genuinely revealed in sim messages.
         possible_abilities = list(pokedex_info["abilities"].values())
-        self.active_ability = None
+        self.active_ability: Optional[str] = None
         if len(possible_abilities) == 1:
             only_ability = possible_abilities[0]
             if only_ability == "No Ability":
                 self.active_ability = Nothing.NO_ABILITY
             else:
                 self.active_ability = only_ability
-        self.had_ability = self.active_ability
+        self.had_ability: Optional[str] = self.active_ability
 
         self.active_item: Optional[str] = None
         self.had_item: Optional[str] = None
@@ -301,6 +302,7 @@ class Pokemon:
         if move.name == "Struggle":
             return
 
+        # TODO: switch to set_pp
         self.reveal_move(move)
         if self.transformed_into is None and move.name in self.had_moves:
             # subtract pp from had_moves (the moves we brought to the battle)
@@ -591,7 +593,41 @@ class Turn:
             raise RareValueError(f"Unknown player in '{s}'")
         if poke is None:
             raise RareValueError(f"No pokemon present in slot {sub_str}")
+
+        # AFAIK, in the early gens the sim protocol never requires
+        # identifying pokemon by nickname. Messages are always referring
+        # to a slot amongst the active pokemon, otherwise they give the
+        # species instead of the nickname. The only known exception is
+        # Gen 9 Revival Blessing, which appears to only identify the revived
+        # pokemon by nickname. So we try to find nicknames in these messages
+        # to chase the special case later...
+        if ":" in s:
+            nickname = s.split(":")[1].strip()
+            if poke.nickname is None:
+                poke.nickname = nickname
+            elif poke.nickname != nickname:
+                return self._get_pokemon_from_nickname(s)
         return poke
+
+    def _get_pokemon_from_nickname(self, s: str) -> Optional[Pokemon]:
+        breakpoint()
+        if s in ["", "null"]:
+            return None
+
+        side_id = s[1:3]
+        nickname = s.split(":")[1].strip()
+        if "1" in side_id:
+            p1 = True
+        elif "2" in side_id:
+            p1 = False
+        else:
+            breakpoint()
+            raise RareValueError(f"Unknown player: {side_id}")
+        side = self.get_pokemon(p1=p1)
+        for pokemon in side:
+            if pokemon is not None and pokemon.nickname == nickname:
+                return pokemon
+        return None
 
     def get_pokemon_list_from_str(self, s: str) -> List[Optional[Pokemon]]:
         sub_str = s[0:2]
@@ -754,6 +790,7 @@ class ReplayState:
     format: str
     force_switch: bool
     active_pokemon: Pokemon
+    player_fainted: List[Pokemon]
     opponent_active_pokemon: Pokemon
     available_switches: List[Pokemon]
     player_prev_move: Move
