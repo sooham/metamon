@@ -89,6 +89,10 @@ class SpecialCategories:
         "Volt Switch",
     }
 
+    FORCES_REVIVAL = {
+        "Revival Blessing",
+    }
+
     # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_call_other_moves
     MOVE_OVERRIDE = {
         "Assist",
@@ -117,7 +121,7 @@ class SpecialCategories:
     RESTORES_STATUS = {"Healing Wish", "Lunar Dance"}
 
     # approved to ignore in `move` [from] ability: messages
-    KNOWN_MOVE_ABILITY_REVEALS = {"Magic Bounce", "Dancer"}
+    MOVE_CAUSED_BY_ABILITY = {"Magic Bounce", "Dancer"}
 
     ABILITY_STEALS_ABILITY = {"Trace"}
 
@@ -311,11 +315,16 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         # fill the forced switch state
         switch_team, switch_slot = curr_turn.player_id_to_action_idx(data[0])
         is_force_switch = False
-        for subturn_idx, subturn in enumerate(curr_turn.subturns):
-            if subturn.unfilled and subturn.matches_slot(switch_team, switch_slot):
-                is_force_switch = True
+        player_subturn = None
+        for subturn in curr_turn.subturns:
+            # this switch decision was made based on the information on the field
+            # right now.
+            if subturn.unfilled:
                 subturn.fill_turn(curr_turn.create_subturn(is_force_switch))
-                break
+            # the switch action will be placed in this subturn
+            if subturn.matches_slot(switch_team, switch_slot):
+                is_force_switch = True
+                player_subturn = subturn
 
         # id switch out
         poke_list = curr_turn.get_pokemon_list_from_str(data[0])
@@ -351,7 +360,9 @@ def parse_row(replay: ParsedReplay, row: List[str]):
 
         if name == "switch":
             if is_force_switch:
-                curr_turn.subturns[subturn_idx].action = Action(name="Switch", user=current_active, target=poke, is_switch=True)
+                if player_subturn is None:
+                    breakpoint()
+                player_subturn.action = Action(name="Switch", user=current_active, target=poke, is_switch=True)
             else:
                 curr_turn.set_move_attribute(
                     data[0][:3], move_name="Switch", is_noop=False, is_switch=True, user=current_active, target=poke,
@@ -381,6 +392,10 @@ def parse_row(replay: ParsedReplay, row: List[str]):
             if not notarget and not protected:
                 curr_turn.mark_forced_switch(data[0])
 
+        elif move_name in SpecialCategories.FORCES_REVIVAL:
+            breakpoint()
+            curr_turn.mark_forced_switch(data[0])
+
         if extra_from_message:
             # fishing for "moves called by moves that call other moves", which should be prevented
             # from being incorrectly added to a pokemon's true moveset.
@@ -398,8 +413,11 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                             pokemon.reveal_move(move)
                         return
                 elif is_ability:
-                    if is_ability in SpecialCategories.KNOWN_MOVE_ABILITY_REVEALS:
-                        pass
+                    if is_ability in SpecialCategories.MOVE_CAUSED_BY_ABILITY:
+                        # this "move" was automatically called by an ability,
+                        # and shouldn't be considered a "move" that reveals anything
+                        # about this Pokemon or uses PP --- early exit.
+                        return
                     else:
                         raise UnimplementedMoveFromMoveAbility(data)
             else:
@@ -416,8 +434,8 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                         return
                 probably_ability = ability_or_move.lower() not in {"lockedmove", "pursuit"} and not probably_item and not probably_repeat_move
                 if probably_ability:
-                    if ability_or_move in SpecialCategories.KNOWN_MOVE_ABILITY_REVEALS:
-                        pass
+                    if ability_or_move in SpecialCategories.MOVE_CAUSED_BY_ABILITY:
+                        return
                     else:
                         raise UnimplementedMoveFromMoveAbility(data)
 
@@ -471,22 +489,38 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         if len(data) < 2 or (len(data) == 2 and not data[-1]):
             raise UnfinishedMessageException(" ".join(row))
 
-        # take or heal damage
         pokemon = curr_turn.get_pokemon_from_str(data[0])
         assert pokemon is not None
-        if "fnt" in data[1] or data[1] == "0" or data[1][:2] == "0 ":
-            pokemon.current_hp = 0
-            pokemon.status = PEStatus.FNT
-        else:
-            if "/" not in data[1]:
-                raise UnfinishedMessageException(row)
-            cur_hp, max_hp = parse_hp_fraction(data[1])
-            pokemon.current_hp = cur_hp
-            pokemon.max_hp = max_hp
 
         if len(data) > 2:
             # parse extra info for items and abilities
             found_item, found_ability, found_move, found_of_pokemon = parse_from_effect_of(data)
+            if found_move:
+                if found_move in SpecialCategories.FORCES_REVIVAL:
+                    switch_team, switch_slot = curr_turn.player_id_to_action_idx(data[0])
+                    for subturn in curr_turn.subturns:
+                        if subturn.matches_slot(switch_team, switch_slot):
+                            breakpoint()
+                            if subturn.unfilled:
+                                subturn.fill_turn(curr_turn.create_subturn(True))
+                            else:
+                                breakpoint()
+                            # the action regards this as a "switch", which will map it to the discrete idxs normally
+                            # used for switching.
+                            subturn.action = Action(name="Forced Revival", user=None, target=pokemon, is_switch=False)
+                            break
+                    if pokemon.status == PEStatus.FNT:
+                        pokemon.status = Nothing.NO_STATUS
+                    else:
+                        breakpoint()
+                if found_move in SpecialCategories.RESTORES_PP:
+                    for move_name, move in pokemon.moves.items():
+                        move.pp = move.maximum_pp
+                        if move_name in pokemon.had_moves:
+                            had_move = pokemon.had_moves[move_name]
+                            had_move.pp = had_move.maximum_pp
+                if found_move in SpecialCategories.RESTORES_STATUS and pokemon.status != PEStatus.FNT:
+                    pokemon.status = Nothing.NO_STATUS
             if found_item:
                 if name == "-heal":
                     # like the ability/heal combo just below, the "[of]" pokemon here is misleading
@@ -503,7 +537,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                     of_pokemon.active_item = found_item
                     if of_pokemon.had_item is None:
                         of_pokemon.had_item = found_item
-
             if found_ability:
                 if name == "-heal":
                     # poke-env comments say the [of] pokemon is the wrong side here
@@ -516,17 +549,20 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                     else:
                         of_pokemon = pokemon
                 of_pokemon.reveal_ability(found_ability)
+                
 
-            if found_move:
-                if found_move in SpecialCategories.RESTORES_PP:
-                    for move_name, move in pokemon.moves.items():
-                        move.pp = move.maximum_pp
-                        if move_name in pokemon.had_moves:
-                            had_move = pokemon.had_moves[move_name]
-                            had_move.pp = had_move.maximum_pp
+        # take or heal damage
+        if "fnt" in data[1] or data[1] == "0" or data[1][:2] == "0 ":
+            pokemon.current_hp = 0
+            pokemon.status = PEStatus.FNT
+        else:
+            if "/" not in data[1]:
+                raise UnfinishedMessageException(row)
+            cur_hp, max_hp = parse_hp_fraction(data[1])
+            pokemon.current_hp = cur_hp
+            pokemon.max_hp = max_hp
 
-                if found_move in SpecialCategories.RESTORES_STATUS and pokemon.status != PEStatus.FNT:
-                    pokemon.status = Nothing.NO_STATUS
+
     
     elif name == "-sethp":
         # |-sethp|POKEMON|HP
