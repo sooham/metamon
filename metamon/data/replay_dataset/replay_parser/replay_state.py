@@ -284,6 +284,11 @@ class Pokemon:
         if self.had_ability is None and not self.transformed_into:
             self.had_ability = ability
 
+    def reveal_item(self, item: str):
+        self.active_item = item
+        if self.had_item is None and not self.transformed_into:
+            self.had_item = item
+
     def transform(self, other):
         # too complicated to change the name, stats, ability, & types here.
         # only change things that won't carry forward after switching out.

@@ -328,7 +328,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         player_subturn = None
         for subturn in curr_turn.subturns:
             if subturn.matches_slot(switch_team, switch_slot):
-                breakpoint()
                 is_force_switch = True
                 player_subturn = subturn
             if subturn.unfilled:
@@ -970,10 +969,26 @@ def parse_row(replay: ParsedReplay, row: List[str]):
     elif name == "-fail":
         # |-fail|POKEMON|ACTION
         pokemon = curr_turn.get_pokemon_from_str(data[0])
+        from_item, from_ability, from_move, from_mon = parse_from_effect_of(data)
+        if from_item is not None and from_mon is not None:
+            pokemon.reveal_item(from_item)
+        if from_ability is not None and from_mon is not None:
+            pokemon.reveal_ability(from_ability)
+
+        # attempting to identify failed forced switch moves
         if pokemon.last_used_move is not None and pokemon.last_used_move.name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT:
-            # a move we thought would create a forced switch actually failed
             team, slot = curr_turn.player_id_to_action_idx(data[0])
             curr_turn.remove_empty_subturn(team=team, slot=slot)
+        if pokemon.last_targeted_by is not None:
+            # awful edge case; holding pattern until we can figure out the more general rule
+            # https://replay.pokemonshowdown.com/gen9ou-2383086891
+            last_targeted_by_poke, last_targeted_by_move = pokemon.last_targeted_by
+            if last_targeted_by_move in {"Parting Shot"} and any("unboost" in s for s in data):
+                breakpoint()
+                team, slot = curr_turn.player_id_to_action_idx(data[0])
+                other_team = 3-team
+                # TODO: this won't work in doubles
+                curr_turn.remove_empty_subturn(team=other_team, slot=0)
 
     elif name == "-singleturn":
         # ['-singleturn', 'p2a: Abomasnow', 'Protect']
