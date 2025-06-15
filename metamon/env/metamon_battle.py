@@ -72,6 +72,8 @@ class MetamonBackendBattle(pe.AbstractBattle):
 
     @property
     def _current_turn(self) -> Turn:
+        # TODO: incorrectly handles subturns... which are
+        # only valid in hindsight. send most recent turn only?
         return self._mm_battle.flattened_turnlist[-1]
 
     def parse_message(self, split_message: List[str]):
