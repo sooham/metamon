@@ -172,9 +172,9 @@ REPLAY_IGNORES = {
     "leave",
     "l",
     "L",
-    "-miss",
     "message",
     "-message",  # chat
+    "-miss",
     "n",
     "-nothing",  # redundant for a move that did "absolutely nothing"
     "-notarget",  # for move target
@@ -326,14 +326,11 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         is_force_switch = False
         player_subturn = None
         for subturn in curr_turn.subturns:
-            # this switch decision was made based on the information on the field
-            # right now.
-            if subturn.unfilled:
-                subturn.fill_turn(curr_turn.create_subturn(is_force_switch))
-            # the switch action will be placed in this subturn
             if subturn.matches_slot(switch_team, switch_slot):
                 is_force_switch = True
                 player_subturn = subturn
+            if subturn.unfilled:
+                subturn.fill_turn(curr_turn.create_subturn(True))
 
         # id switch out
         poke_list = curr_turn.get_pokemon_list_from_str(data[0])
@@ -399,7 +396,8 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         if move_name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT:
             notarget = any('[notarget]' in d for d in data)
             protected = target_pokemon.protected if target_pokemon else False
-            if not notarget and not protected:
+            missed = any('[miss]' in d for d in data)
+            if not notarget and not protected and not missed:
                 curr_turn.mark_forced_switch(data[0])
         elif move_name in SpecialCategories.FORCES_REVIVAL:
             curr_turn.mark_forced_switch(data[0])
@@ -930,6 +928,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                 opp_move.target == pokemon):
                 # if they targeted this pokemon with a move that would normally
                 # force a switch, the move failed, and we should remove the subturn...
+                breakpoint()
                 curr_turn.remove_empty_subturn(team=3-this_team, slot=opp_slot)
 
     elif name == "detailschange" or name == "-formechange":
