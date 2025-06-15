@@ -195,17 +195,42 @@ def check_info_filled(replay):
 def check_action_alignment(replay):
     for turn, team_actions in zip(replay.povturnlist, replay.actionlist):
         active = turn.active_pokemon_1 if replay.from_p1_pov else turn.active_pokemon_2
+        switches = turn.get_switches(replay.from_p1_pov)
         for active_pokemon, action in zip(active, team_actions):
-            if (
-                action is None
-                or action.name in ["Switch", "Struggle"]
-                or action.is_noop
-            ):
-                pass
-            elif action.name in active_pokemon.moves.keys():
-                pass
-            else:
-                raise ActionMisaligned(active_pokemon, action)
+            if action is None or action.name in ["Struggle"] or action.is_noop:
+                # considered a "no-op"
+                continue
+            elif action.name == "Switch":
+                # standard switch
+                if action.target in switches and action.is_switch:
+                    continue
+            elif action.name in active_pokemon.moves.keys() and not action.is_switch:
+                # standard move
+                continue
+            elif action.name is None and action.is_tera:
+                # revealed only the choice to tera (at the start of the turn),
+                # but never found out what the move was...
+                continue
+            elif action.name == "Forced Revival":
+                pokemon = turn.get_pokemon(replay.from_p1_pov)
+                if action.target in pokemon and action.target not in switches:
+                    # our revival choice is on our team but had fainted (can't be switched to)
+                    continue
+            breakpoint()
+            raise ActionMisaligned(active_pokemon, action)
+
+
+def check_action_idxs(action_idxs: list[int], gen: int):
+    tera = 0
+    for action_idx in action_idxs:
+        if action_idx > 13 or action_idx < -1:
+            raise ActionMisaligned(f"Action index {action_idx} is out of bounds")
+        if action_idx >= 9:
+            tera += 1
+        if tera and gen != 9:
+            raise ActionMisaligned(f"Found Tera action in gen {gen}")
+        if tera > 1:
+            raise ActionMisaligned(f"Found {tera} Tera actions")
 
 
 def check_forced_switching(turn):
@@ -218,4 +243,5 @@ def check_forced_switching(turn):
                 else turn.available_switches_2
             )
             if len(switches) > 0:
+                breakpoint()
                 raise ForceSwitchMishandled(subturn)
