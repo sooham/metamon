@@ -139,6 +139,7 @@ class SpecialCategories:
     ITEM_UNNAMED_STOLEN = {"Trick", "Switcheroo"}
     ITEM_NAMED_STOLEN = {"Thief", "Covet"}
     ITEMS_THAT_SWITCH_THE_USER_OUT = {"Eject Button", "Eject Pack"}
+    ITEMS_THAT_SWITCH_THE_ATTACKER_OUT = {"Red Card"}
 
 
 REPLAY_IGNORES = {
@@ -772,6 +773,9 @@ def parse_row(replay: ParsedReplay, row: List[str]):
             if item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT and found_move is None:
                 # catch Eject Button and Eject Pack messages (which - if activated - would not have an item component?)
                 curr_turn.mark_forced_switch(data[0])
+            elif item in SpecialCategories.ITEMS_THAT_SWITCH_THE_ATTACKER_OUT and found_mon is not None:
+                team, slot = curr_turn.player_id_to_action_idx(found_mon)
+                curr_turn.remove_empty_subturn(team=team, slot=slot)
         else:
             pokemon.active_item = item
 
