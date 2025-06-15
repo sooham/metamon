@@ -328,6 +328,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         player_subturn = None
         for subturn in curr_turn.subturns:
             if subturn.matches_slot(switch_team, switch_slot):
+                breakpoint()
                 is_force_switch = True
                 player_subturn = subturn
             if subturn.unfilled:
@@ -783,7 +784,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                         opponent_active_pokemon = curr_turn.get_active_pokemon(p1=team == 2)
                         for slot, opp_pokemon in enumerate(opponent_active_pokemon):
                             if opp_pokemon == last_targeted_by_poke:
-                                breakpoint()
                                 curr_turn.remove_empty_subturn(team=3-team, slot=slot)
                                 break
             elif item in SpecialCategories.ITEMS_THAT_SWITCH_THE_ATTACKER_OUT and found_mon is not None:

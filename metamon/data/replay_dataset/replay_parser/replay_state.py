@@ -577,10 +577,13 @@ class Turn:
         subturn = Subturn(turn=None, team=team, slot=slot, action=None)
         self.subturns.append(subturn)
 
-    def get_pokemon_from_str(self, s: str) -> Optional[Pokemon]:
-        if s in ["", "null"]:
+    def get_pokemon_from_str(
+        self, showdown_msg: str, fallback_to_nickname: bool = True
+    ) -> Optional[Pokemon]:
+        if showdown_msg in ["", "null"]:
             return None
-        sub_str = s[1:3]
+        # get active pokemon from slod id first
+        sub_str = showdown_msg[1:3]
         if sub_str == "1a" or sub_str == "1:":
             poke = self.active_pokemon_1[0]
         elif sub_str == "1b":
@@ -590,39 +593,39 @@ class Turn:
         elif sub_str == "2b":
             poke = self.active_pokemon_2[1]
         else:
-            raise RareValueError(f"Unknown player in '{s}'")
+            raise RareValueError(f"Unknown player in '{showdown_msg}'")
         if poke is None:
             raise RareValueError(f"No pokemon present in slot {sub_str}")
-
-        # AFAIK, in the early gens the sim protocol never requires
-        # identifying pokemon by nickname. Messages are always referring
-        # to a slot amongst the active pokemon, otherwise they give the
-        # species instead of the nickname. The only known exception is
-        # Gen 9 Revival Blessing, which appears to only identify the revived
-        # pokemon by nickname. So we try to find nicknames in these messages
-        # to chase the special case later...
-        if ":" in s:
-            nickname = s.split(":")[1].strip()
+        if ":" in showdown_msg:
+            # discover nickname
+            nickname = showdown_msg.split(":")[1].strip()
+            # attempt to assign nickname
             if poke.nickname is None:
                 poke.nickname = nickname
-            elif poke.nickname != nickname:
-                return self._get_pokemon_from_nickname(s)
+            elif poke.nickname != nickname and fallback_to_nickname:
+                # experimental: hard to say when this is a good idea.
+                # there are some messages where the reference is meant
+                # to be identified by nickname, so it should be ok
+                # to check by position first, and then fallback to nickname.
+                # this relies on the idea that the first time we need to id
+                # a pokemon by nickname comes after a message that would discover
+                # the nickname. so far the only cases I know of are Revival Blessing
+                # and curestatus from heal bell, where that's true, though there are
+                # probably more.
+                poke_by_nickname = self.get_pokemon_from_nickname(showdown_msg)
+                if poke_by_nickname is None:
+                    breakpoint()
+                return poke_by_nickname
         return poke
 
-    def _get_pokemon_from_nickname(self, s: str) -> Optional[Pokemon]:
+    def get_pokemon_from_nickname(self, s: str) -> Optional[Pokemon]:
         breakpoint()
         if s in ["", "null"]:
             return None
 
         side_id = s[1:3]
         nickname = s.split(":")[1].strip()
-        if "1" in side_id:
-            p1 = True
-        elif "2" in side_id:
-            p1 = False
-        else:
-            breakpoint()
-            raise RareValueError(f"Unknown player: {side_id}")
+        p1 = "1" in side_id
         side = self.get_pokemon(p1=p1)
         for pokemon in side:
             if pokemon is not None and pokemon.nickname == nickname:

@@ -108,12 +108,14 @@ class ReplayParser:
         universal_states = []
         action_idxs = []
 
-        print()
+        if self.verbose:
+            print()
         for state, action in zip(states, actions):
             universal_state = interface.UniversalState.from_ReplayState(state)
-            print(
-                f"{universal_state.player_active_pokemon.name} {universal_state.player_active_pokemon.status} vs. {universal_state.opponent_active_pokemon.name} {universal_state.opponent_active_pokemon.status}; {action}"
-            )
+            if self.verbose:
+                print(
+                    f"forced: {state.force_switch}; {universal_state.player_active_pokemon.name} {universal_state.player_active_pokemon.status} vs. {universal_state.opponent_active_pokemon.name} {universal_state.opponent_active_pokemon.status}; {action}"
+                )
             action_idx = interface.replaystate_action_to_idx(state, action)
             if action_idx is None:
                 breakpoint()
