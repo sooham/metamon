@@ -983,12 +983,12 @@ def parse_row(replay: ParsedReplay, row: List[str]):
             # awful edge case; holding pattern until we can figure out the more general rule
             # https://replay.pokemonshowdown.com/gen9ou-2383086891
             last_targeted_by_poke, last_targeted_by_move = pokemon.last_targeted_by
-            if last_targeted_by_move in {"Parting Shot"} and any("unboost" in s for s in data):
+            if replay.gen >= 7 and last_targeted_by_move in {"Parting Shot"} and any("unboost" in s for s in data):
+                # https://bulbapedia.bulbagarden.net/wiki/Parting_Shot_(move)
                 breakpoint()
                 team, slot = curr_turn.player_id_to_action_idx(data[0])
                 other_team = 3-team
-                # TODO: this won't work in doubles
-                curr_turn.remove_empty_subturn(team=other_team, slot=0)
+                curr_turn.remove_empty_subturn(team=other_team, slot=0) # FIXME for doubles
 
     elif name == "-singleturn":
         # ['-singleturn', 'p2a: Abomasnow', 'Protect']
