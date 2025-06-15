@@ -190,8 +190,10 @@ def resolve_transforms(replay):
         pokemon.unique_id: pokemon.base_stats for pokemon in replay[0].all_pokemon
     }
     types = {pokemon.unique_id: pokemon.type for pokemon in replay[0].all_pokemon}
-
-    for prev_turn, turn in zip(replay.turnlist, replay.turnlist[1:]):
+    zero_turn = copy.deepcopy(replay.turnlist[0])
+    for pokemon in zero_turn.all_pokemon:
+        pokemon.transformed_into = None
+    for prev_turn, turn in zip([zero_turn] + replay.turnlist, replay.turnlist):
         for pokemon in turn.all_pokemon:
             prev_ids = prev_turn.id2pokemon
             on_prev_turn = prev_ids[pokemon.unique_id]

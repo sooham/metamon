@@ -773,17 +773,19 @@ def parse_row(replay: ParsedReplay, row: List[str]):
             if item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT and found_move is None:
                 # catch Eject Button and Eject Pack messages (which - if activated - would not have an item component?)
                 curr_turn.mark_forced_switch(data[0])
-                last_targeted_by_poke, last_targeted_by_move = pokemon.last_targeted_by
-                if (last_targeted_by_poke is not None and 
-                    last_targeted_by_move in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT):
+                if pokemon.last_targeted_by:
                     # check for Eject Button/Pack cancelling planned switch move
-                    team, slot = curr_turn.player_id_to_action_idx(data[0])
-                    # look for opponent with planned switch 
-                    opponent_active_pokemon = curr_turn.get_active_pokemon(p1=team == 2)
-                    for slot, opp_pokemon in enumerate(opponent_active_pokemon):
-                        if opp_pokemon == last_targeted_by_poke:
-                            curr_turn.remove_empty_subturn(team=3-team, slot=slot)
-                            break
+                    last_targeted_by_poke, last_targeted_by_move = pokemon.last_targeted_by
+                    if (last_targeted_by_poke is not None and 
+                        last_targeted_by_move in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT):
+                        team, slot = curr_turn.player_id_to_action_idx(data[0])
+                        # look for opponent with planned switch 
+                        opponent_active_pokemon = curr_turn.get_active_pokemon(p1=team == 2)
+                        for slot, opp_pokemon in enumerate(opponent_active_pokemon):
+                            if opp_pokemon == last_targeted_by_poke:
+                                breakpoint()
+                                curr_turn.remove_empty_subturn(team=3-team, slot=slot)
+                                break
             elif item in SpecialCategories.ITEMS_THAT_SWITCH_THE_ATTACKER_OUT and found_mon is not None:
                 team, slot = curr_turn.player_id_to_action_idx(found_mon)
                 curr_turn.remove_empty_subturn(team=team, slot=slot)
