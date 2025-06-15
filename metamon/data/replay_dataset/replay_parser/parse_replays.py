@@ -10,6 +10,8 @@ from typing import Optional
 
 import numpy as np
 import lz4.frame
+from poke_env.environment import Status
+
 from metamon import interface
 from metamon.data.replay_dataset.replay_parser import backward, forward
 from metamon.data.replay_dataset.replay_parser.exceptions import (
@@ -21,6 +23,7 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
     Action,
     ReplayState,
 )
+from metamon.data.replay_dataset.replay_parser import checks
 from metamon.data.team_prediction.predictor import TeamPredictor, NaiveUsagePredictor
 
 
@@ -69,6 +72,8 @@ class ReplayParser:
             switches = turn.available_switches_1 if p1 else turn.available_switches_2
             player_conditions = turn.conditions_1 if p1 else turn.conditions_2
             opponent_conditions = turn.conditions_2 if p1 else turn.conditions_1
+            player_team = turn.pokemon_1 if p1 else turn.pokemon_2
+            player_fainted = [p for p in player_team if p.status == Status.FNT]
 
             # fill a ReplayState
             states.append(
@@ -77,6 +82,7 @@ class ReplayParser:
                     force_switch=turn.is_force_switch,
                     active_pokemon=active_mon,
                     opponent_active_pokemon=opponent_mon,
+                    player_fainted=player_fainted,
                     opponent_team=opponent_team,
                     available_switches=switches,
                     player_prev_move=active_mon.last_used_move,
@@ -102,10 +108,15 @@ class ReplayParser:
         universal_states = []
         action_idxs = []
 
+        print()
         for state, action in zip(states, actions):
             universal_state = interface.UniversalState.from_ReplayState(state)
+            print(
+                f"{universal_state.player_active_pokemon.name} {universal_state.player_active_pokemon.status} vs. {universal_state.opponent_active_pokemon.name} {universal_state.opponent_active_pokemon.status}; {action}"
+            )
             action_idx = interface.replaystate_action_to_idx(state, action)
             if action_idx is None:
+                breakpoint()
                 raise InvalidActionIndex(state, action)
             action_idxs.append(action_idx)
             universal_states.append(universal_state)
@@ -117,6 +128,7 @@ class ReplayParser:
         universal_states, action_idxs = self.state_action_to_obs_action_reward(
             states, actions
         )
+        checks.check_action_idxs(action_idxs, gen=replay.gen)
         return universal_states, action_idxs
 
     def save_to_disk(
