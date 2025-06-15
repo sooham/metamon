@@ -336,6 +336,7 @@ class UniversalState:
 
     format: str
     player_active_pokemon: UniversalPokemon
+    player_fainted: List[UniversalPokemon]
     opponent_active_pokemon: UniversalPokemon
     available_switches: List[UniversalPokemon]
     player_prev_move: UniversalMove
@@ -399,6 +400,7 @@ class UniversalState:
             player_active_pokemon=active,
             opponent_active_pokemon=opponent,
             available_switches=switches,
+            player_fainted=state.player_fainted,
             player_prev_move=UniversalMove.from_ReplayMove(state.player_prev_move),
             opponent_prev_move=UniversalMove.from_ReplayMove(state.opponent_prev_move),
             player_conditions=cls.universal_conditions(state.player_conditions),
@@ -413,6 +415,8 @@ class UniversalState:
 
     @classmethod
     def from_Battle(cls, battle: Battle):
+        # TODO: player_fainted
+        breakpoint()
         format = battle.battle_tag.split("-")[1]
         weather = cls.universal_weather(battle.weather)
         battle_field = cls.universal_field(battle.fields)
@@ -452,6 +456,10 @@ class UniversalState:
     
     @classmethod
     def from_dict(cls, data: dict):
+        # TODO: possibly defend against missing player_fainted,
+        # unless we go all the way and update the entire dataset after gen
+        # 9 is done.
+
         # convert nested Pokemon objects
         data["player_active_pokemon"] = UniversalPokemon.from_dict(data["player_active_pokemon"])
         data["opponent_active_pokemon"] = UniversalPokemon.from_dict(data["opponent_active_pokemon"])
@@ -471,14 +479,23 @@ def replaystate_action_to_idx(
     The action space is defined as follows:
         - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
         - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
+        - 9-13: Tera + move 1-4, sorted by alphabetical order
     """
     # *can* return None, but replay parser will throw an exception if it does.
     action_idx = None
-    if action is None or action.is_noop:
+    if action is None or action.is_noop or (action.name is None and action.is_tera):
         action_idx = -1
 
     elif action.name == "Struggle":
         action_idx = 0
+
+    elif action.name == "Forced Revival":
+        for switch_idx, fainted_pokemon in enumerate(
+            consistent_pokemon_order(state.player_fainted)
+        ):
+            if fainted_pokemon.unique_id == action.target.unique_id:
+                action_idx = 4 + switch_idx
+                break
 
     elif action.is_switch:
         for switch_idx, available_switch in enumerate(
@@ -492,6 +509,8 @@ def replaystate_action_to_idx(
         for move_idx, move in enumerate(consistent_move_order(move_options)):
             if move.name == action.name:
                 action_idx = move_idx
+                if action.is_tera:
+                    action_idx += 9
                 break
 
     return action_idx
@@ -506,6 +525,8 @@ def action_idx_to_battle_order(
         - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
         - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
     """
+    # TODO: sort out revival blessing
+
     if action_idx > 8:
         raise ValueError(
             f"Invalid `action_idx` {action_idx}. The global action space is bounded {0, ..., 8}"
