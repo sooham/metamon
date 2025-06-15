@@ -737,14 +737,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         item = data[1]
         if pokemon is None:
             raise RareValueError(f"Could not find pokemon from {data[0]}")
-        
-        # adjust active item
-        if "end" in name:
-            pokemon.active_item = Nothing.NO_ITEM
-            if item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT:
-                curr_turn.mark_forced_switch(data[0])
-        else:
-            pokemon.active_item = item
 
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
         if found_move:
@@ -771,9 +763,17 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                     pokemon.had_item = BackwardMarkers.FORCE_UNKNOWN
             else:
                 raise UnhandledFromMoveItemLogic(row)
-
         elif pokemon.had_item is None:
             pokemon.had_item = item
+
+        # adjust active item
+        if "end" in name:
+            pokemon.active_item = Nothing.NO_ITEM
+            if item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT and found_move is None:
+                # catch Eject Button and Eject Pack messages (which - if activated - would not have an item component?)
+                curr_turn.mark_forced_switch(data[0])
+        else:
+            pokemon.active_item = item
 
     elif name == "-terastallize":
         pokemon = curr_turn.get_pokemon_from_str(data[0])
@@ -928,7 +928,6 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                 opp_move.target == pokemon):
                 # if they targeted this pokemon with a move that would normally
                 # force a switch, the move failed, and we should remove the subturn...
-                breakpoint()
                 curr_turn.remove_empty_subturn(team=3-this_team, slot=opp_slot)
 
     elif name == "detailschange" or name == "-formechange":
