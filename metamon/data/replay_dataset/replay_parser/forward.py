@@ -89,6 +89,14 @@ class SpecialCategories:
         "Volt Switch",
     }
 
+    # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_switch_the_target_out
+    MOVES_THAT_SWITCH_THE_TARGET_OUT = {
+        "Whirlwind",
+        "Roar",
+        "Dragon Tail",
+        "Circle Throw",
+    }
+
     FORCES_REVIVAL = {
         "Revival Blessing",
     }
@@ -130,6 +138,7 @@ class SpecialCategories:
     ITEM_APPROVED_SKIP = {"Knock Off", "Recycle", "Fling", "Corrosive Gas"}
     ITEM_UNNAMED_STOLEN = {"Trick", "Switcheroo"}
     ITEM_NAMED_STOLEN = {"Thief", "Covet"}
+    ITEMS_THAT_SWITCH_THE_USER_OUT = {"Eject Button", "Eject Pack"}
 
 
 REPLAY_IGNORES = {
@@ -311,7 +320,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         # |switch|POKEMON|DETAILS|HP STATUS or |drag|POKEMON|DETAILS|HP STATUS
         if len(data) < 3:
             raise UnfinishedMessageException(row)
-
+        
         # fill the forced switch state
         switch_team, switch_slot = curr_turn.player_id_to_action_idx(data[0])
         is_force_switch = False
@@ -386,14 +395,13 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                 extra_from_message = d
                 break
 
+        # forced selection of another pokemon
         if move_name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT:
             notarget = any('[notarget]' in d for d in data)
             protected = target_pokemon.protected if target_pokemon else False
             if not notarget and not protected:
                 curr_turn.mark_forced_switch(data[0])
-
         elif move_name in SpecialCategories.FORCES_REVIVAL:
-            breakpoint()
             curr_turn.mark_forced_switch(data[0])
 
         if extra_from_message:
@@ -733,10 +741,13 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         item = data[1]
         if pokemon is None:
             raise RareValueError(f"Could not find pokemon from {data[0]}")
-
+        
         # adjust active item
         if "end" in name:
             pokemon.active_item = Nothing.NO_ITEM
+            if item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT:
+                breakpoint()
+                curr_turn.mark_forced_switch(data[0])
         else:
             pokemon.active_item = item
 
