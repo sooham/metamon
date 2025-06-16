@@ -178,6 +178,18 @@ class SpecialCategories:
                     curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
                     return True
         return False
+    
+    @staticmethod
+    def cancel_opponent_switch_based_on_user_item(curr_turn: Turn, user_pokemon: Pokemon, based_on_item: str) -> bool:
+        if based_on_item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT and user_pokemon.last_targeted_by:
+            last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
+            if (last_targeted_by_poke and last_targeted_by_move in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT):
+                subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
+                if subturn_slot:
+                    breakpoint()
+                    curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
+                    return True
+        return False
 
     # fmt: on
 
@@ -841,18 +853,11 @@ def parse_row(replay: ParsedReplay, row: List[str]):
             if item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT and found_move is None:
                 # catch Eject Button and Eject Pack messages (which - if activated - would not have an item component?)
                 curr_turn.mark_forced_switch(data[0])
-                if pokemon.last_targeted_by:
-                    # check for Eject Button/Pack cancelling planned switch move
-                    last_targeted_by_poke, last_targeted_by_move = pokemon.last_targeted_by
-                    if (last_targeted_by_poke is not None and 
-                        last_targeted_by_move in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT):
-                        team, slot = curr_turn.player_id_to_action_idx(data[0])
-                        # look for opponent with planned switch 
-                        opponent_active_pokemon = curr_turn.get_active_pokemon(p1=team == 2)
-                        for slot, opp_pokemon in enumerate(opponent_active_pokemon):
-                            if opp_pokemon == last_targeted_by_poke:
-                                curr_turn.remove_empty_subturn(team=3-team, slot=slot)
-                                break
+                SpecialCategories.cancel_opponent_switch_based_on_user_item(
+                    curr_turn,
+                    user_pokemon=pokemon,
+                    based_on_item=item,
+                )
             elif item in SpecialCategories.ITEMS_THAT_SWITCH_THE_ATTACKER_OUT and found_mon is not None:
                 team, slot = curr_turn.player_id_to_action_idx(found_mon)
                 curr_turn.remove_empty_subturn(team=team, slot=slot)
