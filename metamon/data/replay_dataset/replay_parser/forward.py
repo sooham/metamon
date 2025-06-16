@@ -291,7 +291,7 @@ class SpecialCategories:
 
 
 class SimProtocol:
-    """State-tracking from Showdown "battle" (sim protoocl) messages
+    """State-tracking from Showdown "battle" (sim protocol) messages
 
     https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
 
@@ -370,13 +370,17 @@ class SimProtocol:
         return self.replay.turnlist[-1]
 
     def _parse_gen(self, args: List[str]):
-        # |gen|GENNUM
+        """
+        |gen|GENNUM
+        """
         self.replay.gen = int(args[0])
         if not (self.replay.gen <= 4 or self.replay.gen == 9):
             raise SoftLockedGen(self.replay.gen)
 
     def _parse_player(self, args: List[str]):
-        # |player|PLAYER|USERNAME|AVATAR|RATING
+        """
+        |player|PLAYER|USERNAME|AVATAR|RATING
+        """
         if len(args) < 2 or not args[1]:
             # skip reintroductions
             return
@@ -395,7 +399,9 @@ class SimProtocol:
             self.replay.ratings[slot] = "Unrated"
 
     def _parse_teamsize(self, args: List[str]):
-        # |teamsize|PLAYER|NUMBER
+        """
+        |teamsize|PLAYER|NUMBER
+        """
         player, size = args
         size = int(size)
         assert len(self.curr_turn.pokemon_1) == 6
@@ -410,7 +416,9 @@ class SimProtocol:
             raise UnusualTeamSize(size)
 
     def _parse_turn(self, args: List[str]):
-        # |turn|NUMBER
+        """
+        |turn|NUMBER
+        """
         checks.check_forced_switching(self.curr_turn)
         assert self.curr_turn.turn_number is not None
         new_turn = self.curr_turn.create_next_turn()
@@ -419,7 +427,9 @@ class SimProtocol:
         self.replay.turnlist.append(new_turn)
 
     def _parse_win(self, args: List[str]):
-        # |win|USER
+        """
+        |win|USER
+        """
         winner_name = to_id_str(args[0])
         if winner_name == self.replay.players[0]:
             self.replay.winner = Winner.PLAYER_1
@@ -431,11 +441,15 @@ class SimProtocol:
             )
 
     def _parse_choice(self, args: List[str]):
-        # https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md#sending-decisions
-        # `choice` messaegs reveal players action choices directly instead of waiting to see the outcome of the move/switch.
-        # they are not present in every replay, but when they are, they can help us fill missing actions.
-        # It would be possible to catch many more choices if we could use the numeric arg format of some
-        # messages (e.g. `move 1`). We'd need to infer a mapping between the numeric args and the move names.
+        """
+        |choice|PLAYER_CHOICES
+
+        https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md#sending-decisions
+        `choice` messaegs reveal players action choices directly instead of waiting to see the outcome of the move/switch.
+        they are not present in every replay, but when they are, they can help us fill missing actions.
+        It would be possible to catch many more choices if we could use the numeric arg format of some
+        messages (e.g. `move 1`). We'd need to infer a mapping between the numeric args and the move names.
+        """
         for player_idx, player_choice in enumerate(args):
             if not player_choice:
                 continue
@@ -468,7 +482,9 @@ class SimProtocol:
                         self.curr_turn.choices_2[poke_idx] = choice
 
     def _parse_poke(self, args: List[str]):
-        # |poke|PLAYER|DETAILS|ITEM
+        """
+        |poke|PLAYER|DETAILS|ITEM
+        """
         poke_list = self.curr_turn.get_pokemon_list_from_str(args[0])
         assert isinstance(poke_list, list)
         if None not in poke_list:
@@ -478,7 +494,9 @@ class SimProtocol:
         poke_list[insert_at] = Pokemon(name=poke_name, lvl=lvl, gen=self.replay.gen)
 
     def _parse_switch_drag(self, args: List[str], name: str):
-        # |switch|POKEMON|DETAILS|HP STATUS or |drag|POKEMON|DETAILS|HP STATUS
+        """
+        |switch|POKEMON|DETAILS|HP STATUS or |drag|POKEMON|DETAILS|HP STATUS
+        """
         if len(args) < 3:
             raise UnfinishedMessageException([name] + args)
 
@@ -546,7 +564,9 @@ class SimProtocol:
                 )
 
     def _parse_move(self, args: List[str]):
-        # |move|POKEMON|MOVE|TARGET
+        """
+        |move|POKEMON|MOVE|TARGET
+        """
         if len(args) < 2:
             raise UnfinishedMessageException(["move"] + args)
 
@@ -716,7 +736,9 @@ class SimProtocol:
         )
 
     def _parse_damage_heal(self, args: List[str], name: str):
-        # |-damage|POKEMON|HP STATUS or |-heal|POKEMON|HP STATUS
+        """
+        |-damage|POKEMON|HP STATUS or |-heal|POKEMON|HP STATUS
+        """
         if len(args) < 2 or (len(args) == 2 and not args[-1]):
             raise UnfinishedMessageException([name] + args)
 
@@ -814,7 +836,9 @@ class SimProtocol:
             pokemon.max_hp = max_hp
 
     def _parse_sethp(self, args: List[str]):
-        # |-sethp|POKEMON|HP
+        """
+        |-sethp|POKEMON|HP
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         assert pokemon is not None
         cur_hp, max_hp = parse_hp_fraction(args[1])
@@ -823,7 +847,9 @@ class SimProtocol:
         pokemon.current_hp = cur_hp
 
     def _parse_faint(self, args: List[str]):
-        # |faint|POKEMON
+        """
+        |faint|POKEMON
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         assert pokemon is not None
         pokemon.current_hp = 0
@@ -831,7 +857,9 @@ class SimProtocol:
         self.curr_turn.mark_forced_switch(args[0])
 
     def _parse_status_curestatus(self, args: List[str], name: str):
-        # |-status|POKEMON|STATUS or |-curestatus|POKEMON|STATUS
+        """
+        |-status|POKEMON|STATUS or |-curestatus|POKEMON|STATUS
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         assert pokemon is not None
         status = PEStatus[args[1].upper()]
@@ -841,7 +869,9 @@ class SimProtocol:
             pokemon.status = Nothing.NO_STATUS
 
     def _parse_boost_unboost(self, args: List[str], name: str):
-        # |-boost|POKEMON|STAT|AMOUNT or |-unboost|POKEMON|STAT|AMOUNT
+        """
+        |-boost|POKEMON|STAT|AMOUNT or |-unboost|POKEMON|STAT|AMOUNT
+        """
         if len(args) < 3:
             raise UnfinishedMessageException([name] + args)
         change = int(args[2])
@@ -852,7 +882,9 @@ class SimProtocol:
         pokemon.boosts.change_with_str(args[1], change)
 
     def _parse_swapboost(self, args: List[str]):
-        # |-swapboost|SOURCE|TARGET|STATS
+        """
+        |-swapboost|SOURCE|TARGET|STATS
+        """
         pokemon_1 = self.curr_turn.get_pokemon_from_str(args[0])
         pokemon_2 = self.curr_turn.get_pokemon_from_str(args[1])
         if "[from]" in args[2]:
@@ -870,11 +902,15 @@ class SimProtocol:
             pokemon_2.boosts.set_to_with_str(stat, temp.get_boost(stat))
 
     def _parse_swap(self, args: List[str]):
-        # |swap|POKEMON|POSITION
+        """
+        |swap|POKEMON|POSITION
+        """
         raise UnimplementedMessage(["swap"] + args)
 
     def _parse_ability(self, args: List[str]):
-        # |-ability|POKEMON|ABILITY|[from]EFFECT
+        """
+        |-ability|POKEMON|ABILITY|[from]EFFECT
+        """
         if len(args) < 2:
             raise UnfinishedMessageException(["-ability"] + args)
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
@@ -903,7 +939,9 @@ class SimProtocol:
             pokemon.reveal_ability(ability)
 
     def _parse_endability(self, args: List[str]):
-        # |-endability|POKEMON
+        """
+        |-endability|POKEMON
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         pokemon.active_ability = Nothing.NO_ABILITY
         if len(args) > 1:
@@ -912,7 +950,9 @@ class SimProtocol:
                 pokemon.had_ability = ability
 
     def _parse_side_conditions(self, args: List[str], name: str):
-        # |-sidestart|SIDE|CONDITION or |-sideend|SIDE|CONDITION or |-swapsideconditions
+        """
+        |-sidestart|SIDE|CONDITION or |-sideend|SIDE|CONDITION or |-swapsideconditions
+        """
         if "start" in name or "end" in name:
             side_str = args[0][0:2]
             if side_str == "p1":
@@ -941,7 +981,9 @@ class SimProtocol:
             )
 
     def _parse_weather(self, args: List[str]):
-        # |-weather|WEATHER
+        """
+        |-weather|WEATHER
+        """
         if args[0] == "none":
             self.curr_turn.weather = Nothing.NO_WEATHER
         else:
@@ -954,8 +996,11 @@ class SimProtocol:
                 pokemon.reveal_ability(found_ability)
 
     def _parse_activate(self, args: List[str]):
-        # |-activate|EFFECT
-        # also the catch-all message PS sends for minor edge cases
+        """
+        |-activate|EFFECT
+
+        also the catch-all message PS sends for minor edge cases
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         assert pokemon is not None
         if args[1].startswith("ability:"):
@@ -989,7 +1034,9 @@ class SimProtocol:
         pokemon.start_effect(effect)
 
     def _parse_item_enditem(self, args: List[str], name: str):
-        # |-item|POKEMON|ITEM|[from]EFFECT or |-enditem|POKEMON|ITEM|[from]EFFECT
+        """
+        |-item|POKEMON|ITEM|[from]EFFECT or |-enditem|POKEMON|ITEM|[from]EFFECT
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         item = args[1]
         if pokemon is None:
@@ -1049,7 +1096,9 @@ class SimProtocol:
             pokemon.active_item = item
 
     def _parse_terastallize(self, args: List[str]):
-        # |-terastallize|POKEMON|TYPE
+        """
+        |-terastallize|POKEMON|TYPE
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         poke_str = args[0][:3]
         self.curr_turn.set_move_attribute(
@@ -1059,11 +1108,15 @@ class SimProtocol:
         pokemon.type = [args[1]]
 
     def _parse_zpower_mega(self, args: List[str]):
-        # |-zpower|... or |-mega|...
+        """
+        |-zpower|... or |-mega|...
+        """
         raise SoftLockedGen(self.replay.gen)
 
     def _parse_transform(self, args: List[str]):
-        # |-transform|POKEMON|SPECIES
+        """
+        |-transform|POKEMON|SPECIES
+        """
         user = self.curr_turn.get_pokemon_from_str(args[0])
         target = self.curr_turn.get_pokemon_from_str(args[1])
         _, found_ability, _, _ = parse_from_effect_of(args)
@@ -1072,7 +1125,9 @@ class SimProtocol:
         user.transform(target)
 
     def _parse_field_conditions(self, args: List[str], name: str):
-        # |-fieldstart|CONDITION or |-fieldend|CONDITION
+        """
+        |-fieldstart|CONDITION or |-fieldend|CONDITION
+        """
         field_condition = PEField.from_showdown_message(args[0])
         if name == "-fieldstart":
             found_item, found_ability, found_move, found_of_mon = parse_from_effect_of(
@@ -1095,14 +1150,18 @@ class SimProtocol:
                 self.curr_turn.battle_field.pop(field_condition)
 
     def _parse_cureteam(self, args: List[str]):
-        # |-cureteam|POKEMON
+        """
+        |-cureteam|POKEMON
+        """
         poke_list = self.curr_turn.get_pokemon_list_from_str(args[0])
         for poke in poke_list:
             if poke and poke.status != PEStatus.FNT:
                 poke.status = Nothing.NO_STATUS
 
     def _parse_start_end(self, args: List[str], name: str):
+        """
         # |-start|POKEMON|EFFECT or # |-end|POKEMON|EFFECT
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         assert pokemon is not None
         effect = PEEffect.from_showdown_message(args[1])
@@ -1126,40 +1185,52 @@ class SimProtocol:
                 of_pokemon.reveal_ability(found_ability)
 
     def _parse_setboost(self, args: List[str]):
-        # |-setboost|POKEMON|STAT|AMOUNT
+        """
+        |-setboost|POKEMON|STAT|AMOUNT
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         assert pokemon is not None
         pokemon.boosts.set_to_with_str(args[1], int(args[2]))
 
     def _parse_clearboost(self, args: List[str]):
-        # |-clearboost|POKEMON
+        """
+        |-clearboost|POKEMON
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         assert pokemon is not None
         pokemon.boosts = Boosts()
 
     def _parse_clearpositiveboost(self, args: List[str]):
-        # |-clearpositiveboost|TARGET|POKEMON|EFFECT
+        """
+        |-clearpositiveboost|TARGET|POKEMON|EFFECT
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         for stat in pokemon.boosts.stat_attrs:
             current = getattr(pokemon.boosts, stat)
             setattr(pokemon.boosts, stat, min(current, 0))
 
     def _parse_clearnegativeboost(self, args: List[str]):
-        # |-clearnegativeboost|POKEMON
+        """
+        |-clearnegativeboost|POKEMON
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         for stat in pokemon.boosts.stat_attrs:
             current = getattr(pokemon.boosts, stat)
             setattr(pokemon.boosts, stat, max(current, 0))
 
     def _parse_copyboost(self, args: List[str]):
-        # |-copyboost|SOURCE|TARGET
+        """
+        |-copyboost|SOURCE|TARGET
+        """
         source = self.curr_turn.get_pokemon_from_str(args[0])
         target = self.curr_turn.get_pokemon_from_str(args[1])
         assert source is not None and target is not None
         source.boosts = copy.deepcopy(target.boosts)
 
     def _parse_clearallboost(self, args: List[str]):
-        # |-clearallboost
+        """
+        |-clearallboost
+        """
         for active in [
             self.curr_turn.active_pokemon_1,
             self.curr_turn.active_pokemon_2,
@@ -1169,7 +1240,9 @@ class SimProtocol:
                     pokemon.boosts = Boosts()
 
     def _parse_restoreboost(self, args: List[str]):
-        # |-restoreboost|p2a: Gorebyss|[silent]
+        """
+        |-restoreboost|p2a: Gorebyss|[silent]
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         assert pokemon is not None
         boosts = pokemon.boosts
@@ -1178,7 +1251,9 @@ class SimProtocol:
             setattr(boosts, stat_name, max(stage, 0))
 
     def _parse_invertboost(self, args: List[str]):
-        # |-invertboost|POKEMON
+        """
+        |-invertboost|POKEMON
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         assert pokemon is not None
         boosts = pokemon.boosts
@@ -1187,18 +1262,24 @@ class SimProtocol:
             setattr(boosts, stat_name, inv)
 
     def _parse_mustrecharge(self, args: List[str]):
-        # |-mustrecharge|POKEMON
+        """
+        |-mustrecharge|POKEMON
+        """
         # the action labels default to None, so we do nothing here.
         pass
 
     def _parse_cant(self, args: List[str]):
-        # |cant|POKEMON|REASON or |cant|POKEMON|REASON|MOVE
+        """
+        |cant|POKEMON|REASON or |cant|POKEMON|REASON|MOVE
+        """
         # pokemon cannot move and we usually aren't told what the player's preferred action was.
         # the action labels default to None, so we do nothing here.
         pass
 
     def _parse_immune(self, args: List[str]):
-        # | -immune | POKEMON
+        """
+        |-immune|POKEMON
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(args)
         if found_ability:
@@ -1209,7 +1290,9 @@ class SimProtocol:
         )
 
     def _parse_detailschange_formechange(self, args: List[str]):
-        # |detailschange|POKEMON|DETAILS|HP STATUS or |-formechange|POKEMON|SPECIES|HP STATUS
+        """
+        |detailschange|POKEMON|DETAILS|HP STATUS or |-formechange|POKEMON|SPECIES|HP STATUS
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         if pokemon.had_name is None:
             pokemon.had_name = pokemon.name
@@ -1221,15 +1304,21 @@ class SimProtocol:
             pokemon.reveal_ability(found_ability)
 
     def _parse_replace(self, args: List[str]):
-        # |replace|POKEMON|DETAILS|HP STATUS
+        """
+        |replace|POKEMON|DETAILS|HP STATUS
+        """
         raise ZoroarkException
 
     def _parse_burst(self, args: List[str]):
-        # |-burst|POKEMON|SPECIES|ITEM
+        """
+        |-burst|POKEMON|SPECIES|ITEM
+        """
         raise UnimplementedMessage(["-burst"] + args)
 
     def _parse_fail(self, args: List[str]):
-        # |-fail|POKEMON|ACTION
+        """
+        |-fail|POKEMON|ACTION
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         from_item, from_ability, from_move, from_mon = parse_from_effect_of(args)
         if from_item is not None and from_mon is not None:
@@ -1258,22 +1347,41 @@ class SimProtocol:
                 )  # FIXME for doubles
 
     def _parse_singleturn(self, args: List[str]):
-        # ['-singleturn', 'p2a: Abomasnow', 'Protect']
+        """
+        |-singleturn|POKEMON|EFFECT
+        """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         effect = PEEffect.from_showdown_message(args[1])
         if effect == PEEffect.PROTECT:
             pokemon.protected = True
 
     def _parse_tie(self, args: List[str]):
-        # |tie
+        """
+        |tie
+        """
         self.replay.winner = Winner.TIE
 
     def _parse_rule(self, args: List[str]):
-        # |rule|RULE: DESCRIPTION
+        """
+        |rule|RULE: DESCRIPTION
+        """
         self.replay.rules.append(args[0])
 
     def interpret_message(self, message: List[str]):
+        """Interpret and process a single Showdown battle protocol message.
 
+        Parses messages according to the Showdown sim protocol and updates the
+        replay state accordingly. Each message is a list where the first element
+        is the message type and subsequent elements are the arguments.
+
+        References:
+            https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
+            https://github.com/hsahovic/poke-env/blob/master/src/poke_env/environment/abstract_battle.py
+
+        Args:
+            message: List of strings representing a protocol message, where
+                    message[0] is the message type and message[1:] are the arguments.
+        """
         name, *data = message
         if name in self.IGNORES:
             return
@@ -1387,10 +1495,11 @@ def forward_fill(
 ) -> ParsedReplay:
     sim_protocol = SimProtocol(replay)
     for message in log:
-        if message:
-            if verbose:
-                print(f"{replay.gameid} {message}")
-            sim_protocol.interpret_message(message)
+        if not message:
+            continue
+        if verbose:
+            print(f"{replay.gameid} {message}")
+        sim_protocol.interpret_message(message)
 
     checks.check_noun_spelling(replay)
     checks.check_finished(replay)
