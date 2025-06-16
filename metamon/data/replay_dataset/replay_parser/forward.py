@@ -769,26 +769,26 @@ class SimProtocol:
                     of_pokemon.active_item = found_item
                     if of_pokemon.had_item is None:
                         of_pokemon.had_item = found_item
-                if found_ability:
-                    if name == "-heal":
-                        # poke-env comments say the [of] pokemon is the wrong side here
-                        # (|-heal|p2a: Quagsire|100/100|[from] ability: Water Absorb|[of] p1a: Genesect
-                        # is healing Quagsire from Quagsire's Water Absorb ability)
-                        of_pokemon = pokemon
-                        # dealing with edge case of switching move failure due to the target's ability
-                        SpecialCategories.cancel_opponent_switch_based_on_user_ability(
-                            self.curr_turn,
-                            user_pokemon=pokemon,
-                            based_on_ability=found_ability,
-                        )
-                    else:
-                        of_pokemon = (
-                            self.curr_turn.get_pokemon_from_str(found_of_pokemon)
-                            if found_of_pokemon
-                            else pokemon
-                        )
-                    # reveal found ability
-                    of_pokemon.reveal_ability(found_ability)
+            if found_ability:
+                if name == "-heal":
+                    # poke-env comments say the [of] pokemon is the wrong side here
+                    # (|-heal|p2a: Quagsire|100/100|[from] ability: Water Absorb|[of] p1a: Genesect
+                    # is healing Quagsire from Quagsire's Water Absorb ability)
+                    of_pokemon = pokemon
+                    # dealing with edge case of switching move failure due to the target's ability
+                    SpecialCategories.cancel_opponent_switch_based_on_user_ability(
+                        self.curr_turn,
+                        user_pokemon=pokemon,
+                        based_on_ability=found_ability,
+                    )
+                else:
+                    of_pokemon = (
+                        self.curr_turn.get_pokemon_from_str(found_of_pokemon)
+                        if found_of_pokemon
+                        else pokemon
+                    )
+                # reveal found ability
+                of_pokemon.reveal_ability(found_ability)
 
         # take or heal damage
         if "fnt" in args[1] or args[1] == "0" or args[1][:2] == "0 ":
