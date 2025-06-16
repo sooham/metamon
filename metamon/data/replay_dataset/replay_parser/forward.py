@@ -148,7 +148,7 @@ class SpecialCategories:
 
     # heal messages associated with key ability should indicate that
     # the value move failed to force a switch
-    HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL = {
+    ABILITY_CAUSES_MOVE_TO_FAIL = {
         "Water Absorb": "Flip Turn",
         "Dry Skin": "Flip Turn",
         "Lightning Rod": "Volt Switch",
@@ -178,8 +178,7 @@ class SpecialCategories:
             bool: True if the switch was cancelled, False otherwise
         """
         if (
-            based_on_ability
-            not in SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL
+            based_on_ability not in SpecialCategories.ABILITY_CAUSES_MOVE_TO_FAIL
             or not user_pokemon.last_targeted_by
         ):
             return False
@@ -187,7 +186,7 @@ class SpecialCategories:
         last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
         if (
             last_targeted_by_move
-            != SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL[based_on_ability]
+            != SpecialCategories.ABILITY_CAUSES_MOVE_TO_FAIL[based_on_ability]
         ):
             return False
 
