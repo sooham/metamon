@@ -350,8 +350,14 @@ class SimProtocol:
         "-zbroken",  # z-move hits through protect
     }
 
+    def _parse_gen(self, replay: ParsedReplay, message_args: List[str]):
+        # |gen|GENNUM
+        replay.gen = int(message_args[0])
+        if not (replay.gen <= 4 or replay.gen == 9):
+            raise SoftLockedGen(replay.gen)
+
     # fmt: off
-    def parse_row(self, replay: ParsedReplay, row: List[str]):
+    def interpret_message(self, replay: ParsedReplay, message: List[str]):
         """
         https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
         
@@ -359,7 +365,7 @@ class SimProtocol:
         """
         curr_turn = replay.turnlist[-1]
 
-        name, *data = row
+        name, *data = message
 
         if name in self.IGNORES:
             return
@@ -470,7 +476,7 @@ class SimProtocol:
         elif name == "switch" or name == "drag":
             # |switch|POKEMON|DETAILS|HP STATUS or |drag|POKEMON|DETAILS|HP STATUS
             if len(data) < 3:
-                raise UnfinishedMessageException(row)
+                raise UnfinishedMessageException(message)
             
             # fill the forced switch state
             switch_team, switch_slot = curr_turn.player_id_to_action_idx(data[0])
@@ -529,7 +535,7 @@ class SimProtocol:
         elif name == "move":
             # |move|POKEMON|MOVE|TARGET
             if len(data) < 2:
-                raise UnfinishedMessageException(row)
+                raise UnfinishedMessageException(message)
 
             # id pokemon
             poke_str = data[0][:3]
@@ -578,7 +584,7 @@ class SimProtocol:
                         probably_repeat_move = from_move.lower() == move_name.lower()
                         if from_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY | SpecialCategories.MOVE_OVERRIDE:
                             if override_risk and len(pokemon.had_moves) < 4:
-                                raise CalledForeignConsecutive(row)
+                                raise CalledForeignConsecutive(message)
                             if from_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                                 pokemon.reveal_move(move)
                             return
@@ -604,7 +610,7 @@ class SimProtocol:
                     if not (probably_repeat_move or probably_item):
                         if ability_or_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY | SpecialCategories.MOVE_OVERRIDE:
                             if override_risk and len(pokemon.had_moves) < 4:
-                                raise CalledForeignConsecutive(row)
+                                raise CalledForeignConsecutive(message)
                             if ability_or_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                                 pokemon.reveal_move(move)
                             return
@@ -663,7 +669,7 @@ class SimProtocol:
         elif name == "-damage" or name == "-heal":
             # |-damage|POKEMON|HP STATUS or |-heal|POKEMON|HP STATUS
             if len(data) < 2 or (len(data) == 2 and not data[-1]):
-                raise UnfinishedMessageException(" ".join(row))
+                raise UnfinishedMessageException(" ".join(message))
 
             pokemon = curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
@@ -736,7 +742,7 @@ class SimProtocol:
                 pokemon.status = PEStatus.FNT
             else:
                 if "/" not in data[1]:
-                    raise UnfinishedMessageException(row)
+                    raise UnfinishedMessageException(message)
                 cur_hp, max_hp = parse_hp_fraction(data[1])
                 pokemon.current_hp = cur_hp
                 pokemon.max_hp = max_hp
@@ -772,7 +778,7 @@ class SimProtocol:
         elif name == "-boost" or name == "-unboost":
             # |-boost|POKEMON|STAT|AMOUNT or |-unboost|POKEMON|STAT|AMOUNT
             if len(data) < 3:
-                raise UnfinishedMessageException(row)
+                raise UnfinishedMessageException(message)
             change = int(data[2])
             if name == "-unboost":
                 change *= -1
@@ -790,7 +796,7 @@ class SimProtocol:
                 elif "Guard Swap" in data[2]:
                     stats = ["def", "spd"]
                 else:
-                    raise UnimplementedSwapboost(row)
+                    raise UnimplementedSwapboost(message)
             else:
                 stats = data[2].split(", ")
             temp = copy.deepcopy(pokemon_1.boosts)
@@ -800,12 +806,12 @@ class SimProtocol:
 
         elif name == "swap":
             # |swap|POKEMON|POSITION
-            raise UnimplementedMessage(row)
+            raise UnimplementedMessage(message)
 
         elif name == "-ability":
             # |-ability|POKEMON|ABILITY|[from]EFFECT
             if len(data) < 2:
-                raise UnfinishedMessageException(row)
+                raise UnfinishedMessageException(message)
             pokemon = curr_turn.get_pokemon_from_str(data[0])
             ability = parse_ability(data[1])
             found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
@@ -823,9 +829,9 @@ class SimProtocol:
                         pokemon.had_ability = found_ability # porygon used to have trace
                     curr_turn.get_pokemon_from_str(found_mon).reveal_ability(ability) # dragapult has clear body
                 else:
-                    raise UnhandledFromOfAbilityLogic(row)
+                    raise UnhandledFromOfAbilityLogic(message)
             elif (found_item or found_mon or found_move) and found_ability:
-                raise UnhandledFromOfAbilityLogic(row)
+                raise UnhandledFromOfAbilityLogic(message)
             else:
                 pokemon.reveal_ability(ability)
 
@@ -849,7 +855,7 @@ class SimProtocol:
                 else:
                     raise RareValueError(f"Can't find side conditions from identifier `{data[0]}`")
                 if len(data) < 2:
-                    raise UnfinishedMessageException(row)
+                    raise UnfinishedMessageException(message)
                 condition = PESideCondition.from_showdown_message(data[1])
                 if "start" in name:
                     if condition in STACKABLE_CONDITIONS:
@@ -894,7 +900,7 @@ class SimProtocol:
                     pokemon.tricking = found_mon
                     found_mon.tricking = pokemon
                 else:
-                    raise TrickError(row)
+                    raise TrickError(message)
             elif effect == PEEffect.MIMIC:
                 pokemon.mimic(move_name=data[2], gen=replay.gen)
             elif effect in [PEEffect.LEPPA_BERRY, PEEffect.MYSTERY_BERRY]:
@@ -924,7 +930,7 @@ class SimProtocol:
                 elif found_move in SpecialCategories.ITEM_UNNAMED_STOLEN:
                     # item is stolen from the opponent using a move
                     if not pokemon.tricking:
-                        raise TrickError(row)
+                        raise TrickError(message)
                     if pokemon.tricking.had_item is None:
                         pokemon.tricking.had_item = item
                 elif found_move in SpecialCategories.ITEM_NAMED_STOLEN:
@@ -941,7 +947,7 @@ class SimProtocol:
                     if pokemon.had_item is None:
                         pokemon.had_item = BackwardMarkers.FORCE_UNKNOWN
                 else:
-                    raise UnhandledFromMoveItemLogic(row)
+                    raise UnhandledFromMoveItemLogic(message)
             elif pokemon.had_item is None:
                 pokemon.had_item = item
 
@@ -1127,7 +1133,7 @@ class SimProtocol:
 
         elif name == "-burst":
             # |-burst|POKEMON|SPECIES|ITEM
-            raise UnimplementedMessage(row)
+            raise UnimplementedMessage(message)
 
         elif name == "-fail":
             # |-fail|POKEMON|ACTION
@@ -1164,18 +1170,18 @@ class SimProtocol:
                 # leaked browser console messages?
                 pass
             else:
-                raise UnimplementedMessage(row)
+                raise UnimplementedMessage(message)
 
 
 def forward_fill(
     replay: ParsedReplay, log: list[list[str]], verbose: bool = False
 ) -> ParsedReplay:
     sim_protocol = SimProtocol()
-    for row in log:
-        if row:
+    for message in log:
+        if message:
             if verbose:
-                print(f"{replay.gameid} {row}")
-            sim_protocol.parse_row(replay, row)
+                print(f"{replay.gameid} {message}")
+            sim_protocol.interpret_message(replay, message)
 
     checks.check_noun_spelling(replay)
     checks.check_finished(replay)
