@@ -290,887 +290,892 @@ class SpecialCategories:
         return False
 
 
-REPLAY_IGNORES = {
-    "",
-    "-anim",
-    "askreg",
-    "badge",
-    "bigerror",  # usually auto-tie warnings
-    "c",
-    "c:",
-    "chatmsg-raw",
-    "-crit",  # redundant
-    "chat",
-    "clearpoke",
-    "debug",
-    "deinit",
-    "error",
-    "-fieldactivate",  # redundant
-    "gametype",
-    "hidelines",  # undocumented, no idea
-    "-hint",
-    "hint",
-    "html",
-    "-hitcount",
-    "init",
-    "inactive",  # battle timer
-    "inactiveoff",  # battle timer
-    "j",
-    "J",
-    "join",
-    "leave",
-    "l",
-    "L",
-    "message",
-    "-message",  # chat
-    "-miss",
-    "n",
-    "-nothing",  # redundant for a move that did "absolutely nothing"
-    "-notarget",  # for move target
-    "-ohko",
-    "-prepare",  # extra move info
-    "-primal",  # based soley on action
-    "raw",
-    "rated",
-    "request",
-    "-resisted",
-    "start",
-    "-supereffective",
-    "-singlemove",
-    "seed",
-    "teampreview",
-    "title",
-    "tier",
-    "t:",  # timer
-    "upkeep",
-    "uhtml",
-    "unlink",  # disconnect or spectator removed
-    "-zbroken",  # z-move hits through protect
-}
+class SimProtocol:
 
-# fmt: off
-def parse_row(replay: ParsedReplay, row: List[str]):
-    """
-    https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
-    
-    and https://github.com/hsahovic/poke-env/blob/master/src/poke_env/environment/abstract_battle.py
-    """
-    curr_turn = replay.turnlist[-1]
+    IGNORES = {
+        "",
+        "-anim",
+        "askreg",
+        "badge",
+        "bigerror",  # usually auto-tie warnings
+        "c",
+        "c:",
+        "chatmsg-raw",
+        "-crit",  # redundant
+        "chat",
+        "clearpoke",
+        "debug",
+        "deinit",
+        "error",
+        "-fieldactivate",  # redundant
+        "gametype",
+        "hidelines",  # undocumented, no idea
+        "-hint",
+        "hint",
+        "html",
+        "-hitcount",
+        "init",
+        "inactive",  # battle timer
+        "inactiveoff",  # battle timer
+        "j",
+        "J",
+        "join",
+        "leave",
+        "l",
+        "L",
+        "message",
+        "-message",  # chat
+        "-miss",
+        "n",
+        "-nothing",  # redundant for a move that did "absolutely nothing"
+        "-notarget",  # for move target
+        "-ohko",
+        "-prepare",  # extra move info
+        "-primal",  # based soley on action
+        "raw",
+        "rated",
+        "request",
+        "-resisted",
+        "start",
+        "-supereffective",
+        "-singlemove",
+        "seed",
+        "teampreview",
+        "title",
+        "tier",
+        "t:",  # timer
+        "upkeep",
+        "uhtml",
+        "unlink",  # disconnect or spectator removed
+        "-zbroken",  # z-move hits through protect
+    }
 
-    name, *data = row
-
-    if name in REPLAY_IGNORES:
-        return
-
-    if name == "gen":
-        # |gen|GENNUM
-        replay.gen = int(data[0])
-        if not (replay.gen <= 4 or replay.gen == 9):
-            raise SoftLockedGen(replay.gen)
-    
-    elif name == "tier":
-        # |tier|TIER
-        replay.format = data[0]
-
-    elif name == "player":
-        # |player|PLAYER|USERNAME|AVATAR|RATING
-        if len(data) < 2 or not data[1]:
-            # skip reintroductions
-            return
-        if data[0] == "p1":
-            slot = 0
-        elif data[0] == "p2":
-            slot = 1
-        else:
-            raise RareValueError(f"Could not parse player slot from player id `{data[0]}`")
-        replay.players[slot] = to_id_str(data[1])
-        if len(data) >= 4 and data[3]:
-            replay.ratings[slot] = int(data[3])
-        else:
-            replay.ratings[slot] = "Unrated"
-
-    elif name == "teamsize":
-        # |teamsize|PLAYER|NUMBER
-        player, size = data
-        size = int(size)
-        assert len(curr_turn.pokemon_1) == 6
-        assert len(curr_turn.pokemon_2) == 6
-        if player == "p1":
-            while len(curr_turn.pokemon_1) > size:
-                curr_turn.pokemon_1.remove(None)
-        elif player == "p2":
-            while len(curr_turn.pokemon_2) > size:
-                curr_turn.pokemon_2.remove(None)
-        if size != 6:
-            raise UnusualTeamSize(size)
-
-    elif name == "turn":
-        # |turn|NUMBER
-        checks.check_forced_switching(curr_turn)
-        assert curr_turn.turn_number is not None
-        new_turn = curr_turn.create_next_turn()
-        # saves the within-turn-state for the previous turn, but does not continue it
-        new_turn.on_end_of_turn() 
-        replay.turnlist.append(new_turn)
-
-    elif name == "win":
-        # |win|USER
-        winner_name = to_id_str(data[0])
-        if winner_name == replay.players[0]:
-            replay.winner = Winner.PLAYER_1
-        elif winner_name == replay.players[1]:
-            replay.winner = Winner.PLAYER_2
-        else:
-            raise RareValueError(
-                f"Unknown winner: {winner_name} with players: {replay.players}"
-            )
-
-    elif name == "choice":
-        # https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md#sending-decisions
-        # `choice` messaegs reveal players action choices directly instead of waiting to see the outcome of the move/switch.
-        # they are not present in every replay, but when they are, they can help us fill missing actions.
-        # It would be possible to catch many more choices if we could use the numeric arg format of some
-        # messages (e.g. `move 1`). We'd need to infer a mapping between the numeric args and the move names.
-        for player_idx, player_choice in enumerate(data):
-            if player_choice:
-                for poke_idx, poke_choice in enumerate(player_choice.split(",")):
-                    msg = poke_choice.split(" ")
-                    command = msg[0]
-                    args = re.sub(r'\d+', '', " ".join(msg[1:])).strip()
-                    if command == "move" and args and args.lower() not in {"recharge", "struggle"}:
-                        user_pokemon = curr_turn.active_pokemon_1[poke_idx] if player_idx == 0 else curr_turn.active_pokemon_2[poke_idx]
-                        move = Move(name=args, gen=replay.gen)
-                        choice = Action(name=move.name, is_switch=False, is_noop=False, user=user_pokemon, target=None)
-                        user_pokemon.reveal_move(move)
-                        if player_idx == 0:
-                            curr_turn.choices_1[poke_idx] = choice
-                        else:
-                            curr_turn.choices_2[poke_idx] = choice
-
-    elif name == "tie":
-        # |tie
-        replay.winner = Winner.TIE
-
-    elif name == "rule":
-        # |rule|RULE: DESCRIPTION
-        replay.rules.append(data[0])
-
-    elif name == "poke":
-        # |poke|PLAYER|DETAILS|ITEM
-        poke_list = curr_turn.get_pokemon_list_from_str(data[0])
-        assert isinstance(poke_list, list)
-        if None not in poke_list:
-            raise UnusualTeamSize(len(poke_list) + 1)
-        poke_name, lvl = Pokemon.identify_from_details(data[1])
-        insert_at = poke_list.index(None)
-        poke_list[insert_at] = Pokemon(name=poke_name, lvl=lvl, gen=replay.gen)
-
-    elif name == "switch" or name == "drag":
-        # |switch|POKEMON|DETAILS|HP STATUS or |drag|POKEMON|DETAILS|HP STATUS
-        if len(data) < 3:
-            raise UnfinishedMessageException(row)
+    # fmt: off
+    def parse_row(self, replay: ParsedReplay, row: List[str]):
+        """
+        https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
         
-        # fill the forced switch state
-        switch_team, switch_slot = curr_turn.player_id_to_action_idx(data[0])
-        is_force_switch = False
-        player_subturn = None
-        for subturn in curr_turn.subturns:
-            if subturn.matches_slot(switch_team, switch_slot):
-                is_force_switch = True
-                player_subturn = subturn
-            if subturn.unfilled:
-                subturn.fill_turn(curr_turn.create_subturn(True))
+        and https://github.com/hsahovic/poke-env/blob/master/src/poke_env/environment/abstract_battle.py
+        """
+        curr_turn = replay.turnlist[-1]
 
-        # id switch out
-        poke_list = curr_turn.get_pokemon_list_from_str(data[0])
-        assert poke_list
-        active_poke_list = curr_turn.get_active_pokemon_from_str(data[0])
-        current_active = active_poke_list[switch_slot]
-        if current_active is not None:
-            current_active.on_switch_out()
+        name, *data = row
 
-        # id switch in
-        poke_name, lvl = Pokemon.identify_from_details(data[1])
-        # match against names up to a forme change
-        lookup_poke_name = poke_name.split("-")[0]
-        lookup_known_names = [p.name.split("-")[0] if p else None for p in poke_list]
-        lookup_known_first_names = [p.had_name.split("-")[0] if p else None for p in poke_list]
-        if lookup_poke_name in lookup_known_names:
-            # previously identified pokemon
-            poke = poke_list[lookup_known_names.index(lookup_poke_name)]
-        elif lookup_poke_name in lookup_known_first_names:
-            # previously identified, but known by name that has been changing (forms)
-            poke = poke_list[lookup_known_first_names.index(lookup_poke_name)]
-        else:
-            # discovered by switching in
-            poke = Pokemon(name=poke_name, lvl=lvl, gen=replay.gen)
-            if None not in poke_list: 
-                raise CantIDSwitchIn(data[1], poke_list)
-            insert_at = poke_list.index(None)
-            poke_list[insert_at] = poke
-        active_poke_list[switch_slot] = poke
-        cur_hp, max_hp = parse_hp_fraction(data[2])
-        poke.max_hp = max_hp
-        poke.current_hp = cur_hp
+        if name in self.IGNORES:
+            return
 
-        if name == "switch":
-            # mark intentional "Switch" action
-            if is_force_switch:
-                if player_subturn is None:
-                    breakpoint()
-                player_subturn.action = Action(name="Switch", user=current_active, target=poke, is_switch=True)
+        if name == "gen":
+            # |gen|GENNUM
+            replay.gen = int(data[0])
+            if not (replay.gen <= 4 or replay.gen == 9):
+                raise SoftLockedGen(replay.gen)
+        
+        elif name == "tier":
+            # |tier|TIER
+            replay.format = data[0]
+
+        elif name == "player":
+            # |player|PLAYER|USERNAME|AVATAR|RATING
+            if len(data) < 2 or not data[1]:
+                # skip reintroductions
+                return
+            if data[0] == "p1":
+                slot = 0
+            elif data[0] == "p2":
+                slot = 1
             else:
-                curr_turn.set_move_attribute(
-                    data[0][:3], move_name="Switch", is_noop=False, is_switch=True, user=current_active, target=poke,
+                raise RareValueError(f"Could not parse player slot from player id `{data[0]}`")
+            replay.players[slot] = to_id_str(data[1])
+            if len(data) >= 4 and data[3]:
+                replay.ratings[slot] = int(data[3])
+            else:
+                replay.ratings[slot] = "Unrated"
+
+        elif name == "teamsize":
+            # |teamsize|PLAYER|NUMBER
+            player, size = data
+            size = int(size)
+            assert len(curr_turn.pokemon_1) == 6
+            assert len(curr_turn.pokemon_2) == 6
+            if player == "p1":
+                while len(curr_turn.pokemon_1) > size:
+                    curr_turn.pokemon_1.remove(None)
+            elif player == "p2":
+                while len(curr_turn.pokemon_2) > size:
+                    curr_turn.pokemon_2.remove(None)
+            if size != 6:
+                raise UnusualTeamSize(size)
+
+        elif name == "turn":
+            # |turn|NUMBER
+            checks.check_forced_switching(curr_turn)
+            assert curr_turn.turn_number is not None
+            new_turn = curr_turn.create_next_turn()
+            # saves the within-turn-state for the previous turn, but does not continue it
+            new_turn.on_end_of_turn() 
+            replay.turnlist.append(new_turn)
+
+        elif name == "win":
+            # |win|USER
+            winner_name = to_id_str(data[0])
+            if winner_name == replay.players[0]:
+                replay.winner = Winner.PLAYER_1
+            elif winner_name == replay.players[1]:
+                replay.winner = Winner.PLAYER_2
+            else:
+                raise RareValueError(
+                    f"Unknown winner: {winner_name} with players: {replay.players}"
                 )
 
-    elif name == "move":
-        # |move|POKEMON|MOVE|TARGET
-        if len(data) < 2:
-            raise UnfinishedMessageException(row)
-
-        # id pokemon
-        poke_str = data[0][:3]
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        move_name = data[1]
-        move = Move(name=move_name, gen=replay.gen)
-        probably_repeat_move = False
-
-        # id target
-        target_pokemon, target_team_idx, target_slot_idx = None, None, None
-        if len(data) > 2:
-            target_pokemon = curr_turn.get_pokemon_from_str(data[2])
-            if target_pokemon:
-                target_team_idx, target_slot_idx = curr_turn.player_id_to_action_idx(data[2])
-        else:
-            target_pokemon = None
-            target_team_idx, target_slot_idx = None, None
-
-        # find extra info from the message
-        extra_from_message = None
-        for d in reversed(data):
-            if "[from]" in d:
-                extra_from_message = d
-                break
-
-        # forced selection of another pokemon
-        if move_name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT:
-            notarget = any('[notarget]' in d for d in data)
-            protected = target_pokemon.protected if target_pokemon else False
-            missed = any('[miss]' in d for d in data)
-            if not notarget and not protected and not missed:
-                curr_turn.mark_forced_switch(data[0])
-        elif move_name in SpecialCategories.FORCES_REVIVAL:
-            curr_turn.mark_forced_switch(data[0])
-
-        if extra_from_message:
-            # fishing for "moves called by moves that call other moves", which should be prevented
-            # from being incorrectly added to a pokemon's true moveset.
-            override_risk = move_name in SpecialCategories.CONSECUTIVE_MOVES or move.charge_move
-
-            if "move:" in extra_from_message or "ability:" in extra_from_message:
-                # equivalent of below block but for messages that do specify move: or ability:
-                _, is_ability, is_move, _ = parse_from_effect_of([extra_from_message])
-                if is_move:
-                    from_move = parse_move_from_extra(extra_from_message)
-                    probably_repeat_move = from_move.lower() == move_name.lower()
-                    if from_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY | SpecialCategories.MOVE_OVERRIDE:
-                        if override_risk and len(pokemon.had_moves) < 4:
-                            raise CalledForeignConsecutive(row)
-                        if from_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
-                            pokemon.reveal_move(move)
-                        return
-                elif is_ability:
-                    if is_ability in SpecialCategories.MOVE_CAUSED_BY_ABILITY:
-                        # this "move" was automatically called by an ability,
-                        # and shouldn't be considered a "move" that reveals anything
-                        # about this Pokemon or uses PP --- early exit.
-                        if (move_name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT 
-                            and target_pokemon is not None 
-                            and target_pokemon.last_used_move_name == move_name):
-                            # the move being stolen by the ability is cancelling the opponent's forced switch
-                            breakpoint()
-                            curr_turn.remove_empty_subturn(team=target_team_idx, slot=target_slot_idx)
-                        return
-                    else:
-                        raise UnimplementedMoveFromMoveAbility(data)
-            else:
-                # equivalent of above block but for messages that do not specify move: or ability:
-                ability_or_move = parse_extra(extra_from_message)
-                probably_repeat_move = ability_or_move.lower() == move_name.lower()
-                probably_item = ability_or_move in ({pokemon.had_item, pokemon.active_item} | SpecialCategories.MOVE_IGNORE_ITEMS)
-                if not (probably_repeat_move or probably_item):
-                    if ability_or_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY | SpecialCategories.MOVE_OVERRIDE:
-                        if override_risk and len(pokemon.had_moves) < 4:
-                            raise CalledForeignConsecutive(row)
-                        if ability_or_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
-                            pokemon.reveal_move(move)
-                        return
-                probably_ability = ability_or_move.lower() not in {"lockedmove", "pursuit"} and not probably_item and not probably_repeat_move
-                if probably_ability:
-                    if ability_or_move in SpecialCategories.MOVE_CAUSED_BY_ABILITY:
-                        return
-                    else:
-                        raise UnimplementedMoveFromMoveAbility(data)
-
-
-        # how much PP is used?
-        pressured = target_pokemon is not None and target_pokemon.active_ability == "Pressure" and target_pokemon != pokemon and '[notarget]' not in data
-        if move.charge_move:
-            if "[still]" in data:
-                pp_used = 0
-            else:
-                pp_used = 1 + pressured
-        elif replay.gen == 1:
-            # gen1 partial trapping PP counting edge cases
-            if probably_repeat_move:
-                # the turns that auto apply partial trapping moves w/o PP have `move USER MOVE TARGET [from]MOVE`
-                pp_used = 0
-            elif move_name in SpecialCategories.GEN1_PP_ROLLOVERS and pokemon.get_pp_for_move_name(move_name) == 0:
-                # (https://www.smogon.com/rb/articles/rby_trapping)
-                pp_used = -63
-            else:
-                pp_used = 1
-        else:
-            pp_used = 1 + pressured
-        # known PP counter flaw: consecutively executed moves (https://bulbapedia.bulbagarden.net/wiki/Category:Consecutively_executed_moves).
-        # also breaks the PS replay viewer (https://replay.pokemonshowdown.com/gen2ou-1136717194); we just aren't given enough info to tell
-        # when the move should/shouldn't use PP.
-
-        # use move
-        pokemon.use_move(move, pp_used=pp_used)
-        if pokemon.transformed_into is not None:
-            pokemon.transformed_into.reveal_move(copy.deepcopy(move))
-
-        # create edge between pokemon to help track down special cases
-        pokemon.last_target = (target_pokemon, move_name) 
-        if target_pokemon:
-            target_pokemon.last_targeted_by = (pokemon, move_name)
-
-        # create Action
-        curr_turn.set_move_attribute(
-            s=poke_str,
-            move_name=move.name,
-            is_noop=False,
-            is_switch=False,
-            user=pokemon,
-            target=target_pokemon,
-        )
-
-        
-    elif name == "-damage" or name == "-heal":
-        # |-damage|POKEMON|HP STATUS or |-heal|POKEMON|HP STATUS
-        if len(data) < 2 or (len(data) == 2 and not data[-1]):
-            raise UnfinishedMessageException(" ".join(row))
-
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        assert pokemon is not None
-
-        if len(data) > 2:
-            # parse extra info for items and abilities
-            found_item, found_ability, found_move, found_of_pokemon = parse_from_effect_of(data)
-            if found_move:
-                if found_move in SpecialCategories.FORCES_REVIVAL:
-                    switch_team, switch_slot = curr_turn.player_id_to_action_idx(data[0])
-                    for subturn in curr_turn.subturns:
-                        if subturn.matches_slot(switch_team, switch_slot):
-                            if subturn.unfilled:
-                                subturn.fill_turn(curr_turn.create_subturn(True))
+        elif name == "choice":
+            # https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md#sending-decisions
+            # `choice` messaegs reveal players action choices directly instead of waiting to see the outcome of the move/switch.
+            # they are not present in every replay, but when they are, they can help us fill missing actions.
+            # It would be possible to catch many more choices if we could use the numeric arg format of some
+            # messages (e.g. `move 1`). We'd need to infer a mapping between the numeric args and the move names.
+            for player_idx, player_choice in enumerate(data):
+                if player_choice:
+                    for poke_idx, poke_choice in enumerate(player_choice.split(",")):
+                        msg = poke_choice.split(" ")
+                        command = msg[0]
+                        args = re.sub(r'\d+', '', " ".join(msg[1:])).strip()
+                        if command == "move" and args and args.lower() not in {"recharge", "struggle"}:
+                            user_pokemon = curr_turn.active_pokemon_1[poke_idx] if player_idx == 0 else curr_turn.active_pokemon_2[poke_idx]
+                            move = Move(name=args, gen=replay.gen)
+                            choice = Action(name=move.name, is_switch=False, is_noop=False, user=user_pokemon, target=None)
+                            user_pokemon.reveal_move(move)
+                            if player_idx == 0:
+                                curr_turn.choices_1[poke_idx] = choice
                             else:
-                                breakpoint()
-                            # the action regards this as a "switch", which will map it to the discrete idxs normally
-                            # used for switching.
-                            subturn.action = Action(name="Forced Revival", user=None, target=pokemon, is_switch=False)
-                            break
-                    if pokemon.status == PEStatus.FNT:
-                        pokemon.status = Nothing.NO_STATUS
-                    else:
-                        breakpoint()
-                if found_move in SpecialCategories.RESTORES_PP:
-                    for move_name, move in pokemon.moves.items():
-                        move.pp = move.maximum_pp
-                        if move_name in pokemon.had_moves:
-                            had_move = pokemon.had_moves[move_name]
-                            had_move.pp = had_move.maximum_pp
-                if found_move in SpecialCategories.RESTORES_STATUS and pokemon.status != PEStatus.FNT:
-                    pokemon.status = Nothing.NO_STATUS
-            if found_item:
-                if name == "-heal":
-                    # like the ability/heal combo just below, the "[of]" pokemon here is misleading
-                    of_pokemon = pokemon
-                    if of_pokemon.active_item != Nothing.NO_ITEM:
-                        of_pokemon.active_item = found_item
-                    if of_pokemon.had_item is None:
-                        of_pokemon.had_item = found_item
-                else:
-                    if found_of_pokemon:
-                        of_pokemon = curr_turn.get_pokemon_from_str(found_of_pokemon)
-                    else:
-                        of_pokemon = pokemon
-                    of_pokemon.active_item = found_item
-                    if of_pokemon.had_item is None:
-                        of_pokemon.had_item = found_item
-            if found_ability:
-                if name == "-heal":
-                    # poke-env comments say the [of] pokemon is the wrong side here
-                    # (|-heal|p2a: Quagsire|100/100|[from] ability: Water Absorb|[of] p1a: Genesect
-                    # is healing Quagsire from Quagsire's Water Absorb ability)
-                    of_pokemon = pokemon
-                    # dealing with edge case of switching move failure due to the target's ability
-                    SpecialCategories.cancel_opponent_switch_based_on_user_ability(
-                        curr_turn,
-                        user_pokemon=pokemon,
-                        based_on_ability=found_ability
-                    )
-                else:
-                    of_pokemon = curr_turn.get_pokemon_from_str(found_of_pokemon) if found_of_pokemon else pokemon
-                # reveal found ability
-                of_pokemon.reveal_ability(found_ability)
-                
+                                curr_turn.choices_2[poke_idx] = choice
 
-        # take or heal damage
-        if "fnt" in data[1] or data[1] == "0" or data[1][:2] == "0 ":
-            pokemon.current_hp = 0
-            pokemon.status = PEStatus.FNT
-        else:
-            if "/" not in data[1]:
+        elif name == "tie":
+            # |tie
+            replay.winner = Winner.TIE
+
+        elif name == "rule":
+            # |rule|RULE: DESCRIPTION
+            replay.rules.append(data[0])
+
+        elif name == "poke":
+            # |poke|PLAYER|DETAILS|ITEM
+            poke_list = curr_turn.get_pokemon_list_from_str(data[0])
+            assert isinstance(poke_list, list)
+            if None not in poke_list:
+                raise UnusualTeamSize(len(poke_list) + 1)
+            poke_name, lvl = Pokemon.identify_from_details(data[1])
+            insert_at = poke_list.index(None)
+            poke_list[insert_at] = Pokemon(name=poke_name, lvl=lvl, gen=replay.gen)
+
+        elif name == "switch" or name == "drag":
+            # |switch|POKEMON|DETAILS|HP STATUS or |drag|POKEMON|DETAILS|HP STATUS
+            if len(data) < 3:
                 raise UnfinishedMessageException(row)
-            cur_hp, max_hp = parse_hp_fraction(data[1])
-            pokemon.current_hp = cur_hp
-            pokemon.max_hp = max_hp
+            
+            # fill the forced switch state
+            switch_team, switch_slot = curr_turn.player_id_to_action_idx(data[0])
+            is_force_switch = False
+            player_subturn = None
+            for subturn in curr_turn.subturns:
+                if subturn.matches_slot(switch_team, switch_slot):
+                    is_force_switch = True
+                    player_subturn = subturn
+                if subturn.unfilled:
+                    subturn.fill_turn(curr_turn.create_subturn(True))
 
-    
-    elif name == "-sethp":
-        # |-sethp|POKEMON|HP
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        assert pokemon is not None
-        cur_hp, max_hp = parse_hp_fraction(data[1])
-        if pokemon.max_hp:
-            assert max_hp == pokemon.max_hp
-        pokemon.current_hp = cur_hp
+            # id switch out
+            poke_list = curr_turn.get_pokemon_list_from_str(data[0])
+            assert poke_list
+            active_poke_list = curr_turn.get_active_pokemon_from_str(data[0])
+            current_active = active_poke_list[switch_slot]
+            if current_active is not None:
+                current_active.on_switch_out()
 
-    elif name == "faint":
-        # |faint|POKEMON
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        assert pokemon is not None
-        pokemon.current_hp = 0
-        pokemon.status = PEStatus.FNT
-        curr_turn.mark_forced_switch(data[0])
-
-    elif name == "-status" or name == "-curestatus":
-        # |-status|POKEMON|STATUS or |-curestatus|POKEMON|STATUS
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        assert pokemon is not None
-        status = PEStatus[data[1].upper()]
-        if name == "-status":
-            pokemon.status = status
-        elif pokemon.status == status:
-            pokemon.status = Nothing.NO_STATUS
-
-    elif name == "-boost" or name == "-unboost":
-        # |-boost|POKEMON|STAT|AMOUNT or |-unboost|POKEMON|STAT|AMOUNT
-        if len(data) < 3:
-            raise UnfinishedMessageException(row)
-        change = int(data[2])
-        if name == "-unboost":
-            change *= -1
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        assert pokemon is not None
-        pokemon.boosts.change_with_str(data[1], change)
-
-    elif name == "-swapboost":
-        # |-swapboost|SOURCE|TARGET|STATS
-        pokemon_1 = curr_turn.get_pokemon_from_str(data[0])
-        pokemon_2 = curr_turn.get_pokemon_from_str(data[1])
-        if "[from]" in data[2]:
-            if "Heart Swap" in data[2]:
-                stats = ["atk", "spa", "def", "spd", "spe", "accuracy", "evasion"]
-            elif "Guard Swap" in data[2]:
-                stats = ["def", "spd"]
+            # id switch in
+            poke_name, lvl = Pokemon.identify_from_details(data[1])
+            # match against names up to a forme change
+            lookup_poke_name = poke_name.split("-")[0]
+            lookup_known_names = [p.name.split("-")[0] if p else None for p in poke_list]
+            lookup_known_first_names = [p.had_name.split("-")[0] if p else None for p in poke_list]
+            if lookup_poke_name in lookup_known_names:
+                # previously identified pokemon
+                poke = poke_list[lookup_known_names.index(lookup_poke_name)]
+            elif lookup_poke_name in lookup_known_first_names:
+                # previously identified, but known by name that has been changing (forms)
+                poke = poke_list[lookup_known_first_names.index(lookup_poke_name)]
             else:
-                raise UnimplementedSwapboost(row)
-        else:
-            stats = data[2].split(", ")
-        temp = copy.deepcopy(pokemon_1.boosts)
-        for stat in stats:
-            pokemon_1.boosts.set_to_with_str(stat, pokemon_2.boosts.get_boost(stat))
-            pokemon_2.boosts.set_to_with_str(stat, temp.get_boost(stat))
+                # discovered by switching in
+                poke = Pokemon(name=poke_name, lvl=lvl, gen=replay.gen)
+                if None not in poke_list: 
+                    raise CantIDSwitchIn(data[1], poke_list)
+                insert_at = poke_list.index(None)
+                poke_list[insert_at] = poke
+            active_poke_list[switch_slot] = poke
+            cur_hp, max_hp = parse_hp_fraction(data[2])
+            poke.max_hp = max_hp
+            poke.current_hp = cur_hp
 
-    elif name == "swap":
-        # |swap|POKEMON|POSITION
-        raise UnimplementedMessage(row)
+            if name == "switch":
+                # mark intentional "Switch" action
+                if is_force_switch:
+                    if player_subturn is None:
+                        breakpoint()
+                    player_subturn.action = Action(name="Switch", user=current_active, target=poke, is_switch=True)
+                else:
+                    curr_turn.set_move_attribute(
+                        data[0][:3], move_name="Switch", is_noop=False, is_switch=True, user=current_active, target=poke,
+                    )
 
-    elif name == "-ability":
-        # |-ability|POKEMON|ABILITY|[from]EFFECT
-        if len(data) < 2:
-            raise UnfinishedMessageException(row)
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        ability = parse_ability(data[1])
-        found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
-        SpecialCategories.cancel_opponent_switch_based_on_user_ability(
-            curr_turn,
-            user_pokemon=pokemon,
-            based_on_ability=ability,
-        )
-        if found_mon and found_ability:
-            if found_ability in SpecialCategories.ABILITY_STEALS_ABILITY:
-                # ['p1a: Porygon2', 'Clear Body', '[from] ability: Trace', '[of] p2a: Dragapult']
-                # Porygon2 has the Trace ability, copying Clear Body from Dragapult
-                pokemon.active_ability = ability # # porygon now has clear body
-                if pokemon.had_ability is None:
-                    pokemon.had_ability = found_ability # porygon used to have trace
-                curr_turn.get_pokemon_from_str(found_mon).reveal_ability(ability) # dragapult has clear body
-            else:
-                raise UnhandledFromOfAbilityLogic(row)
-        elif (found_item or found_mon or found_move) and found_ability:
-            raise UnhandledFromOfAbilityLogic(row)
-        else:
-            pokemon.reveal_ability(ability)
-
-    elif name == "-endability":
-        # |-endability|POKEMON
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        pokemon.active_ability = Nothing.NO_ABILITY
-        if len(data) > 1:
-            ability = parse_ability(data[1])
-            if pokemon.had_ability is None:
-                pokemon.had_ability = ability
-
-    elif name == "-sidestart" or name == "-sideend" or name == "-swapsideconditions":
-        # |-sidestart|SIDE|CONDITION or |-sideend|SIDE|CONDITION or |-swapsideconditions
-        if "start" in name or "end" in name:
-            side_str = data[0][0:2]
-            if side_str == "p1":
-                side = curr_turn.conditions_1
-            elif side_str == "p2":
-                side = curr_turn.conditions_2
-            else:
-                raise RareValueError(f"Can't find side conditions from identifier `{data[0]}`")
+        elif name == "move":
+            # |move|POKEMON|MOVE|TARGET
             if len(data) < 2:
                 raise UnfinishedMessageException(row)
-            condition = PESideCondition.from_showdown_message(data[1])
-            if "start" in name:
-                if condition in STACKABLE_CONDITIONS:
-                    side[condition] = side.get(condition, 0) + 1
-                elif condition not in side:
-                    side[condition] = curr_turn.turn_number
+
+            # id pokemon
+            poke_str = data[0][:3]
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            move_name = data[1]
+            move = Move(name=move_name, gen=replay.gen)
+            probably_repeat_move = False
+
+            # id target
+            target_pokemon, target_team_idx, target_slot_idx = None, None, None
+            if len(data) > 2:
+                target_pokemon = curr_turn.get_pokemon_from_str(data[2])
+                if target_pokemon:
+                    target_team_idx, target_slot_idx = curr_turn.player_id_to_action_idx(data[2])
             else:
-                if condition in side and condition != PESideCondition.UNKNOWN:
-                    side.pop(condition)
-        else:
-            curr_turn.conditions_1, curr_turn.conditions_2 = curr_turn.conditions_2, curr_turn.conditions_1
+                target_pokemon = None
+                target_team_idx, target_slot_idx = None, None
 
-    elif name == "-weather":
-        # |-weather|WEATHER
-        if data[0] == "none":
-            curr_turn.weather = Nothing.NO_WEATHER
-        else:
-            curr_turn.weather = PEWeather.from_showdown_message(data[0])
-        found_item, found_ability, found_move, found_of_mon = parse_from_effect_of(data)
-        if found_of_mon:
-            pokemon = curr_turn.get_pokemon_from_str(found_of_mon)
-            assert pokemon is not None
-            if found_ability:
-                pokemon.reveal_ability(found_ability)
+            # find extra info from the message
+            extra_from_message = None
+            for d in reversed(data):
+                if "[from]" in d:
+                    extra_from_message = d
+                    break
 
-    elif name == "-activate":
-        # |-activate|EFFECT
-        # also the catch-all message PS sends for minor edge cases
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        assert pokemon is not None
-        if data[1].startswith("ability:"):
-            ability = parse_ability(data[1])
-            pokemon.reveal_ability(ability)
-            return
-
-        effect = PEEffect.from_showdown_message(data[1])
-        # edge cases
-        found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
-        if effect == PEEffect.TRICK:
-            if found_mon:
-                found_mon = curr_turn.get_pokemon_from_str(found_mon)
-                pokemon.tricking = found_mon
-                found_mon.tricking = pokemon
-            else:
-                raise TrickError(row)
-        elif effect == PEEffect.MIMIC:
-            pokemon.mimic(move_name=data[2], gen=replay.gen)
-        elif effect in [PEEffect.LEPPA_BERRY, PEEffect.MYSTERY_BERRY]:
-            # https://bulbapedia.bulbagarden.net/wiki/Category:PP-restoring_items
-            pp_gained = 10 if effect == PEEffect.LEPPA_BERRY else 5
-            move_name = data[2]
-            if move_name in pokemon.moves:
-                pokemon.moves[move_name].pp += pp_gained
-                if move_name in pokemon.had_moves:
-                    pokemon.had_moves[move_name].pp += pp_gained
-        # this catches so much redundant info that probably shouldn't be called
-        # a volatile status (and isn't displayed like that on PS)
-        # but it's 1:1 with poke-env
-        pokemon.start_effect(effect)
-
-    elif name == "-item" or name == "-enditem":
-        # |-item|POKEMON|ITEM|[from]EFFECT or |-enditem|POKEMON|ITEM|[from]EFFECT
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        item = data[1]
-        if pokemon is None:
-            raise RareValueError(f"Could not find pokemon from {data[0]}")
-
-        found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
-        if found_move:
-            if found_move in SpecialCategories.ITEM_APPROVED_SKIP:
-                pass
-            elif found_move in SpecialCategories.ITEM_UNNAMED_STOLEN:
-                # item is stolen from the opponent using a move
-                if not pokemon.tricking:
-                    raise TrickError(row)
-                if pokemon.tricking.had_item is None:
-                    pokemon.tricking.had_item = item
-            elif found_move in SpecialCategories.ITEM_NAMED_STOLEN:
-                # item is stolen from a named opponent.
-                if "end" in name:
-                    pokemon_that_had_the_item = pokemon
-                else:
-                    pokemon_that_had_the_item = curr_turn.get_pokemon_from_str(found_mon)
-                # remove item 
-                pokemon_that_had_the_item.active_item = Nothing.NO_ITEM
-                if pokemon_that_had_the_item.had_item is None:
-                    pokemon_that_had_the_item.had_item = item
-                # if we still don't know the pokemon's item here, make sure we never fill it in
-                if pokemon.had_item is None:
-                    pokemon.had_item = BackwardMarkers.FORCE_UNKNOWN
-            else:
-                raise UnhandledFromMoveItemLogic(row)
-        elif pokemon.had_item is None:
-            pokemon.had_item = item
-
-        # adjust active item
-        if "end" in name:
-            pokemon.active_item = Nothing.NO_ITEM
-            if item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT and found_move is None:
-                # catch Eject Button and Eject Pack messages (which - if activated - would not have an item component?)
+            # forced selection of another pokemon
+            if move_name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT:
+                notarget = any('[notarget]' in d for d in data)
+                protected = target_pokemon.protected if target_pokemon else False
+                missed = any('[miss]' in d for d in data)
+                if not notarget and not protected and not missed:
+                    curr_turn.mark_forced_switch(data[0])
+            elif move_name in SpecialCategories.FORCES_REVIVAL:
                 curr_turn.mark_forced_switch(data[0])
-                SpecialCategories.cancel_opponent_switch_based_on_user_item(
-                    curr_turn,
-                    user_pokemon=pokemon,
-                    based_on_item=item,
-                )
-            elif item in SpecialCategories.ITEMS_THAT_SWITCH_THE_ATTACKER_OUT and found_mon is not None:
-                team, slot = curr_turn.player_id_to_action_idx(found_mon)
-                curr_turn.remove_empty_subturn(team=team, slot=slot)
-        else:
-            pokemon.active_item = item
 
-    elif name == "-terastallize":
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        poke_str = data[0][:3]
-        curr_turn.set_move_attribute(
-            s=poke_str,
-            is_tera=True,
-        )
-        pokemon.type = [data[1]]
+            if extra_from_message:
+                # fishing for "moves called by moves that call other moves", which should be prevented
+                # from being incorrectly added to a pokemon's true moveset.
+                override_risk = move_name in SpecialCategories.CONSECUTIVE_MOVES or move.charge_move
 
-    elif name == "-zpower" or name == "-mega":
-        raise SoftLockedGen(replay.gen)
+                if "move:" in extra_from_message or "ability:" in extra_from_message:
+                    # equivalent of below block but for messages that do specify move: or ability:
+                    _, is_ability, is_move, _ = parse_from_effect_of([extra_from_message])
+                    if is_move:
+                        from_move = parse_move_from_extra(extra_from_message)
+                        probably_repeat_move = from_move.lower() == move_name.lower()
+                        if from_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY | SpecialCategories.MOVE_OVERRIDE:
+                            if override_risk and len(pokemon.had_moves) < 4:
+                                raise CalledForeignConsecutive(row)
+                            if from_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
+                                pokemon.reveal_move(move)
+                            return
+                    elif is_ability:
+                        if is_ability in SpecialCategories.MOVE_CAUSED_BY_ABILITY:
+                            # this "move" was automatically called by an ability,
+                            # and shouldn't be considered a "move" that reveals anything
+                            # about this Pokemon or uses PP --- early exit.
+                            if (move_name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT 
+                                and target_pokemon is not None 
+                                and target_pokemon.last_used_move_name == move_name):
+                                # the move being stolen by the ability is cancelling the opponent's forced switch
+                                breakpoint()
+                                curr_turn.remove_empty_subturn(team=target_team_idx, slot=target_slot_idx)
+                            return
+                        else:
+                            raise UnimplementedMoveFromMoveAbility(data)
+                else:
+                    # equivalent of above block but for messages that do not specify move: or ability:
+                    ability_or_move = parse_extra(extra_from_message)
+                    probably_repeat_move = ability_or_move.lower() == move_name.lower()
+                    probably_item = ability_or_move in ({pokemon.had_item, pokemon.active_item} | SpecialCategories.MOVE_IGNORE_ITEMS)
+                    if not (probably_repeat_move or probably_item):
+                        if ability_or_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY | SpecialCategories.MOVE_OVERRIDE:
+                            if override_risk and len(pokemon.had_moves) < 4:
+                                raise CalledForeignConsecutive(row)
+                            if ability_or_move in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
+                                pokemon.reveal_move(move)
+                            return
+                    probably_ability = ability_or_move.lower() not in {"lockedmove", "pursuit"} and not probably_item and not probably_repeat_move
+                    if probably_ability:
+                        if ability_or_move in SpecialCategories.MOVE_CAUSED_BY_ABILITY:
+                            return
+                        else:
+                            raise UnimplementedMoveFromMoveAbility(data)
 
-    elif name == "-transform":
-        # |-transform|POKEMON|SPECIES
-        user = curr_turn.get_pokemon_from_str(data[0])
-        target = curr_turn.get_pokemon_from_str(data[1])
-        _, found_ability, _, _ = parse_from_effect_of(data)
-        if found_ability:
-            user.reveal_ability(found_ability)
-        user.transform(target)
 
-    elif name in ["-fieldstart", "-fieldend"]:
-        # |-fieldstart|CONDITION or |-fieldend|CONDITION
-        field_condition = PEField.from_showdown_message(data[0])
-        if name == "-fieldstart":
-            found_item, found_ability, found_move, found_of_mon = parse_from_effect_of(data)
-            if found_of_mon and found_ability:
-                pokemon = curr_turn.get_pokemon_from_str(found_of_mon)
-                assert pokemon is not None
-                pokemon.reveal_ability(found_ability)
-
-            if field_condition.is_terrain:
-                curr_turn.battle_field = {f : t for f, t in curr_turn.battle_field.items() if not f.is_terrain}
-            curr_turn.battle_field[field_condition] = curr_turn.turn_number
-        else:
-            if field_condition != PEField.UNKNOWN:
-                curr_turn.battle_field.pop(field_condition)
-
-    elif name == "-cureteam":
-        # |-cureteam|POKEMON
-        poke_list = curr_turn.get_pokemon_list_from_str(data[0])
-        for poke in poke_list:
-            if poke and poke.status != PEStatus.FNT:
-                poke.status = Nothing.NO_STATUS
-
-    elif name in ["-start", "-end"]:
-        # |-start|POKEMON|EFFECT or # |-end|POKEMON|EFFECT
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        assert pokemon is not None
-        effect = PEEffect.from_showdown_message(data[1])
-        if effect == PEEffect.MIMIC:
-            # 1 of 2 ways PS will tell you which move Mimic copies 
-            # (depending on gen or replay date it's hard to tell)
-            pokemon.mimic(move_name=data[2], gen=replay.gen)
-        found_item, found_ability, found_move, found_mon = parse_from_effect_of(data[2:])
-        if "start" in name:
-            pokemon.start_effect(effect)
-        else:
-            pokemon.end_effect(effect)
-        if found_item or found_ability or found_mon or found_move:
-            if found_mon is None:
-                of_pokemon = pokemon
+            # how much PP is used?
+            pressured = target_pokemon is not None and target_pokemon.active_ability == "Pressure" and target_pokemon != pokemon and '[notarget]' not in data
+            if move.charge_move:
+                if "[still]" in data:
+                    pp_used = 0
+                else:
+                    pp_used = 1 + pressured
+            elif replay.gen == 1:
+                # gen1 partial trapping PP counting edge cases
+                if probably_repeat_move:
+                    # the turns that auto apply partial trapping moves w/o PP have `move USER MOVE TARGET [from]MOVE`
+                    pp_used = 0
+                elif move_name in SpecialCategories.GEN1_PP_ROLLOVERS and pokemon.get_pp_for_move_name(move_name) == 0:
+                    # (https://www.smogon.com/rb/articles/rby_trapping)
+                    pp_used = -63
+                else:
+                    pp_used = 1
             else:
-                of_pokemon = curr_turn.get_pokemon_from_str(found_mon)
-            if found_ability:
-                of_pokemon.reveal_ability(found_ability)
+                pp_used = 1 + pressured
+            # known PP counter flaw: consecutively executed moves (https://bulbapedia.bulbagarden.net/wiki/Category:Consecutively_executed_moves).
+            # also breaks the PS replay viewer (https://replay.pokemonshowdown.com/gen2ou-1136717194); we just aren't given enough info to tell
+            # when the move should/shouldn't use PP.
 
-    elif name == "-setboost":
-        # |-setboost|POKEMON|STAT|AMOUNT
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        assert pokemon is not None
-        pokemon.boosts.set_to_with_str(data[1], int(data[2]))
+            # use move
+            pokemon.use_move(move, pp_used=pp_used)
+            if pokemon.transformed_into is not None:
+                pokemon.transformed_into.reveal_move(copy.deepcopy(move))
 
-    elif name == "-clearboost":
-        # |-clearboost|POKEMON
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        assert pokemon is not None
-        pokemon.boosts = Boosts()
+            # create edge between pokemon to help track down special cases
+            pokemon.last_target = (target_pokemon, move_name) 
+            if target_pokemon:
+                target_pokemon.last_targeted_by = (pokemon, move_name)
 
-    elif name == "-clearpositiveboost":
-        # |-clearpositiveboost|TARGET|POKEMON|EFFECT
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        for stat in pokemon.boosts.stat_attrs:
-            current = getattr(pokemon.boosts, stat)
-            setattr(pokemon.boosts, stat, min(current, 0))
+            # create Action
+            curr_turn.set_move_attribute(
+                s=poke_str,
+                move_name=move.name,
+                is_noop=False,
+                is_switch=False,
+                user=pokemon,
+                target=target_pokemon,
+            )
 
-    elif name == "-clearnegativeboost":
-        # |-clearnegativeboost|POKEMON
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        for stat in pokemon.boosts.stat_attrs:
-            current = getattr(pokemon.boosts, stat)
-            setattr(pokemon.boosts, stat, max(current, 0))
+            
+        elif name == "-damage" or name == "-heal":
+            # |-damage|POKEMON|HP STATUS or |-heal|POKEMON|HP STATUS
+            if len(data) < 2 or (len(data) == 2 and not data[-1]):
+                raise UnfinishedMessageException(" ".join(row))
 
-    elif name == "-copyboost":
-        # |-copyboost|SOURCE|TARGET
-        source = curr_turn.get_pokemon_from_str(data[0])
-        target = curr_turn.get_pokemon_from_str(data[1])
-        assert source is not None and target is not None
-        source.boosts = copy.deepcopy(target.boosts)
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            assert pokemon is not None
 
-    elif name == "-clearallboost":
-        # |-clearallboost
-        for active in [curr_turn.active_pokemon_1, curr_turn.active_pokemon_2]:
-            for pokemon in active:
-                if pokemon:
-                    pokemon.boosts = Boosts()
+            if len(data) > 2:
+                # parse extra info for items and abilities
+                found_item, found_ability, found_move, found_of_pokemon = parse_from_effect_of(data)
+                if found_move:
+                    if found_move in SpecialCategories.FORCES_REVIVAL:
+                        switch_team, switch_slot = curr_turn.player_id_to_action_idx(data[0])
+                        for subturn in curr_turn.subturns:
+                            if subturn.matches_slot(switch_team, switch_slot):
+                                if subturn.unfilled:
+                                    subturn.fill_turn(curr_turn.create_subturn(True))
+                                else:
+                                    breakpoint()
+                                # the action regards this as a "switch", which will map it to the discrete idxs normally
+                                # used for switching.
+                                subturn.action = Action(name="Forced Revival", user=None, target=pokemon, is_switch=False)
+                                break
+                        if pokemon.status == PEStatus.FNT:
+                            pokemon.status = Nothing.NO_STATUS
+                        else:
+                            breakpoint()
+                    if found_move in SpecialCategories.RESTORES_PP:
+                        for move_name, move in pokemon.moves.items():
+                            move.pp = move.maximum_pp
+                            if move_name in pokemon.had_moves:
+                                had_move = pokemon.had_moves[move_name]
+                                had_move.pp = had_move.maximum_pp
+                    if found_move in SpecialCategories.RESTORES_STATUS and pokemon.status != PEStatus.FNT:
+                        pokemon.status = Nothing.NO_STATUS
+                if found_item:
+                    if name == "-heal":
+                        # like the ability/heal combo just below, the "[of]" pokemon here is misleading
+                        of_pokemon = pokemon
+                        if of_pokemon.active_item != Nothing.NO_ITEM:
+                            of_pokemon.active_item = found_item
+                        if of_pokemon.had_item is None:
+                            of_pokemon.had_item = found_item
+                    else:
+                        if found_of_pokemon:
+                            of_pokemon = curr_turn.get_pokemon_from_str(found_of_pokemon)
+                        else:
+                            of_pokemon = pokemon
+                        of_pokemon.active_item = found_item
+                        if of_pokemon.had_item is None:
+                            of_pokemon.had_item = found_item
+                if found_ability:
+                    if name == "-heal":
+                        # poke-env comments say the [of] pokemon is the wrong side here
+                        # (|-heal|p2a: Quagsire|100/100|[from] ability: Water Absorb|[of] p1a: Genesect
+                        # is healing Quagsire from Quagsire's Water Absorb ability)
+                        of_pokemon = pokemon
+                        # dealing with edge case of switching move failure due to the target's ability
+                        SpecialCategories.cancel_opponent_switch_based_on_user_ability(
+                            curr_turn,
+                            user_pokemon=pokemon,
+                            based_on_ability=found_ability
+                        )
+                    else:
+                        of_pokemon = curr_turn.get_pokemon_from_str(found_of_pokemon) if found_of_pokemon else pokemon
+                    # reveal found ability
+                    of_pokemon.reveal_ability(found_ability)
+                    
 
-    elif name == "-restoreboost":
-        # |-restoreboost|p2a: Gorebyss|[silent]
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        assert pokemon is not None
-        boosts = pokemon.boosts
-        for stat_name in boosts.stat_attrs:
-            stage = getattr(boosts, stat_name)
-            setattr(boosts, stat_name, max(stage, 0))
+            # take or heal damage
+            if "fnt" in data[1] or data[1] == "0" or data[1][:2] == "0 ":
+                pokemon.current_hp = 0
+                pokemon.status = PEStatus.FNT
+            else:
+                if "/" not in data[1]:
+                    raise UnfinishedMessageException(row)
+                cur_hp, max_hp = parse_hp_fraction(data[1])
+                pokemon.current_hp = cur_hp
+                pokemon.max_hp = max_hp
 
-    elif name == "-invertboost":
-        # |-invertboost|POKEMON
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        assert pokemon is not None
-        boosts = pokemon.boosts
-        for stat_name in boosts.stat_attrs:
-            inv = -getattr(boosts, stat_name)
-            setattr(boosts, stat_name, inv)
+        
+        elif name == "-sethp":
+            # |-sethp|POKEMON|HP
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            assert pokemon is not None
+            cur_hp, max_hp = parse_hp_fraction(data[1])
+            if pokemon.max_hp:
+                assert max_hp == pokemon.max_hp
+            pokemon.current_hp = cur_hp
 
-    elif name == "-mustrecharge":
-        # |-mustrecharge|POKEMON
-        # the action labels default to None, so we do nothing here.
-        pass
+        elif name == "faint":
+            # |faint|POKEMON
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            assert pokemon is not None
+            pokemon.current_hp = 0
+            pokemon.status = PEStatus.FNT
+            curr_turn.mark_forced_switch(data[0])
 
-    elif name == "cant":
-        # |cant|POKEMON|REASON or |cant|POKEMON|REASON|MOVE
-        # pokemon cannot move and we usually aren't told what the player's preferred action was.
-        # the action labels default to None, so we do nothing here.
-        pass
+        elif name == "-status" or name == "-curestatus":
+            # |-status|POKEMON|STATUS or |-curestatus|POKEMON|STATUS
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            assert pokemon is not None
+            status = PEStatus[data[1].upper()]
+            if name == "-status":
+                pokemon.status = status
+            elif pokemon.status == status:
+                pokemon.status = Nothing.NO_STATUS
 
-    elif name == "-immune":
-        # | -immune | POKEMON
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
-        if found_ability:
-            pokemon.reveal_ability(found_ability)
-        SpecialCategories.cancel_opponent_switch_based_on_user_immunity(
-            curr_turn,
-            immune_pokemon=pokemon,
-        )
+        elif name == "-boost" or name == "-unboost":
+            # |-boost|POKEMON|STAT|AMOUNT or |-unboost|POKEMON|STAT|AMOUNT
+            if len(data) < 3:
+                raise UnfinishedMessageException(row)
+            change = int(data[2])
+            if name == "-unboost":
+                change *= -1
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            assert pokemon is not None
+            pokemon.boosts.change_with_str(data[1], change)
 
-    elif name == "detailschange" or name == "-formechange":
-        # |detailschange|POKEMON|DETAILS|HP STATUS or |-formechange|POKEMON|SPECIES|HP STATUS
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        if pokemon.had_name is None:
-            pokemon.had_name = pokemon.name
-        name, lvl = Pokemon.identify_from_details(data[1])
-        pokemon.name = name
-        pokemon.lvl = lvl
-        found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
-        if found_ability:
-            pokemon.reveal_ability(found_ability)
+        elif name == "-swapboost":
+            # |-swapboost|SOURCE|TARGET|STATS
+            pokemon_1 = curr_turn.get_pokemon_from_str(data[0])
+            pokemon_2 = curr_turn.get_pokemon_from_str(data[1])
+            if "[from]" in data[2]:
+                if "Heart Swap" in data[2]:
+                    stats = ["atk", "spa", "def", "spd", "spe", "accuracy", "evasion"]
+                elif "Guard Swap" in data[2]:
+                    stats = ["def", "spd"]
+                else:
+                    raise UnimplementedSwapboost(row)
+            else:
+                stats = data[2].split(", ")
+            temp = copy.deepcopy(pokemon_1.boosts)
+            for stat in stats:
+                pokemon_1.boosts.set_to_with_str(stat, pokemon_2.boosts.get_boost(stat))
+                pokemon_2.boosts.set_to_with_str(stat, temp.get_boost(stat))
 
-    elif name == "replace":
-        # |replace|POKEMON|DETAILS|HP STATUS
-        raise ZoroarkException
-
-    elif name == "-burst":
-        # |-burst|POKEMON|SPECIES|ITEM
-        raise UnimplementedMessage(row)
-
-    elif name == "-fail":
-        # |-fail|POKEMON|ACTION
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        from_item, from_ability, from_move, from_mon = parse_from_effect_of(data)
-        if from_item is not None and from_mon is not None:
-            pokemon.reveal_item(from_item)
-        if from_ability is not None and from_mon is not None:
-            pokemon.reveal_ability(from_ability)
-        SpecialCategories.cancel_user_switch_based_on_failure(
-            curr_turn,
-            user_pokemon=pokemon,
-        )
-        if pokemon.last_targeted_by is not None:
-            # awful edge case; holding pattern until we can figure out the more general rule
-            # https://replay.pokemonshowdown.com/gen9ou-2383086891
-            last_targeted_by_poke, last_targeted_by_move = pokemon.last_targeted_by
-            if replay.gen >= 7 and last_targeted_by_move in {"Parting Shot"} and any("unboost" in s for s in data):
-                # https://bulbapedia.bulbagarden.net/wiki/Parting_Shot_(move)
-                breakpoint()
-                team, slot = curr_turn.player_id_to_action_idx(data[0])
-                other_team = 3-team
-                curr_turn.remove_empty_subturn(team=other_team, slot=0) # FIXME for doubles
-
-    elif name == "-singleturn":
-        # ['-singleturn', 'p2a: Abomasnow', 'Protect']
-        pokemon = curr_turn.get_pokemon_from_str(data[0])
-        effect = PEEffect.from_showdown_message(data[1])
-        if effect == PEEffect.PROTECT:
-            pokemon.protected = True
-    
-    else:
-        if data and data[0].startswith(">>>"):
-            # leaked browser console messages?
-            pass
-        else:
+        elif name == "swap":
+            # |swap|POKEMON|POSITION
             raise UnimplementedMessage(row)
 
+        elif name == "-ability":
+            # |-ability|POKEMON|ABILITY|[from]EFFECT
+            if len(data) < 2:
+                raise UnfinishedMessageException(row)
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            ability = parse_ability(data[1])
+            found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
+            SpecialCategories.cancel_opponent_switch_based_on_user_ability(
+                curr_turn,
+                user_pokemon=pokemon,
+                based_on_ability=ability,
+            )
+            if found_mon and found_ability:
+                if found_ability in SpecialCategories.ABILITY_STEALS_ABILITY:
+                    # ['p1a: Porygon2', 'Clear Body', '[from] ability: Trace', '[of] p2a: Dragapult']
+                    # Porygon2 has the Trace ability, copying Clear Body from Dragapult
+                    pokemon.active_ability = ability # # porygon now has clear body
+                    if pokemon.had_ability is None:
+                        pokemon.had_ability = found_ability # porygon used to have trace
+                    curr_turn.get_pokemon_from_str(found_mon).reveal_ability(ability) # dragapult has clear body
+                else:
+                    raise UnhandledFromOfAbilityLogic(row)
+            elif (found_item or found_mon or found_move) and found_ability:
+                raise UnhandledFromOfAbilityLogic(row)
+            else:
+                pokemon.reveal_ability(ability)
 
-def forward_fill(replay: ParsedReplay, log: list[list[str]], verbose: bool = False) -> ParsedReplay:
+        elif name == "-endability":
+            # |-endability|POKEMON
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon.active_ability = Nothing.NO_ABILITY
+            if len(data) > 1:
+                ability = parse_ability(data[1])
+                if pokemon.had_ability is None:
+                    pokemon.had_ability = ability
+
+        elif name == "-sidestart" or name == "-sideend" or name == "-swapsideconditions":
+            # |-sidestart|SIDE|CONDITION or |-sideend|SIDE|CONDITION or |-swapsideconditions
+            if "start" in name or "end" in name:
+                side_str = data[0][0:2]
+                if side_str == "p1":
+                    side = curr_turn.conditions_1
+                elif side_str == "p2":
+                    side = curr_turn.conditions_2
+                else:
+                    raise RareValueError(f"Can't find side conditions from identifier `{data[0]}`")
+                if len(data) < 2:
+                    raise UnfinishedMessageException(row)
+                condition = PESideCondition.from_showdown_message(data[1])
+                if "start" in name:
+                    if condition in STACKABLE_CONDITIONS:
+                        side[condition] = side.get(condition, 0) + 1
+                    elif condition not in side:
+                        side[condition] = curr_turn.turn_number
+                else:
+                    if condition in side and condition != PESideCondition.UNKNOWN:
+                        side.pop(condition)
+            else:
+                curr_turn.conditions_1, curr_turn.conditions_2 = curr_turn.conditions_2, curr_turn.conditions_1
+
+        elif name == "-weather":
+            # |-weather|WEATHER
+            if data[0] == "none":
+                curr_turn.weather = Nothing.NO_WEATHER
+            else:
+                curr_turn.weather = PEWeather.from_showdown_message(data[0])
+            found_item, found_ability, found_move, found_of_mon = parse_from_effect_of(data)
+            if found_of_mon:
+                pokemon = curr_turn.get_pokemon_from_str(found_of_mon)
+                assert pokemon is not None
+                if found_ability:
+                    pokemon.reveal_ability(found_ability)
+
+        elif name == "-activate":
+            # |-activate|EFFECT
+            # also the catch-all message PS sends for minor edge cases
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            assert pokemon is not None
+            if data[1].startswith("ability:"):
+                ability = parse_ability(data[1])
+                pokemon.reveal_ability(ability)
+                return
+
+            effect = PEEffect.from_showdown_message(data[1])
+            # edge cases
+            found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
+            if effect == PEEffect.TRICK:
+                if found_mon:
+                    found_mon = curr_turn.get_pokemon_from_str(found_mon)
+                    pokemon.tricking = found_mon
+                    found_mon.tricking = pokemon
+                else:
+                    raise TrickError(row)
+            elif effect == PEEffect.MIMIC:
+                pokemon.mimic(move_name=data[2], gen=replay.gen)
+            elif effect in [PEEffect.LEPPA_BERRY, PEEffect.MYSTERY_BERRY]:
+                # https://bulbapedia.bulbagarden.net/wiki/Category:PP-restoring_items
+                pp_gained = 10 if effect == PEEffect.LEPPA_BERRY else 5
+                move_name = data[2]
+                if move_name in pokemon.moves:
+                    pokemon.moves[move_name].pp += pp_gained
+                    if move_name in pokemon.had_moves:
+                        pokemon.had_moves[move_name].pp += pp_gained
+            # this catches so much redundant info that probably shouldn't be called
+            # a volatile status (and isn't displayed like that on PS)
+            # but it's 1:1 with poke-env
+            pokemon.start_effect(effect)
+
+        elif name == "-item" or name == "-enditem":
+            # |-item|POKEMON|ITEM|[from]EFFECT or |-enditem|POKEMON|ITEM|[from]EFFECT
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            item = data[1]
+            if pokemon is None:
+                raise RareValueError(f"Could not find pokemon from {data[0]}")
+
+            found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
+            if found_move:
+                if found_move in SpecialCategories.ITEM_APPROVED_SKIP:
+                    pass
+                elif found_move in SpecialCategories.ITEM_UNNAMED_STOLEN:
+                    # item is stolen from the opponent using a move
+                    if not pokemon.tricking:
+                        raise TrickError(row)
+                    if pokemon.tricking.had_item is None:
+                        pokemon.tricking.had_item = item
+                elif found_move in SpecialCategories.ITEM_NAMED_STOLEN:
+                    # item is stolen from a named opponent.
+                    if "end" in name:
+                        pokemon_that_had_the_item = pokemon
+                    else:
+                        pokemon_that_had_the_item = curr_turn.get_pokemon_from_str(found_mon)
+                    # remove item 
+                    pokemon_that_had_the_item.active_item = Nothing.NO_ITEM
+                    if pokemon_that_had_the_item.had_item is None:
+                        pokemon_that_had_the_item.had_item = item
+                    # if we still don't know the pokemon's item here, make sure we never fill it in
+                    if pokemon.had_item is None:
+                        pokemon.had_item = BackwardMarkers.FORCE_UNKNOWN
+                else:
+                    raise UnhandledFromMoveItemLogic(row)
+            elif pokemon.had_item is None:
+                pokemon.had_item = item
+
+            # adjust active item
+            if "end" in name:
+                pokemon.active_item = Nothing.NO_ITEM
+                if item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT and found_move is None:
+                    # catch Eject Button and Eject Pack messages (which - if activated - would not have an item component?)
+                    curr_turn.mark_forced_switch(data[0])
+                    SpecialCategories.cancel_opponent_switch_based_on_user_item(
+                        curr_turn,
+                        user_pokemon=pokemon,
+                        based_on_item=item,
+                    )
+                elif item in SpecialCategories.ITEMS_THAT_SWITCH_THE_ATTACKER_OUT and found_mon is not None:
+                    team, slot = curr_turn.player_id_to_action_idx(found_mon)
+                    curr_turn.remove_empty_subturn(team=team, slot=slot)
+            else:
+                pokemon.active_item = item
+
+        elif name == "-terastallize":
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            poke_str = data[0][:3]
+            curr_turn.set_move_attribute(
+                s=poke_str,
+                is_tera=True,
+            )
+            pokemon.type = [data[1]]
+
+        elif name == "-zpower" or name == "-mega":
+            raise SoftLockedGen(replay.gen)
+
+        elif name == "-transform":
+            # |-transform|POKEMON|SPECIES
+            user = curr_turn.get_pokemon_from_str(data[0])
+            target = curr_turn.get_pokemon_from_str(data[1])
+            _, found_ability, _, _ = parse_from_effect_of(data)
+            if found_ability:
+                user.reveal_ability(found_ability)
+            user.transform(target)
+
+        elif name in ["-fieldstart", "-fieldend"]:
+            # |-fieldstart|CONDITION or |-fieldend|CONDITION
+            field_condition = PEField.from_showdown_message(data[0])
+            if name == "-fieldstart":
+                found_item, found_ability, found_move, found_of_mon = parse_from_effect_of(data)
+                if found_of_mon and found_ability:
+                    pokemon = curr_turn.get_pokemon_from_str(found_of_mon)
+                    assert pokemon is not None
+                    pokemon.reveal_ability(found_ability)
+
+                if field_condition.is_terrain:
+                    curr_turn.battle_field = {f : t for f, t in curr_turn.battle_field.items() if not f.is_terrain}
+                curr_turn.battle_field[field_condition] = curr_turn.turn_number
+            else:
+                if field_condition != PEField.UNKNOWN:
+                    curr_turn.battle_field.pop(field_condition)
+
+        elif name == "-cureteam":
+            # |-cureteam|POKEMON
+            poke_list = curr_turn.get_pokemon_list_from_str(data[0])
+            for poke in poke_list:
+                if poke and poke.status != PEStatus.FNT:
+                    poke.status = Nothing.NO_STATUS
+
+        elif name in ["-start", "-end"]:
+            # |-start|POKEMON|EFFECT or # |-end|POKEMON|EFFECT
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            assert pokemon is not None
+            effect = PEEffect.from_showdown_message(data[1])
+            if effect == PEEffect.MIMIC:
+                # 1 of 2 ways PS will tell you which move Mimic copies 
+                # (depending on gen or replay date it's hard to tell)
+                pokemon.mimic(move_name=data[2], gen=replay.gen)
+            found_item, found_ability, found_move, found_mon = parse_from_effect_of(data[2:])
+            if "start" in name:
+                pokemon.start_effect(effect)
+            else:
+                pokemon.end_effect(effect)
+            if found_item or found_ability or found_mon or found_move:
+                if found_mon is None:
+                    of_pokemon = pokemon
+                else:
+                    of_pokemon = curr_turn.get_pokemon_from_str(found_mon)
+                if found_ability:
+                    of_pokemon.reveal_ability(found_ability)
+
+        elif name == "-setboost":
+            # |-setboost|POKEMON|STAT|AMOUNT
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            assert pokemon is not None
+            pokemon.boosts.set_to_with_str(data[1], int(data[2]))
+
+        elif name == "-clearboost":
+            # |-clearboost|POKEMON
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            assert pokemon is not None
+            pokemon.boosts = Boosts()
+
+        elif name == "-clearpositiveboost":
+            # |-clearpositiveboost|TARGET|POKEMON|EFFECT
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            for stat in pokemon.boosts.stat_attrs:
+                current = getattr(pokemon.boosts, stat)
+                setattr(pokemon.boosts, stat, min(current, 0))
+
+        elif name == "-clearnegativeboost":
+            # |-clearnegativeboost|POKEMON
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            for stat in pokemon.boosts.stat_attrs:
+                current = getattr(pokemon.boosts, stat)
+                setattr(pokemon.boosts, stat, max(current, 0))
+
+        elif name == "-copyboost":
+            # |-copyboost|SOURCE|TARGET
+            source = curr_turn.get_pokemon_from_str(data[0])
+            target = curr_turn.get_pokemon_from_str(data[1])
+            assert source is not None and target is not None
+            source.boosts = copy.deepcopy(target.boosts)
+
+        elif name == "-clearallboost":
+            # |-clearallboost
+            for active in [curr_turn.active_pokemon_1, curr_turn.active_pokemon_2]:
+                for pokemon in active:
+                    if pokemon:
+                        pokemon.boosts = Boosts()
+
+        elif name == "-restoreboost":
+            # |-restoreboost|p2a: Gorebyss|[silent]
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            assert pokemon is not None
+            boosts = pokemon.boosts
+            for stat_name in boosts.stat_attrs:
+                stage = getattr(boosts, stat_name)
+                setattr(boosts, stat_name, max(stage, 0))
+
+        elif name == "-invertboost":
+            # |-invertboost|POKEMON
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            assert pokemon is not None
+            boosts = pokemon.boosts
+            for stat_name in boosts.stat_attrs:
+                inv = -getattr(boosts, stat_name)
+                setattr(boosts, stat_name, inv)
+
+        elif name == "-mustrecharge":
+            # |-mustrecharge|POKEMON
+            # the action labels default to None, so we do nothing here.
+            pass
+
+        elif name == "cant":
+            # |cant|POKEMON|REASON or |cant|POKEMON|REASON|MOVE
+            # pokemon cannot move and we usually aren't told what the player's preferred action was.
+            # the action labels default to None, so we do nothing here.
+            pass
+
+        elif name == "-immune":
+            # | -immune | POKEMON
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
+            if found_ability:
+                pokemon.reveal_ability(found_ability)
+            SpecialCategories.cancel_opponent_switch_based_on_user_immunity(
+                curr_turn,
+                immune_pokemon=pokemon,
+            )
+
+        elif name == "detailschange" or name == "-formechange":
+            # |detailschange|POKEMON|DETAILS|HP STATUS or |-formechange|POKEMON|SPECIES|HP STATUS
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            if pokemon.had_name is None:
+                pokemon.had_name = pokemon.name
+            name, lvl = Pokemon.identify_from_details(data[1])
+            pokemon.name = name
+            pokemon.lvl = lvl
+            found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
+            if found_ability:
+                pokemon.reveal_ability(found_ability)
+
+        elif name == "replace":
+            # |replace|POKEMON|DETAILS|HP STATUS
+            raise ZoroarkException
+
+        elif name == "-burst":
+            # |-burst|POKEMON|SPECIES|ITEM
+            raise UnimplementedMessage(row)
+
+        elif name == "-fail":
+            # |-fail|POKEMON|ACTION
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            from_item, from_ability, from_move, from_mon = parse_from_effect_of(data)
+            if from_item is not None and from_mon is not None:
+                pokemon.reveal_item(from_item)
+            if from_ability is not None and from_mon is not None:
+                pokemon.reveal_ability(from_ability)
+            SpecialCategories.cancel_user_switch_based_on_failure(
+                curr_turn,
+                user_pokemon=pokemon,
+            )
+            if pokemon.last_targeted_by is not None:
+                # awful edge case; holding pattern until we can figure out the more general rule
+                # https://replay.pokemonshowdown.com/gen9ou-2383086891
+                last_targeted_by_poke, last_targeted_by_move = pokemon.last_targeted_by
+                if replay.gen >= 7 and last_targeted_by_move in {"Parting Shot"} and any("unboost" in s for s in data):
+                    # https://bulbapedia.bulbagarden.net/wiki/Parting_Shot_(move)
+                    breakpoint()
+                    team, slot = curr_turn.player_id_to_action_idx(data[0])
+                    other_team = 3-team
+                    curr_turn.remove_empty_subturn(team=other_team, slot=0) # FIXME for doubles
+
+        elif name == "-singleturn":
+            # ['-singleturn', 'p2a: Abomasnow', 'Protect']
+            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            effect = PEEffect.from_showdown_message(data[1])
+            if effect == PEEffect.PROTECT:
+                pokemon.protected = True
+        
+        else:
+            if data and data[0].startswith(">>>"):
+                # leaked browser console messages?
+                pass
+            else:
+                raise UnimplementedMessage(row)
+
+
+def forward_fill(
+    replay: ParsedReplay, log: list[list[str]], verbose: bool = False
+) -> ParsedReplay:
+    sim_protocol = SimProtocol()
     for row in log:
         if row:
             if verbose:
                 print(f"{replay.gameid} {row}")
-            parse_row(replay, row)
+            sim_protocol.parse_row(replay, row)
 
     checks.check_noun_spelling(replay)
     checks.check_finished(replay)
