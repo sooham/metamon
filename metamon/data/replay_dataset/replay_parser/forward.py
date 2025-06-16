@@ -81,6 +81,8 @@ class SpecialCategories:
     Map groups of edge case behaviors to a name that describes what that edge case is.
     """
 
+    # fmt: off
+
     # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_switch_the_user_out
     MOVES_THAT_SWITCH_THE_USER_OUT = {
         "Baton Pass",
@@ -151,6 +153,7 @@ class SpecialCategories:
     HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL = {
         "Water Absorb": "Flip Turn",
         "Dry Skin": "Flip Turn",
+        "Lightning Rod": "Volt Switch",
         # "Volt Absorb" : "Volt Switch",
     }
 
@@ -161,6 +164,22 @@ class SpecialCategories:
     ITEM_NAMED_STOLEN = {"Thief", "Covet"}
     ITEMS_THAT_SWITCH_THE_USER_OUT = {"Eject Button", "Eject Pack"}
     ITEMS_THAT_SWITCH_THE_ATTACKER_OUT = {"Red Card"}
+
+    @staticmethod
+    def cancel_opponent_switch_based_on_user_ability(curr_turn : Turn, user_pokemon: Pokemon, based_on_ability: str) -> bool:
+        if (based_on_ability in SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL 
+            and user_pokemon.last_targeted_by):
+            last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
+            if last_targeted_by_move == SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL[based_on_ability]:
+                breakpoint()
+                subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
+                if subturn_slot:
+                    # block the forced switch from occuring
+                    curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
+                    return True
+        return False
+
+    # fmt: on
 
 
 REPLAY_IGNORES = {
@@ -589,20 +608,8 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                     # (|-heal|p2a: Quagsire|100/100|[from] ability: Water Absorb|[of] p1a: Genesect
                     # is healing Quagsire from Quagsire's Water Absorb ability)
                     of_pokemon = pokemon
-
                     # dealing with edge case of switching move failure due to the target's ability
-                    if (found_of_pokemon is not None 
-                        and found_ability in SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL 
-                        and pokemon.last_targeted_by is not None):
-                        found_of_pokemon_as_poke = curr_turn.get_pokemon_from_str(found_of_pokemon)
-                        last_targeted_by_poke, last_targeted_by_move = pokemon.last_targeted_by
-                        # this pokemon is healing becaues it was hit by a move that would normally switch the user out
-                        if (last_targeted_by_move == SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL[found_ability] 
-                            and last_targeted_by_poke == found_of_pokemon_as_poke):
-                            breakpoint()
-                            # block the forced switch from occuring
-                            team, slot = curr_turn.player_id_to_action_idx(found_of_pokemon)
-                            curr_turn.remove_empty_subturn(team=team, slot=slot)
+                    SpecialCategories.cancel_opponent_switch_based_on_user_ability(curr_turn, pokemon, found_ability)
                 else:
                     of_pokemon = curr_turn.get_pokemon_from_str(found_of_pokemon) if found_of_pokemon else pokemon
                 # reveal found ability
@@ -688,6 +695,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         pokemon = curr_turn.get_pokemon_from_str(data[0])
         ability = parse_ability(data[1])
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
+        breakpoint()
         if found_mon and found_ability:
             if found_ability in SpecialCategories.ABILITY_STEALS_ABILITY:
                 # ['p1a: Porygon2', 'Clear Body', '[from] ability: Trace', '[of] p2a: Dragapult']

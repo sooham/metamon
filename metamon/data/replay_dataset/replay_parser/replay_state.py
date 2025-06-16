@@ -524,6 +524,14 @@ class Turn:
     def get_available_switches(self, p1: bool) -> List[Pokemon]:
         return self.available_switches_1 if p1 else self.available_switches_2
 
+    def pokemon_to_action_idx(self, pokemon: Pokemon) -> Optional[Tuple[int, int]]:
+        for team_idx, team in enumerate([self.active_pokemon_1, self.active_pokemon_2]):
+            for slot_idx, slot in enumerate(team):
+                if slot == pokemon:
+                    # teams were apparently 1-indexed...
+                    return team_idx + 1, slot_idx
+        return None
+
     def on_end_of_turn(self):
         for pokemon in self.all_pokemon:
             if pokemon:
