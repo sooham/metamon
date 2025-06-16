@@ -407,8 +407,17 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         pokemon = curr_turn.get_pokemon_from_str(data[0])
         move_name = data[1]
         move = Move(name=move_name, gen=replay.gen)
-        target_pokemon = curr_turn.get_pokemon_from_str(data[2]) if len(data) > 2 else None
         probably_repeat_move = False
+
+        # id target
+        if len(data) > 2:
+            target_pokemon = curr_turn.get_pokemon_from_str(data[2])
+            target_team_idx, target_slot_idx = curr_turn.player_id_to_action_idx(data[2])
+        else:
+            target_pokemon = None
+            target_team_idx, target_slot_idx = None, None
+
+        # find extra info from the message
         extra_from_message = None
         for d in reversed(data):
             if "[from]" in d:
@@ -429,8 +438,9 @@ def parse_row(replay: ParsedReplay, row: List[str]):
             # fishing for "moves called by moves that call other moves", which should be prevented
             # from being incorrectly added to a pokemon's true moveset.
             override_risk = move_name in SpecialCategories.CONSECUTIVE_MOVES or move.charge_move
+
             if "move:" in extra_from_message or "ability:" in extra_from_message:
-                # MODERN REPLAY VERSION
+                # equivalent of below block but for messages that do specify move: or ability:
                 _, is_ability, is_move, _ = parse_from_effect_of([extra_from_message])
                 if is_move:
                     from_move = parse_move_from_extra(extra_from_message)
@@ -446,11 +456,17 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                         # this "move" was automatically called by an ability,
                         # and shouldn't be considered a "move" that reveals anything
                         # about this Pokemon or uses PP --- early exit.
+                        if (move_name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT 
+                            and target_pokemon is not None 
+                            and target_pokemon.last_used_move_name == move_name):
+                            # the move being stolen by the ability is cancelling the opponent's forced switch
+                            breakpoint()
+                            curr_turn.remove_empty_subturn(team=target_team_idx, slot=target_slot_idx)
                         return
                     else:
                         raise UnimplementedMoveFromMoveAbility(data)
             else:
-                # OLD REPLAY VERSION
+                # equivalent of above block but for messages that do not specify move: or ability:
                 ability_or_move = parse_extra(extra_from_message)
                 probably_repeat_move = ability_or_move.lower() == move_name.lower()
                 probably_item = ability_or_move in ({pokemon.had_item, pokemon.active_item} | SpecialCategories.MOVE_IGNORE_ITEMS)
