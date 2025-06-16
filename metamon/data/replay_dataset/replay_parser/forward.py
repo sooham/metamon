@@ -350,87 +350,91 @@ class SimProtocol:
         "-zbroken",  # z-move hits through protect
     }
 
-    def _parse_gen(self, replay: ParsedReplay, message_args: List[str]):
+    def __init__(self, replay: ParsedReplay):
+        self.replay = replay
+
+    @property
+    def curr_turn(self):
+        return self.replay.turnlist[-1]
+
+    def _parse_gen(self, args: List[str]):
         # |gen|GENNUM
-        replay.gen = int(message_args[0])
-        if not (replay.gen <= 4 or replay.gen == 9):
-            raise SoftLockedGen(replay.gen)
+        self.replay.gen = int(args[0])
+        if not (self.replay.gen <= 4 or self.replay.gen == 9):
+            raise SoftLockedGen(self.replay.gen)
+
+    def _parse_player(self, args: List[str]):
+        # |player|PLAYER|USERNAME|AVATAR|RATING
+        if len(args) < 2 or not args[1]:
+            # skip reintroductions
+            return
+        if args[0] == "p1":
+            slot = 0
+        elif args[0] == "p2":
+            slot = 1
+        else:
+            raise RareValueError(
+                f"Could not parse player slot from player id `{args[0]}`"
+            )
+        self.replay.players[slot] = to_id_str(args[1])
+        if len(args) >= 4 and args[3]:
+            self.replay.ratings[slot] = int(args[3])
+        else:
+            self.replay.ratings[slot] = "Unrated"
 
     # fmt: off
-    def interpret_message(self, replay: ParsedReplay, message: List[str]):
+
+    def interpret_message(self, message: List[str]):
         """
         https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
         
         and https://github.com/hsahovic/poke-env/blob/master/src/poke_env/environment/abstract_battle.py
         """
-        curr_turn = replay.turnlist[-1]
-
         name, *data = message
-
         if name in self.IGNORES:
             return
-
         if name == "gen":
-            # |gen|GENNUM
-            replay.gen = int(data[0])
-            if not (replay.gen <= 4 or replay.gen == 9):
-                raise SoftLockedGen(replay.gen)
-        
+            self._parse_gen(data)
         elif name == "tier":
             # |tier|TIER
-            replay.format = data[0]
-
+            self.replay.format = data[0]
         elif name == "player":
-            # |player|PLAYER|USERNAME|AVATAR|RATING
-            if len(data) < 2 or not data[1]:
-                # skip reintroductions
-                return
-            if data[0] == "p1":
-                slot = 0
-            elif data[0] == "p2":
-                slot = 1
-            else:
-                raise RareValueError(f"Could not parse player slot from player id `{data[0]}`")
-            replay.players[slot] = to_id_str(data[1])
-            if len(data) >= 4 and data[3]:
-                replay.ratings[slot] = int(data[3])
-            else:
-                replay.ratings[slot] = "Unrated"
+            self._parse_player(data)
 
         elif name == "teamsize":
             # |teamsize|PLAYER|NUMBER
             player, size = data
             size = int(size)
-            assert len(curr_turn.pokemon_1) == 6
-            assert len(curr_turn.pokemon_2) == 6
+            assert len(self.curr_turn.pokemon_1) == 6
+            assert len(self.curr_turn.pokemon_2) == 6
             if player == "p1":
-                while len(curr_turn.pokemon_1) > size:
-                    curr_turn.pokemon_1.remove(None)
+                while len(self.curr_turn.pokemon_1) > size:
+                    self.curr_turn.pokemon_1.remove(None)
             elif player == "p2":
-                while len(curr_turn.pokemon_2) > size:
-                    curr_turn.pokemon_2.remove(None)
+                while len(self.curr_turn.pokemon_2) > size:
+                    self.curr_turn.pokemon_2.remove(None)
             if size != 6:
                 raise UnusualTeamSize(size)
 
         elif name == "turn":
             # |turn|NUMBER
-            checks.check_forced_switching(curr_turn)
-            assert curr_turn.turn_number is not None
-            new_turn = curr_turn.create_next_turn()
+            checks.check_forced_switching(self.curr_turn)
+            assert self.curr_turn.turn_number is not None
+            new_turn = self.curr_turn.create_next_turn()
             # saves the within-turn-state for the previous turn, but does not continue it
             new_turn.on_end_of_turn() 
-            replay.turnlist.append(new_turn)
+            self.replay.turnlist.append(new_turn)
 
         elif name == "win":
             # |win|USER
             winner_name = to_id_str(data[0])
-            if winner_name == replay.players[0]:
-                replay.winner = Winner.PLAYER_1
-            elif winner_name == replay.players[1]:
-                replay.winner = Winner.PLAYER_2
+            if winner_name == self.replay.players[0]:
+                self.replay.winner = Winner.PLAYER_1
+            elif winner_name == self.replay.players[1]:
+                self.replay.winner = Winner.PLAYER_2
             else:
                 raise RareValueError(
-                    f"Unknown winner: {winner_name} with players: {replay.players}"
+                    f"Unknown winner: {winner_name} with players: {self.replay.players}"
                 )
 
         elif name == "choice":
@@ -446,32 +450,32 @@ class SimProtocol:
                         command = msg[0]
                         args = re.sub(r'\d+', '', " ".join(msg[1:])).strip()
                         if command == "move" and args and args.lower() not in {"recharge", "struggle"}:
-                            user_pokemon = curr_turn.active_pokemon_1[poke_idx] if player_idx == 0 else curr_turn.active_pokemon_2[poke_idx]
-                            move = Move(name=args, gen=replay.gen)
+                            user_pokemon = self.curr_turn.active_pokemon_1[poke_idx] if player_idx == 0 else self.curr_turn.active_pokemon_2[poke_idx]
+                            move = Move(name=args, gen=self.replay.gen)
                             choice = Action(name=move.name, is_switch=False, is_noop=False, user=user_pokemon, target=None)
                             user_pokemon.reveal_move(move)
                             if player_idx == 0:
-                                curr_turn.choices_1[poke_idx] = choice
+                                self.curr_turn.choices_1[poke_idx] = choice
                             else:
-                                curr_turn.choices_2[poke_idx] = choice
+                                self.curr_turn.choices_2[poke_idx] = choice
 
         elif name == "tie":
             # |tie
-            replay.winner = Winner.TIE
+            self.replay.winner = Winner.TIE
 
         elif name == "rule":
             # |rule|RULE: DESCRIPTION
-            replay.rules.append(data[0])
+            self.replay.rules.append(data[0])
 
         elif name == "poke":
             # |poke|PLAYER|DETAILS|ITEM
-            poke_list = curr_turn.get_pokemon_list_from_str(data[0])
+            poke_list = self.curr_turn.get_pokemon_list_from_str(data[0])
             assert isinstance(poke_list, list)
             if None not in poke_list:
                 raise UnusualTeamSize(len(poke_list) + 1)
             poke_name, lvl = Pokemon.identify_from_details(data[1])
             insert_at = poke_list.index(None)
-            poke_list[insert_at] = Pokemon(name=poke_name, lvl=lvl, gen=replay.gen)
+            poke_list[insert_at] = Pokemon(name=poke_name, lvl=lvl, gen=self.replay.gen)
 
         elif name == "switch" or name == "drag":
             # |switch|POKEMON|DETAILS|HP STATUS or |drag|POKEMON|DETAILS|HP STATUS
@@ -479,20 +483,20 @@ class SimProtocol:
                 raise UnfinishedMessageException(message)
             
             # fill the forced switch state
-            switch_team, switch_slot = curr_turn.player_id_to_action_idx(data[0])
+            switch_team, switch_slot = self.curr_turn.player_id_to_action_idx(data[0])
             is_force_switch = False
             player_subturn = None
-            for subturn in curr_turn.subturns:
+            for subturn in self.curr_turn.subturns:
                 if subturn.matches_slot(switch_team, switch_slot):
                     is_force_switch = True
                     player_subturn = subturn
                 if subturn.unfilled:
-                    subturn.fill_turn(curr_turn.create_subturn(True))
+                    subturn.fill_turn(self.curr_turn.create_subturn(True))
 
             # id switch out
-            poke_list = curr_turn.get_pokemon_list_from_str(data[0])
+            poke_list = self.curr_turn.get_pokemon_list_from_str(data[0])
             assert poke_list
-            active_poke_list = curr_turn.get_active_pokemon_from_str(data[0])
+            active_poke_list = self.curr_turn.get_active_pokemon_from_str(data[0])
             current_active = active_poke_list[switch_slot]
             if current_active is not None:
                 current_active.on_switch_out()
@@ -511,7 +515,7 @@ class SimProtocol:
                 poke = poke_list[lookup_known_first_names.index(lookup_poke_name)]
             else:
                 # discovered by switching in
-                poke = Pokemon(name=poke_name, lvl=lvl, gen=replay.gen)
+                poke = Pokemon(name=poke_name, lvl=lvl, gen=self.replay.gen)
                 if None not in poke_list: 
                     raise CantIDSwitchIn(data[1], poke_list)
                 insert_at = poke_list.index(None)
@@ -528,7 +532,7 @@ class SimProtocol:
                         breakpoint()
                     player_subturn.action = Action(name="Switch", user=current_active, target=poke, is_switch=True)
                 else:
-                    curr_turn.set_move_attribute(
+                    self.curr_turn.set_move_attribute(
                         data[0][:3], move_name="Switch", is_noop=False, is_switch=True, user=current_active, target=poke,
                     )
 
@@ -539,17 +543,17 @@ class SimProtocol:
 
             # id pokemon
             poke_str = data[0][:3]
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             move_name = data[1]
-            move = Move(name=move_name, gen=replay.gen)
+            move = Move(name=move_name, gen=self.replay.gen)
             probably_repeat_move = False
 
             # id target
             target_pokemon, target_team_idx, target_slot_idx = None, None, None
             if len(data) > 2:
-                target_pokemon = curr_turn.get_pokemon_from_str(data[2])
+                target_pokemon = self.curr_turn.get_pokemon_from_str(data[2])
                 if target_pokemon:
-                    target_team_idx, target_slot_idx = curr_turn.player_id_to_action_idx(data[2])
+                    target_team_idx, target_slot_idx = self.curr_turn.player_id_to_action_idx(data[2])
             else:
                 target_pokemon = None
                 target_team_idx, target_slot_idx = None, None
@@ -567,9 +571,9 @@ class SimProtocol:
                 protected = target_pokemon.protected if target_pokemon else False
                 missed = any('[miss]' in d for d in data)
                 if not notarget and not protected and not missed:
-                    curr_turn.mark_forced_switch(data[0])
+                    self.curr_turn.mark_forced_switch(data[0])
             elif move_name in SpecialCategories.FORCES_REVIVAL:
-                curr_turn.mark_forced_switch(data[0])
+                self.curr_turn.mark_forced_switch(data[0])
 
             if extra_from_message:
                 # fishing for "moves called by moves that call other moves", which should be prevented
@@ -598,7 +602,7 @@ class SimProtocol:
                                 and target_pokemon.last_used_move_name == move_name):
                                 # the move being stolen by the ability is cancelling the opponent's forced switch
                                 breakpoint()
-                                curr_turn.remove_empty_subturn(team=target_team_idx, slot=target_slot_idx)
+                                self.curr_turn.remove_empty_subturn(team=target_team_idx, slot=target_slot_idx)
                             return
                         else:
                             raise UnimplementedMoveFromMoveAbility(data)
@@ -629,7 +633,7 @@ class SimProtocol:
                     pp_used = 0
                 else:
                     pp_used = 1 + pressured
-            elif replay.gen == 1:
+            elif self.replay.gen == 1:
                 # gen1 partial trapping PP counting edge cases
                 if probably_repeat_move:
                     # the turns that auto apply partial trapping moves w/o PP have `move USER MOVE TARGET [from]MOVE`
@@ -656,7 +660,7 @@ class SimProtocol:
                 target_pokemon.last_targeted_by = (pokemon, move_name)
 
             # create Action
-            curr_turn.set_move_attribute(
+            self.curr_turn.set_move_attribute(
                 s=poke_str,
                 move_name=move.name,
                 is_noop=False,
@@ -671,7 +675,7 @@ class SimProtocol:
             if len(data) < 2 or (len(data) == 2 and not data[-1]):
                 raise UnfinishedMessageException(" ".join(message))
 
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
 
             if len(data) > 2:
@@ -679,11 +683,11 @@ class SimProtocol:
                 found_item, found_ability, found_move, found_of_pokemon = parse_from_effect_of(data)
                 if found_move:
                     if found_move in SpecialCategories.FORCES_REVIVAL:
-                        switch_team, switch_slot = curr_turn.player_id_to_action_idx(data[0])
-                        for subturn in curr_turn.subturns:
+                        switch_team, switch_slot = self.curr_turn.player_id_to_action_idx(data[0])
+                        for subturn in self.curr_turn.subturns:
                             if subturn.matches_slot(switch_team, switch_slot):
                                 if subturn.unfilled:
-                                    subturn.fill_turn(curr_turn.create_subturn(True))
+                                    subturn.fill_turn(self.curr_turn.create_subturn(True))
                                 else:
                                     breakpoint()
                                 # the action regards this as a "switch", which will map it to the discrete idxs normally
@@ -712,7 +716,7 @@ class SimProtocol:
                             of_pokemon.had_item = found_item
                     else:
                         if found_of_pokemon:
-                            of_pokemon = curr_turn.get_pokemon_from_str(found_of_pokemon)
+                            of_pokemon = self.curr_turn.get_pokemon_from_str(found_of_pokemon)
                         else:
                             of_pokemon = pokemon
                         of_pokemon.active_item = found_item
@@ -726,12 +730,12 @@ class SimProtocol:
                         of_pokemon = pokemon
                         # dealing with edge case of switching move failure due to the target's ability
                         SpecialCategories.cancel_opponent_switch_based_on_user_ability(
-                            curr_turn,
+                            self.curr_turn,
                             user_pokemon=pokemon,
                             based_on_ability=found_ability
                         )
                     else:
-                        of_pokemon = curr_turn.get_pokemon_from_str(found_of_pokemon) if found_of_pokemon else pokemon
+                        of_pokemon = self.curr_turn.get_pokemon_from_str(found_of_pokemon) if found_of_pokemon else pokemon
                     # reveal found ability
                     of_pokemon.reveal_ability(found_ability)
                     
@@ -750,7 +754,7 @@ class SimProtocol:
         
         elif name == "-sethp":
             # |-sethp|POKEMON|HP
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
             cur_hp, max_hp = parse_hp_fraction(data[1])
             if pokemon.max_hp:
@@ -759,15 +763,15 @@ class SimProtocol:
 
         elif name == "faint":
             # |faint|POKEMON
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
             pokemon.current_hp = 0
             pokemon.status = PEStatus.FNT
-            curr_turn.mark_forced_switch(data[0])
+            self.curr_turn.mark_forced_switch(data[0])
 
         elif name == "-status" or name == "-curestatus":
             # |-status|POKEMON|STATUS or |-curestatus|POKEMON|STATUS
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
             status = PEStatus[data[1].upper()]
             if name == "-status":
@@ -782,14 +786,14 @@ class SimProtocol:
             change = int(data[2])
             if name == "-unboost":
                 change *= -1
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
             pokemon.boosts.change_with_str(data[1], change)
 
         elif name == "-swapboost":
             # |-swapboost|SOURCE|TARGET|STATS
-            pokemon_1 = curr_turn.get_pokemon_from_str(data[0])
-            pokemon_2 = curr_turn.get_pokemon_from_str(data[1])
+            pokemon_1 = self.curr_turn.get_pokemon_from_str(data[0])
+            pokemon_2 = self.curr_turn.get_pokemon_from_str(data[1])
             if "[from]" in data[2]:
                 if "Heart Swap" in data[2]:
                     stats = ["atk", "spa", "def", "spd", "spe", "accuracy", "evasion"]
@@ -812,11 +816,11 @@ class SimProtocol:
             # |-ability|POKEMON|ABILITY|[from]EFFECT
             if len(data) < 2:
                 raise UnfinishedMessageException(message)
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             ability = parse_ability(data[1])
             found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
             SpecialCategories.cancel_opponent_switch_based_on_user_ability(
-                curr_turn,
+                self.curr_turn,
                 user_pokemon=pokemon,
                 based_on_ability=ability,
             )
@@ -827,7 +831,7 @@ class SimProtocol:
                     pokemon.active_ability = ability # # porygon now has clear body
                     if pokemon.had_ability is None:
                         pokemon.had_ability = found_ability # porygon used to have trace
-                    curr_turn.get_pokemon_from_str(found_mon).reveal_ability(ability) # dragapult has clear body
+                    self.curr_turn.get_pokemon_from_str(found_mon).reveal_ability(ability) # dragapult has clear body
                 else:
                     raise UnhandledFromOfAbilityLogic(message)
             elif (found_item or found_mon or found_move) and found_ability:
@@ -837,7 +841,7 @@ class SimProtocol:
 
         elif name == "-endability":
             # |-endability|POKEMON
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             pokemon.active_ability = Nothing.NO_ABILITY
             if len(data) > 1:
                 ability = parse_ability(data[1])
@@ -849,9 +853,9 @@ class SimProtocol:
             if "start" in name or "end" in name:
                 side_str = data[0][0:2]
                 if side_str == "p1":
-                    side = curr_turn.conditions_1
+                    side = self.curr_turn.conditions_1
                 elif side_str == "p2":
-                    side = curr_turn.conditions_2
+                    side = self.curr_turn.conditions_2
                 else:
                     raise RareValueError(f"Can't find side conditions from identifier `{data[0]}`")
                 if len(data) < 2:
@@ -861,22 +865,22 @@ class SimProtocol:
                     if condition in STACKABLE_CONDITIONS:
                         side[condition] = side.get(condition, 0) + 1
                     elif condition not in side:
-                        side[condition] = curr_turn.turn_number
+                        side[condition] = self.curr_turn.turn_number
                 else:
                     if condition in side and condition != PESideCondition.UNKNOWN:
                         side.pop(condition)
             else:
-                curr_turn.conditions_1, curr_turn.conditions_2 = curr_turn.conditions_2, curr_turn.conditions_1
+                self.curr_turn.conditions_1, self.curr_turn.conditions_2 = self.curr_turn.conditions_2, self.curr_turn.conditions_1
 
         elif name == "-weather":
             # |-weather|WEATHER
             if data[0] == "none":
-                curr_turn.weather = Nothing.NO_WEATHER
+                self.curr_turn.weather = Nothing.NO_WEATHER
             else:
-                curr_turn.weather = PEWeather.from_showdown_message(data[0])
+                self.curr_turn.weather = PEWeather.from_showdown_message(data[0])
             found_item, found_ability, found_move, found_of_mon = parse_from_effect_of(data)
             if found_of_mon:
-                pokemon = curr_turn.get_pokemon_from_str(found_of_mon)
+                pokemon = self.curr_turn.get_pokemon_from_str(found_of_mon)
                 assert pokemon is not None
                 if found_ability:
                     pokemon.reveal_ability(found_ability)
@@ -884,7 +888,7 @@ class SimProtocol:
         elif name == "-activate":
             # |-activate|EFFECT
             # also the catch-all message PS sends for minor edge cases
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
             if data[1].startswith("ability:"):
                 ability = parse_ability(data[1])
@@ -896,13 +900,13 @@ class SimProtocol:
             found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
             if effect == PEEffect.TRICK:
                 if found_mon:
-                    found_mon = curr_turn.get_pokemon_from_str(found_mon)
+                    found_mon = self.curr_turn.get_pokemon_from_str(found_mon)
                     pokemon.tricking = found_mon
                     found_mon.tricking = pokemon
                 else:
                     raise TrickError(message)
             elif effect == PEEffect.MIMIC:
-                pokemon.mimic(move_name=data[2], gen=replay.gen)
+                pokemon.mimic(move_name=data[2], gen=self.replay.gen)
             elif effect in [PEEffect.LEPPA_BERRY, PEEffect.MYSTERY_BERRY]:
                 # https://bulbapedia.bulbagarden.net/wiki/Category:PP-restoring_items
                 pp_gained = 10 if effect == PEEffect.LEPPA_BERRY else 5
@@ -918,7 +922,7 @@ class SimProtocol:
 
         elif name == "-item" or name == "-enditem":
             # |-item|POKEMON|ITEM|[from]EFFECT or |-enditem|POKEMON|ITEM|[from]EFFECT
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             item = data[1]
             if pokemon is None:
                 raise RareValueError(f"Could not find pokemon from {data[0]}")
@@ -938,7 +942,7 @@ class SimProtocol:
                     if "end" in name:
                         pokemon_that_had_the_item = pokemon
                     else:
-                        pokemon_that_had_the_item = curr_turn.get_pokemon_from_str(found_mon)
+                        pokemon_that_had_the_item = self.curr_turn.get_pokemon_from_str(found_mon)
                     # remove item 
                     pokemon_that_had_the_item.active_item = Nothing.NO_ITEM
                     if pokemon_that_had_the_item.had_item is None:
@@ -956,34 +960,34 @@ class SimProtocol:
                 pokemon.active_item = Nothing.NO_ITEM
                 if item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT and found_move is None:
                     # catch Eject Button and Eject Pack messages (which - if activated - would not have an item component?)
-                    curr_turn.mark_forced_switch(data[0])
+                    self.curr_turn.mark_forced_switch(data[0])
                     SpecialCategories.cancel_opponent_switch_based_on_user_item(
-                        curr_turn,
+                        self.curr_turn,
                         user_pokemon=pokemon,
                         based_on_item=item,
                     )
                 elif item in SpecialCategories.ITEMS_THAT_SWITCH_THE_ATTACKER_OUT and found_mon is not None:
-                    team, slot = curr_turn.player_id_to_action_idx(found_mon)
-                    curr_turn.remove_empty_subturn(team=team, slot=slot)
+                    team, slot = self.curr_turn.player_id_to_action_idx(found_mon)
+                    self.curr_turn.remove_empty_subturn(team=team, slot=slot)
             else:
                 pokemon.active_item = item
 
         elif name == "-terastallize":
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             poke_str = data[0][:3]
-            curr_turn.set_move_attribute(
+            self.curr_turn.set_move_attribute(
                 s=poke_str,
                 is_tera=True,
             )
             pokemon.type = [data[1]]
 
         elif name == "-zpower" or name == "-mega":
-            raise SoftLockedGen(replay.gen)
+            raise SoftLockedGen(self.replay.gen)
 
         elif name == "-transform":
             # |-transform|POKEMON|SPECIES
-            user = curr_turn.get_pokemon_from_str(data[0])
-            target = curr_turn.get_pokemon_from_str(data[1])
+            user = self.curr_turn.get_pokemon_from_str(data[0])
+            target = self.curr_turn.get_pokemon_from_str(data[1])
             _, found_ability, _, _ = parse_from_effect_of(data)
             if found_ability:
                 user.reveal_ability(found_ability)
@@ -995,33 +999,33 @@ class SimProtocol:
             if name == "-fieldstart":
                 found_item, found_ability, found_move, found_of_mon = parse_from_effect_of(data)
                 if found_of_mon and found_ability:
-                    pokemon = curr_turn.get_pokemon_from_str(found_of_mon)
+                    pokemon = self.curr_turn.get_pokemon_from_str(found_of_mon)
                     assert pokemon is not None
                     pokemon.reveal_ability(found_ability)
 
                 if field_condition.is_terrain:
-                    curr_turn.battle_field = {f : t for f, t in curr_turn.battle_field.items() if not f.is_terrain}
-                curr_turn.battle_field[field_condition] = curr_turn.turn_number
+                    self.curr_turn.battle_field = {f : t for f, t in self.curr_turn.battle_field.items() if not f.is_terrain}
+                self.curr_turn.battle_field[field_condition] = self.curr_turn.turn_number
             else:
                 if field_condition != PEField.UNKNOWN:
-                    curr_turn.battle_field.pop(field_condition)
+                    self.curr_turn.battle_field.pop(field_condition)
 
         elif name == "-cureteam":
             # |-cureteam|POKEMON
-            poke_list = curr_turn.get_pokemon_list_from_str(data[0])
+            poke_list = self.curr_turn.get_pokemon_list_from_str(data[0])
             for poke in poke_list:
                 if poke and poke.status != PEStatus.FNT:
                     poke.status = Nothing.NO_STATUS
 
         elif name in ["-start", "-end"]:
             # |-start|POKEMON|EFFECT or # |-end|POKEMON|EFFECT
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
             effect = PEEffect.from_showdown_message(data[1])
             if effect == PEEffect.MIMIC:
                 # 1 of 2 ways PS will tell you which move Mimic copies 
                 # (depending on gen or replay date it's hard to tell)
-                pokemon.mimic(move_name=data[2], gen=replay.gen)
+                pokemon.mimic(move_name=data[2], gen=self.replay.gen)
             found_item, found_ability, found_move, found_mon = parse_from_effect_of(data[2:])
             if "start" in name:
                 pokemon.start_effect(effect)
@@ -1031,53 +1035,53 @@ class SimProtocol:
                 if found_mon is None:
                     of_pokemon = pokemon
                 else:
-                    of_pokemon = curr_turn.get_pokemon_from_str(found_mon)
+                    of_pokemon = self.curr_turn.get_pokemon_from_str(found_mon)
                 if found_ability:
                     of_pokemon.reveal_ability(found_ability)
 
         elif name == "-setboost":
             # |-setboost|POKEMON|STAT|AMOUNT
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
             pokemon.boosts.set_to_with_str(data[1], int(data[2]))
 
         elif name == "-clearboost":
             # |-clearboost|POKEMON
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
             pokemon.boosts = Boosts()
 
         elif name == "-clearpositiveboost":
             # |-clearpositiveboost|TARGET|POKEMON|EFFECT
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             for stat in pokemon.boosts.stat_attrs:
                 current = getattr(pokemon.boosts, stat)
                 setattr(pokemon.boosts, stat, min(current, 0))
 
         elif name == "-clearnegativeboost":
             # |-clearnegativeboost|POKEMON
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             for stat in pokemon.boosts.stat_attrs:
                 current = getattr(pokemon.boosts, stat)
                 setattr(pokemon.boosts, stat, max(current, 0))
 
         elif name == "-copyboost":
             # |-copyboost|SOURCE|TARGET
-            source = curr_turn.get_pokemon_from_str(data[0])
-            target = curr_turn.get_pokemon_from_str(data[1])
+            source = self.curr_turn.get_pokemon_from_str(data[0])
+            target = self.curr_turn.get_pokemon_from_str(data[1])
             assert source is not None and target is not None
             source.boosts = copy.deepcopy(target.boosts)
 
         elif name == "-clearallboost":
             # |-clearallboost
-            for active in [curr_turn.active_pokemon_1, curr_turn.active_pokemon_2]:
+            for active in [self.curr_turn.active_pokemon_1, self.curr_turn.active_pokemon_2]:
                 for pokemon in active:
                     if pokemon:
                         pokemon.boosts = Boosts()
 
         elif name == "-restoreboost":
             # |-restoreboost|p2a: Gorebyss|[silent]
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
             boosts = pokemon.boosts
             for stat_name in boosts.stat_attrs:
@@ -1086,7 +1090,7 @@ class SimProtocol:
 
         elif name == "-invertboost":
             # |-invertboost|POKEMON
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             assert pokemon is not None
             boosts = pokemon.boosts
             for stat_name in boosts.stat_attrs:
@@ -1106,18 +1110,18 @@ class SimProtocol:
 
         elif name == "-immune":
             # | -immune | POKEMON
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
             if found_ability:
                 pokemon.reveal_ability(found_ability)
             SpecialCategories.cancel_opponent_switch_based_on_user_immunity(
-                curr_turn,
+                self.curr_turn,
                 immune_pokemon=pokemon,
             )
 
         elif name == "detailschange" or name == "-formechange":
             # |detailschange|POKEMON|DETAILS|HP STATUS or |-formechange|POKEMON|SPECIES|HP STATUS
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             if pokemon.had_name is None:
                 pokemon.had_name = pokemon.name
             name, lvl = Pokemon.identify_from_details(data[1])
@@ -1137,30 +1141,30 @@ class SimProtocol:
 
         elif name == "-fail":
             # |-fail|POKEMON|ACTION
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             from_item, from_ability, from_move, from_mon = parse_from_effect_of(data)
             if from_item is not None and from_mon is not None:
                 pokemon.reveal_item(from_item)
             if from_ability is not None and from_mon is not None:
                 pokemon.reveal_ability(from_ability)
             SpecialCategories.cancel_user_switch_based_on_failure(
-                curr_turn,
+                self.curr_turn,
                 user_pokemon=pokemon,
             )
             if pokemon.last_targeted_by is not None:
                 # awful edge case; holding pattern until we can figure out the more general rule
                 # https://replay.pokemonshowdown.com/gen9ou-2383086891
                 last_targeted_by_poke, last_targeted_by_move = pokemon.last_targeted_by
-                if replay.gen >= 7 and last_targeted_by_move in {"Parting Shot"} and any("unboost" in s for s in data):
+                if self.replay.gen >= 7 and last_targeted_by_move in {"Parting Shot"} and any("unboost" in s for s in data):
                     # https://bulbapedia.bulbagarden.net/wiki/Parting_Shot_(move)
                     breakpoint()
-                    team, slot = curr_turn.player_id_to_action_idx(data[0])
+                    team, slot = self.curr_turn.player_id_to_action_idx(data[0])
                     other_team = 3-team
-                    curr_turn.remove_empty_subturn(team=other_team, slot=0) # FIXME for doubles
+                    self.curr_turn.remove_empty_subturn(team=other_team, slot=0) # FIXME for doubles
 
         elif name == "-singleturn":
             # ['-singleturn', 'p2a: Abomasnow', 'Protect']
-            pokemon = curr_turn.get_pokemon_from_str(data[0])
+            pokemon = self.curr_turn.get_pokemon_from_str(data[0])
             effect = PEEffect.from_showdown_message(data[1])
             if effect == PEEffect.PROTECT:
                 pokemon.protected = True
@@ -1172,16 +1176,18 @@ class SimProtocol:
             else:
                 raise UnimplementedMessage(message)
 
+    # fmt: on
+
 
 def forward_fill(
     replay: ParsedReplay, log: list[list[str]], verbose: bool = False
 ) -> ParsedReplay:
-    sim_protocol = SimProtocol()
+    sim_protocol = SimProtocol(replay)
     for message in log:
         if message:
             if verbose:
                 print(f"{replay.gameid} {message}")
-            sim_protocol.interpret_message(replay, message)
+            sim_protocol.interpret_message(message)
 
     checks.check_noun_spelling(replay)
     checks.check_finished(replay)
