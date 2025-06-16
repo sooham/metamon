@@ -291,6 +291,18 @@ class SpecialCategories:
 
 
 class SimProtocol:
+    """State-tracking from Showdown "battle" (sim protoocl) messages
+
+    https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
+
+    Originally based on (and was intended to be 1:1 with)
+    https://github.com/hsahovic/poke-env/blob/master/src/poke_env/environment/abstract_battle.py
+    except that it emphasized "offline" situation where we don't expect Showdown
+    "request" messages to help us out, and identified failure cases that should be skipped
+    because that help was truly needed.
+
+    Now that there is a `metamon` battle backend, more flexible changes are allowed.
+    """
 
     IGNORES = {
         "",
@@ -1261,11 +1273,7 @@ class SimProtocol:
         self.replay.rules.append(args[0])
 
     def interpret_message(self, message: List[str]):
-        """
-        https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
 
-        and https://github.com/hsahovic/poke-env/blob/master/src/poke_env/environment/abstract_battle.py
-        """
         name, *data = message
         if name in self.IGNORES:
             return
