@@ -8,6 +8,13 @@ from datetime import datetime
 import multiprocessing as mp
 from functools import partial
 import re
+import tqdm
+from tqdm.contrib.concurrent import process_map
+import orjson
+
+
+def load_json(f):
+    return orjson.loads(f.read())
 
 
 def find_json_files(directory: str) -> List[str]:
@@ -116,14 +123,40 @@ def copy_to_target(
     return True
 
 
+def copy_file_task(task_data: Dict) -> bool:
+    """
+    Wrapper function for parallel file copying.
+    Returns True if file was copied successfully.
+    """
+    try:
+        gen_dir, tier = get_format_dirs(task_data["normalized_format"])
+        if not gen_dir or not tier:
+            return False
+
+        # Create directory structure
+        tier_path = os.path.join(task_data["target_dir"], gen_dir, tier)
+        os.makedirs(tier_path, exist_ok=True)
+
+        # Define target file path using game ID
+        target_path = os.path.join(tier_path, f"{task_data['game_id']}.json")
+
+        # Copy the file
+        shutil.copy2(task_data["source_path"], target_path)
+        return True
+    except Exception as e:
+        # In case of any error, return False
+        return False
+
+
 def process_single_file(json_path: str, allowed_formats: set) -> Dict:
     """Process a single JSON file and return its statistics if valid."""
     try:
         with open(json_path, "r") as f:
-            json_data = json.load(f)
+            json_data = load_json(f)
 
         # Basic validation checks
-        if not json_data.get("log"):
+        log = json_data.get("log")
+        if not log:
             return {"valid": False}
 
         # Check for game ID
@@ -131,40 +164,40 @@ def process_single_file(json_path: str, allowed_formats: set) -> Dict:
         if not game_id:
             return {"valid": False}
 
-        log_lines = json_data["log"].split("\n")
-
-        # Check for required log content
-        has_win = any(line.startswith("|win|") for line in log_lines)
-        has_gen = any(line.startswith("|gen|") for line in log_lines)
-        has_tier = any(line.startswith("|tier|") for line in log_lines)
-
-        # Check for minimum number of turns (to filter out forfeits/disconnects)
-        turn_count = sum(1 for line in log_lines if line.startswith("|turn|"))
-        has_min_turns = turn_count >= 5
-
-        # Check for required metadata
+        # Check for required metadata first (fastest checks)
         has_format = "format" in json_data
-        has_upload_time = "uploadtime" in json_data and int(json_data["uploadtime"]) > 0
+        uploadtime = json_data.get("uploadtime", 0)
+        has_upload_time = uploadtime and int(uploadtime) > 0
 
-        # Validate format
-        raw_format = json_data.get("format", "unknown")
+        if not (has_format and has_upload_time):
+            return {"valid": False}
+
+        # Validate format early to skip processing if not needed
+        raw_format = json_data["format"]
         normalized_format = normalize_format(raw_format)
-
-        # Skip if format doesn't match filter
         if allowed_formats and normalized_format not in allowed_formats:
             return {"valid": False}
 
+        # Single pass through log lines for all checks
+        has_win = False
+        has_gen = False
+        has_tier = False
+        turn_count = 0
+
+        # Use string operations instead of splitting into lines when possible
+        if "|win|" in log:
+            has_win = True
+        if "|gen|" in log:
+            has_gen = True
+        if "|tier|" in log:
+            has_tier = True
+
+        if has_win and has_gen and has_tier:
+            turn_count = log.count("|turn|")
+        has_min_turns = turn_count >= 5
+
         # Combine all validation checks
-        is_valid = all(
-            [
-                has_win,
-                has_gen,
-                has_tier,
-                has_min_turns,
-                has_format,
-                has_upload_time,
-            ]
-        )
+        is_valid = has_win and has_gen and has_tier and has_min_turns
 
         if not is_valid:
             return {"valid": False}
@@ -173,7 +206,7 @@ def process_single_file(json_path: str, allowed_formats: set) -> Dict:
         return {
             "valid": True,
             "normalized_format": normalized_format,
-            "upload_time": int(json_data["uploadtime"]),
+            "upload_time": int(uploadtime),
             "game_id": game_id,
             "source_path": json_path,
         }
@@ -296,33 +329,30 @@ def analyze_replays(
         print("No JSON files found in the specified directory")
         return
 
-    # Get existing game IDs and upload times if target directory is specified
+    # get existing game IDs and upload times if target directory is specified
     existing_games = get_existing_game_ids(target_dir) if target_dir else {}
     if target_dir:
         print(f"Found {len(existing_games)} existing replays in target directory")
 
-    # Determine number of processes
     if num_processes is None:
-        # Default to all available CPU cores except one
-        num_processes = max(1, mp.cpu_count() - 1)
+        num_processes = mp.cpu_count()
     else:
-        # Ensure num_processes is within valid range
         num_processes = max(1, min(num_processes, mp.cpu_count()))
-
     print(f"Processing files using {num_processes} processes...")
 
     # Process files in parallel
-    with mp.Pool(num_processes) as pool:
-        # Create a partial function with the allowed_formats
-        process_func = partial(process_single_file, allowed_formats=allowed_formats)
-        # Use imap_unordered for better performance with large datasets
-        results = list(
-            pool.imap_unordered(
-                process_func,
-                json_files,
-                chunksize=max(1, total_files // (num_processes * 10)),
-            )
-        )
+    # Create a partial function with the allowed_formats
+    process_func = partial(process_single_file, allowed_formats=allowed_formats)
+    # Use process_map for better progress tracking with multiprocessing
+    # Optimize chunksize based on total files and workers
+    results = process_map(
+        process_func,
+        json_files,
+        max_workers=num_processes,
+        desc="Processing replays",
+        unit="files",
+        chunksize=max(1, len(json_files) // num_processes),
+    )
 
     # Generate and save time series if requested
     if time_series_path:
@@ -355,9 +385,9 @@ def analyze_replays(
             f"\nDeduplicated {len(results)} replays to {len(deduplicated_results)} unique games"
         )
 
-        copied_count = 0
+        # Prepare data for parallel file copying
+        copy_tasks = []
         skipped_count = 0
-        updated_count = 0
 
         for result in deduplicated_results.values():
             game_id = result["game_id"]
@@ -368,15 +398,30 @@ def analyze_replays(
                 skipped_count += 1
                 continue
 
-            if copy_to_target(
-                result["source_path"],
-                game_id,
-                result["normalized_format"],
-                upload_time,
-                target_dir,
-                existing_games,
-            ):
-                copied_count += 1
+            copy_tasks.append(
+                {
+                    "source_path": result["source_path"],
+                    "game_id": game_id,
+                    "normalized_format": result["normalized_format"],
+                    "upload_time": upload_time,
+                    "target_dir": target_dir,
+                }
+            )
+
+        if copy_tasks:
+            print(f"Copying {len(copy_tasks)} files in parallel...")
+            # Parallel file copying
+            copy_results = process_map(
+                copy_file_task,
+                copy_tasks,
+                max_workers=min(num_processes, len(copy_tasks)),
+                desc="Copying files",
+                unit="files",
+                chunksize=max(1, len(copy_tasks) // num_processes),
+            )
+            copied_count = sum(copy_results)
+        else:
+            copied_count = 0
 
     # Print summary
     print("\nAnalysis Summary:")
