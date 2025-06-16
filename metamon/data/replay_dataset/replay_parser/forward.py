@@ -674,8 +674,7 @@ class SimProtocol:
                     # is healing Quagsire from Quagsire's Water Absorb ability)
                     of_pokemon = pokemon
                     # dealing with edge case of switching move failure due to the target's ability
-                    SimProtocol._cancel_opponent_switch_based_on_user_ability(
-                        self.curr_turn,
+                    self._cancel_opponent_switch_based_on_user_ability(
                         user_pokemon=pokemon,
                         based_on_ability=found_ability,
                     )
@@ -780,8 +779,7 @@ class SimProtocol:
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         ability = parse_ability(args[1])
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(args)
-        SimProtocol._cancel_opponent_switch_based_on_user_ability(
-            self.curr_turn,
+        self._cancel_opponent_switch_based_on_user_ability(
             user_pokemon=pokemon,
             based_on_ability=ability,
         )
@@ -945,8 +943,7 @@ class SimProtocol:
             ):
                 # catch Eject Button and Eject Pack messages (which - if activated - would not have an item component?)
                 self.curr_turn.mark_forced_switch(args[0])
-                SimProtocol._cancel_opponent_switch_based_on_user_item(
-                    self.curr_turn,
+                self._cancel_opponent_switch_based_on_user_item(
                     user_pokemon=pokemon,
                     based_on_item=item,
                 )
@@ -1148,8 +1145,7 @@ class SimProtocol:
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(args)
         if found_ability:
             pokemon.reveal_ability(found_ability)
-        SimProtocol._cancel_opponent_switch_based_on_user_immunity(
-            self.curr_turn,
+        self._cancel_opponent_switch_based_on_user_immunity(
             immune_pokemon=pokemon,
         )
 
@@ -1189,10 +1185,7 @@ class SimProtocol:
             pokemon.reveal_item(from_item)
         if from_ability is not None and from_mon is not None:
             pokemon.reveal_ability(from_ability)
-        SimProtocol._cancel_user_switch_based_on_failure(
-            self.curr_turn,
-            user_pokemon=pokemon,
-        )
+        self._cancel_user_switch_based_on_failure(user_pokemon=pokemon)
         if pokemon.last_targeted_by is not None:
             # awful edge case; holding pattern until we can figure out the more general rule
             # https://replay.pokemonshowdown.com/gen9ou-2383086891
@@ -1353,9 +1346,8 @@ class SimProtocol:
             else:
                 raise UnimplementedMessage(message)
 
-    @staticmethod
     def _cancel_opponent_switch_based_on_user_ability(
-        curr_turn: Turn, user_pokemon: Pokemon, based_on_ability: str
+        self, user_pokemon: Pokemon, based_on_ability: str
     ) -> bool:
         """Cancel an opponent's switch if the user's ability was activated by a switch-out move.
 
@@ -1367,6 +1359,7 @@ class SimProtocol:
         Returns:
             bool: True if the switch was cancelled, False otherwise
         """
+        curr_turn = self.curr_turn
         if (
             based_on_ability not in SimProtocol.ABILITY_CAUSES_MOVE_TO_FAIL
             or not user_pokemon.last_targeted_by
@@ -1388,9 +1381,8 @@ class SimProtocol:
         curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
         return True
 
-    @staticmethod
     def _cancel_opponent_switch_based_on_user_item(
-        curr_turn: Turn, user_pokemon: Pokemon, based_on_item: str
+        self, user_pokemon: Pokemon, based_on_item: str
     ) -> bool:
         """Cancel an opponent's switch if the user's item was activated by a switch-out move.
 
@@ -1402,6 +1394,7 @@ class SimProtocol:
         Returns:
             bool: True if the switch was cancelled, False otherwise
         """
+        curr_turn = self.curr_turn
         if (
             based_on_item not in SimProtocol.ITEMS_THAT_SWITCH_THE_USER_OUT
             or not user_pokemon.last_targeted_by
@@ -1423,9 +1416,8 @@ class SimProtocol:
         curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
         return True
 
-    @staticmethod
     def _cancel_opponent_switch_based_on_user_immunity(
-        curr_turn: Turn, immune_pokemon: Pokemon
+        self, immune_pokemon: Pokemon
     ) -> bool:
         """Cancel an opponent's switch if the immune Pokemon was targeted by a switch-out move.
 
@@ -1436,6 +1428,7 @@ class SimProtocol:
         Returns:
             bool: True if the switch was cancelled, False otherwise
         """
+        curr_turn = self.curr_turn
         if not immune_pokemon.last_targeted_by:
             return False
 
@@ -1450,10 +1443,7 @@ class SimProtocol:
         curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
         return True
 
-    @staticmethod
-    def cancel_user_switch_based_on_failure(
-        curr_turn: Turn, user_pokemon: Pokemon
-    ) -> bool:
+    def _cancel_user_switch_based_on_failure(self, user_pokemon: Pokemon) -> bool:
         """Cancel a user's switch if their move failed and it was a switch-out move.
 
         Args:
@@ -1463,6 +1453,7 @@ class SimProtocol:
         Returns:
             bool: True if the switch was cancelled, False otherwise
         """
+        curr_turn = self.curr_turn
         if (
             user_pokemon.last_used_move is not None
             and user_pokemon.last_used_move.name
