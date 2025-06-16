@@ -76,10 +76,77 @@ class ParsedReplay:
         return ",\n".join(items)
 
 
-class SpecialCategories:
+class SimProtocol:
+    """State-tracking from Showdown "battle" (sim protocol) messages
+
+    https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
+
+    Originally based on (and was intended to be 1:1 with)
+    https://github.com/hsahovic/poke-env/blob/master/src/poke_env/environment/abstract_battle.py
+    except that it emphasized "offline" situation where we don't expect Showdown
+    "request" messages to help us out, and identified failure cases that should be skipped
+    because that help was truly needed.
+
+    Now that there is a `metamon` battle backend, more flexible changes are allowed.
     """
-    Map groups of edge case behaviors to a name that describes what that edge case is.
-    """
+
+    IGNORES = {
+        "",
+        "-anim",
+        "askreg",
+        "badge",
+        "bigerror",  # usually auto-tie warnings
+        "c",
+        "c:",
+        "chatmsg-raw",
+        "-crit",  # redundant
+        "chat",
+        "clearpoke",
+        "debug",
+        "deinit",
+        "error",
+        "-fieldactivate",  # redundant
+        "gametype",
+        "hidelines",  # undocumented, no idea
+        "-hint",
+        "hint",
+        "html",
+        "-hitcount",
+        "init",
+        "inactive",  # battle timer
+        "inactiveoff",  # battle timer
+        "j",
+        "J",
+        "join",
+        "leave",
+        "l",
+        "L",
+        "message",
+        "-message",  # chat
+        "-miss",
+        "n",
+        "-nothing",  # redundant for a move that did "absolutely nothing"
+        "-notarget",  # for move target
+        "-ohko",
+        "-prepare",  # extra move info
+        "-primal",  # based soley on action
+        "raw",
+        "rated",
+        "request",
+        "-resisted",
+        "start",
+        "-supereffective",
+        "-singlemove",
+        "seed",
+        "teampreview",
+        "title",
+        "tier",
+        "t:",  # timer
+        "upkeep",
+        "uhtml",
+        "unlink",  # disconnect or spectator removed
+        "-zbroken",  # z-move hits through protect
+    }
 
     # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_switch_the_user_out
     MOVES_THAT_SWITCH_THE_USER_OUT = {
@@ -162,204 +229,6 @@ class SpecialCategories:
     ITEM_NAMED_STOLEN = {"Thief", "Covet"}
     ITEMS_THAT_SWITCH_THE_USER_OUT = {"Eject Button", "Eject Pack"}
     ITEMS_THAT_SWITCH_THE_ATTACKER_OUT = {"Red Card"}
-
-    @staticmethod
-    def cancel_opponent_switch_based_on_user_ability(
-        curr_turn: Turn, user_pokemon: Pokemon, based_on_ability: str
-    ) -> bool:
-        """Cancel an opponent's switch if the user's ability was activated by a switch-out move.
-
-        Args:
-            curr_turn: The current turn being processed
-            user_pokemon: The Pokemon that had its ability activated
-            based_on_ability: The name of the ability that was activated
-
-        Returns:
-            bool: True if the switch was cancelled, False otherwise
-        """
-        if (
-            based_on_ability not in SpecialCategories.ABILITY_CAUSES_MOVE_TO_FAIL
-            or not user_pokemon.last_targeted_by
-        ):
-            return False
-
-        last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
-        if (
-            last_targeted_by_move
-            != SpecialCategories.ABILITY_CAUSES_MOVE_TO_FAIL[based_on_ability]
-        ):
-            return False
-
-        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
-        if not subturn_slot:
-            return False
-
-        breakpoint()
-        curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
-        return True
-
-    @staticmethod
-    def cancel_opponent_switch_based_on_user_item(
-        curr_turn: Turn, user_pokemon: Pokemon, based_on_item: str
-    ) -> bool:
-        """Cancel an opponent's switch if the user's item was activated by a switch-out move.
-
-        Args:
-            curr_turn: The current turn being processed
-            user_pokemon: The Pokemon that had its item activated
-            based_on_item: The name of the item that was activated
-
-        Returns:
-            bool: True if the switch was cancelled, False otherwise
-        """
-        if (
-            based_on_item not in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT
-            or not user_pokemon.last_targeted_by
-        ):
-            return False
-
-        last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
-        if (
-            not last_targeted_by_poke
-            or last_targeted_by_move
-            not in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT
-        ):
-            return False
-
-        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
-        if not subturn_slot:
-            return False
-
-        breakpoint()
-        curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
-        return True
-
-    @staticmethod
-    def cancel_opponent_switch_based_on_user_immunity(
-        curr_turn: Turn, immune_pokemon: Pokemon
-    ) -> bool:
-        """Cancel an opponent's switch if the immune Pokemon was targeted by a switch-out move.
-
-        Args:
-            curr_turn: The current turn being processed
-            immune_pokemon: The Pokemon that is immune to the move
-
-        Returns:
-            bool: True if the switch was cancelled, False otherwise
-        """
-        if not immune_pokemon.last_targeted_by:
-            return False
-
-        last_targeted_by_poke, last_targeted_by_move = immune_pokemon.last_targeted_by
-        if (
-            last_targeted_by_move
-            not in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT
-        ):
-            return False
-
-        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
-        if not subturn_slot:
-            return False
-
-        curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
-        return True
-
-    @staticmethod
-    def cancel_user_switch_based_on_failure(
-        curr_turn: Turn, user_pokemon: Pokemon
-    ) -> bool:
-        """Cancel a user's switch if their move failed and it was a switch-out move.
-
-        Args:
-            curr_turn: The current turn being processed
-            user_pokemon: The Pokemon that failed to use its move
-
-        Returns:
-            bool: True if the switch was cancelled, False otherwise
-        """
-        if (
-            user_pokemon.last_used_move is not None
-            and user_pokemon.last_used_move.name
-            in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT
-        ):
-            team_slot = curr_turn.pokemon_to_action_idx(user_pokemon)
-            if team_slot:
-                curr_turn.remove_empty_subturn(team=team_slot[0], slot=team_slot[1])
-                return True
-        return False
-
-
-class SimProtocol:
-    """State-tracking from Showdown "battle" (sim protocol) messages
-
-    https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
-
-    Originally based on (and was intended to be 1:1 with)
-    https://github.com/hsahovic/poke-env/blob/master/src/poke_env/environment/abstract_battle.py
-    except that it emphasized "offline" situation where we don't expect Showdown
-    "request" messages to help us out, and identified failure cases that should be skipped
-    because that help was truly needed.
-
-    Now that there is a `metamon` battle backend, more flexible changes are allowed.
-    """
-
-    IGNORES = {
-        "",
-        "-anim",
-        "askreg",
-        "badge",
-        "bigerror",  # usually auto-tie warnings
-        "c",
-        "c:",
-        "chatmsg-raw",
-        "-crit",  # redundant
-        "chat",
-        "clearpoke",
-        "debug",
-        "deinit",
-        "error",
-        "-fieldactivate",  # redundant
-        "gametype",
-        "hidelines",  # undocumented, no idea
-        "-hint",
-        "hint",
-        "html",
-        "-hitcount",
-        "init",
-        "inactive",  # battle timer
-        "inactiveoff",  # battle timer
-        "j",
-        "J",
-        "join",
-        "leave",
-        "l",
-        "L",
-        "message",
-        "-message",  # chat
-        "-miss",
-        "n",
-        "-nothing",  # redundant for a move that did "absolutely nothing"
-        "-notarget",  # for move target
-        "-ohko",
-        "-prepare",  # extra move info
-        "-primal",  # based soley on action
-        "raw",
-        "rated",
-        "request",
-        "-resisted",
-        "start",
-        "-supereffective",
-        "-singlemove",
-        "seed",
-        "teampreview",
-        "title",
-        "tier",
-        "t:",  # timer
-        "upkeep",
-        "uhtml",
-        "unlink",  # disconnect or spectator removed
-        "-zbroken",  # z-move hits through protect
-    }
 
     def __init__(self, replay: ParsedReplay):
         self.replay = replay
@@ -584,9 +453,6 @@ class SimProtocol:
                 target_team_idx, target_slot_idx = (
                     self.curr_turn.player_id_to_action_idx(args[2])
                 )
-        else:
-            target_pokemon = None
-            target_team_idx, target_slot_idx = None, None
 
         # find extra info from the message
         extra_from_message = None
@@ -596,49 +462,47 @@ class SimProtocol:
                 break
 
         # forced selection of another pokemon
-        if move_name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT:
+        if move_name in SimProtocol.MOVES_THAT_SWITCH_THE_USER_OUT:
             notarget = any("[notarget]" in d for d in args)
             protected = target_pokemon.protected if target_pokemon else False
             missed = any("[miss]" in d for d in args)
             if not notarget and not protected and not missed:
                 self.curr_turn.mark_forced_switch(args[0])
-        elif move_name in SpecialCategories.FORCES_REVIVAL:
+        elif move_name in SimProtocol.FORCES_REVIVAL:
             self.curr_turn.mark_forced_switch(args[0])
 
         if extra_from_message:
             # fishing for "moves called by moves that call other moves", which should be prevented
             # from being incorrectly added to a pokemon's true moveset.
             override_risk = (
-                move_name in SpecialCategories.CONSECUTIVE_MOVES or move.charge_move
+                move_name in SimProtocol.CONSECUTIVE_MOVES or move.charge_move
             )
 
+            # two equivalent logic blocks:
             if "move:" in extra_from_message or "ability:" in extra_from_message:
-                # equivalent of below block but for messages that do specify move: or ability:
+                # 1. parse [from] effect [of] messages that specify whether they are talking
+                # about a move or ability, which are much less ambiguous, but not always appear.
                 _, is_ability, is_move, _ = parse_from_effect_of([extra_from_message])
                 if is_move:
                     from_move = parse_move_from_extra(extra_from_message)
                     probably_repeat_move = from_move.lower() == move_name.lower()
                     if (
                         from_move
-                        in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY
-                        | SpecialCategories.MOVE_OVERRIDE
+                        in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY
+                        | SimProtocol.MOVE_OVERRIDE
                     ):
                         if override_risk and len(pokemon.had_moves) < 4:
                             raise CalledForeignConsecutive(["move"] + args)
-                        if (
-                            from_move
-                            in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY
-                        ):
+                        if from_move in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                             pokemon.reveal_move(move)
                         return
                 elif is_ability:
-                    if is_ability in SpecialCategories.MOVE_CAUSED_BY_ABILITY:
+                    if is_ability in SimProtocol.MOVE_CAUSED_BY_ABILITY:
                         # this "move" was automatically called by an ability,
                         # and shouldn't be considered a "move" that reveals anything
                         # about this Pokemon or uses PP --- early exit.
                         if (
-                            move_name
-                            in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT
+                            move_name in SimProtocol.MOVES_THAT_SWITCH_THE_USER_OUT
                             and target_pokemon is not None
                             and target_pokemon.last_used_move_name == move_name
                         ):
@@ -651,24 +515,26 @@ class SimProtocol:
                     else:
                         raise UnimplementedMoveFromMoveAbility(args)
             else:
-                # equivalent of above block but for messages that do not specify move: or ability:
+                # 2. parse messages that do not specify move: or ability:. I used to think these
+                # were caused by ancient replays (because specifying move/ability is clearly better)
+                # but they are still present in recent battles so I no longer know the cause of this.
                 ability_or_move = parse_extra(extra_from_message)
                 probably_repeat_move = ability_or_move.lower() == move_name.lower()
                 probably_item = ability_or_move in (
                     {pokemon.had_item, pokemon.active_item}
-                    | SpecialCategories.MOVE_IGNORE_ITEMS
+                    | SimProtocol.MOVE_IGNORE_ITEMS
                 )
                 if not (probably_repeat_move or probably_item):
                     if (
                         ability_or_move
-                        in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY
-                        | SpecialCategories.MOVE_OVERRIDE
+                        in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY
+                        | SimProtocol.MOVE_OVERRIDE
                     ):
                         if override_risk and len(pokemon.had_moves) < 4:
                             raise CalledForeignConsecutive(["move"] + args)
                         if (
                             ability_or_move
-                            in SpecialCategories.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY
+                            in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY
                         ):
                             pokemon.reveal_move(move)
                         return
@@ -678,7 +544,7 @@ class SimProtocol:
                     and not probably_repeat_move
                 )
                 if probably_ability:
-                    if ability_or_move in SpecialCategories.MOVE_CAUSED_BY_ABILITY:
+                    if ability_or_move in SimProtocol.MOVE_CAUSED_BY_ABILITY:
                         return
                     else:
                         raise UnimplementedMoveFromMoveAbility(args)
@@ -701,7 +567,7 @@ class SimProtocol:
                 # the turns that auto apply partial trapping moves w/o PP have `move USER MOVE TARGET [from]MOVE`
                 pp_used = 0
             elif (
-                move_name in SpecialCategories.GEN1_PP_ROLLOVERS
+                move_name in SimProtocol.GEN1_PP_ROLLOVERS
                 and pokemon.get_pp_for_move_name(move_name) == 0
             ):
                 # (https://www.smogon.com/rb/articles/rby_trapping)
@@ -750,7 +616,7 @@ class SimProtocol:
                 parse_from_effect_of(args)
             )
             if found_move:
-                if found_move in SpecialCategories.FORCES_REVIVAL:
+                if found_move in SimProtocol.FORCES_REVIVAL:
                     switch_team, switch_slot = self.curr_turn.player_id_to_action_idx(
                         args[0]
                     )
@@ -760,8 +626,7 @@ class SimProtocol:
                                 subturn.fill_turn(self.curr_turn.create_subturn(True))
                             else:
                                 breakpoint()
-                            # the action regards this as a "switch", which will map it to the discrete idxs normally
-                            # used for switching.
+                            # hardcoded action type that gets converted to similar action idices to "switch"
                             subturn.action = Action(
                                 name="Forced Revival",
                                 user=None,
@@ -773,14 +638,14 @@ class SimProtocol:
                         pokemon.status = Nothing.NO_STATUS
                     else:
                         breakpoint()
-                if found_move in SpecialCategories.RESTORES_PP:
+                if found_move in SimProtocol.RESTORES_PP:
                     for move_name, move in pokemon.moves.items():
                         move.pp = move.maximum_pp
                         if move_name in pokemon.had_moves:
                             had_move = pokemon.had_moves[move_name]
                             had_move.pp = had_move.maximum_pp
                 if (
-                    found_move in SpecialCategories.RESTORES_STATUS
+                    found_move in SimProtocol.RESTORES_STATUS
                     and pokemon.status != PEStatus.FNT
                 ):
                     pokemon.status = Nothing.NO_STATUS
@@ -809,7 +674,7 @@ class SimProtocol:
                     # is healing Quagsire from Quagsire's Water Absorb ability)
                     of_pokemon = pokemon
                     # dealing with edge case of switching move failure due to the target's ability
-                    SpecialCategories.cancel_opponent_switch_based_on_user_ability(
+                    SimProtocol._cancel_opponent_switch_based_on_user_ability(
                         self.curr_turn,
                         user_pokemon=pokemon,
                         based_on_ability=found_ability,
@@ -915,13 +780,13 @@ class SimProtocol:
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         ability = parse_ability(args[1])
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(args)
-        SpecialCategories.cancel_opponent_switch_based_on_user_ability(
+        SimProtocol._cancel_opponent_switch_based_on_user_ability(
             self.curr_turn,
             user_pokemon=pokemon,
             based_on_ability=ability,
         )
         if found_mon and found_ability:
-            if found_ability in SpecialCategories.ABILITY_STEALS_ABILITY:
+            if found_ability in SimProtocol.ABILITY_STEALS_ABILITY:
                 # ['p1a: Porygon2', 'Clear Body', '[from] ability: Trace', '[of] p2a: Dragapult']
                 # Porygon2 has the Trace ability, copying Clear Body from Dragapult
                 pokemon.active_ability = ability  # # porygon now has clear body
@@ -1043,15 +908,15 @@ class SimProtocol:
 
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(args)
         if found_move:
-            if found_move in SpecialCategories.ITEM_APPROVED_SKIP:
+            if found_move in SimProtocol.ITEM_APPROVED_SKIP:
                 pass
-            elif found_move in SpecialCategories.ITEM_UNNAMED_STOLEN:
+            elif found_move in SimProtocol.ITEM_UNNAMED_STOLEN:
                 # item is stolen from the opponent using a move
                 if not pokemon.tricking:
                     raise TrickError([name] + args)
                 if pokemon.tricking.had_item is None:
                     pokemon.tricking.had_item = item
-            elif found_move in SpecialCategories.ITEM_NAMED_STOLEN:
+            elif found_move in SimProtocol.ITEM_NAMED_STOLEN:
                 # item is stolen from a named opponent.
                 if "end" in name:
                     pokemon_that_had_the_item = pokemon
@@ -1075,18 +940,18 @@ class SimProtocol:
         if "end" in name:
             pokemon.active_item = Nothing.NO_ITEM
             if (
-                item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT
+                item in SimProtocol.ITEMS_THAT_SWITCH_THE_USER_OUT
                 and found_move is None
             ):
                 # catch Eject Button and Eject Pack messages (which - if activated - would not have an item component?)
                 self.curr_turn.mark_forced_switch(args[0])
-                SpecialCategories.cancel_opponent_switch_based_on_user_item(
+                SimProtocol._cancel_opponent_switch_based_on_user_item(
                     self.curr_turn,
                     user_pokemon=pokemon,
                     based_on_item=item,
                 )
             elif (
-                item in SpecialCategories.ITEMS_THAT_SWITCH_THE_ATTACKER_OUT
+                item in SimProtocol.ITEMS_THAT_SWITCH_THE_ATTACKER_OUT
                 and found_mon is not None
             ):
                 team, slot = self.curr_turn.player_id_to_action_idx(found_mon)
@@ -1283,7 +1148,7 @@ class SimProtocol:
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(args)
         if found_ability:
             pokemon.reveal_ability(found_ability)
-        SpecialCategories.cancel_opponent_switch_based_on_user_immunity(
+        SimProtocol._cancel_opponent_switch_based_on_user_immunity(
             self.curr_turn,
             immune_pokemon=pokemon,
         )
@@ -1324,7 +1189,7 @@ class SimProtocol:
             pokemon.reveal_item(from_item)
         if from_ability is not None and from_mon is not None:
             pokemon.reveal_ability(from_ability)
-        SpecialCategories.cancel_user_switch_based_on_failure(
+        SimProtocol._cancel_user_switch_based_on_failure(
             self.curr_turn,
             user_pokemon=pokemon,
         )
@@ -1487,6 +1352,127 @@ class SimProtocol:
                 pass
             else:
                 raise UnimplementedMessage(message)
+
+    @staticmethod
+    def _cancel_opponent_switch_based_on_user_ability(
+        curr_turn: Turn, user_pokemon: Pokemon, based_on_ability: str
+    ) -> bool:
+        """Cancel an opponent's switch if the user's ability was activated by a switch-out move.
+
+        Args:
+            curr_turn: The current turn being processed
+            user_pokemon: The Pokemon that had its ability activated
+            based_on_ability: The name of the ability that was activated
+
+        Returns:
+            bool: True if the switch was cancelled, False otherwise
+        """
+        if (
+            based_on_ability not in SimProtocol.ABILITY_CAUSES_MOVE_TO_FAIL
+            or not user_pokemon.last_targeted_by
+        ):
+            return False
+
+        last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
+        if (
+            last_targeted_by_move
+            != SimProtocol.ABILITY_CAUSES_MOVE_TO_FAIL[based_on_ability]
+        ):
+            return False
+
+        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
+        if not subturn_slot:
+            return False
+
+        breakpoint()
+        curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
+        return True
+
+    @staticmethod
+    def _cancel_opponent_switch_based_on_user_item(
+        curr_turn: Turn, user_pokemon: Pokemon, based_on_item: str
+    ) -> bool:
+        """Cancel an opponent's switch if the user's item was activated by a switch-out move.
+
+        Args:
+            curr_turn: The current turn being processed
+            user_pokemon: The Pokemon that had its item activated
+            based_on_item: The name of the item that was activated
+
+        Returns:
+            bool: True if the switch was cancelled, False otherwise
+        """
+        if (
+            based_on_item not in SimProtocol.ITEMS_THAT_SWITCH_THE_USER_OUT
+            or not user_pokemon.last_targeted_by
+        ):
+            return False
+
+        last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
+        if (
+            not last_targeted_by_poke
+            or last_targeted_by_move not in SimProtocol.MOVES_THAT_SWITCH_THE_USER_OUT
+        ):
+            return False
+
+        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
+        if not subturn_slot:
+            return False
+
+        breakpoint()
+        curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
+        return True
+
+    @staticmethod
+    def _cancel_opponent_switch_based_on_user_immunity(
+        curr_turn: Turn, immune_pokemon: Pokemon
+    ) -> bool:
+        """Cancel an opponent's switch if the immune Pokemon was targeted by a switch-out move.
+
+        Args:
+            curr_turn: The current turn being processed
+            immune_pokemon: The Pokemon that is immune to the move
+
+        Returns:
+            bool: True if the switch was cancelled, False otherwise
+        """
+        if not immune_pokemon.last_targeted_by:
+            return False
+
+        last_targeted_by_poke, last_targeted_by_move = immune_pokemon.last_targeted_by
+        if last_targeted_by_move not in SimProtocol.MOVES_THAT_SWITCH_THE_USER_OUT:
+            return False
+
+        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
+        if not subturn_slot:
+            return False
+
+        curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
+        return True
+
+    @staticmethod
+    def cancel_user_switch_based_on_failure(
+        curr_turn: Turn, user_pokemon: Pokemon
+    ) -> bool:
+        """Cancel a user's switch if their move failed and it was a switch-out move.
+
+        Args:
+            curr_turn: The current turn being processed
+            user_pokemon: The Pokemon that failed to use its move
+
+        Returns:
+            bool: True if the switch was cancelled, False otherwise
+        """
+        if (
+            user_pokemon.last_used_move is not None
+            and user_pokemon.last_used_move.name
+            in SimProtocol.MOVES_THAT_SWITCH_THE_USER_OUT
+        ):
+            team_slot = curr_turn.pokemon_to_action_idx(user_pokemon)
+            if team_slot:
+                curr_turn.remove_empty_subturn(team=team_slot[0], slot=team_slot[1])
+                return True
+        return False
 
 
 def forward_fill(
