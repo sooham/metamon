@@ -81,8 +81,6 @@ class SpecialCategories:
     Map groups of edge case behaviors to a name that describes what that edge case is.
     """
 
-    # fmt: off
-
     # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_switch_the_user_out
     MOVES_THAT_SWITCH_THE_USER_OUT = {
         "Baton Pass",
@@ -154,7 +152,7 @@ class SpecialCategories:
         "Water Absorb": "Flip Turn",
         "Dry Skin": "Flip Turn",
         "Lightning Rod": "Volt Switch",
-        "Volt Absorb" : "Volt Switch",
+        "Volt Absorb": "Volt Switch",
     }
 
     # https://bulbapedia.bulbagarden.net/wiki/Category:Item-manipulating_moves
@@ -166,32 +164,130 @@ class SpecialCategories:
     ITEMS_THAT_SWITCH_THE_ATTACKER_OUT = {"Red Card"}
 
     @staticmethod
-    def cancel_opponent_switch_based_on_user_ability(curr_turn : Turn, user_pokemon: Pokemon, based_on_ability: str) -> bool:
-        if (based_on_ability in SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL 
-            and user_pokemon.last_targeted_by):
-            last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
-            if last_targeted_by_move == SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL[based_on_ability]:
-                breakpoint()
-                subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
-                if subturn_slot:
-                    # block the forced switch from occuring
-                    curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
-                    return True
-        return False
-    
-    @staticmethod
-    def cancel_opponent_switch_based_on_user_item(curr_turn: Turn, user_pokemon: Pokemon, based_on_item: str) -> bool:
-        if based_on_item in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT and user_pokemon.last_targeted_by:
-            last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
-            if (last_targeted_by_poke and last_targeted_by_move in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT):
-                subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
-                if subturn_slot:
-                    breakpoint()
-                    curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
-                    return True
-        return False
+    def cancel_opponent_switch_based_on_user_ability(
+        curr_turn: Turn, user_pokemon: Pokemon, based_on_ability: str
+    ) -> bool:
+        """Cancel an opponent's switch if the user's ability was activated by a switch-out move.
 
-    # fmt: on
+        Args:
+            curr_turn: The current turn being processed
+            user_pokemon: The Pokemon that had its ability activated
+            based_on_ability: The name of the ability that was activated
+
+        Returns:
+            bool: True if the switch was cancelled, False otherwise
+        """
+        if (
+            based_on_ability
+            not in SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL
+            or not user_pokemon.last_targeted_by
+        ):
+            return False
+
+        last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
+        if (
+            last_targeted_by_move
+            != SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL[based_on_ability]
+        ):
+            return False
+
+        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
+        if not subturn_slot:
+            return False
+
+        breakpoint()
+        curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
+        return True
+
+    @staticmethod
+    def cancel_opponent_switch_based_on_user_item(
+        curr_turn: Turn, user_pokemon: Pokemon, based_on_item: str
+    ) -> bool:
+        """Cancel an opponent's switch if the user's item was activated by a switch-out move.
+
+        Args:
+            curr_turn: The current turn being processed
+            user_pokemon: The Pokemon that had its item activated
+            based_on_item: The name of the item that was activated
+
+        Returns:
+            bool: True if the switch was cancelled, False otherwise
+        """
+        if (
+            based_on_item not in SpecialCategories.ITEMS_THAT_SWITCH_THE_USER_OUT
+            or not user_pokemon.last_targeted_by
+        ):
+            return False
+
+        last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
+        if (
+            not last_targeted_by_poke
+            or last_targeted_by_move
+            not in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT
+        ):
+            return False
+
+        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
+        if not subturn_slot:
+            return False
+
+        breakpoint()
+        curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
+        return True
+
+    @staticmethod
+    def cancel_opponent_switch_based_on_user_immunity(
+        curr_turn: Turn, immune_pokemon: Pokemon
+    ) -> bool:
+        """Cancel an opponent's switch if the immune Pokemon was targeted by a switch-out move.
+
+        Args:
+            curr_turn: The current turn being processed
+            immune_pokemon: The Pokemon that is immune to the move
+
+        Returns:
+            bool: True if the switch was cancelled, False otherwise
+        """
+        if not immune_pokemon.last_targeted_by:
+            return False
+
+        last_targeted_by_poke, last_targeted_by_move = immune_pokemon.last_targeted_by
+        if (
+            last_targeted_by_move
+            not in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT
+        ):
+            return False
+
+        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
+        if not subturn_slot:
+            return False
+
+        curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
+        return True
+
+    @staticmethod
+    def cancel_user_switch_based_on_failure(
+        curr_turn: Turn, user_pokemon: Pokemon
+    ) -> bool:
+        """Cancel a user's switch if their move failed and it was a switch-out move.
+
+        Args:
+            curr_turn: The current turn being processed
+            user_pokemon: The Pokemon that failed to use its move
+
+        Returns:
+            bool: True if the switch was cancelled, False otherwise
+        """
+        if (
+            user_pokemon.last_used_move is not None
+            and user_pokemon.last_used_move.name
+            in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT
+        ):
+            team_slot = curr_turn.pokemon_to_action_idx(user_pokemon)
+            if team_slot:
+                curr_turn.remove_empty_subturn(team=team_slot[0], slot=team_slot[1])
+                return True
+        return False
 
 
 REPLAY_IGNORES = {
@@ -1006,18 +1102,10 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
         if found_ability:
             pokemon.reveal_ability(found_ability)
-        
-        # try to chase down our only indicator that a forced switch will fail?
-        this_team, _ = curr_turn.player_id_to_action_idx(data[0])
-        # look at the other team's moves on this turn
-        opponent_moves = curr_turn.get_moves(p1=this_team == 2)
-        for opp_slot, opp_move in enumerate(opponent_moves):
-            if (opp_move is not None and 
-                opp_move.name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT and 
-                opp_move.target == pokemon):
-                # if they targeted this pokemon with a move that would normally
-                # force a switch, the move failed, and we should remove the subturn...
-                curr_turn.remove_empty_subturn(team=3-this_team, slot=opp_slot)
+        SpecialCategories.cancel_opponent_switch_based_on_user_immunity(
+            curr_turn,
+            immune_pokemon=pokemon,
+        )
 
     elif name == "detailschange" or name == "-formechange":
         # |detailschange|POKEMON|DETAILS|HP STATUS or |-formechange|POKEMON|SPECIES|HP STATUS
@@ -1047,11 +1135,10 @@ def parse_row(replay: ParsedReplay, row: List[str]):
             pokemon.reveal_item(from_item)
         if from_ability is not None and from_mon is not None:
             pokemon.reveal_ability(from_ability)
-
-        # attempting to identify failed forced switch moves
-        if pokemon.last_used_move is not None and pokemon.last_used_move.name in SpecialCategories.MOVES_THAT_SWITCH_THE_USER_OUT:
-            team, slot = curr_turn.player_id_to_action_idx(data[0])
-            curr_turn.remove_empty_subturn(team=team, slot=slot)
+        SpecialCategories.cancel_user_switch_based_on_failure(
+            curr_turn,
+            user_pokemon=pokemon,
+        )
         if pokemon.last_targeted_by is not None:
             # awful edge case; holding pattern until we can figure out the more general rule
             # https://replay.pokemonshowdown.com/gen9ou-2383086891
