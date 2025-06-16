@@ -302,6 +302,14 @@ class Pokemon:
             move.pp = 5
             move.maximum_pp = 5
 
+    @property
+    def last_used_move_name(self) -> Optional[str]:
+        return self.last_used_move.name if self.last_used_move is not None else None
+
+    @property
+    def last_used_move_pp(self) -> Optional[int]:
+        return self.last_used_move.pp if self.last_used_move is not None else None
+
     def use_move(self, move: Move, pp_used: int):
         self.last_used_move = move
         if move.name == "Struggle":
