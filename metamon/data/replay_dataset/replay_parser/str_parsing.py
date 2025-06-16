@@ -58,17 +58,18 @@ def parse_extra(raw: str) -> str:
     return info
 
 
-def parse_effect(effect: str) -> str:
-    for p in ["item", "move", "ability"]:
-        effect = effect.replace(p, "")
-    return to_id_str(effect)
-
-
 def parse_ability(raw: str) -> str:
     ability = raw.replace("ability:", "").strip()
     if not ability or ":" in ability:
         raise StrParsingException("parse_ability", raw)
     return ability
+
+
+def parse_item(raw: str) -> str:
+    item = raw.replace("item:", "").strip()
+    if not item or ":" in item:
+        raise StrParsingException("parse_item", raw)
+    return item
 
 
 def parse_from_effect_of(message: list[str]) -> tuple[Optional[str]]:

@@ -641,10 +641,8 @@ class Turn:
         return poke
 
     def get_pokemon_from_nickname(self, s: str) -> Optional[Pokemon]:
-        breakpoint()
         if s in ["", "null"]:
             return None
-
         side_id = s[1:3]
         nickname = s.split(":")[1].strip()
         p1 = "1" in side_id

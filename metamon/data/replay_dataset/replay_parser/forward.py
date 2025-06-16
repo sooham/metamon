@@ -81,7 +81,7 @@ class SimProtocol:
 
     https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md
 
-    Originally based on (and was intended to be 1:1 with)
+    Originally based on (and intended to be 1:1 with)
     https://github.com/hsahovic/poke-env/blob/master/src/poke_env/environment/abstract_battle.py
     except that it emphasized "offline" situation where we don't expect Showdown
     "request" messages to help us out, and identified failure cases that should be skipped
@@ -220,6 +220,7 @@ class SimProtocol:
         "Dry Skin": "Flip Turn",
         "Lightning Rod": "Volt Switch",
         "Volt Absorb": "Volt Switch",
+        "Storm Drain": "Flip Turn",
     }
 
     # https://bulbapedia.bulbagarden.net/wiki/Category:Item-manipulating_moves
@@ -1224,6 +1225,21 @@ class SimProtocol:
         """
         self.replay.rules.append(args[0])
 
+    def _parse_block(self, args: List[str]):
+        """
+        |-block|POKEMON|EFFECT|MOVE|ATTACKER
+        """
+        *_, from_mon = parse_from_effect_of(args)
+        if from_mon:
+            pokemon = self.curr_turn.get_pokemon_from_str(from_mon)
+        else:
+            pokemon = self.curr_turn.get_pokemon_from_str(args[0])
+        if from_mon and "ability" in args[1]:
+            ability = parse_ability(args[1])
+            pokemon.reveal_ability(ability)
+        else:
+            breakpoint()
+
     def interpret_message(self, message: List[str]):
         """Interpret and process a single Showdown battle protocol message.
 
@@ -1339,6 +1355,8 @@ class SimProtocol:
             self._parse_fail(data)
         elif name == "-singleturn":
             self._parse_singleturn(data)
+        elif name == "-block":
+            self._parse_block(data)
         else:
             if data and data[0].startswith(">>>"):
                 # leaked browser console messages?
@@ -1377,7 +1395,6 @@ class SimProtocol:
         if not subturn_slot:
             return False
 
-        breakpoint()
         curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
         return True
 
@@ -1412,7 +1429,6 @@ class SimProtocol:
         if not subturn_slot:
             return False
 
-        breakpoint()
         curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
         return True
 
