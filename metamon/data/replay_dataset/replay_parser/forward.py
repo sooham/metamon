@@ -410,9 +410,11 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         probably_repeat_move = False
 
         # id target
+        target_pokemon, target_team_idx, target_slot_idx = None, None, None
         if len(data) > 2:
             target_pokemon = curr_turn.get_pokemon_from_str(data[2])
-            target_team_idx, target_slot_idx = curr_turn.player_id_to_action_idx(data[2])
+            if target_pokemon:
+                target_team_idx, target_slot_idx = curr_turn.player_id_to_action_idx(data[2])
         else:
             target_pokemon = None
             target_team_idx, target_slot_idx = None, None
