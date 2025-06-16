@@ -77,6 +77,10 @@ class ParsedReplay:
 
 
 class SpecialCategories:
+    """
+    Map groups of edge case behaviors to a name that describes what that edge case is.
+    """
+
     # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_switch_the_user_out
     MOVES_THAT_SWITCH_THE_USER_OUT = {
         "Baton Pass",
@@ -102,6 +106,8 @@ class SpecialCategories:
     }
 
     # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_call_other_moves
+    # moves that call another move, where the move that is chosen does not necessarily
+    # reveal a move this Pokemon actually has.
     MOVE_OVERRIDE = {
         "Assist",
         "Copycat",
@@ -112,8 +118,12 @@ class SpecialCategories:
         "Snatch",
         "Magic Coat",
     }
+    # moves that call another move, where the move that is chosen is from the Pokemon's moveset
+    # and therefore might reveal information.
     MOVE_OVERRIDE_BUT_REVEAL_ANYWAY = {"Sleep Talk"}
+
     MOVE_IGNORE_ITEMS = {"Custap Berry"}
+
     CONSECUTIVE_MOVES = {
         "Rollout",
         "Outrage",
@@ -122,16 +132,27 @@ class SpecialCategories:
         "Petal Dance",
         "Ice Ball",
     }
+
+    # partial trapping moves that cause the gen 1 PP rollover to 63
     GEN1_PP_ROLLOVERS = {"Bind", "Wrap", "Fire Spin", "Clamp"}
 
     # https://bulbapedia.bulbagarden.net/wiki/Category:Moves_that_restore_HP
     RESTORES_PP = {"Lunar Dance"}
+
     RESTORES_STATUS = {"Healing Wish", "Lunar Dance"}
 
     # approved to ignore in `move` [from] ability: messages
     MOVE_CAUSED_BY_ABILITY = {"Magic Bounce", "Dancer"}
 
     ABILITY_STEALS_ABILITY = {"Trace"}
+
+    # heal messages associated with key ability should indicate that
+    # the value move failed to force a switch
+    HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL = {
+        "Water Absorb": "Flip Turn",
+        "Dry Skin": "Flip Turn",
+        # "Volt Absorb" : "Volt Switch",
+    }
 
     # https://bulbapedia.bulbagarden.net/wiki/Category:Item-manipulating_moves
     # we are missing some of these; lookout for UnhandledFromMoveItemLogic
@@ -366,6 +387,7 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         poke.current_hp = cur_hp
 
         if name == "switch":
+            # mark intentional "Switch" action
             if is_force_switch:
                 if player_subturn is None:
                     breakpoint()
@@ -549,11 +571,23 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                     # (|-heal|p2a: Quagsire|100/100|[from] ability: Water Absorb|[of] p1a: Genesect
                     # is healing Quagsire from Quagsire's Water Absorb ability)
                     of_pokemon = pokemon
+
+                    # dealing with edge case of switching move failure due to the target's ability
+                    if (found_of_pokemon is not None 
+                        and found_ability in SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL 
+                        and pokemon.last_targeted_by is not None):
+                        found_of_pokemon_as_poke = curr_turn.get_pokemon_from_str(found_of_pokemon)
+                        last_targeted_by_poke, last_targeted_by_move = pokemon.last_targeted_by
+                        # this pokemon is healing becaues it was hit by a move that would normally switch the user out
+                        if (last_targeted_by_move == SpecialCategories.HEAL_ON_ABILITY_CAUSES_MOVE_TO_FAIL[found_ability] 
+                            and last_targeted_by_poke == found_of_pokemon_as_poke):
+                            breakpoint()
+                            # block the forced switch from occuring
+                            team, slot = curr_turn.player_id_to_action_idx(found_of_pokemon)
+                            curr_turn.remove_empty_subturn(team=team, slot=slot)
                 else:
-                    if found_of_pokemon:
-                        of_pokemon = curr_turn.get_pokemon_from_str(found_of_pokemon)
-                    else:
-                        of_pokemon = pokemon
+                    of_pokemon = curr_turn.get_pokemon_from_str(found_of_pokemon) if found_of_pokemon else pokemon
+                # reveal found ability
                 of_pokemon.reveal_ability(found_ability)
                 
 
