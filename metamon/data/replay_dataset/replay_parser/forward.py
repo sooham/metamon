@@ -154,7 +154,7 @@ class SpecialCategories:
         "Water Absorb": "Flip Turn",
         "Dry Skin": "Flip Turn",
         "Lightning Rod": "Volt Switch",
-        # "Volt Absorb" : "Volt Switch",
+        "Volt Absorb" : "Volt Switch",
     }
 
     # https://bulbapedia.bulbagarden.net/wiki/Category:Item-manipulating_moves
@@ -609,7 +609,11 @@ def parse_row(replay: ParsedReplay, row: List[str]):
                     # is healing Quagsire from Quagsire's Water Absorb ability)
                     of_pokemon = pokemon
                     # dealing with edge case of switching move failure due to the target's ability
-                    SpecialCategories.cancel_opponent_switch_based_on_user_ability(curr_turn, pokemon, found_ability)
+                    SpecialCategories.cancel_opponent_switch_based_on_user_ability(
+                        curr_turn,
+                        user_pokemon=pokemon,
+                        based_on_ability=found_ability
+                    )
                 else:
                     of_pokemon = curr_turn.get_pokemon_from_str(found_of_pokemon) if found_of_pokemon else pokemon
                 # reveal found ability
@@ -695,7 +699,11 @@ def parse_row(replay: ParsedReplay, row: List[str]):
         pokemon = curr_turn.get_pokemon_from_str(data[0])
         ability = parse_ability(data[1])
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(data)
-        breakpoint()
+        SpecialCategories.cancel_opponent_switch_based_on_user_ability(
+            curr_turn,
+            user_pokemon=pokemon,
+            based_on_ability=ability,
+        )
         if found_mon and found_ability:
             if found_ability in SpecialCategories.ABILITY_STEALS_ABILITY:
                 # ['p1a: Porygon2', 'Clear Body', '[from] ability: Trace', '[of] p2a: Dragapult']
