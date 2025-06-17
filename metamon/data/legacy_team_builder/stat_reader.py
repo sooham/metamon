@@ -200,6 +200,7 @@ def parse_pokemon_moveset(file_path):
         "items": [],
         "spreads": [],
         "moves": [],
+        "tera_types": [],
         "teammates": [],
         "checks": [],
     }
@@ -263,6 +264,17 @@ def parse_pokemon_moveset(file_path):
         moveset_data_list["moves"].append(_moves)
         return moveset_data_list
 
+    def p_tera_types(data_cache):
+        _tera_types = {}
+        assert "Tera Types" in data_cache[0], "Tera Types not found"
+        for line in data_cache[1:]:
+            line_split = line[2:-2].strip().split()
+            name = " ".join(line_split[:-1])
+            percent = line_split[-1]
+            _tera_types[name] = float(percent[:-1]) / 100
+        moveset_data_list["tera_types"].append(_tera_types)
+        return moveset_data_list
+
     def p_teammates(data_cache):
         _teammates = {}
         assert "Teammates" in data_cache[0], "Teammates not found"
@@ -296,19 +308,35 @@ def parse_pokemon_moveset(file_path):
         return moveset_data_list
 
     with open(file_path, "r") as file:
-        lines = file.readlines()
+        file_content = file.read()
 
-    section_order = [
-        p_name,
-        p_count,
-        p_abilities,
-        p_items,
-        p_spreads,
-        p_moves,
-        p_teammates,
-        p_checks,
-        lambda _: None,
-    ]
+    if "Tera Types" in file_content:
+        section_order = [
+            p_name,
+            p_count,
+            p_abilities,
+            p_items,
+            p_spreads,
+            p_moves,
+            p_tera_types,
+            p_teammates,
+            p_checks,
+            lambda _: None,
+        ]
+    else:
+        section_order = [
+            p_name,
+            p_count,
+            p_abilities,
+            p_items,
+            p_spreads,
+            p_moves,
+            p_teammates,
+            p_checks,
+            lambda _: None,
+        ]
+
+    lines = file_content.split("\n")
     current_section = -1
 
     data_cache = []
@@ -330,6 +358,7 @@ def parse_pokemon_moveset(file_path):
         _items = moveset_data_list["items"][i]
         _spreads = moveset_data_list["spreads"][i]
         _moves = moveset_data_list["moves"][i]
+        _tera_types = moveset_data_list["tera_types"][i]
         _teammates = moveset_data_list["teammates"][i]
         _checks = moveset_data_list["checks"][i]
         moveset_data[_name] = {
@@ -338,6 +367,7 @@ def parse_pokemon_moveset(file_path):
             "items": _items,
             "spreads": _spreads,
             "moves": _moves,
+            "tera_types": _tera_types,
             "teammates": _teammates,
             "checks": _checks,
         }
