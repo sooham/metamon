@@ -11,9 +11,10 @@ METAMON_CACHE_DIR = os.environ.get("METAMON_CACHE_DIR", None)
 if METAMON_CACHE_DIR is not None:
     VERSION_REFERENCE_PATH = os.path.join(METAMON_CACHE_DIR, "version_reference.json")
 else:
+    raise ValueError("METAMON_CACHE_DIR environment variable is not set")
     VERSION_REFERENCE_PATH = None
 
-LATEST_RAW_REPLAY_REVISION = "v2"
+LATEST_RAW_REPLAY_REVISION = "v3"
 LATEST_PARSED_REPLAY_REVISION = "v2"
 LATEST_TEAMS_REVISION = "v2"
 
