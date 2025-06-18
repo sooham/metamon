@@ -1,7 +1,7 @@
 import random
 import numpy as np
-from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
-from metamon.data.legacy_team_builder.constants import (
+from metamon.data.team_prediction.usage_stats.stat_reader import PreloadedSmogonStat
+from metamon.data.team_prediction.usage_stats.constants import (
     HIDDEN_POWER_IVS,
     HIDDEN_POWER_DVS,
     INCOMPATIBLE_MOVES,

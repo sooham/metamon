@@ -1,11 +1,16 @@
 import os
 import re
 import json
-from metamon.data import DATA_PATH
-from metamon.data.download_stats import download_data
-from metamon.data.legacy_team_builder.format_rules import get_valid_pokemon, Tier
+import datetime
 
 from poke_env.data import to_id_str
+
+from metamon.download import METAMON_CACHE_DIR
+from metamon.data.team_prediction.usage_stats.format_rules import (
+    get_valid_pokemon,
+    Tier,
+)
+
 
 TIER_MAP = {
     "ubers": Tier.UBERS,
@@ -16,180 +21,6 @@ TIER_MAP = {
     "pu": Tier.PU,
     "lc": Tier.LC,
 }
-
-
-class SmogonStat:
-    def __init__(
-        self, format, raw_stats_dir: str, date=None, rank=None, verbose: bool = True
-    ) -> None:
-        if date and type(date) == str:
-            dates = [date]
-        elif date and type(date) == list:
-            dates = date
-        else:
-            dates = os.listdir(raw_stats_dir)
-
-        self.data_paths = [os.path.join(raw_stats_dir, date) for date in dates]
-        self.format = format
-        self.rank = rank
-        self.verbose = verbose
-
-        self._movesets = {}
-        self._inclusive = {}
-        self._usage = None
-        self._load()
-        self._name_conversion = {
-            to_id_str(pokemon): pokemon for pokemon in self._movesets.keys()
-        }
-
-    def _load(self):
-        moveset_paths = [
-            os.path.join(data_path, "moveset") for data_path in self.data_paths
-        ]
-        if self.verbose:
-            print(f"Loading Smogon data from {len(moveset_paths)} paths")
-        _movesets = []
-        for moveset_path in moveset_paths:
-            format_data = [
-                x for x in os.listdir(moveset_path) if x.startswith(self.format + "-")
-            ]
-
-            if self.rank is not None:
-                format_data = [x for x in format_data if self.rank in x]
-            _movesets += [
-                parse_pokemon_moveset(os.path.join(moveset_path, x))
-                for x in format_data
-            ]
-        self._movesets = {to_id_str(k): v for k, v in merge_movesets(_movesets).items()}
-
-    def pretty_print(self, key):
-        data = self[key]
-        print(f"------ {key} {data['count']} ------\n")
-        print("\tMoveset:")
-        sorted_moves = sorted(data["moves"].items(), key=lambda x: x[1], reverse=True)
-        for i, (move, usage) in enumerate(sorted_moves[:10]):
-            print(f"\t\t{i+1}. {move} ({usage * 100: .1f}%)")
-        print("\n\tTeammates:")
-        sorted_mates = sorted(
-            data["teammates"].items(), key=lambda x: x[1], reverse=True
-        )
-        for i, (mate, usage) in enumerate(sorted_mates[:5]):
-            print(f"\t\t{i+1}. {mate} ({usage * 100: .1f}%)")
-        print("\n\tChecks:")
-        sorted_checks = sorted(data["checks"].items(), key=lambda x: x[1], reverse=True)
-        for i, (check, usage) in enumerate(sorted_checks[:5]):
-            print(f"\t\t{i+1}. {check} ({usage * 100: .1f}%)")
-
-    def remove_banned_pm(self):
-        valid_pm_dict = get_valid_pokemon(self.format)
-        tier = TIER_MAP[self.format[4:]]
-        valid_pm = []
-        # get all pokemon valid in this tier
-        for t in valid_pm_dict.keys():
-            if t >= tier:
-                valid_pm.extend(valid_pm_dict[t])
-
-        if self.verbose:
-            print(f"Total {len(valid_pm)} valid pokemon for {self.format}")
-        # remove pokemon that not in this tier
-        for pm in list(self._movesets.keys()):
-            if re.sub(r"[^a-zA-Z0-9]", "", pm) not in valid_pm:
-                if self.verbose:
-                    print(f"Remove {pm} from {self.format}")
-                del self._movesets[pm]
-
-    def __getitem__(self, key):
-        try:
-            return self.get_from_movesets(key)
-        except KeyError as e:
-            if self._inclusive:
-                return self.get_from_inclusive(key)
-            raise e
-
-    def get_from_movesets(self, key):
-        # Name in ps stat
-        if key in self._movesets:
-            return self._movesets[key]
-        # Name in ps id
-        clean_name = to_id_str(key)
-        if clean_name in self._name_conversion:
-            key = self._name_conversion[clean_name]
-            return self._movesets[key]
-        # Handle format like "Gastrodon-East"
-        key = key.split("-")[0]
-        if key in self._movesets:
-            return self._movesets[key]
-
-        raise KeyError(f"Pokemon {key} not found in {self.format}")
-
-    def get_from_inclusive(self, key):
-        raise KeyError(f"Please use PreloadedStat for inclusive search")
-
-    @property
-    def movesets(self):
-        return self._movesets
-
-    @property
-    def usage(self):
-        if self._usage is None:
-            # create a list of pokemon names, sorted by count
-            self._usage = list(
-                sorted(
-                    self._movesets.keys(),
-                    key=lambda x: self._movesets[x]["count"],
-                    reverse=True,
-                )
-            )
-        return self._usage
-
-
-class PreloadedSmogonStat(SmogonStat):
-    def __init__(self, format, verbose: bool = True, inclusive=False):
-        self.format = format
-        self.rank = None
-        self.verbose = verbose
-        self._usage = None
-
-        gen, tier = format[:4], format[4:]
-        file_path = os.path.join(
-            DATA_PATH, f"movesets_data/{gen}/{tier}/alltime_allrank.json"
-        )
-        inclusive_file_path = os.path.join(
-            DATA_PATH, f"movesets_data/{gen}/inclusive.json"
-        )
-        if not os.path.exists(file_path) or not os.path.exists(inclusive_file_path):
-            download_data()
-        with open(file_path, "r") as file:
-            self._movesets = json.load(file)
-        if inclusive:
-            with open(inclusive_file_path, "r") as file:
-                self._inclusive = json.load(file)
-        if self.verbose:
-            print(f"Loaded precomputed Smogon data from {file_path}")
-        self._name_conversion = {
-            to_id_str(pokemon): pokemon for pokemon in self._movesets.keys()
-        }
-
-    def _load(self):
-        pass
-
-    def get_from_inclusive(self, key):
-        if self.verbose:
-            print(f"Using inclusive search for {key}")
-        # Name in ps stat
-        if key in self._inclusive:
-            return self._inclusive[key]
-        # Name in ps id
-        clean_name = to_id_str(key)
-        if clean_name in self._name_conversion:
-            key = self._name_conversion[clean_name]
-            return self._inclusive[key]
-        # Handle format like "Gastrodon-East"
-        key = key.split("-")[0]
-        if key in self._inclusive:
-            return self._inclusive[key]
-
-        raise KeyError(f"Pokemon {key} not found in {self.format}")
 
 
 def parse_pokemon_moveset(file_path):
@@ -350,6 +181,9 @@ def parse_pokemon_moveset(file_path):
             data_cache.append(line.strip())
 
     n = len(moveset_data_list["name"])
+    if len(moveset_data_list["tera_types"]) == 0:
+        moveset_data_list["tera_types"] = [{"Nothing": 1.0} for _ in range(n)]
+
     moveset_data = {}
     for i in range(n):
         _name = moveset_data_list["name"][i]
@@ -371,7 +205,6 @@ def parse_pokemon_moveset(file_path):
             "teammates": _teammates,
             "checks": _checks,
         }
-
     return moveset_data
 
 
@@ -408,8 +241,212 @@ def merge_movesets(movesets):
     return result
 
 
+class SmogonStat:
+    def __init__(
+        self,
+        format: str,
+        raw_stats_dir: str,
+        date=None,
+        rank=None,
+        verbose: bool = True,
+    ) -> None:
+        if date and type(date) == str:
+            dates = [date]
+        elif date and type(date) == list:
+            dates = date
+        else:
+            dates = os.listdir(raw_stats_dir)
+
+        self.data_paths = [os.path.join(raw_stats_dir, date) for date in dates]
+        self.format = format
+        self.rank = rank
+        self.verbose = verbose
+
+        self._movesets = {}
+        self._inclusive = {}
+        self._usage = None
+        self._load()
+        self._name_conversion = {
+            to_id_str(pokemon): pokemon for pokemon in self._movesets.keys()
+        }
+
+    def _load(self):
+        moveset_paths = []
+        for data_path in self.data_paths:
+            moveset_path = os.path.join(data_path, "moveset")
+            if os.path.exists(moveset_path):
+                moveset_paths.append(moveset_path)
+
+        if len(moveset_paths) == 0:
+            print(f"No moveset data found for {self.format} in {self.data_paths}")
+            self._movesets = {}
+            return
+
+        _movesets = []
+        for moveset_path in moveset_paths:
+            format_data = [
+                x for x in os.listdir(moveset_path) if x.startswith(self.format + "-")
+            ]
+            if self.rank is not None:
+                format_data = [x for x in format_data if self.rank in x]
+            _movesets += [
+                parse_pokemon_moveset(os.path.join(moveset_path, x))
+                for x in format_data
+            ]
+        self._movesets = {to_id_str(k): v for k, v in merge_movesets(_movesets).items()}
+
+    def pretty_print(self, key):
+        data = self[key]
+        print(f"------ {key} {data['count']} ------\n")
+        print("\tMoveset:")
+        sorted_moves = sorted(data["moves"].items(), key=lambda x: x[1], reverse=True)
+        for i, (move, usage) in enumerate(sorted_moves[:10]):
+            print(f"\t\t{i+1}. {move} ({usage * 100: .1f}%)")
+        print("\n\tTeammates:")
+        sorted_mates = sorted(
+            data["teammates"].items(), key=lambda x: x[1], reverse=True
+        )
+        for i, (mate, usage) in enumerate(sorted_mates[:5]):
+            print(f"\t\t{i+1}. {mate} ({usage * 100: .1f}%)")
+        print("\n\tChecks:")
+        sorted_checks = sorted(data["checks"].items(), key=lambda x: x[1], reverse=True)
+        for i, (check, usage) in enumerate(sorted_checks[:5]):
+            print(f"\t\t{i+1}. {check} ({usage * 100: .1f}%)")
+
+    def remove_banned_pm(self):
+        valid_pm_dict = get_valid_pokemon(self.format)
+        tier = TIER_MAP[self.format[4:]]
+        valid_pm = []
+        # get all pokemon valid in this tier
+        for t in valid_pm_dict.keys():
+            if t >= tier:
+                valid_pm.extend(valid_pm_dict[t])
+
+        if self.verbose:
+            print(f"Total {len(valid_pm)} valid pokemon for {self.format}")
+        # remove pokemon that not in this tier
+        for pm in list(self._movesets.keys()):
+            if re.sub(r"[^a-zA-Z0-9]", "", pm) not in valid_pm:
+                if self.verbose:
+                    print(f"Remove {pm} from {self.format}")
+                del self._movesets[pm]
+
+    def __getitem__(self, key):
+        try:
+            return self.get_from_movesets(key)
+        except KeyError as e:
+            if self._inclusive:
+                return self.get_from_inclusive(key)
+            raise e
+
+    def get_from_movesets(self, key):
+        # Name in ps stat
+        if key in self._movesets:
+            return self._movesets[key]
+        # Name in ps id
+        clean_name = to_id_str(key)
+        if clean_name in self._name_conversion:
+            key = self._name_conversion[clean_name]
+            return self._movesets[key]
+        # Handle format like "Gastrodon-East"
+        key = key.split("-")[0]
+        if key in self._movesets:
+            return self._movesets[key]
+
+        raise KeyError(f"Pokemon {key} not found in {self.format}")
+
+    def get_from_inclusive(self, key):
+        raise KeyError(f"Please use PreloadedStat for inclusive search")
+
+    @property
+    def movesets(self):
+        return self._movesets
+
+    @property
+    def usage(self):
+        if self._usage is None:
+            # create a list of pokemon names, sorted by count
+            self._usage = list(
+                sorted(
+                    self._movesets.keys(),
+                    key=lambda x: self._movesets[x]["count"],
+                    reverse=True,
+                )
+            )
+        return self._usage
+
+
+class PreloadedSmogonStat(SmogonStat):
+    def __init__(
+        self,
+        format,
+        start_date: datetime.date,
+        end_date: datetime.date,
+        verbose: bool = True,
+    ):
+        self.format = format
+        self.rank = None
+        self.verbose = verbose
+        self._usage = None
+        gen, tier = format[:4], format[4:]
+        movesets_path = os.path.join(
+            METAMON_CACHE_DIR, "usage-stats", "movesets_data", gen, f"{tier}"
+        )
+        inclusive_path = os.path.join(
+            METAMON_CACHE_DIR, "usage-stats", "movesets_data", gen, "all_tiers"
+        )
+        # data is split by year and month
+        start_date = start_date.replace(day=1)
+        end_date = end_date.replace(day=1)
+        if not os.path.exists(movesets_path) or not os.path.exists(inclusive_path):
+            raise FileNotFoundError(
+                f"Movesets data not found for {format}. Run `python -m metamon download usage-stats` to download the data."
+            )
+
+        def _merge_stats_over_time(dir_path, start_date, end_date):
+            selected_data = []
+            for json_file in os.listdir(dir_path):
+                year, month = json_file.replace(".json", "").split("-")
+                date = datetime.date(year=int(year), month=int(month), day=1)
+                if not start_date <= date <= end_date:
+                    continue
+                with open(os.path.join(dir_path, json_file), "r") as file:
+                    data = json.load(file)
+                selected_data.append(data)
+            return merge_movesets(selected_data)
+
+        self._movesets = _merge_stats_over_time(movesets_path, start_date, end_date)
+        self._inclusive = _merge_stats_over_time(inclusive_path, start_date, end_date)
+        self._name_conversion = {
+            to_id_str(pokemon): pokemon for pokemon in self._movesets.keys()
+        }
+
+    def _load(self):
+        pass
+
+    def get_from_inclusive(self, key):
+        if self.verbose:
+            print(f"Using inclusive search for {key}")
+        # Name in ps stat
+        if key in self._inclusive:
+            return self._inclusive[key]
+        # Name in ps id
+        clean_name = to_id_str(key)
+        if clean_name in self._name_conversion:
+            key = self._name_conversion[clean_name]
+            return self._inclusive[key]
+        # Handle format like "Gastrodon-East"
+        key = key.split("-")[0]
+        if key in self._inclusive:
+            return self._inclusive[key]
+
+        raise KeyError(f"Pokemon {key} not found in {self.format}")
+
+
 if __name__ == "__main__":
-    stats = PreloadedSmogonStat("gen9ou")
+    stats = PreloadedSmogonStat(
+        "gen9ou", datetime.date(2023, 1, 1), datetime.date(2025, 6, 1)
+    )
     print(len(stats.usage))
     for mon in sorted(
         stats.movesets.keys(), key=lambda m: stats[m]["count"], reverse=True

@@ -8,18 +8,20 @@ from urllib.parse import urljoin
 
 base_url = "https://www.smogon.com/stats/"
 
-parser = argparse.ArgumentParser(description="Scrape Smogon stats")
+parser = argparse.ArgumentParser(
+    description="Gathers tier usage statistics from Smogon by month across a range of years"
+)
 parser.add_argument(
     "--start_date",
     type=int,
     default=2015,
-    help="Start date for scraping (YYYY)",
+    help="Start date for scraping (YYYY) (inclusive)",
 )
 parser.add_argument(
     "--end_date",
     type=int,
     default=2024,
-    help="End date for scraping (YYYY)",
+    help="End year for scraping (YYYY) (exclusive)",
 )
 parser.add_argument(
     "--save_dir",
