@@ -7,16 +7,18 @@ from collections import defaultdict
 
 from huggingface_hub import hf_hub_download
 
+from metamon import SUPPORTED_BATTLE_FORMATS
+
 METAMON_CACHE_DIR = os.environ.get("METAMON_CACHE_DIR", None)
 if METAMON_CACHE_DIR is not None:
     VERSION_REFERENCE_PATH = os.path.join(METAMON_CACHE_DIR, "version_reference.json")
 else:
-    raise ValueError("METAMON_CACHE_DIR environment variable is not set")
     VERSION_REFERENCE_PATH = None
 
 LATEST_RAW_REPLAY_REVISION = "v3"
 LATEST_PARSED_REPLAY_REVISION = "v2"
 LATEST_TEAMS_REVISION = "v2"
+LATEST_USAGE_STATS_REVISION = "v1"
 
 
 def _update_version_reference(key: str, name: str, version: str):
@@ -179,6 +181,8 @@ def download_raw_replays(version: str = LATEST_RAW_REPLAY_REVISION) -> str:
     Returns:
         The path to the dataset on disk.
     """
+    if METAMON_CACHE_DIR is None:
+        raise ValueError("METAMON_CACHE_DIR environment variable is not set")
     from metamon.data.replay_dataset.raw_replays.download_from_hf import process_dataset
 
     process_dataset(
@@ -188,6 +192,64 @@ def download_raw_replays(version: str = LATEST_RAW_REPLAY_REVISION) -> str:
     )
     _update_version_reference("raw-replays", "raw-replays", version)
     return os.path.join(METAMON_CACHE_DIR, "raw-replays")
+
+
+def download_usage_stats(
+    gen: int,
+    version: str = LATEST_USAGE_STATS_REVISION,
+    force_download: bool = False,
+) -> str:
+    """Download the usage stats for a given battle format and year/month.
+
+    Usage stats are cheatsheet conversions of the raw Smogon data released for
+    evaluating rule changes and metagame trends. They help us predict missing information
+    based on team construction trends at the time the battle was played.
+
+    Args:
+        gen: Generation of the usage stats to download (e.g. 1 for Gen 1)
+        version: Version of the dataset to download. Corresponds to revisions on the
+            Hugging Face Hub. Defaults to the latest version.
+        force_download: If True, download the dataset even if a previous version
+            already exists in the cache.
+
+    Returns:
+        The path to the dataset on disk.
+    """
+    if METAMON_CACHE_DIR is None:
+        raise ValueError("METAMON_CACHE_DIR environment variable is not set")
+
+    usage_stats_dir = os.path.join(METAMON_CACHE_DIR, "usage-stats")
+    movesets_path = os.path.join(usage_stats_dir, "movesets_data")
+    checks_path = os.path.join(usage_stats_dir, "checks_data")
+    movesets_tar_path = os.path.join(movesets_path, f"gen{gen}.tar.gz")
+    checks_tar_path = os.path.join(checks_path, f"gen{gen}.tar.gz")
+    movesets_extract_path = os.path.join(movesets_path, f"gen{gen}")
+    checks_extract_path = os.path.join(checks_path, f"gen{gen}")
+
+    def _download_and_extract(tar_path, extract_path):
+        if os.path.exists(extract_path):
+            if not force_download:
+                return extract_path
+            print(f"Clearing existing dataset at {extract_path}...")
+            shutil.rmtree(extract_path)
+        repo_folder = os.path.basename(os.path.dirname(tar_path))
+        hf_hub_download(
+            cache_dir=None,
+            repo_id="jakegrigsby/metamon-usage-stats",
+            filename=f"{repo_folder}/{os.path.basename(tar_path)}",
+            local_dir=usage_stats_dir,
+            revision=version,
+            repo_type="dataset",
+        )
+        with tarfile.open(tar_path) as tar:
+            print(f"Extracting {tar_path}...")
+            tar.extractall(path=os.path.dirname(extract_path))
+        os.remove(tar_path)
+
+    _download_and_extract(movesets_tar_path, movesets_extract_path)
+    _download_and_extract(checks_tar_path, checks_extract_path)
+    _update_version_reference("usage-stats", f"gen{gen}", version)
+    return usage_stats_dir
 
 
 def print_version_tree(version_dict: dict, indent: int = 0):
@@ -242,6 +304,7 @@ For current dataset versions, see `get_active_dataset_versions()` or run:
             "revealed-teams",
             "replay-stats",
             "teams",
+            "usage-stats",
             "check-versions",
         ],
         help="""
@@ -259,9 +322,7 @@ Dataset to download:
         "--formats",
         nargs="+",
         type=str,
-        default=[
-            f"gen{i}{tier}" for i in range(1, 5) for tier in ["ou", "nu", "uu", "ubers"]
-        ],
+        default=SUPPORTED_BATTLE_FORMATS,
         help="""
 Battle formats to download. Defaults to all Gen 1-4 formats (OU, UU, NU, Ubers).
 Examples:
@@ -298,6 +359,13 @@ Available versions:
     elif args.dataset == "replay-stats":
         version = args.version or LATEST_PARSED_REPLAY_REVISION
         download_replay_stats(version=version, force_download=True)
+    elif args.dataset == "usage-stats":
+        version = args.version or LATEST_USAGE_STATS_REVISION
+        if args.formats is None:
+            raise ValueError("Must specify at least one battle format (e.g., gen1ou)")
+        generations = set(int(format[3]) for format in args.formats)
+        for gen in generations:
+            download_usage_stats(gen=gen, version=version, force_download=True)
     elif args.dataset == "teams":
         version = args.version or LATEST_TEAMS_REVISION
         if args.formats is None:
