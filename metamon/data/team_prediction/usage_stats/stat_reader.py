@@ -396,6 +396,7 @@ def load_between_dates(
         raise FileNotFoundError(
             f"No Showdown usage stats found in {dir_path} between {start_date} and {end_date}"
         )
+    print(f"Loading usage stats between {start_date} and {end_date}")
     return merge_movesets(selected_data)
 
 

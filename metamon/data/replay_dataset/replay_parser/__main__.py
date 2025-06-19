@@ -3,9 +3,9 @@ import glob
 import random
 import tqdm
 
-from .parse_replays import ReplayParser
 import metamon
-from metamon.data.team_prediction.predictor import *
+from metamon.data.replay_dataset.replay_parser.parse_replays import ReplayParser
+from metamon.data.team_prediction.predictor import ALL_PREDICTORS
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
@@ -63,7 +63,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--team_predictor",
         type=str,
-        choices=["NaiveUsagePredictor", "ReplayPredictor"],
+        choices=list(ALL_PREDICTORS.keys()),
         default="NaiveUsagePredictor",
         help="Team predictor to use",
     )
@@ -102,7 +102,7 @@ if __name__ == "__main__":
         replay_output_dir=output_dir,
         team_output_dir=team_output_dir,
         verbose=args.verbose,
-        team_predictor=eval(args.team_predictor)(
+        team_predictor=ALL_PREDICTORS[args.team_predictor](
             replay_stats_dir=args.replay_stats_dir
         ),
     )

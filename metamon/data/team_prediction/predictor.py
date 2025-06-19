@@ -458,6 +458,11 @@ class ReplayPredictor(NaiveUsagePredictor):
         return super().fill_team(team, date=date)
 
 
+ALL_PREDICTORS = {
+    "NaiveUsagePredictor": NaiveUsagePredictor,
+    "ReplayPredictor": ReplayPredictor,
+}
+
 if __name__ == "__main__":
     import argparse
     from metamon.data.team_prediction.dataset import TeamDataset
