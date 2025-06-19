@@ -3,7 +3,6 @@ import os
 import random
 import json
 import datetime
-from dateutil.relativedelta import relativedelta
 from abc import ABC, abstractmethod
 from functools import lru_cache
 from collections import deque
@@ -16,7 +15,9 @@ from metamon.data.team_prediction.usage_stats.legacy_team_builder import (
     TeamBuilder,
     PokemonStatsLookupError,
 )
-from metamon.data.team_prediction.usage_stats.stat_reader import get_usage_stats
+from metamon.data.team_prediction.usage_stats import (
+    PreloadedSmogonUsageStats,
+)
 from metamon.data.team_prediction.team import TeamSet, PokemonSet, Roster
 
 
@@ -27,10 +28,12 @@ class TeamPredictor(ABC):
     def bin_usage_stats_dates(
         self, date: datetime.date
     ) -> Tuple[datetime.date, datetime.date]:
-        # the old system would be equivalent to:
-        # return EARLIEST_USAGE_STATS_DATE, LATEST_USAGE_STATS_DATE.
-        # best binning method unclear; starting by splitting into 6 month
-        # bins for now..
+        """
+        The old system would be equivalent to:
+        return EARLIEST_USAGE_STATS_DATE, LATEST_USAGE_STATS_DATE.
+
+        Best binning method unclear; starting by splitting into 6 month bins for now..
+        """
         year = date.year
         if date.month <= 6:
             start_date = datetime.date(year, 1, 1)
@@ -47,6 +50,12 @@ class TeamPredictor(ABC):
             start_date=start_date,
             end_date=end_date,
         )
+
+    def get_usage_stats(
+        self, format: str, date: datetime.date
+    ) -> PreloadedSmogonUsageStats:
+        # route this through the same binning method as the TeamBuilder
+        return self.get_legacy_team_builder(format, date).stat
 
     def predict(self, team: TeamSet, date: datetime.date) -> TeamSet:
         copy_team = copy.deepcopy(team)
@@ -402,10 +411,7 @@ class ReplayPredictor(NaiveUsagePredictor):
             # we only trust our stats for the big OU formats for now
             return super().fill_team(team, date=date)
 
-        breakpoint()
-        self.smogon_stat = get_usage_stats(
-            team.format, date - self.usage_stat_lookback, date
-        )
+        self.smogon_stat = self.get_usage_stats(team.format, date)
 
         if self.stat_format != team.format:
             # load the stats on a format change

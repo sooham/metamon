@@ -13,14 +13,13 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
     Nothing,
     BackwardMarkers,
 )
-from metamon.data.team_prediction.usage_stats import PreloadedSmogonStat
+from metamon.data.team_prediction.usage_stats import get_usage_stats
 
 
 def moveset_size(pokemon_name: str, gen: int) -> int:
     # attempts to handle cases where we would expect a Pokemon to have less than 4 moves
-    stat = PreloadedSmogonStat(
+    stat = get_usage_stats(
         f"gen{gen}ubers",
-        verbose=False,
         start_date=date(2020, 1, 1),
         end_date=date(2025, 5, 1),
     )
