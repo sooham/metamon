@@ -90,7 +90,7 @@ if __name__ == "__main__":
 
     from metamon.interface import *
     from metamon.datasets import ParsedReplayDataset
-    from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
+    from metamon.data.team_prediction.usage_stats import get_usage_stats
 
     parser = ArgumentParser()
     parser.add_argument("--parsed_replay_root", required=True)
@@ -119,7 +119,9 @@ if __name__ == "__main__":
     for gen in range(1, 5):
         for tier in ["ou", "uu", "ubers", "nu"]:
             format = f"gen{gen}{tier}"
-            stat = PreloadedSmogonStat(format, inclusive=True)
+            stat = get_usage_stats(
+                format, start_date=date(2015, 1, 1), end_date=date(2025, 1, 1)
+            )
             for pokemon_name_str, data in tqdm.tqdm(stat._inclusive.items()):
                 tokenizer.add_token_for(pokemon_name(pokemon_name_str))
 

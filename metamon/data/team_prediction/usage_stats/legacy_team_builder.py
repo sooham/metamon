@@ -2,7 +2,7 @@ import random
 import datetime
 
 import numpy as np
-from metamon.data.team_prediction.usage_stats.stat_reader import PreloadedSmogonStat
+from metamon.data.team_prediction.usage_stats import get_usage_stats
 from metamon.data.team_prediction.usage_stats.constants import (
     HIDDEN_POWER_IVS,
     HIDDEN_POWER_DVS,
@@ -26,9 +26,7 @@ class TeamBuilder:
         remove_banned: bool = False,
     ):
         self.format = format
-        self.stat = PreloadedSmogonStat(
-            format, start_date=start_date, end_date=end_date, verbose=verbose
-        )
+        self.stat = get_usage_stats(format, start_date, end_date)
         if remove_banned:
             self.stat.remove_banned_pm()
         self.verbose = verbose

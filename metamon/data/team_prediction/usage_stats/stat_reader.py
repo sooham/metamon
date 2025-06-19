@@ -3,6 +3,7 @@ import re
 import json
 import datetime
 import functools
+from typing import Optional
 
 from poke_env.data import to_id_str
 
@@ -22,6 +23,9 @@ TIER_MAP = {
     "pu": Tier.PU,
     "lc": Tier.LC,
 }
+
+EARLIEST_USAGE_STATS_DATE = datetime.date(2015, 1, 1)
+LATEST_USAGE_STATS_DATE = datetime.date(2025, 5, 1)
 
 
 def parse_pokemon_moveset(file_path):
@@ -377,7 +381,6 @@ class SmogonStat:
         return self._usage
 
 
-@functools.lru_cache(maxsize=32)
 def load_between_dates(
     dir_path: str, start_year: int, start_month: int, end_year: int, end_month: int
 ) -> dict:
@@ -396,11 +399,10 @@ def load_between_dates(
         raise FileNotFoundError(
             f"No Showdown usage stats found in {dir_path} between {start_date} and {end_date}"
         )
-    print(f"Loading usage stats between {start_date} and {end_date}")
     return merge_movesets(selected_data)
 
 
-class PreloadedSmogonStat(SmogonStat):
+class PreloadedSmogonUsageStats(SmogonStat):
     def __init__(
         self,
         format,
@@ -464,8 +466,34 @@ class PreloadedSmogonStat(SmogonStat):
         raise KeyError(f"Pokemon {key} not found in {self.format}")
 
 
+def get_usage_stats(
+    format,
+    start_date: Optional[datetime.date] = None,
+    end_date: Optional[datetime.date] = None,
+) -> PreloadedSmogonUsageStats:
+    if start_date is None:
+        start_date = EARLIEST_USAGE_STATS_DATE
+    else:
+        # force to start of months to prevent cache miss (we only have monthly stats anyway)
+        start_date = datetime.date(start_date.year, start_date.month, 1)
+    if end_date is None:
+        end_date = LATEST_USAGE_STATS_DATE
+    else:
+        # force to start of months to prevent cache miss (we only have monthly stats anyway)
+        end_date = datetime.date(end_date.year, end_date.month, 1)
+    return _cached_smogon_stats(format, start_date, end_date)
+
+
+@functools.lru_cache(maxsize=32)
+def _cached_smogon_stats(format, start_date: datetime.date, end_date: datetime.date):
+    print(f"Loading usage stats for {format} between {start_date} and {end_date}")
+    return PreloadedSmogonUsageStats(
+        format=format, start_date=start_date, end_date=end_date, verbose=False
+    )
+
+
 if __name__ == "__main__":
-    stats = PreloadedSmogonStat(
+    stats = get_usage_stats(
         "gen9ou", datetime.date(2023, 1, 1), datetime.date(2025, 6, 1)
     )
     print(len(stats.usage))
