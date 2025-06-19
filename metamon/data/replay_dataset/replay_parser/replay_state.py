@@ -635,9 +635,10 @@ class Turn:
                 # and curestatus from heal bell, where that's true, though there are
                 # probably more.
                 poke_by_nickname = self.get_pokemon_from_nickname(showdown_msg)
-                if poke_by_nickname is None:
+                if poke_by_nickname is not None:
+                    poke.nickname = nickname
+                else:
                     breakpoint()
-                return poke_by_nickname
         return poke
 
     def get_pokemon_from_nickname(self, s: str) -> Optional[Pokemon]:

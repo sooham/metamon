@@ -441,7 +441,9 @@ class SimProtocol:
 
         # id pokemon
         poke_str = args[0][:3]
-        pokemon = self.curr_turn.get_pokemon_from_str(args[0])
+        pokemon = self.curr_turn.get_pokemon_from_str(
+            args[0], fallback_to_nickname=False
+        )
         move_name = args[1]
         move = Move(name=move_name, gen=self.replay.gen)
         probably_repeat_move = False
@@ -449,7 +451,9 @@ class SimProtocol:
         # id target
         target_pokemon, target_team_idx, target_slot_idx = None, None, None
         if len(args) > 2:
-            target_pokemon = self.curr_turn.get_pokemon_from_str(args[2])
+            target_pokemon = self.curr_turn.get_pokemon_from_str(
+                args[2], fallback_to_nickname=False
+            )
             if target_pokemon:
                 target_team_idx, target_slot_idx = (
                     self.curr_turn.player_id_to_action_idx(args[2])
