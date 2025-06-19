@@ -16,7 +16,7 @@ from metamon.data.team_prediction.usage_stats.legacy_team_builder import (
     TeamBuilder,
     PokemonStatsLookupError,
 )
-from metamon.data.team_prediction.usage_stats.stat_reader import PreloadedSmogonStat
+from metamon.data.team_prediction.usage_stats.stat_reader import get_usage_stats
 from metamon.data.team_prediction.team import TeamSet, PokemonSet, Roster
 
 
@@ -27,11 +27,17 @@ class TeamPredictor(ABC):
     def bin_usage_stats_dates(
         self, date: datetime.date
     ) -> Tuple[datetime.date, datetime.date]:
-        # currently: map to all the data from the year the game was played
-        # TODO: explore rolling windows; need to speedup stat load or sort
-        # replays by date to hit cache?
-        start_date = datetime.date(date.year, month=1, day=1)
-        end_date = datetime.date(date.year, month=12, day=31)
+        # the old system would be equivalent to:
+        # return EARLIEST_USAGE_STATS_DATE, LATEST_USAGE_STATS_DATE.
+        # best binning method unclear; starting by splitting into 6 month
+        # bins for now..
+        year = date.year
+        if date.month <= 6:
+            start_date = datetime.date(year, 1, 1)
+            end_date = datetime.date(year, 6, 1)
+        else:
+            start_date = datetime.date(year, 7, 1)
+            end_date = datetime.date(year, 12, 1)
         return start_date, end_date
 
     def get_legacy_team_builder(self, format: str, date: datetime.date) -> TeamBuilder:
@@ -397,11 +403,8 @@ class ReplayPredictor(NaiveUsagePredictor):
             return super().fill_team(team, date=date)
 
         breakpoint()
-        self.smogon_stat = PreloadedSmogonStat(
-            team.format,
-            verbose=False,
-            start_date=date - self.usage_stat_lookback,
-            end_date=date,
+        self.smogon_stat = get_usage_stats(
+            team.format, date - self.usage_stat_lookback, date
         )
 
         if self.stat_format != team.format:
