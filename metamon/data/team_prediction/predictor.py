@@ -105,10 +105,13 @@ class NaiveUsagePredictor(TeamPredictor):
             ivs = [int(x) for x in poke["IVs"].split("/")]
             item = poke["item"].strip()
             ability = poke["ability"].strip()
+            tera_type = poke["tera_type"].strip()
             if ability == "No Ability":
                 ability = PokemonSet.NO_ABILITY
             if not item:
                 item = PokemonSet.NO_ITEM
+            if not tera_type:
+                tera_type = PokemonSet.NO_TERA_TYPE
             cleaned_dict[poke["name"]] = {
                 "moves": poke["moves"],
                 "gen": gen,
@@ -117,6 +120,7 @@ class NaiveUsagePredictor(TeamPredictor):
                 "ivs": ivs,
                 "ability": ability,
                 "item": item,
+                "tera_type": tera_type,
             }
 
         sample_team = []

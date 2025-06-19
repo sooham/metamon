@@ -1,4 +1,5 @@
 import random
+import warnings
 import re
 import os
 import copy
@@ -6,7 +7,6 @@ from datetime import date
 import functools
 from dataclasses import dataclass
 from typing import List, Optional
-import unicodedata
 
 from metamon.data.replay_dataset.replay_parser.replay_state import (
     Pokemon,
@@ -61,11 +61,13 @@ class PokemonSet:
     nature: str
     evs: List[int]
     ivs: List[int]
+    tera_type: str
 
     NO_MOVE = "<nomove>"
     NO_ABILITY = "<noability>"
     NO_ITEM = "<noitem>"
     NO_NATURE = "<nonature>"
+    NO_TERA_TYPE = "<notera>"
 
     MISSING_NAME = "$missing_name$"
     MISSING_MOVE = "$missing_move$"
@@ -74,6 +76,7 @@ class PokemonSet:
     MISSING_EV = "$missing_ev$"
     MISSING_IV = "$missing_iv$"
     MISSING_NATURE = "$missing_nature$"
+    MISSING_TERA_TYPE = "$missing_tera$"
 
     def __post_init__(self):
         assert len(self.evs) == 6
@@ -86,6 +89,7 @@ class PokemonSet:
             self.MISSING_ABILITY,
             self.MISSING_ITEM,
             self.MISSING_NATURE,
+            self.MISSING_TERA_TYPE,
         ]
         self.missing_regex = re.compile("|".join(map(re.escape, self.missing_strings)))
         self.moves = [_one_hidden_power(move) for move in self.moves]
@@ -104,6 +108,7 @@ class PokemonSet:
                 self.nature,
                 evs_tuple,
                 ivs_tuple,
+                self.tera_type,
             )
         )
 
@@ -151,6 +156,7 @@ class PokemonSet:
             + sum(int(move != self.MISSING_MOVE) for move in self.moves)
             + sum(int(ev != self.MISSING_EV) for ev in self.evs)
             + sum(int(iv != self.MISSING_IV) for iv in self.ivs)
+            + int(self.tera_type != self.MISSING_TERA_TYPE)
         )
         return score
 
@@ -172,6 +178,7 @@ class PokemonSet:
             and self.evs == other.evs
             and self.ivs == other.ivs
             and self.gen == other.gen
+            and self.tera_type == other.tera_type
         )
         if possible and (set(self.moves) - {self.MISSING_MOVE}) == (
             set(other.moves) - {other.MISSING_MOVE}
@@ -199,6 +206,11 @@ class PokemonSet:
         if self.item != self.MISSING_ITEM and self.item != other.item:
             return False
         if self.nature != self.MISSING_NATURE and self.nature != other.nature:
+            return False
+        if (
+            self.tera_type != self.MISSING_TERA_TYPE
+            and self.tera_type != other.tera_type
+        ):
             return False
         for our_move in self.moves:
             if our_move != self.MISSING_MOVE and our_move not in other.moves:
@@ -243,6 +255,10 @@ class PokemonSet:
         return cls.NO_ABILITY if gen <= 2 else cls.MISSING_ABILITY
 
     @classmethod
+    def default_tera_type(cls, gen: int):
+        return cls.NO_TERA_TYPE if gen != 9 else cls.MISSING_TERA_TYPE
+
+    @classmethod
     def from_ReplayPokemon(cls, pokemon: Optional[Pokemon], gen: int):
         """
         Used to convert between the Pokemon we are filling in the replay parser
@@ -274,6 +290,10 @@ class PokemonSet:
             ability = cls.MISSING_ABILITY
         else:
             ability = pokemon.had_ability
+        if pokemon.gen == 9 and pokemon.tera_type is not None:
+            tera_type = pokemon.tera_type
+        else:
+            tera_type = cls.default_tera_type(gen)
         return cls(
             name=pokemon.name,
             gen=pokemon.gen,
@@ -283,6 +303,7 @@ class PokemonSet:
             nature=cls.default_nature(gen),
             evs=cls.default_evs(gen),
             ivs=cls.default_ivs(gen),
+            tera_type=tera_type,
         )
 
     def fill_from_PokemonSet(self, other):
@@ -305,6 +326,8 @@ class PokemonSet:
             self.item = other.item
         if self.nature == self.MISSING_NATURE:
             self.nature = other.nature
+        if self.tera_type == self.MISSING_TERA_TYPE:
+            self.tera_type = other.tera_type
         for idx, ev in enumerate(self.evs):
             if ev == self.MISSING_EV:
                 self.evs[idx] = other.evs[idx]
@@ -332,6 +355,8 @@ class PokemonSet:
         start = f"{self.name}"
         if self.item != self.NO_ITEM:
             start += f" @ {self.item}"
+        if self.tera_type != self.NO_TERA_TYPE:
+            start += f"\nTera Type: {self.tera_type}"
         moves = "\n".join([f"- {move}" for move in self.moves])
         ability_str = self.ability if self.ability != self.NO_ABILITY else "No Ability"
         return start + f"\nAbility: {ability_str}\n{evs}\n{ivs}\n{moves}"
@@ -374,6 +399,7 @@ class PokemonSet:
         nature = cls.default_nature(gen)
         ability = cls.default_ability(gen)
         moves = cls.default_moves(name, gen)
+        tera_type = cls.default_tera_type(gen)
 
         for line in lines[1:]:
             if line.startswith("Ability:"):
@@ -405,6 +431,9 @@ class PokemonSet:
             elif line.endswith("Nature"):
                 if gen >= 3:
                     nature = line.split()[0].strip()
+            elif line.startswith("Tera Type:"):
+                if gen == 9:
+                    tera_type = line.split(":")[1].strip()
             elif line.startswith("- "):
                 move_raw = line[2:].strip()
                 # if multiple options, take the first option
@@ -427,6 +456,7 @@ class PokemonSet:
             evs=evs,
             ivs=ivs,
             nature=nature,
+            tera_type=tera_type,
         )
 
     def to_dict(self):
@@ -438,10 +468,19 @@ class PokemonSet:
             "evs": self.evs,
             "ivs": self.ivs,
             "nature": self.nature,
+            "tera_type": self.tera_type,
         }
 
     @classmethod
     def from_dict(cls, d: dict):
+        # backwards compatibility with existing
+        # replay set dicts before gen9 update
+        if "tera_type" not in d:
+            warnings.warn(
+                "tera_type not found in PokemonSet.from_dict. if gen9, this is a bug."
+            )
+            d["tera_type"] = cls.NO_TERA_TYPE
+
         return cls(
             name=d["name"],
             gen=d["gen"],
@@ -451,12 +490,14 @@ class PokemonSet:
             moves=d["moves"],
             evs=d["evs"],
             ivs=d["ivs"],
+            tera_type=d["tera_type"],
         )
 
     def to_seq(self, include_stats: bool = True):
         """ "
         Creates a simple sequence format that is used by a team prediction model.
         """
+        # TODO: broken by gen 9
         seq = [
             f"Mon: {self.name}",
             f"Ability: {self.ability}",
@@ -477,6 +518,7 @@ class PokemonSet:
         """
         Creates a PokemonSet from the sequence format, which may have been predicted by a model.
         """
+        # TODO: broken by gen 9
         name = seq[0].split(":")[1].strip()
         ability = seq[1].split(":")[1].strip()
         item = seq[2].split(":")[1].strip()
@@ -511,6 +553,7 @@ class PokemonSet:
             moves=[PokemonSet.MISSING_MOVE] * 4,
             evs=PokemonSet.default_evs(gen),
             ivs=PokemonSet.default_ivs(gen),
+            tera_type=PokemonSet.default_tera_type(gen),
         )
 
     def masked(self, mask_attrs_prob: float = 0.1):
@@ -518,6 +561,7 @@ class PokemonSet:
         Randomly sets some of the known attributes of this PokemonSet to be missing,
         so that we may learn to predict them.
         """
+        # TODO: broken by gen 9
         data = self.to_dict()
         data["name"] = self.name
         # Mask nature, item, ability

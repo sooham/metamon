@@ -139,6 +139,7 @@ class TeamBuilder:
         spreads = poke_stat["spreads"]
         moves = poke_stat["moves"]
         selected_moves = self.get_valid_moves(pokemon, moves.copy())
+        tera_types = poke_stat["tera_types"]
 
         ivs = "31/31/31/31/31/31"
         for move in selected_moves:
@@ -160,6 +161,7 @@ class TeamBuilder:
             "ability": random_choice(abilities, 1)[0],
             "item": random_choice(items, 1)[0],
             "spread": random_choice(spreads, 1)[0],
+            "tera_type": random_choice(tera_types, 1)[0],
             "IVs": ivs,
             "moves": selected_moves,
         }
@@ -178,6 +180,7 @@ class TeamBuilder:
         items = poke_stat["items"]
         spreads = poke_stat["spreads"]
         moves = poke_stat["moves"]
+        breakpoint()
         if selected_moves is not None and not self.check_valid_moves(
             pokemon, selected_moves
         ):
