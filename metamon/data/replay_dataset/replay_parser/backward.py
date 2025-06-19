@@ -1,5 +1,6 @@
 import copy
 import re
+import datetime
 from typing import List
 
 from metamon.data.replay_dataset.replay_parser import checks, forward
@@ -18,11 +19,13 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
 )
 from metamon.data.team_prediction.predictor import TeamPredictor
 from metamon.data.team_prediction.team import TeamSet, PokemonSet
-from metamon.data.legacy_team_builder.team_builder import PokemonStatsLookupError
 
 
 def fill_missing_team_info(
-    battle_format: str, poke_list: List[Pokemon], team_predictor: TeamPredictor
+    battle_format: str,
+    date_played: datetime.date,
+    poke_list: List[Pokemon],
+    team_predictor: TeamPredictor,
 ) -> List[Pokemon]:
     """
     Team prediction works by:
@@ -42,7 +45,7 @@ def fill_missing_team_info(
 
     # 2. Predict the team
     try:
-        predicted_team = team_predictor.predict(revealed_team)
+        predicted_team = team_predictor.predict(revealed_team, date=date_played)
     except Exception as e:
         raise BackwardException(f"Error predicting team: {e}")
     if not revealed_team.is_consistent_with(predicted_team):
@@ -175,11 +178,18 @@ def add_filled_final_turn(
     # backwards through the replay and discareded.
     filled_turn = replay[-1].create_next_turn()
     filled_turn.on_end_of_turn()
+    date_played = replay.time_played.date()
     filled_turn.pokemon_1, revealed_team_1 = fill_missing_team_info(
-        replay.format, replay[-1].pokemon_1, team_predictor=team_predictor
+        replay.format,
+        date_played=date_played,
+        poke_list=replay[-1].pokemon_1,
+        team_predictor=team_predictor,
     )
     filled_turn.pokemon_2, revealed_team_2 = fill_missing_team_info(
-        replay.format, replay[-1].pokemon_2, team_predictor=team_predictor
+        replay.format,
+        date_played=date_played,
+        poke_list=replay[-1].pokemon_2,
+        team_predictor=team_predictor,
     )
     replay.turnlist.append(filled_turn)
     return replay, (revealed_team_1, revealed_team_2)

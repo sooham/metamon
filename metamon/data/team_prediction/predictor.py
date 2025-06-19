@@ -21,11 +21,26 @@ from metamon.data.team_prediction.team import TeamSet, PokemonSet, Roster
 
 
 class TeamPredictor(ABC):
-    def __init__(
-        self, replay_stats_dir: Optional[str] = None, usage_stats_window_months: int = 3
-    ):
+    def __init__(self, replay_stats_dir: Optional[str] = None):
         self.replay_stats_dir = replay_stats_dir
-        self.usage_stat_lookback = relativedelta(months=usage_stats_window_months)
+
+    def bin_usage_stats_dates(
+        self, date: datetime.date
+    ) -> Tuple[datetime.date, datetime.date]:
+        # currently: map to all the data from the year the game was played
+        # TODO: explore rolling windows; need to speedup stat load or sort
+        # replays by date to hit cache?
+        start_date = datetime.date(date.year, month=1, day=1)
+        end_date = datetime.date(date.year, month=12, day=31)
+        return start_date, end_date
+
+    def get_legacy_team_builder(self, format: str, date: datetime.date) -> TeamBuilder:
+        start_date, end_date = self.bin_usage_stats_dates(date)
+        return TeamBuilder(
+            format=format,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     def predict(self, team: TeamSet, date: datetime.date) -> TeamSet:
         copy_team = copy.deepcopy(team)
@@ -51,11 +66,7 @@ class NaiveUsagePredictor(TeamPredictor):
     """
 
     def fill_team(self, team: TeamSet, date: datetime.date):
-        team_builder = TeamBuilder(
-            format=team.format,
-            start_date=date - self.usage_stat_lookback,
-            end_date=date,
-        )
+        team_builder = self.get_legacy_team_builder(team.format, date)
         gen = int(team.format.split("gen")[1][0])
         pokemon = [team.lead] + team.reserve
         # use legacy team builder to generate a team of 6 Pokémon based on the ones we already
@@ -182,12 +193,9 @@ class ReplayPredictor(NaiveUsagePredictor):
         top_k_scored_teams: int = 10,
         top_k_scored_movesets: int = 3,
         replay_stats_dir: Optional[str] = None,
-        usage_stats_window_months: int = 3,
     ):
         assert not isinstance(top_k_consistent_teams, str)
-        super().__init__(
-            replay_stats_dir, usage_stats_window_months=usage_stats_window_months
-        )
+        super().__init__(replay_stats_dir)
         self.stat_format = None
         self.top_k_consistent_teams = top_k_consistent_teams
         self.top_k_consistent_movesets = top_k_consistent_movesets
@@ -388,6 +396,7 @@ class ReplayPredictor(NaiveUsagePredictor):
             # we only trust our stats for the big OU formats for now
             return super().fill_team(team, date=date)
 
+        breakpoint()
         self.smogon_stat = PreloadedSmogonStat(
             team.format,
             verbose=False,
