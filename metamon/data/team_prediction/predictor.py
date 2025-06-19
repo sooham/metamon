@@ -2,37 +2,38 @@ import copy
 import os
 import random
 import json
+import datetime
+from dateutil.relativedelta import relativedelta
 from abc import ABC, abstractmethod
 from functools import lru_cache
 from collections import deque
 from typing import Tuple, Optional, List, Set
 import numpy as np
 
-from metamon.data.legacy_team_builder.team_builder import (
+
+import metamon
+from metamon.data.team_prediction.usage_stats.legacy_team_builder import (
     TeamBuilder,
     PokemonStatsLookupError,
 )
-from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
+from metamon.data.team_prediction.usage_stats.stat_reader import PreloadedSmogonStat
 from metamon.data.team_prediction.team import TeamSet, PokemonSet, Roster
-from metamon import download
 
 
 class TeamPredictor(ABC):
-    def __init__(self, replay_stats_dir: Optional[str] = None):
+    def __init__(
+        self, replay_stats_dir: Optional[str] = None, usage_stats_window_months: int = 3
+    ):
         self.replay_stats_dir = replay_stats_dir
+        self.usage_stat_lookback = relativedelta(months=usage_stats_window_months)
 
-    def predict(self, team: TeamSet) -> TeamSet:
+    def predict(self, team: TeamSet, date: datetime.date) -> TeamSet:
         copy_team = copy.deepcopy(team)
-        return self.fill_team(copy_team)
+        return self.fill_team(copy_team, date=date)
 
     @abstractmethod
-    def fill_team(self, team: TeamSet):
+    def fill_team(self, team: TeamSet, date: datetime.date):
         raise NotImplementedError
-
-
-@lru_cache(maxsize=16)
-def get_legacy_teambuilder(format: str):
-    return TeamBuilder(format, verbose=False, remove_banned=False, inclusive=True)
 
 
 class NaiveUsagePredictor(TeamPredictor):
@@ -49,8 +50,12 @@ class NaiveUsagePredictor(TeamPredictor):
     converting back.
     """
 
-    def fill_team(self, team: TeamSet):
-        team_builder = get_legacy_teambuilder(team.format)
+    def fill_team(self, team: TeamSet, date: datetime.date):
+        team_builder = TeamBuilder(
+            format=team.format,
+            start_date=date - self.usage_stat_lookback,
+            end_date=date,
+        )
         gen = int(team.format.split("gen")[1][0])
         pokemon = [team.lead] + team.reserve
         # use legacy team builder to generate a team of 6 Pokémon based on the ones we already
@@ -116,13 +121,13 @@ class NaiveUsagePredictor(TeamPredictor):
         return final_team
 
 
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=len(metamon.SUPPORTED_BATTLE_FORMATS))
 def load_replay_stats_by_format(format: str, replay_stats_dir: Optional[str] = None):
     """
     This loads large json files that are created by the `generate_replay_stats` script.
     """
     if replay_stats_dir is None:
-        replay_stats_dir = download.download_replay_stats()
+        replay_stats_dir = metamon.download.download_replay_stats()
     pokemon_set_path = os.path.join(
         replay_stats_dir,
         f"{format}_pokemon.json",
@@ -177,17 +182,19 @@ class ReplayPredictor(NaiveUsagePredictor):
         top_k_scored_teams: int = 10,
         top_k_scored_movesets: int = 3,
         replay_stats_dir: Optional[str] = None,
+        usage_stats_window_months: int = 3,
     ):
         assert not isinstance(top_k_consistent_teams, str)
-        super().__init__(replay_stats_dir)
+        super().__init__(
+            replay_stats_dir, usage_stats_window_months=usage_stats_window_months
+        )
         self.stat_format = None
         self.top_k_consistent_teams = top_k_consistent_teams
         self.top_k_consistent_movesets = top_k_consistent_movesets
         self.top_k_scored_teams = top_k_scored_teams
         self.top_k_scored_movesets = top_k_scored_movesets
 
-    def _load_data(self, format: str):
-        self.smogon_stat = PreloadedSmogonStat(format, verbose=False, inclusive=True)
+    def _load_replay_data(self, format: str):
         self.pokemon_sets, self.team_rosters = load_replay_stats_by_format(
             format, replay_stats_dir=self.replay_stats_dir
         )
@@ -376,14 +383,21 @@ class ReplayPredictor(NaiveUsagePredictor):
                     pokemon.name = extra
                     break
 
-    def fill_team(self, team: TeamSet) -> TeamSet:
+    def fill_team(self, team: TeamSet, date: datetime.date) -> TeamSet:
         if team.format not in {"gen1ou", "gen2ou", "gen3ou", "gen4ou"}:
             # we only trust our stats for the big OU formats for now
-            return super().fill_team(team)
+            return super().fill_team(team, date=date)
+
+        self.smogon_stat = PreloadedSmogonStat(
+            team.format,
+            verbose=False,
+            start_date=date - self.usage_stat_lookback,
+            end_date=date,
+        )
 
         if self.stat_format != team.format:
             # load the stats on a format change
-            self._load_data(team.format)
+            self._load_replay_data(team.format)
 
         # first we fill our team of 6 pokemon names
         lead_name = team.lead.name
@@ -432,7 +446,7 @@ class ReplayPredictor(NaiveUsagePredictor):
                 pokemon.fill_from_PokemonSet(new_pokemon)
 
         # fall back to old method for any remaining info
-        return super().fill_team(team)
+        return super().fill_team(team, date=date)
 
 
 if __name__ == "__main__":
@@ -446,24 +460,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "format", type=str, help="Showdown battle format (e.g., gen1ou)"
     )
-    parser.add_argument(
-        "--metamon_teamfile_path",
-        type=str,
-        default=None,
-        help="Path to the metamon teamfile directory. Defaults to the official huggingface version.",
-    )
     args = parser.parse_args()
 
-    if args.metamon_teamfile_path is None:
-        args.metamon_teamfile_path = download_revealed_teams()
-
-    dataset = TeamDataset(args.metamon_teamfile_path, format=args.format)
+    dataset = TeamDataset(format=args.format)
     naive_predictor = NaiveUsagePredictor()
-    improved_predictor = ReplayPredictor(replay_stats_dir="replay_stats")
+    improved_predictor = ReplayPredictor()
 
     for team, _, _ in dataset:
-        naive_team = naive_predictor.predict(team)
-        improved_team = improved_predictor.predict(team)
+        date = datetime.date(2025, 4, 1)
+        naive_team = naive_predictor.predict(team, date=date)
+        improved_team = improved_predictor.predict(team, date=date)
         assert team.is_consistent_with(naive_team)
         assert team.is_consistent_with(improved_team)
         # Print teams side by side

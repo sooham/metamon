@@ -2,6 +2,7 @@ import os
 import re
 import json
 import datetime
+import functools
 
 from poke_env.data import to_id_str
 
@@ -376,6 +377,28 @@ class SmogonStat:
         return self._usage
 
 
+@functools.lru_cache(maxsize=32)
+def load_between_dates(
+    dir_path: str, start_year: int, start_month: int, end_year: int, end_month: int
+) -> dict:
+    start_date = datetime.date(start_year, start_month, 1)
+    end_date = datetime.date(end_year, end_month, 1)
+    selected_data = []
+    for json_file in os.listdir(dir_path):
+        year, month = json_file.replace(".json", "").split("-")
+        date = datetime.date(year=int(year), month=int(month), day=1)
+        if not start_date <= date <= end_date:
+            continue
+        with open(os.path.join(dir_path, json_file), "r") as file:
+            data = json.load(file)
+        selected_data.append(data)
+    if not selected_data:
+        raise FileNotFoundError(
+            f"No Showdown usage stats found in {dir_path} between {start_date} and {end_date}"
+        )
+    return merge_movesets(selected_data)
+
+
 class PreloadedSmogonStat(SmogonStat):
     def __init__(
         self,
@@ -396,27 +419,24 @@ class PreloadedSmogonStat(SmogonStat):
             METAMON_CACHE_DIR, "usage-stats", "movesets_data", gen, "all_tiers"
         )
         # data is split by year and month
-        start_date = start_date.replace(day=1)
-        end_date = end_date.replace(day=1)
         if not os.path.exists(movesets_path) or not os.path.exists(inclusive_path):
             raise FileNotFoundError(
                 f"Movesets data not found for {format}. Run `python -m metamon download usage-stats` to download the data."
             )
-
-        def _merge_stats_over_time(dir_path, start_date, end_date):
-            selected_data = []
-            for json_file in os.listdir(dir_path):
-                year, month = json_file.replace(".json", "").split("-")
-                date = datetime.date(year=int(year), month=int(month), day=1)
-                if not start_date <= date <= end_date:
-                    continue
-                with open(os.path.join(dir_path, json_file), "r") as file:
-                    data = json.load(file)
-                selected_data.append(data)
-            return merge_movesets(selected_data)
-
-        self._movesets = _merge_stats_over_time(movesets_path, start_date, end_date)
-        self._inclusive = _merge_stats_over_time(inclusive_path, start_date, end_date)
+        self._movesets = load_between_dates(
+            movesets_path,
+            start_year=start_date.year,
+            start_month=start_date.month,
+            end_year=end_date.year,
+            end_month=end_date.month,
+        )
+        self._inclusive = load_between_dates(
+            inclusive_path,
+            start_year=start_date.year,
+            start_month=start_date.month,
+            end_year=end_date.year,
+            end_month=end_date.month,
+        )
         self._name_conversion = {
             to_id_str(pokemon): pokemon for pokemon in self._movesets.keys()
         }

@@ -58,20 +58,20 @@ def main(args):
                             with open(path, "w") as f:
                                 json.dump(check_cheatsheet, f)
                         pbar.update(1)
-                if valid_movesets:
-                    # merge all the tiers. used to lookup rare Pokémon choices, i.e. fooling around
-                    # with low-tier Pokémon in OverUsed
-                    inclusive_movesets = merge_movesets(valid_movesets)
-                    path = os.path.join(
-                        args.save_dir,
-                        "movesets_data",
-                        f"gen{gen}",
-                        "all_tiers",
-                        f"{year}-{month:02d}.json",
-                    )
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    with open(path, "w") as f:
-                        json.dump(inclusive_movesets, f)
+                    if valid_movesets:
+                        # merge all the tiers. used to lookup rare Pokémon choices, i.e. fooling around
+                        # with low-tier Pokémon in OverUsed
+                        inclusive_movesets = merge_movesets(valid_movesets)
+                        path = os.path.join(
+                            args.save_dir,
+                            "movesets_data",
+                            f"gen{gen}",
+                            "all_tiers",
+                            f"{year}-{month:02d}.json",
+                        )
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        with open(path, "w") as f:
+                            json.dump(inclusive_movesets, f)
 
 
 if __name__ == "__main__":

@@ -159,7 +159,8 @@ def download_replay_stats(
     Returns:
         The path to the dataset on disk.
     """
-    return download_parsed_replays("replay_stats", version, force_download)
+    replay_stats_dir = download_parsed_replays("replay_stats", version, force_download)
+    return replay_stats_dir
 
 
 def download_revealed_teams(

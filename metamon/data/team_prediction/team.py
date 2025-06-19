@@ -2,7 +2,8 @@ import random
 import re
 import os
 import copy
-from functools import lru_cache, total_ordering
+from datetime import date
+import functools
 from dataclasses import dataclass
 from typing import List, Optional
 import unicodedata
@@ -12,25 +13,17 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
     Nothing,
     BackwardMarkers,
 )
-from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
-
-"""
-# TODO
-Known Bugs (fix for datasets v2):
-
-Needs to handle BackwardMarkers.FORCE_UNKNOWN
-"""
-
-
-@lru_cache
-def get_preloaded_stat(gen: int):
-    # we grab the biggest dataset we can by using ubers "inclusive" (ubers including lower tiers)
-    return PreloadedSmogonStat(f"gen{gen}ubers", inclusive=True, verbose=False)
+from metamon.data.team_prediction.usage_stats import PreloadedSmogonStat
 
 
 def moveset_size(pokemon_name: str, gen: int) -> int:
     # attempts to handle cases where we would expect a Pokemon to have less than 4 moves
-    stat = get_preloaded_stat(gen)
+    stat = PreloadedSmogonStat(
+        f"gen{gen}ubers",
+        verbose=False,
+        start_date=date(2020, 1, 1),
+        end_date=date(2025, 5, 1),
+    )
     try:
         moves = len(
             set(stat.get_from_inclusive(pokemon_name)["moves"].keys()) - {"Nothing"}
@@ -51,7 +44,7 @@ def _one_hidden_power(move_name: str) -> str:
         return move_name
 
 
-@total_ordering
+@functools.total_ordering
 @dataclass
 class PokemonSet:
     """
@@ -551,7 +544,7 @@ class PokemonSet:
         return type(self).from_dict(data)
 
 
-@total_ordering
+@functools.total_ordering
 @dataclass
 class Roster:
     """

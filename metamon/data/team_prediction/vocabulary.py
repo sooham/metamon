@@ -7,7 +7,7 @@ import torch
 
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.data.team_prediction.team import PokemonSet
-from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
+from metamon.data.team_prediction.usage_stats import PreloadedSmogonStat
 
 
 def create_vocabularies():
@@ -35,7 +35,7 @@ def create_vocabularies():
     for gen in range(1, 5):
         for tier in ["ou", "uu", "ubers", "nu"]:
             format = f"gen{gen}{tier}"
-            stat = PreloadedSmogonStat(format, inclusive=True)
+            stat = PreloadedSmogonStat(format)
 
             for pokemon_name, data in stat._inclusive.items():
                 team_tokenizer.add_token_for(f"Mon: {pokemon_name}")
