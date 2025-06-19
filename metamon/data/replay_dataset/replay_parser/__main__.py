@@ -4,6 +4,7 @@ import random
 import tqdm
 
 from .parse_replays import ReplayParser
+import metamon
 from metamon.data.team_prediction.predictor import *
 
 if __name__ == "__main__":
@@ -11,16 +12,15 @@ if __name__ == "__main__":
 
     parser = ArgumentParser()
     parser.add_argument(
-        "--gen", type=int, choices=list(range(1, 5)) + [9], required=True
-    )
-    parser.add_argument(
-        "--raw_replay_dir", required=True, help="Path to raw replay dataset folder."
-    )
-    parser.add_argument(
         "--format",
         type=str,
-        choices=["ou", "uu", "nu", "ubers"],
+        choices=metamon.SUPPORTED_BATTLE_FORMATS,
         required=True,
+    )
+    parser.add_argument(
+        "--raw_replay_dir",
+        default=None,
+        help="Path to raw replay dataset folder. Defaults to the latest huggingface version.",
     )
     parser.add_argument("--max", type=int, help="Parse up to this many replays.")
     parser.add_argument(
@@ -74,8 +74,14 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    invalid_format_set: set[str] = set()
-    path = os.path.join(args.raw_replay_dir, f"gen{args.gen}", args.format)
+    if args.raw_replay_dir is None:
+        args.raw_replay_dir = os.path.join(
+            metamon.download.METAMON_CACHE_DIR, "raw-replays"
+        )
+
+    gen = args.format[:4]
+    format = args.format[4:].lower()
+    path = os.path.join(args.raw_replay_dir, gen, format)
     filenames = glob.glob(f"{path}/**/*.json", recursive=True)
     random.shuffle(filenames)
     if args.filter_by_code is not None:
@@ -86,12 +92,9 @@ if __name__ == "__main__":
         filenames = filenames[: args.end_after]
     if args.max is not None:
         filenames = filenames[: args.max]
-    battle_format = f"gen{args.gen}{args.format.lower()}"
-    output_dir = (
-        os.path.join(args.output_dir, battle_format) if args.output_dir else None
-    )
+    output_dir = os.path.join(args.output_dir, args.format) if args.output_dir else None
     team_output_dir = (
-        os.path.join(args.team_output_dir, battle_format)
+        os.path.join(args.team_output_dir, args.format)
         if args.team_output_dir
         else None
     )
