@@ -1,7 +1,9 @@
 import random
+import datetime
+
 import numpy as np
-from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
-from metamon.data.legacy_team_builder.constants import (
+from metamon.data.team_prediction.usage_stats.stat_reader import PreloadedSmogonStat
+from metamon.data.team_prediction.usage_stats.constants import (
     HIDDEN_POWER_IVS,
     HIDDEN_POWER_DVS,
     INCOMPATIBLE_MOVES,
@@ -15,9 +17,18 @@ class PokemonStatsLookupError(KeyError):
 
 
 class TeamBuilder:
-    def __init__(self, format, verbose=True, remove_banned=True, inclusive=False):
+    def __init__(
+        self,
+        format,
+        start_date: datetime.date,
+        end_date: datetime.date,
+        verbose: bool = True,
+        remove_banned: bool = False,
+    ):
         self.format = format
-        self.stat = PreloadedSmogonStat(format, verbose=verbose, inclusive=inclusive)
+        self.stat = PreloadedSmogonStat(
+            format, start_date=start_date, end_date=end_date, verbose=verbose
+        )
         if remove_banned:
             self.stat.remove_banned_pm()
         self.verbose = verbose

@@ -14,3 +14,23 @@ if not os.environ.get("METAMON_ALLOW_ANY_POKE_ENV"):
             f"different version of poke-env, set the METAMON_ALLOW_ANY_POKE_ENV environment\n"
             f"variable to True."
         )
+
+SUPPORTED_BATTLE_FORMATS = [
+    "gen1ou",
+    "gen1uu",
+    "gen1nu",
+    "gen1ubers",
+    "gen2ou",
+    "gen2uu",
+    "gen2nu",
+    "gen2ubers",
+    "gen3ou",
+    "gen3uu",
+    "gen3nu",
+    "gen3ubers",
+    "gen4ou",
+    "gen4uu",
+    "gen4nu",
+    "gen4ubers",
+    "gen9ou",
+]
