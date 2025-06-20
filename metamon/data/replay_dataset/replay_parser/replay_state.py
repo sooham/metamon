@@ -28,6 +28,7 @@ class Nothing(Enum):
     NO_ABILITY = auto()
     NO_WEATHER = auto()
     NO_STATUS = auto()
+    NO_TERA_TYPE = auto()
 
 
 def _one_hidden_power(move_name: str) -> str:
@@ -147,6 +148,7 @@ class Pokemon:
             raise PokedexMissingEntry(name, self.lookup_name)
         self.type: List[str] = pokedex_info["types"]
         self.had_type: List[str] = copy.deepcopy(self.type)
+        self.tera_type: Optional[str] = None
         self.base_stats: Dict[str, int] = pokedex_info["baseStats"]
 
         # poke-env will assign an abilty as "known" when there
@@ -219,6 +221,7 @@ class Pokemon:
         fresh.active_ability = fresh.had_ability
         fresh.active_item = fresh.had_item
         fresh.moves = copy.deepcopy(fresh.had_moves)
+        fresh.type = copy.deepcopy(fresh.had_type)
         fresh.on_end_of_turn()
         return fresh
 
@@ -350,6 +353,7 @@ class Pokemon:
         _fill_if("had_name")
         _fill_if("max_hp")
         _fill_if("current_hp")
+        _fill_if("tera_type")
 
         if self.active_item is None:
             assert self.had_item is not None
@@ -437,6 +441,12 @@ class Pokemon:
         elif ability == pokemon_set.MISSING_ABILITY:
             ability = None
         self.had_ability = ability
+        tera_type = pokemon_set.tera_type
+        if tera_type == pokemon_set.NO_TERA_TYPE:
+            tera_type = Nothing.NO_TERA_TYPE
+        elif tera_type == pokemon_set.MISSING_TERA_TYPE:
+            tera_type = None
+        self.tera_type = tera_type
         pokemon_set_moves = set(
             _one_hidden_power(move)
             for move in pokemon_set.moves
@@ -636,7 +646,7 @@ class Turn:
                 # probably more.
                 poke_by_nickname = self.get_pokemon_from_nickname(showdown_msg)
                 if poke_by_nickname is not None:
-                    poke.nickname = nickname
+                    return poke_by_nickname
                 else:
                     breakpoint()
         return poke

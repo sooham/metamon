@@ -18,15 +18,9 @@ from metamon.data.team_prediction.usage_stats import get_usage_stats
 
 def moveset_size(pokemon_name: str, gen: int) -> int:
     # attempts to handle cases where we would expect a Pokemon to have less than 4 moves
-    stat = get_usage_stats(
-        f"gen{gen}ubers",
-        start_date=date(2020, 1, 1),
-        end_date=date(2025, 5, 1),
-    )
+    stat = get_usage_stats(f"gen{gen}ubers")
     try:
-        moves = len(
-            set(stat.get_from_inclusive(pokemon_name)["moves"].keys()) - {"Nothing"}
-        )
+        moves = len(set(stat[pokemon_name]["moves"].keys()) - {"Nothing"})
     except KeyError:
         return 4
     moveset = min(moves, 4)

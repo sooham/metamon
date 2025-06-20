@@ -972,6 +972,7 @@ class SimProtocol:
             is_tera=True,
         )
         pokemon.type = [args[1]]
+        pokemon.tera_type = args[1]
 
     def _parse_zpower_mega(self, args: List[str]):
         """

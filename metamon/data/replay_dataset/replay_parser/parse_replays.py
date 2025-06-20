@@ -118,7 +118,6 @@ class ReplayParser:
                 )
             action_idx = interface.replaystate_action_to_idx(state, action)
             if action_idx is None:
-                breakpoint()
                 raise InvalidActionIndex(state, action)
             action_idxs.append(action_idx)
             universal_states.append(universal_state)

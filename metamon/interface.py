@@ -192,6 +192,9 @@ class UniversalPokemon:
     base_spe: int
     base_hp: int
 
+    # version-specific
+    tera_type: str
+
     @classmethod
     def from_dict(cls, data: dict):
         data["moves"] = [UniversalMove(**m) for m in data["moves"]]
@@ -246,20 +249,23 @@ class UniversalPokemon:
         return clean_no_numbers(status_rep.name)
 
     @staticmethod
-    def universal_types(type_rep: list) -> str:
-        while len(type_rep) < 2:
-            type_rep.append(None)
+    def universal_types(type_rep: list, force_two: bool = True) -> str:
+        if force_two:
+            while len(type_rep) < 2:
+                type_rep.append(None)
 
         type_strs = []
+        # TODO: tera types need a lot of work in this file
         for type in type_rep:
-            if type is None:
+            if type is None or type == ReplayNothing.NO_TERA_TYPE:
                 type_strs.append("notype")
             elif isinstance(type, PokemonType):
                 type_strs.append(clean_name(type.name))
             elif isinstance(type, str):
                 type_strs.append(clean_name(type))
 
-        assert len(type_strs) == 2
+        if force_two:
+            assert len(type_strs) == 2
         return " ".join(sorted(type_strs))
 
     @classmethod
@@ -281,12 +287,16 @@ class UniversalPokemon:
         status = cls.universal_status(pokemon.status)
         effect = cls.universal_effects(pokemon.effects)
         types = cls.universal_types(pokemon.type)
+        # TODO: need to recheck this, especially with forme changes so common
+        # in gen 9
         name = clean_name(pokemon.had_name)
+        tera_type = cls.universal_types([pokemon.tera_type], force_two=False)
 
         return cls(
             name=name,
             hp_pct=float(pokemon.current_hp) / pokemon.max_hp,
             types=types,
+            tera_type=tera_type,
             item=item,
             ability=ability,
             lvl=pokemon.lvl,
@@ -386,7 +396,6 @@ class UniversalState:
         return clean_no_numbers(weather_rep.name)
 
     # fmt: off
-
     @classmethod
     def from_ReplayState(cls, state: ReplayState):
         assert isinstance(state, ReplayState)

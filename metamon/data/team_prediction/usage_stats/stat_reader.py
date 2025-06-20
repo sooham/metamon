@@ -336,33 +336,6 @@ class SmogonStat:
                     print(f"Remove {pm} from {self.format}")
                 del self._movesets[pm]
 
-    def __getitem__(self, key):
-        try:
-            return self.get_from_movesets(key)
-        except KeyError as e:
-            if self._inclusive:
-                return self.get_from_inclusive(key)
-            raise e
-
-    def get_from_movesets(self, key):
-        # Name in ps stat
-        if key in self._movesets:
-            return self._movesets[key]
-        # Name in ps id
-        clean_name = to_id_str(key)
-        if clean_name in self._name_conversion:
-            key = self._name_conversion[clean_name]
-            return self._movesets[key]
-        # Handle format like "Gastrodon-East"
-        key = key.split("-")[0]
-        if key in self._movesets:
-            return self._movesets[key]
-
-        raise KeyError(f"Pokemon {key} not found in {self.format}")
-
-    def get_from_inclusive(self, key):
-        raise KeyError(f"Please use PreloadedStat for inclusive search")
-
     @property
     def movesets(self):
         return self._movesets
@@ -440,29 +413,35 @@ class PreloadedSmogonUsageStats(SmogonStat):
             end_year=end_date.year,
             end_month=end_date.month,
         )
-        self._name_conversion = {
-            to_id_str(pokemon): pokemon for pokemon in self._movesets.keys()
-        }
 
     def _load(self):
         pass
 
-    def get_from_inclusive(self, key):
-        if self.verbose:
-            print(f"Using inclusive search for {key}")
-        # Name in ps stat
+    def _inclusive_search(self, key):
+        # check the stats for this specific tier first
+        if key in self._movesets:
+            return self._movesets[key]
+        # fallback to stats compiled across all tiers
         if key in self._inclusive:
             return self._inclusive[key]
-        # Name in ps id
-        clean_name = to_id_str(key)
-        if clean_name in self._name_conversion:
-            key = self._name_conversion[clean_name]
-            return self._inclusive[key]
-        # Handle format like "Gastrodon-East"
-        key = key.split("-")[0]
-        if key in self._inclusive:
-            return self._inclusive[key]
+        return None
 
+    def __getitem__(self, key):
+        species_key = key.split("-")[0]
+        id_key = to_id_str(key)
+        species_id_key = to_id_str(species_key)
+
+        # search by the full name first
+        id_search = self._inclusive_search(id_key)
+        if id_search is not None:
+            return id_search
+
+        # check if the "forme" (e.g. "Gastrodon-East") is the problem
+        species_id_search = self._inclusive_search(species_id_key)
+        if species_id_search is not None:
+            return species_id_search
+
+        breakpoint()
         raise KeyError(f"Pokemon {key} not found in {self.format}")
 
 
@@ -471,12 +450,12 @@ def get_usage_stats(
     start_date: Optional[datetime.date] = None,
     end_date: Optional[datetime.date] = None,
 ) -> PreloadedSmogonUsageStats:
-    if start_date is None:
+    if start_date is None or start_date < EARLIEST_USAGE_STATS_DATE:
         start_date = EARLIEST_USAGE_STATS_DATE
     else:
         # force to start of months to prevent cache miss (we only have monthly stats anyway)
         start_date = datetime.date(start_date.year, start_date.month, 1)
-    if end_date is None:
+    if end_date is None or end_date > LATEST_USAGE_STATS_DATE:
         end_date = LATEST_USAGE_STATS_DATE
     else:
         # force to start of months to prevent cache miss (we only have monthly stats anyway)
