@@ -2,6 +2,7 @@ import copy
 import re
 import datetime
 from typing import List
+import collections
 
 from metamon.data.replay_dataset.replay_parser import checks, forward
 from metamon.data.replay_dataset.replay_parser.exceptions import *
@@ -97,7 +98,6 @@ class POVReplay:
     ):
         if replay.gameid != filled_replay.gameid:
             raise ValueError("Using replays of different games to construct POVReplay")
-
         self.from_p1_pov = from_p1_pov
         self.revealed_team = revealed_team
 
@@ -114,9 +114,58 @@ class POVReplay:
         self.winner = filled_replay.winner == (
             Winner.PLAYER_1 if from_p1_pov else Winner.PLAYER_2
         )
-
         self.fill_one_side(replay, filled_replay)
+        self.resolve_transforms(replay, filled_replay)
+        self.resolve_zoroark(replay, filled_replay)
         self.align_states_actions(replay)
+
+    def resolve_transforms(self, replay, filled_replay):
+        # find the turn where transformations begin
+        transforms = collections.deque()
+        for i, filled_turn in enumerate(filled_replay.turnlist):
+            active_pokemon = filled_turn.get_active_pokemon(self.from_p1_pov)
+            for p in active_pokemon:
+                if p is not None and p.transformed_this_turn:
+                    transforms.append((i, p.unique_id, p.transformed_into.unique_id))
+        while transforms:
+            i, poke_id, tformed_id = transforms.popleft()
+            filled_turn = filled_replay.turnlist[i]
+            transformed_into = filled_turn.id2pokemon[tformed_id]
+            opp_moves_on_transform = transformed_into.moves
+            # skip to the end of the transformation, where we've found
+            # as many moves as we'll ever find...
+            last_moveset = {}
+            for turn in replay.turnlist[i:]:
+                player_pov = turn.id2pokemon[poke_id]
+                if player_pov.transformed_into is None:
+                    break
+                last_moveset = player_pov.moves
+            last_moveset = copy.deepcopy(last_moveset)
+            # fill the last moveset with moves the transformed opponent supposedly
+            # had on the transformation turn
+            for opp_move_name, opp_move in opp_moves_on_transform.items():
+                if opp_move_name not in last_moveset and len(last_moveset) < 4:
+                    fixed_move = opp_move.from_transform()
+                    last_moveset[opp_move_name] = fixed_move
+            # now go through the whole transformation window inserting moves we'll use
+            # later (or will never use at at all -- but the opponent had them)
+            transform_active = False
+            for turn in replay.get_pov_turnlist(self.from_p1_pov, i):
+                # `transform_active` needed in case the transformation actually happens
+                # after a forced switch on the same turn.
+                player_pov = turn.id2pokemon[poke_id]
+                if player_pov.transformed_into is not None:
+                    transform_active = True
+                if transform_active and player_pov.transformed_into is None:
+                    break  # done
+                if transform_active:
+                    for move in last_moveset.values():
+                        player_pov.reveal_move(move)
+
+    def resolve_zoroark(
+        self, replay: forward.ParsedReplay, filled_replay: forward.ParsedReplay
+    ):
+        pass
 
     def fill_one_side(self, replay, filled_replay):
         # take spectator replay and reveal one entire team from filled_replay
@@ -195,64 +244,6 @@ def add_filled_final_turn(
     return replay, (revealed_team_1, revealed_team_2)
 
 
-def resolve_transforms(replay):
-    base_stats = {
-        pokemon.unique_id: pokemon.base_stats for pokemon in replay[0].all_pokemon
-    }
-    types = {pokemon.unique_id: pokemon.type for pokemon in replay[0].all_pokemon}
-    zero_turn = copy.deepcopy(replay.turnlist[0])
-    for pokemon in zero_turn.all_pokemon:
-        pokemon.transformed_into = None
-    for prev_turn, turn in zip([zero_turn] + replay.turnlist, replay.turnlist):
-        for pokemon in turn.all_pokemon:
-            prev_ids = prev_turn.id2pokemon
-            on_prev_turn = prev_ids[pokemon.unique_id]
-
-            if pokemon.transformed_into is not None:
-                transformed_on_prev = prev_ids[pokemon.transformed_into.unique_id]
-
-                if on_prev_turn.transformed_into != pokemon.transformed_into:
-                    # first turn of transformation
-                    for move_name in transformed_on_prev.moves.keys():
-                        # when we got the -transform message on the forward pass
-                        # we copied the moves we already knew about it. now we
-                        # add the ones we didn't discover until the backward pass.
-                        if move_name not in pokemon.moves:
-                            tformed_move = Move(move_name, gen=replay.gen)
-                            tformed_move.pp, tformed_move.maximum_pp = 5, 5
-                            pokemon.moves[tformed_move.name] = tformed_move
-
-                    # on the forward pass we avoided changing things that would
-                    # not reset on switch out. now we make those changes manually.
-                    # poke-env does NOT switch the `species` property on transform,
-                    # so we don't change the `name`.
-                    pokemon.base_stats = transformed_on_prev.base_stats
-                    # ...except for hp
-                    pokemon.base_stats["hp"] = base_stats[pokemon.unique_id]["hp"]
-                    pokemon.active_ability = transformed_on_prev.active_ability
-                    pokemon.type = transformed_on_prev.type
-
-                elif pokemon.transformed_into == on_prev_turn.transformed_into:
-                    # continued transformation
-                    for move_name, move in on_prev_turn.moves.items():
-                        # we may have discovered more of the opponents moveset
-                        # during the transformation, so the moves we added above
-                        # may already be in `moves` with correct PP tracking.
-                        if move_name not in pokemon.moves:
-                            assert move.maximum_pp == 5
-                            pokemon.moves[move_name] = move
-
-                    pokemon.base_stats = on_prev_turn.base_stats
-                    pokemon.active_ability = on_prev_turn.active_ability
-                    pokemon.type = on_prev_turn.type
-
-            elif on_prev_turn.transformed_into is not None:
-                # forward pass logic switches most things back
-                pokemon.base_stats = base_stats[pokemon.unique_id]
-                pokemon.active_ability = pokemon.had_ability
-                pokemon.type = types[pokemon.unique_id]
-
-
 def backward_fill(
     replay: forward.ParsedReplay, team_predictor: TeamPredictor
 ) -> tuple[POVReplay, POVReplay]:
@@ -285,7 +276,6 @@ def backward_fill(
 
     # chop off the extra filled turn
     replay_filled.turnlist = replay_filled.turnlist[:-1]
-    resolve_transforms(replay_filled)
     checks.check_info_filled(replay_filled)
 
     from_p1 = POVReplay(

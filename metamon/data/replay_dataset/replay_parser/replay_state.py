@@ -122,6 +122,12 @@ class Move(PEMove):
         memo[id(self)] = new
         return new
 
+    def from_transform(self):
+        new_move = Move(name=self.name, gen=self.gen_)
+        new_move.set_pp(5)
+        new_move.maximum_pp = 5
+        return new_move
+
     def __eq__(self, other):
         return self.name == other.name and self.pp == other.pp
 
@@ -177,6 +183,8 @@ class Pokemon:
         self.effects: Dict[PEEffect, int] = {}
         self.current_hp: int = None
         self.max_hp: int = None
+
+        self.transformed_this_turn: bool = False
         self.transformed_into = None
 
         # within-turn state (reset on next turn)
@@ -208,6 +216,7 @@ class Pokemon:
         self.last_targeted_by = None
         self.protected = False
         self.tricking = None
+        self.transformed_this_turn = False
 
     def fresh_like(self):
         # returns a version of this pokemon before it entered a battle
@@ -273,9 +282,7 @@ class Pokemon:
 
         if self.transformed_into is not None:
             if move.name not in self.moves:
-                tform_move = copy.deepcopy(move)
-                tform_move.pp = 5
-                tform_move.maximum_pp = 5
+                tform_move = move.from_transform()
                 self.moves[move.name] = tform_move
         else:
             if move.name not in self.moves:
@@ -289,21 +296,18 @@ class Pokemon:
 
     def reveal_item(self, item: str):
         self.active_item = item
-        if self.had_item is None and not self.transformed_into:
+        if self.had_item is None:
             self.had_item = item
 
     def transform(self, other):
         # too complicated to change the name, stats, ability, & types here.
         # only change things that won't carry forward after switching out.
         # we try to take care of the rest at the very end (`resolve_transforms`)
+        self.transformed_this_turn = True
         self.transformed_into = other
-        self.moves = copy.deepcopy(other.moves)
         self.boosts = copy.deepcopy(other.boosts)
-        self.status = other.status
         self.active_ability = other.active_ability
-        for move in self.moves.values():
-            move.pp = 5
-            move.maximum_pp = 5
+        self.moves = {k: v.from_transform() for k, v in other.moves.items()}
 
     @property
     def last_used_move_name(self) -> Optional[str]:
@@ -650,6 +654,14 @@ class Turn:
                 else:
                     breakpoint()
         return poke
+
+    def get_turns_from_pov(self, from_p1_pov: bool):
+        subturns = [
+            s.turn
+            for s in self.subturns
+            if s.turn is not None and s.team == (1 if from_p1_pov else 2)
+        ]
+        return [self] + subturns
 
     def get_pokemon_from_nickname(self, s: str) -> Optional[Pokemon]:
         if s in ["", "null"]:

@@ -24,7 +24,7 @@ TIER_MAP = {
     "lc": Tier.LC,
 }
 
-EARLIEST_USAGE_STATS_DATE = datetime.date(2015, 1, 1)
+EARLIEST_USAGE_STATS_DATE = datetime.date(2014, 1, 1)
 LATEST_USAGE_STATS_DATE = datetime.date(2025, 5, 1)
 
 

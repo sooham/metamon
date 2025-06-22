@@ -41,8 +41,21 @@ class ParsedReplay:
     def __getitem__(self, i):
         return self.turnlist[i]
 
+    def get_pov_turnlist(
+        self, from_p1_pov: bool, start_from_turn: int = 0
+    ) -> list[Turn]:
+        flat = []
+        for turn in self.turnlist[start_from_turn:]:
+            for subturn in turn.subturns:
+                if subturn.turn is not None and subturn.team == (
+                    1 if from_p1_pov else 2
+                ):
+                    flat.append(subturn.turn)
+            flat.append(turn)
+        return flat
+
     @property
-    def flattened_turnlist(self):
+    def flattened_turnlist(self) -> list[Turn]:
         flat = []
         for turn in self.turnlist:
             for subturn in turn.subturns:
