@@ -500,7 +500,9 @@ class SimProtocol:
             # fishing for "moves called by moves that call other moves", which should be prevented
             # from being incorrectly added to a pokemon's true moveset.
             override_risk = (
-                move_name in SimProtocol.CONSECUTIVE_MOVES or move.charge_move
+                move_name in SimProtocol.CONSECUTIVE_MOVES
+                or move.charge_move
+                or move_name in SimProtocol.GEN1_PP_ROLLOVERS
             )
 
             # two equivalent logic blocks:
