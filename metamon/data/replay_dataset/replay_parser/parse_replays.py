@@ -227,9 +227,7 @@ class ReplayParser:
 
         except (ForwardException, BackwardException) as e:
             self.add_exception_to_history(e, path)
-            warning_str = (
-                f"Skipping replay {replay.gameid} due to known exception: {e}."
-            )
+            warning_str = f"{replay.gameid}:\n\t{e}"
             for check_warning in replay.check_warnings:
                 warning_str += f"\n\t{termcolor.colored(f'Note: this replay has a {check_warning.flag.value} warning flag, which may explain the above message.', 'yellow')}"
             warnings.warn(warning_str)

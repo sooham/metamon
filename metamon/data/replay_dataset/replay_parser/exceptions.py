@@ -20,9 +20,7 @@ CheckWarning = namedtuple("CheckWarning", ["flag", "pokemon_id"])
 
 class ForwardException(Exception):
     def __init__(self, message: str):
-        super().__init__(
-            f"Handled Exception on Replay Forward-Fill: {colored(message, 'red')}"
-        )
+        super().__init__(f"Exception on Replay Forward-Fill: {colored(message, 'red')}")
 
 
 class ZoroarkException(ForwardException):
@@ -168,7 +166,7 @@ class RareValueError(ForwardException):
 class BackwardException(Exception):
     def __init__(self, message):
         super().__init__(
-            f"Handled Exception on Replay Backward-Fill: {colored(message, 'blue')}"
+            f"Exception on Replay Backward-Fill: {colored(message, 'blue')}"
         )
 
 
