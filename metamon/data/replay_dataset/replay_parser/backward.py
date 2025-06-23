@@ -1,7 +1,7 @@
 import copy
 import re
 import datetime
-from typing import List
+from typing import List, Optional
 import collections
 
 from metamon.data.replay_dataset.replay_parser import checks, forward
@@ -101,6 +101,8 @@ class POVReplay:
             raise ValueError("Using replays of different games to construct POVReplay")
         self.from_p1_pov = from_p1_pov
         self.revealed_team = revealed_team
+        self._povturnlist: list[Turn] = []
+        self._actionlist: list[list[Optional[Action]]] = []
 
         # copy replay metadata
         self.replay_url = filled_replay.replay_url
@@ -228,9 +230,17 @@ class POVReplay:
                 turn.pokemon_2 = filled_turn.pokemon_2
                 turn.active_pokemon_2 = filled_turn.active_pokemon_2
 
+    @property
+    def povturnlist(self) -> list[Turn]:
+        return self._povturnlist
+
+    @property
+    def actionlist(self) -> list[list[Action]]:
+        return self._actionlist
+
     def align_states_actions(self, replay: forward.ParsedReplay):
-        self.povturnlist = []
-        self.actionlist = []
+        self._povturnlist = []
+        self._actionlist = []
         for idx, (turn_t, turn_t1) in enumerate(
             zip(replay.turnlist, replay.turnlist[1:])
         ):
@@ -242,10 +252,10 @@ class POVReplay:
                 ):
                     action = [None, None]
                     action[subturn.slot] = subturn.action
-                    self.povturnlist.append(subturn.turn)
-                    self.actionlist.append(action)
+                    self._povturnlist.append(subturn.turn)
+                    self._actionlist.append(action)
 
-            self.povturnlist.append(
+            self._povturnlist.append(
                 turn_t
             )  # turn_t holds the state at the very end of the turn
             # and the action we clicked between turns is held in the next turn
@@ -260,11 +270,11 @@ class POVReplay:
                     # if the move was missing, but a `choice` message was parsed,
                     # we can fall back to that.
                     actionlist[move_idx] = choice
-            self.actionlist.append(actionlist)
+            self._actionlist.append(actionlist)
 
         # add final state
-        self.povturnlist.append(turn_t1)
-        self.actionlist.append([None, None])
+        self._povturnlist.append(turn_t1)
+        self._actionlist.append([None, None])
 
 
 def add_filled_final_turn(
