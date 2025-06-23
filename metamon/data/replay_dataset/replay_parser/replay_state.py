@@ -268,16 +268,17 @@ class Pokemon:
         - And so on. We at least catch the basic case of copying a new move you didn't
           have and being able to use it until you switch out or faint in a few turns.
         """
-        if "Mimic" not in self.moves:
+        if "Mimic" not in self.moves or self.last_target is None:
             raise MimicMiss("Mimic not in moveset")
-        if self.last_target[1] != "Mimic":
+        if self.last_target.move != "Mimic":
             raise MimicMiss("Lost reference to Mimic target")
         copied_move = Move(name=move_name, gen=gen)
         # discovers a move the PS viewer doesn't reveal...
-        self.last_target[0].reveal_move(copy.deepcopy(copied_move))
+        self.last_target.pokemon.reveal_move(copy.deepcopy(copied_move))
         # gen1 PP tracking slightly flawed; won't subtract from Mimic
         pp = self.moves["Mimic"].pp if gen == 1 else 5
-        copied_move.pp, copied_move.maximum_pp = pp, pp
+        copied_move.set_pp(pp)
+        copied_move.maximum_pp = pp
         self.move_change_to_from[copied_move.name] = "Mimic"
         del self.moves["Mimic"]
         # by putting the new Move in the move dict ourselves, we prevent
@@ -334,17 +335,23 @@ class Pokemon:
         if move.name == "Struggle":
             return
 
-        # TODO: switch to set_pp
         self.reveal_move(move)
+        if move.name not in self.moves:
+            return
+
         if self.transformed_into is None and move.name in self.had_moves:
             # subtract pp from had_moves (the moves we brought to the battle)
             curr_pp = self.had_moves[move.name].pp
             # you can always use the move 1 more time when curr_pp == 1, setting pp = 0
-            self.had_moves[move.name].pp -= pp_used if curr_pp > 1 else min(pp_used, 1)
+            self.had_moves[move.name].set_pp(
+                curr_pp - (pp_used if curr_pp > 1 else min(pp_used, 1))
+            )
 
         # always subtract pp from current movset
         curr_pp = self.moves[move.name].pp
-        self.moves[move.name].pp -= pp_used if curr_pp > 1 else min(pp_used, 1)
+        self.moves[move.name].set_pp(
+            curr_pp - (pp_used if curr_pp > 1 else min(pp_used, 1))
+        )
 
     def backfill_info(self, future_mon):
         if future_mon != self:
@@ -440,9 +447,10 @@ class Pokemon:
             f"\t\thad_item={self.had_item}",
             f"\t\tactive_item={self.active_item}",
             f"\t\teffects={self.effects}",
-            f"\t\thp={self.current_hp}/{self.max_hp}\n",
+            f"\t\thp={self.current_hp}/{self.max_hp}",
+            f"\t\ttera_type={self.tera_type}\n",
         ]
-        return ",\n".join(items)
+        return "\n".join(items)
 
     def fill_from_PokemonSet(self, pokemon_set):
         if not self.name == pokemon_set.name:
