@@ -370,7 +370,9 @@ class Pokemon:
         for move_name, future_move in future_mon.had_moves.items():
             if move_name not in self.had_moves:
                 _backup_move(future_move, self.had_moves)
-        assert len(self.had_moves.keys()) <= 4
+
+        if len(self.had_moves.keys()) > 4:
+            raise TooManyMoves(self)
 
         move_change_from_to = {v: k for k, v in self.move_change_to_from.items()}
         if self.transformed_into is None:
@@ -494,6 +496,13 @@ class Action:
 
 
 @dataclass
+class Replacement:
+    replaced: Pokemon
+    replaced_with: Pokemon
+    turn_range: Tuple[int, int]
+
+
+@dataclass
 class Turn:
     pokemon_1: List[Optional[Pokemon]] = field(default_factory=lambda: [None] * 6)
     pokemon_2: List[Optional[Pokemon]] = field(default_factory=lambda: [None] * 6)
@@ -511,6 +520,8 @@ class Turn:
     battle_field: Dict[PEField, int] = field(default_factory=dict)
     conditions_1: Dict[PESideCondition, int] = field(default_factory=dict)
     conditions_2: Dict[PESideCondition, int] = field(default_factory=dict)
+    replacements_1: List[Replacement] = field(default_factory=list)
+    replacements_2: List[Replacement] = field(default_factory=list)
     turn_number: int = None
     is_force_switch: bool = False
     subturns: List = field(default_factory=list)
@@ -563,6 +574,8 @@ class Turn:
         next_turn.choices_2 = [None, None]
         next_turn.subturns = []
         next_turn.turn_number += 1
+        next_turn.replacements_1 = []
+        next_turn.replacements_2 = []
         return next_turn
 
     def _available_switches(self, for_team_1: bool) -> List[Pokemon]:
@@ -685,7 +698,6 @@ class Turn:
             raise RareValueError(f"Unknown player: {sub_str}")
 
     def get_active_pokemon_from_str(self, s: str) -> List[Optional[Pokemon]]:
-        # TODO: why was this needed?
         sub_str = s[0:2]
         if sub_str == "p1":
             return self.active_pokemon_1

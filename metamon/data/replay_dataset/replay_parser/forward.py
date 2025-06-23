@@ -1,7 +1,7 @@
 import copy
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional
+from typing import Callable, List, Optional, Set
 
 from metamon.data.replay_dataset.replay_parser import checks
 from metamon.data.replay_dataset.replay_parser.exceptions import *
@@ -14,6 +14,7 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
     Pokemon,
     Turn,
     Winner,
+    Replacement,
 )
 from metamon.data.replay_dataset.replay_parser.str_parsing import *
 
@@ -37,6 +38,7 @@ class ParsedReplay:
     turnlist: List[Turn] = field(default_factory=lambda: [Turn(turn_number=0)])
     rules: List[str] = field(default_factory=list)
     winner: Optional[Winner] = None
+    check_warnings: Set[CheckWarning] = field(default_factory=set)
 
     def __getitem__(self, i):
         return self.turnlist[i]
@@ -900,6 +902,9 @@ class SimProtocol:
                 raise TrickError(["-activate"] + args)
         elif effect == PEEffect.MIMIC:
             pokemon.mimic(move_name=args[2], gen=self.replay.gen)
+            self.replay.check_warnings.add(
+                CheckWarning(flag=WarningFlags.MIMIC, pokemon_id=pokemon.unique_id)
+            )
         elif effect in [PEEffect.LEPPA_BERRY, PEEffect.MYSTERY_BERRY]:
             # https://bulbapedia.bulbagarden.net/wiki/Category:PP-restoring_items
             pp_gained = 10 if effect == PEEffect.LEPPA_BERRY else 5
@@ -1003,6 +1008,9 @@ class SimProtocol:
         if found_ability:
             user.reveal_ability(found_ability)
         user.transform(target)
+        self.replay.check_warnings.add(
+            CheckWarning(flag=WarningFlags.TRANSFORM, pokemon_id=user.unique_id)
+        )
 
     def _parse_field_conditions(self, args: List[str], name: str):
         """
@@ -1049,6 +1057,9 @@ class SimProtocol:
             # 1 of 2 ways PS will tell you which move Mimic copies
             # (depending on gen or replay date it's hard to tell)
             pokemon.mimic(move_name=args[2], gen=self.replay.gen)
+            self.replay.check_warnings.add(
+                CheckWarning(flag=WarningFlags.MIMIC, pokemon_id=pokemon.unique_id)
+            )
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(
             args[2:]
         )
@@ -1186,7 +1197,54 @@ class SimProtocol:
         """
         |replace|POKEMON|DETAILS|HP STATUS
         """
-        raise ZoroarkException
+        # find the pokemon that is being replaced
+        replace_team, replace_slot = self.curr_turn.player_id_to_action_idx(args[0])
+        active_pokemon = self.curr_turn.get_active_pokemon_from_str(args[0])
+        to_replace = active_pokemon[replace_slot]
+
+        # find the zoroark that is replacing it
+        replace_with = None
+        poke_list = self.curr_turn.get_pokemon_list_from_str(args[0])
+        replace_with_name, _ = Pokemon.identify_from_details(args[1])
+        for p in poke_list:
+            if p.name == replace_with_name:
+                replace_with = p
+                break
+        if replace_with is None or not replace_with.name.startswith("Zoroark"):
+            raise ZoroarkException
+
+        # everything that has happened to `replace` since it was last switched
+        # in has been wrong. So go back and find the last time it was inactive.
+        for prev_turn in self.replay.turnlist[::-1]:
+            active_on_turn = prev_turn.get_active_pokemon_from_str(args[0])
+            if to_replace not in active_on_turn:
+                break
+        old_version = copy.deepcopy(prev_turn.get_pokemon_by_uid(to_replace.unique_id))
+        for idx, p in enumerate(poke_list):
+            if p.unique_id == old_version.unique_id:
+                poke_list[idx] = old_version
+                break
+
+        # update the active zoroark to the general condition of the mistaken pokemon
+        replace_with.status = to_replace.status
+        replace_with.current_hp = to_replace.current_hp
+        replace_with.max_hp = to_replace.max_hp
+        replace_with.boosts = to_replace.boosts
+        active_pokemon[replace_slot] = replace_with
+
+        # we're going to have to go back and fix all this during the "backward" pass
+        replacement = Replacement(
+            replaced=to_replace,
+            replaced_with=replace_with,
+            turn_range=(prev_turn.turn_number, self.curr_turn.turn_number),
+        )
+        if replace_team == 1:
+            self.curr_turn.replacements_1.append(replacement)
+        else:
+            self.curr_turn.replacements_2.append(replacement)
+        self.replay.check_warnings.add(
+            CheckWarning(flag=WarningFlags.ZOROARK, pokemon_id=to_replace.unique_id)
+        )
 
     def _parse_burst(self, args: List[str]):
         """
@@ -1205,22 +1263,9 @@ class SimProtocol:
         if from_ability is not None and from_mon is not None:
             pokemon.reveal_ability(from_ability)
         self._cancel_user_switch_based_on_failure(user_pokemon=pokemon)
-        if pokemon.last_targeted_by is not None:
-            # awful edge case; holding pattern until we can figure out the more general rule
-            # https://replay.pokemonshowdown.com/gen9ou-2383086891
-            last_targeted_by_poke, last_targeted_by_move = pokemon.last_targeted_by
-            if (
-                self.replay.gen >= 7
-                and last_targeted_by_move in {"Parting Shot"}
-                and any("unboost" in s for s in args)
-            ):
-                # https://bulbapedia.bulbagarden.net/wiki/Parting_Shot_(move)
-                breakpoint()
-                team, slot = self.curr_turn.player_id_to_action_idx(args[0])
-                other_team = 3 - team
-                self.curr_turn.remove_empty_subturn(
-                    team=other_team, slot=0
-                )  # FIXME for doubles
+        self._cancel_opponent_parting_shot(
+            user_pokemon=pokemon, extra_condition=any("unboost" in s for s in args)
+        )
 
     def _parse_singleturn(self, args: List[str]):
         """
@@ -1255,6 +1300,9 @@ class SimProtocol:
         if from_mon and "ability" in args[1]:
             ability = parse_ability(args[1])
             pokemon.reveal_ability(ability)
+            self._cancel_opponent_parting_shot(
+                user_pokemon=pokemon, extra_condition=True
+            )
         else:
             breakpoint()
 
@@ -1497,6 +1545,32 @@ class SimProtocol:
             if team_slot:
                 curr_turn.remove_empty_subturn(team=team_slot[0], slot=team_slot[1])
                 return True
+        return False
+
+    def _cancel_opponent_parting_shot(
+        self, user_pokemon: Pokemon, extra_condition: bool
+    ) -> bool:
+        # https://bulbapedia.bulbagarden.net/wiki/Parting_Shot_(move)
+        if user_pokemon.last_targeted_by is None:
+            return False
+        last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
+        if (
+            self.replay.gen >= 7
+            and last_targeted_by_move in {"Parting Shot"}
+            and extra_condition
+        ):
+            team1 = self.curr_turn.active_pokemon_1
+            team2 = self.curr_turn.active_pokemon_2
+            if last_targeted_by_poke in team1:
+                other_team = 1
+                slot = team1.index(last_targeted_by_poke)
+            elif last_targeted_by_poke in team2:
+                other_team = 2
+                slot = team2.index(last_targeted_by_poke)
+            else:
+                return False
+            self.curr_turn.remove_empty_subturn(team=other_team, slot=slot)
+            return True
         return False
 
 

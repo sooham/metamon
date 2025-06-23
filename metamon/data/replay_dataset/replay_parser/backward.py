@@ -17,6 +17,7 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
     BackwardMarkers,
     get_pokedex_and_moves,
     unknown,
+    Replacement,
 )
 from metamon.data.team_prediction.predictor import TeamPredictor
 from metamon.data.team_prediction.team import TeamSet, PokemonSet
@@ -120,6 +121,9 @@ class POVReplay:
         self.align_states_actions(replay)
 
     def resolve_transforms(self, replay, filled_replay):
+        if not any(w.flag == WarningFlags.TRANSFORM for w in replay.check_warnings):
+            return
+
         # find the turn where transformations begin
         transforms = collections.deque()
         for i, filled_turn in enumerate(filled_replay.turnlist):
@@ -165,7 +169,51 @@ class POVReplay:
     def resolve_zoroark(
         self, replay: forward.ParsedReplay, filled_replay: forward.ParsedReplay
     ):
-        pass
+        if not any(w.flag == WarningFlags.ZOROARK for w in replay.check_warnings):
+            return
+
+        get_replacements = lambda turn: (
+            turn.replacements_1 if self.from_p1_pov else turn.replacements_2
+        )
+
+        def _fix_action(action: Action, replacement: Replacement) -> bool:
+            if (
+                action is not None
+                and action.name == "Switch"
+                and action.target == replacement.replaced
+            ):
+                breakpoint()
+                action.target = replacement.replaced_with
+                return True
+            return False
+
+        replacements = collections.deque()
+        for turn in replay.turnlist:
+            for replacement in get_replacements(turn):
+                replacements.append(replacement)
+        while replacements:
+            replacement = replacements.popleft()
+            # go looking for the "Switch" action that says we switched in the wrong Pokemon
+            # and patch it to Zoroark.
+            fixed = False
+            for turn in replay.turnlist[
+                replacement.turn_range[0] : replacement.turn_range[1]
+            ]:
+                for subturn in turn.subturns:
+                    if subturn.turn is not None and subturn.team == (
+                        1 if self.from_p1_pov else 2
+                    ):
+                        action = subturn.action
+                        fixed = _fix_action(action, replacement)
+                        if fixed:
+                            break
+                if not fixed:
+                    for move in turn.moves_1 if self.from_p1_pov else turn.moves_2:
+                        fixed = _fix_action(move, replacement)
+                        if fixed:
+                            break
+            if not fixed:
+                raise ZoroarkException
 
     def fill_one_side(self, replay, filled_replay):
         # take spectator replay and reveal one entire team from filled_replay
@@ -247,9 +295,6 @@ def add_filled_final_turn(
 def backward_fill(
     replay: forward.ParsedReplay, team_predictor: TeamPredictor
 ) -> tuple[POVReplay, POVReplay]:
-    cleaned_format = re.sub(r"\[|\]| ", "", replay.format).lower()
-    pokedex, _ = get_pokedex_and_moves(cleaned_format)
-
     # fill in missing team info at the end of the forward pass
     replay_filled, (revealed_team_1, revealed_team_2) = add_filled_final_turn(
         copy.deepcopy(replay), team_predictor=team_predictor
@@ -277,7 +322,6 @@ def backward_fill(
     # chop off the extra filled turn
     replay_filled.turnlist = replay_filled.turnlist[:-1]
     checks.check_info_filled(replay_filled)
-
     from_p1 = POVReplay(
         copy.deepcopy(replay),
         copy.deepcopy(replay_filled),

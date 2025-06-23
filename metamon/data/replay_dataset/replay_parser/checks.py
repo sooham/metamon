@@ -1,4 +1,5 @@
 from metamon.data.replay_dataset.replay_parser.exceptions import *
+from metamon.data.replay_dataset.replay_parser.forward import WarningFlags
 
 from poke_env.environment import Effect as PEEffect
 from poke_env.data import to_id_str
@@ -86,6 +87,7 @@ def check_forward_consistency(replay):
         found_move = False
         for turn in replay.turnlist[on:]:
             pokemon_t = turn.get_pokemon_by_uid(uid)
+
             if found_item and pokemon_t.had_item is None:
                 raise ForwardVerify(f"Lost track of {pokemon_t.name} Item")
             elif (not found_item) and pokemon_t.had_item is not None:

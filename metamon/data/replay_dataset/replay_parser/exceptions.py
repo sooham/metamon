@@ -1,4 +1,21 @@
 from termcolor import colored
+from collections import namedtuple
+from enum import Enum
+
+
+class WarningFlags(Enum):
+    """
+    Indicate that a replay contains The Game's Most Annoying Mechanics™,
+    which are probably the real cause of the issue. Some strict tests might
+    need to be relaxed, and a more helpful error message can be displayed.
+    """
+
+    ZOROARK = "Zoroark"
+    TRANSFORM = "Transform"
+    MIMIC = "Mimic"
+
+
+CheckWarning = namedtuple("CheckWarning", ["flag", "pokemon_id"])
 
 
 class ForwardException(Exception):
@@ -11,7 +28,7 @@ class ForwardException(Exception):
 class ZoroarkException(ForwardException):
     def __init__(self):
         super().__init__(
-            "Detected a Zoroark or related battle message (replace). The 3rd person replay format makes this difficult to deal with. Fix is TODO"
+            "Detected a Zoroark or related battle message (replace). The 3rd person replay format makes this difficult to deal with"
         )
 
 
