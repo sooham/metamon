@@ -408,20 +408,20 @@ class PreloadedSmogonUsageStats(SmogonStat):
         )
         self._inclusive = load_between_dates(
             inclusive_path,
-            start_year=start_date.year,
-            start_month=start_date.month,
-            end_year=end_date.year,
-            end_month=end_date.month,
+            start_year=EARLIEST_USAGE_STATS_DATE.year,
+            start_month=EARLIEST_USAGE_STATS_DATE.month,
+            end_year=LATEST_USAGE_STATS_DATE.year,
+            end_month=LATEST_USAGE_STATS_DATE.month,
         )
 
     def _load(self):
         pass
 
     def _inclusive_search(self, key):
-        # check the stats for this specific tier first
+        # check the stats for this specific tier and time period first
         if key in self._movesets:
             return self._movesets[key]
-        # fallback to stats compiled across all tiers
+        # fallback to stats compiled across all tiers and time periods
         if key in self._inclusive:
             return self._inclusive[key]
         return None
@@ -441,7 +441,6 @@ class PreloadedSmogonUsageStats(SmogonStat):
         if species_id_search is not None:
             return species_id_search
 
-        breakpoint()
         raise KeyError(f"Pokemon {key} not found in {self.format}")
 
 

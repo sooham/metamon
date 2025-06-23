@@ -679,13 +679,10 @@ class Turn:
                 # this relies on the idea that the first time we need to id
                 # a pokemon by nickname comes after a message that would discover
                 # the nickname. so far the only cases I know of are Revival Blessing
-                # and curestatus from heal bell, where that's true, though there are
-                # probably more.
+                # and curestatus from heal bell, though there are probably more.
                 poke_by_nickname = self.get_pokemon_from_nickname(showdown_msg)
                 if poke_by_nickname is not None:
                     return poke_by_nickname
-                else:
-                    breakpoint()
         return poke
 
     def get_turns_from_pov(self, from_p1_pov: bool):
