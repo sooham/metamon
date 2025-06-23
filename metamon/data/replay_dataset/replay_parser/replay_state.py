@@ -135,6 +135,18 @@ class Move(PEMove):
         return f"{self.name} ({self.pp})"
 
 
+@dataclass
+class TargetedBy:
+    pokemon: "Pokemon"
+    move: str
+
+
+@dataclass
+class Targeting:
+    pokemon: "Pokemon"
+    move: str
+
+
 class Pokemon:
     def __init__(self, name: str, lvl: int, gen: int):
         # basic info
@@ -185,13 +197,13 @@ class Pokemon:
         self.max_hp: int = None
 
         self.transformed_this_turn: bool = False
-        self.transformed_into = None
+        self.transformed_into: Optional[Pokemon] = None
 
         # within-turn state (reset on next turn)
         self.protected: bool = False
-        self.last_target = None
-        self.last_targeted_by = None
-        self.tricking = None
+        self.last_target: Optional[Targeting] = None
+        self.last_targeted_by: Optional[TargetedBy] = None
+        self.tricking: Optional["Pokemon"] = None
 
     def __eq__(self, other):
         # the unique id is what ultimately matters. the showdown messages

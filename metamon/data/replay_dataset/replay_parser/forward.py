@@ -14,6 +14,8 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
     Pokemon,
     Turn,
     Winner,
+    TargetedBy,
+    Targeting,
     Replacement,
 )
 from metamon.data.replay_dataset.replay_parser.str_parsing import *
@@ -459,6 +461,9 @@ class SimProtocol:
         pokemon = self.curr_turn.get_pokemon_from_str(
             args[0], fallback_to_nickname=False
         )
+        pokemon_team_idx, pokemon_slot_idx = self.curr_turn.pokemon_to_action_idx(
+            pokemon
+        )
         move_name = args[1]
         move = Move(name=move_name, gen=self.replay.gen)
         probably_repeat_move = False
@@ -604,12 +609,16 @@ class SimProtocol:
         pokemon.use_move(move, pp_used=pp_used)
         if pokemon.transformed_into is not None:
             pokemon.transformed_into.reveal_move(copy.deepcopy(move))
-
         # create edge between pokemon to help track down special cases
-        pokemon.last_target = (target_pokemon, move_name)
+        pokemon.last_target = Targeting(
+            pokemon=target_pokemon,
+            move=move_name,
+        )
         if target_pokemon:
-            target_pokemon.last_targeted_by = (pokemon, move_name)
-
+            target_pokemon.last_targeted_by = TargetedBy(
+                pokemon=pokemon,
+                move=move_name,
+            )
         # create Action
         self.curr_turn.set_move_attribute(
             s=poke_str,
@@ -1450,14 +1459,15 @@ class SimProtocol:
         ):
             return False
 
-        last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
         if (
-            last_targeted_by_move
+            user_pokemon.last_targeted_by.move
             != SimProtocol.ABILITY_CAUSES_MOVE_TO_FAIL[based_on_ability]
         ):
             return False
 
-        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
+        subturn_slot = curr_turn.pokemon_to_action_idx(
+            user_pokemon.last_targeted_by.pokemon
+        )
         if not subturn_slot:
             return False
 
@@ -1478,20 +1488,20 @@ class SimProtocol:
             bool: True if the switch was cancelled, False otherwise
         """
         curr_turn = self.curr_turn
+        last_targeted_by = user_pokemon.last_targeted_by
         if (
             based_on_item not in SimProtocol.ITEMS_THAT_SWITCH_THE_USER_OUT
-            or not user_pokemon.last_targeted_by
+            or not last_targeted_by
         ):
             return False
 
-        last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
         if (
-            not last_targeted_by_poke
-            or last_targeted_by_move not in SimProtocol.MOVES_THAT_SWITCH_THE_USER_OUT
+            not last_targeted_by.pokemon
+            or last_targeted_by.move not in SimProtocol.MOVES_THAT_SWITCH_THE_USER_OUT
         ):
             return False
 
-        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
+        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by.pokemon)
         if not subturn_slot:
             return False
 
@@ -1511,17 +1521,14 @@ class SimProtocol:
             bool: True if the switch was cancelled, False otherwise
         """
         curr_turn = self.curr_turn
-        if not immune_pokemon.last_targeted_by:
+        last_targeted_by = immune_pokemon.last_targeted_by
+        if not last_targeted_by:
             return False
-
-        last_targeted_by_poke, last_targeted_by_move = immune_pokemon.last_targeted_by
-        if last_targeted_by_move not in SimProtocol.MOVES_THAT_SWITCH_THE_USER_OUT:
+        if last_targeted_by.move not in SimProtocol.MOVES_THAT_SWITCH_THE_USER_OUT:
             return False
-
-        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by_poke)
+        subturn_slot = curr_turn.pokemon_to_action_idx(last_targeted_by.pokemon)
         if not subturn_slot:
             return False
-
         curr_turn.remove_empty_subturn(team=subturn_slot[0], slot=subturn_slot[1])
         return True
 
@@ -1553,23 +1560,18 @@ class SimProtocol:
         # https://bulbapedia.bulbagarden.net/wiki/Parting_Shot_(move)
         if user_pokemon.last_targeted_by is None:
             return False
-        last_targeted_by_poke, last_targeted_by_move = user_pokemon.last_targeted_by
+        last_targeted_by = user_pokemon.last_targeted_by
         if (
             self.replay.gen >= 7
-            and last_targeted_by_move in {"Parting Shot"}
+            and last_targeted_by.move in {"Parting Shot"}
             and extra_condition
         ):
-            team1 = self.curr_turn.active_pokemon_1
-            team2 = self.curr_turn.active_pokemon_2
-            if last_targeted_by_poke in team1:
-                other_team = 1
-                slot = team1.index(last_targeted_by_poke)
-            elif last_targeted_by_poke in team2:
-                other_team = 2
-                slot = team2.index(last_targeted_by_poke)
-            else:
-                return False
-            self.curr_turn.remove_empty_subturn(team=other_team, slot=slot)
+            other_team_slot, other_team_team = self.curr_turn.pokemon_to_action_idx(
+                last_targeted_by.pokemon
+            )
+            self.curr_turn.remove_empty_subturn(
+                team=other_team_team, slot=other_team_slot
+            )
             return True
         return False
 
