@@ -32,7 +32,62 @@ class Nothing(Enum):
     NO_TERA_TYPE = auto()
 
 
+class BackwardMarkers(Enum):
+    """
+    Mark info with "all we know is that we definitely can't know this"
+    """
+
+    FORCE_UNKNOWN = auto()
+
+
+def unknown(x: Any) -> bool:
+    """
+    Check if a value is considered "unknown"
+    """
+    return x is None or x == BackwardMarkers.FORCE_UNKNOWN
+
+
+# organize some info for tracking down edge cases
+
+
+@dataclass
+class TargetedBy:
+    pokemon: "Pokemon"
+    move: str
+
+
+@dataclass
+class Targeting:
+    pokemon: "Pokemon"
+    move: str
+
+
+@dataclass
+class Replacement:
+    replaced: "Pokemon"
+    replaced_with: "Pokemon"
+    turn_range: Tuple[int, int]
+
+
+class Winner(Enum):
+    TIE = 0
+    PLAYER_1 = 1
+    PLAYER_2 = 2
+
+
+@lru_cache(maxsize=9)
+def get_pokedex_and_moves(format: str) -> Tuple[dict[str, Any], dict[str, Any]]:
+    if format[:3] != "gen":
+        raise RareValueError(f"Unknown format: {format}")
+    gen = int(format[3])
+    gen_data = GenData.from_gen(gen)
+    return gen_data.pokedex, gen_data.moves
+
+
 def _one_hidden_power(move_name: str) -> str:
+    """
+    Used to map all hidden power moves to the same name
+    """
     # used to map all hidden power moves to the same name
     if move_name.startswith("Hidden Power"):
         return "Hidden Power"
@@ -56,6 +111,10 @@ def cleanup_move_id(move_id: str) -> str:
 
 @dataclass
 class Boosts:
+    """
+    Stat stage boosts
+    """
+
     atk_: int = 0
     spa_: int = 0
     def_: int = 0
@@ -93,6 +152,10 @@ class Boosts:
 
 
 class Move(PEMove):
+    """
+    A wrapper around poke-env's Move object with its own pp counter
+    """
+
     def __init__(self, name: str, gen: int):
         # in an attempt to handle `choice` messages that give names in a case/space insensitive format,
         # we'll go from the name parsed from the replay --> poke_env id --> poke_env's official move name
@@ -134,18 +197,6 @@ class Move(PEMove):
 
     def __repr__(self):
         return f"{self.name} ({self.pp})"
-
-
-@dataclass
-class TargetedBy:
-    pokemon: "Pokemon"
-    move: str
-
-
-@dataclass
-class Targeting:
-    pokemon: "Pokemon"
-    move: str
 
 
 class Pokemon:
@@ -355,6 +406,10 @@ class Pokemon:
         )
 
     def backfill_info(self, future_mon):
+        """
+        Update this Pokemon's info based on a version of itself from later in the battle
+        (when we've hopefully learned more about it)
+        """
         if future_mon != self:
             raise ValueError(
                 "Trying to transfer properties between two different pokemon!"
@@ -454,26 +509,33 @@ class Pokemon:
         return "\n".join(items)
 
     def fill_from_PokemonSet(self, pokemon_set):
+        """
+        Fill unknown details based on the outputs of our team prediction module.
+        """
         if not self.name == pokemon_set.name:
             raise ValueError("other must have the same name")
+
         item = pokemon_set.item
         if item == pokemon_set.NO_ITEM:
             item = Nothing.NO_ITEM
         elif item == pokemon_set.MISSING_ITEM:
             item = None
         self.had_item = item
+
         ability = pokemon_set.ability
         if ability == pokemon_set.NO_ABILITY:
             ability = Nothing.NO_ABILITY
         elif ability == pokemon_set.MISSING_ABILITY:
             ability = None
         self.had_ability = ability
+
         tera_type = pokemon_set.tera_type
         if tera_type == pokemon_set.NO_TERA_TYPE:
             tera_type = Nothing.NO_TERA_TYPE
         elif tera_type == pokemon_set.MISSING_TERA_TYPE:
             tera_type = None
         self.tera_type = tera_type
+
         pokemon_set_moves = set(
             _one_hidden_power(move)
             for move in pokemon_set.moves
@@ -488,6 +550,7 @@ class Pokemon:
             choice = moves_to_add.pop()
             new_move = Move(name=choice, gen=self.gen)
             self.had_moves[new_move.name] = new_move
+
         if self.max_hp is None:
             assert self.current_hp is None
             self.max_hp = 100
@@ -514,13 +577,6 @@ class Action:
             f"target={'None' if self.target is None else self.target.name}",
         ]
         return ",".join(items)
-
-
-@dataclass
-class Replacement:
-    replaced: Pokemon
-    replaced_with: Pokemon
-    turn_range: Tuple[int, int]
 
 
 @dataclass
@@ -573,89 +629,42 @@ class Turn:
     def get_replacements(self, p1: bool) -> List[Replacement]:
         return self.replacements_1 if p1 else self.replacements_2
 
-    def on_end_of_turn(self):
-        for pokemon in self.all_pokemon:
-            if pokemon:
-                pokemon.on_end_of_turn()
-
-    def create_subturn(self, force_switch: bool):
-        subturn = copy.deepcopy(self)
-        subturn.subturns = []
-        subturn.is_force_switch = force_switch
-        return subturn
-
-    def remove_empty_subturn(self, team: int, slot: int):
-        for subturn in self.subturns:
-            if subturn.turn is None and subturn.team == team and subturn.slot == slot:
-                self.subturns.remove(subturn)
-
-    def create_next_turn(self):
-        next_turn = copy.deepcopy(self)
-        # create blank actions
-        next_turn.moves_1 = [None, None]
-        next_turn.moves_2 = [None, None]
-        next_turn.choices_1 = [None, None]
-        next_turn.choices_2 = [None, None]
-        next_turn.subturns = []
-        next_turn.turn_number += 1
-        next_turn.replacements_1 = []
-        next_turn.replacements_2 = []
-        return next_turn
-
-    def _available_switches(self, for_team_1: bool) -> List[Pokemon]:
-        active = self.active_pokemon_1 if for_team_1 else self.active_pokemon_2
-        team = self.pokemon_1 if for_team_1 else self.pokemon_2
-        active_ids = {a.unique_id for a in active if a is not None}
-        return [
-            p
-            for p in team
-            if p is not None
-            and p.status != PEStatus.FNT
-            and p.unique_id not in active_ids
-        ]
-
-    @property
-    def available_switches_1(self):
-        return self._available_switches(for_team_1=True)
-
-    @property
-    def available_switches_2(self):
-        return self._available_switches(for_team_1=False)
-
-    def player_id_to_action_idx(self, move_str: str) -> Tuple[int, int]:
-        sub_str = move_str[1:3]
-        if sub_str == "1a" or sub_str == "1:":
-            return 1, 0
-        elif sub_str == "1b":
-            return 1, 1
-        elif sub_str == "2a" or sub_str == "2:":
-            return 2, 0
-        elif sub_str == "2b":
-            return 2, 1
-        raise RareValueError(f"Unknown player in '{move_str}'")
-
-    def pokemon_to_action_idx(self, pokemon: Pokemon) -> Optional[Tuple[int, int]]:
-        for team_idx, team in enumerate([self.active_pokemon_1, self.active_pokemon_2]):
-            for slot_idx, slot in enumerate(team):
-                if slot == pokemon:
-                    # teams were apparently 1-indexed...
-                    return team_idx + 1, slot_idx
+    def get_pokemon_from_nickname(self, s: str) -> Optional[Pokemon]:
+        if s in ["", "null"]:
+            return None
+        side_id = s[1:3]
+        nickname = s.split(":")[1].strip()
+        p1 = "1" in side_id
+        side = self.get_pokemon(p1=p1)
+        for pokemon in side:
+            if pokemon is not None and pokemon.nickname == nickname:
+                return pokemon
         return None
 
-    def mark_forced_switch(self, move_str: str):
-        # make a blank subturn
-        team, slot = self.player_id_to_action_idx(move_str)
-        # remove an existing forced switch that wasn't filled (lots of edge cases here)
-        self.remove_empty_subturn(team, slot)
-        subturn = Subturn(turn=None, team=team, slot=slot, action=None)
-        self.subturns.append(subturn)
+    def get_pokemon_list_from_str(self, s: str) -> List[Optional[Pokemon]]:
+        sub_str = s[0:2]
+        if sub_str == "p1":
+            return self.pokemon_1
+        elif sub_str == "p2":
+            return self.pokemon_2
+        else:
+            raise RareValueError(f"Unknown player: {sub_str}")
+
+    def get_active_pokemon_from_str(self, s: str) -> List[Optional[Pokemon]]:
+        sub_str = s[0:2]
+        if sub_str == "p1":
+            return self.active_pokemon_1
+        elif sub_str == "p2":
+            return self.active_pokemon_2
+        else:
+            raise RareValueError(f"Unknown player: {sub_str}")
 
     def get_pokemon_from_str(
         self, showdown_msg: str, fallback_to_nickname: bool = True
     ) -> Optional[Pokemon]:
         if showdown_msg in ["", "null"]:
             return None
-        # get active pokemon from slod id first
+        # get active pokemon from slot id first
         sub_str = showdown_msg[1:3]
         if sub_str == "1a" or sub_str == "1:":
             poke = self.active_pokemon_1[0]
@@ -689,38 +698,85 @@ class Turn:
                     return poke_by_nickname
         return poke
 
-    def get_pokemon_from_nickname(self, s: str) -> Optional[Pokemon]:
-        if s in ["", "null"]:
-            return None
-        side_id = s[1:3]
-        nickname = s.split(":")[1].strip()
-        p1 = "1" in side_id
-        side = self.get_pokemon(p1=p1)
-        for pokemon in side:
-            if pokemon is not None and pokemon.nickname == nickname:
-                return pokemon
+    def player_id_to_action_idx(self, move_str: str) -> Tuple[int, int]:
+        sub_str = move_str[1:3]
+        if sub_str == "1a" or sub_str == "1:":
+            return 1, 0
+        elif sub_str == "1b":
+            return 1, 1
+        elif sub_str == "2a" or sub_str == "2:":
+            return 2, 0
+        elif sub_str == "2b":
+            return 2, 1
+        raise RareValueError(f"Unknown player in '{move_str}'")
+
+    def pokemon_to_action_idx(self, pokemon: Pokemon) -> Optional[Tuple[int, int]]:
+        for team_idx, team in enumerate([self.active_pokemon_1, self.active_pokemon_2]):
+            for slot_idx, slot in enumerate(team):
+                if slot == pokemon:
+                    # teams were apparently 1-indexed...
+                    return team_idx + 1, slot_idx
         return None
 
-    def get_pokemon_list_from_str(self, s: str) -> List[Optional[Pokemon]]:
-        sub_str = s[0:2]
-        if sub_str == "p1":
-            return self.pokemon_1
-        elif sub_str == "p2":
-            return self.pokemon_2
-        else:
-            raise RareValueError(f"Unknown player: {sub_str}")
+    def on_end_of_turn(self) -> None:
+        for pokemon in self.all_pokemon:
+            if pokemon:
+                pokemon.on_end_of_turn()
 
-    def get_active_pokemon_from_str(self, s: str) -> List[Optional[Pokemon]]:
-        sub_str = s[0:2]
-        if sub_str == "p1":
-            return self.active_pokemon_1
-        elif sub_str == "p2":
-            return self.active_pokemon_2
-        else:
-            raise RareValueError(f"Unknown player: {sub_str}")
+    def create_next_turn(self) -> "Turn":
+        next_turn = copy.deepcopy(self)
+        # create blank actions
+        next_turn.moves_1 = [None, None]
+        next_turn.moves_2 = [None, None]
+        next_turn.choices_1 = [None, None]
+        next_turn.choices_2 = [None, None]
+        next_turn.subturns = []
+        next_turn.turn_number += 1
+        next_turn.replacements_1 = []
+        next_turn.replacements_2 = []
+        return next_turn
+
+    def create_subturn(self, force_switch: bool) -> "Turn":
+        subturn = copy.deepcopy(self)
+        subturn.subturns = []
+        subturn.is_force_switch = force_switch
+        return subturn
+
+    def remove_empty_subturn(self, team: int, slot: int) -> None:
+        for subturn in self.subturns:
+            if subturn.turn is None and subturn.team == team and subturn.slot == slot:
+                self.subturns.remove(subturn)
+
+    def mark_forced_switch(self, move_str: str) -> None:
+        # make a blank subturn
+        team, slot = self.player_id_to_action_idx(move_str)
+        # remove an existing forced switch that wasn't filled (lots of edge cases here)
+        self.remove_empty_subturn(team, slot)
+        subturn = Subturn(turn=None, team=team, slot=slot, action=None)
+        self.subturns.append(subturn)
+
+    def _available_switches(self, for_team_1: bool) -> List[Pokemon]:
+        active = self.active_pokemon_1 if for_team_1 else self.active_pokemon_2
+        team = self.pokemon_1 if for_team_1 else self.pokemon_2
+        active_ids = {a.unique_id for a in active if a is not None}
+        return [
+            p
+            for p in team
+            if p is not None
+            and p.status != PEStatus.FNT
+            and p.unique_id not in active_ids
+        ]
 
     @property
-    def pokemon2id(self):
+    def available_switches_1(self) -> List[Pokemon]:
+        return self._available_switches(for_team_1=True)
+
+    @property
+    def available_switches_2(self) -> List[Pokemon]:
+        return self._available_switches(for_team_1=False)
+
+    @property
+    def pokemon2id(self) -> Dict[Pokemon, str]:
         return {
             pokemon: pokemon.unique_id
             for pokemon in self.all_pokemon
@@ -728,7 +784,7 @@ class Turn:
         }
 
     @property
-    def id2pokemon(self):
+    def id2pokemon(self) -> Dict[str, Pokemon]:
         return {
             pokemon.unique_id: pokemon
             for pokemon in self.all_pokemon
@@ -749,7 +805,7 @@ class Turn:
         user: Optional[Pokemon] = None,
         target: Optional[Pokemon] = None,
         is_tera: Optional[bool] = None,
-    ):
+    ) -> None:
         # "p1a", "p2a", ...
         if s[1] == "1":
             moves_list = self.moves_1
@@ -806,11 +862,11 @@ class Turn:
         return ",\n".join(items)
 
     @property
-    def all_pokemon(self):
+    def all_pokemon(self) -> List[Optional[Pokemon]]:
         return self.pokemon_1 + self.pokemon_2
 
     @property
-    def all_active_pokemon(self):
+    def all_active_pokemon(self) -> List[Optional[Pokemon]]:
         return self.active_pokemon_1 + self.active_pokemon_2
 
 
@@ -822,38 +878,14 @@ class Subturn:
     action: Optional[Action]
 
     @property
-    def unfilled(self):
+    def unfilled(self) -> bool:
         return self.turn is None
 
-    def matches_slot(self, team, slot):
+    def matches_slot(self, team: int, slot: int) -> bool:
         return self.team == team and self.slot == slot
 
-    def fill_turn(self, turn):
+    def fill_turn(self, turn: Turn) -> None:
         self.turn = turn
-
-
-class Winner(Enum):
-    TIE = 0
-    PLAYER_1 = 1
-    PLAYER_2 = 2
-
-
-class BackwardMarkers(Enum):
-    # mark info with "all we know is that we definitely can't know this"
-    FORCE_UNKNOWN = auto()
-
-
-def unknown(x: Any) -> bool:
-    return x is None or x == BackwardMarkers.FORCE_UNKNOWN
-
-
-@lru_cache(maxsize=9)
-def get_pokedex_and_moves(format: str) -> Tuple[dict[str, Any], dict[str, Any]]:
-    if format[:3] != "gen":
-        raise RareValueError(f"Unknown format: {format}")
-    gen = int(format[3])
-    gen_data = GenData.from_gen(gen)
-    return gen_data.pokedex, gen_data.moves
 
 
 @dataclass
@@ -867,13 +899,16 @@ class ParsedReplay:
     turnlist: List[Turn] = field(default_factory=lambda: [Turn(turn_number=0)])
     rules: List[str] = field(default_factory=list)
     winner: Optional[Winner] = None
-    check_warnings: Set[CheckWarning] = field(default_factory=set)
+    check_warnings: Set[WarningFlags] = field(default_factory=set)
 
     def __getitem__(self, i):
         return self.turnlist[i]
 
-    def has_warning(self, warning: CheckWarning) -> bool:
+    def has_warning(self, warning: WarningFlags) -> bool:
         return warning in self.check_warnings
+
+    def add_warning(self, warning: WarningFlags) -> None:
+        self.check_warnings.add(warning)
 
     def get_pov_turnlist(
         self, from_p1_pov: bool, start_from_turn: int = 0
