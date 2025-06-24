@@ -74,10 +74,6 @@ class NaiveUsagePredictor(TeamPredictor):
     some downsides that are explained / improved by the ReplayPredictor. Every detail that
     was missing in the orignial team is then filled by grabbing the same attribute from
     the generated team.
-
-    This team_prediction module didn't exist in the original version. Because i'm lazy,
-    this works by converting to the old format, running the legacy predictor, and then
-    converting back.
     """
 
     def fill_team(self, team: TeamSet, date: datetime.date):

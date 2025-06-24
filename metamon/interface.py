@@ -316,11 +316,13 @@ class UniversalPokemon:
         item = cls.universal_items(pokemon.item)
         ability = cls.universal_abilities(pokemon.ability)
         types = cls.universal_types(pokemon.types)
+        tera_type = cls.universal_types([pokemon.tera_type], force_two=False)
 
         return cls(
             name=clean_name(pokemon.species),
             hp_pct=float(pokemon.current_hp_fraction),
             types=types,
+            tera_type=tera_type,
             item=item,
             ability=ability,
             lvl=pokemon.level,
@@ -346,7 +348,6 @@ class UniversalState:
 
     format: str
     player_active_pokemon: UniversalPokemon
-    player_fainted: List[UniversalPokemon]
     opponent_active_pokemon: UniversalPokemon
     available_switches: List[UniversalPokemon]
     player_prev_move: UniversalMove
@@ -359,6 +360,9 @@ class UniversalState:
     forced_switch: bool
     battle_won: bool
     battle_lost: bool
+
+    # version-specific
+    player_fainted: List[UniversalPokemon]
 
     def __post_init__(self):
         for name, should_be in self.__annotations__.items():
@@ -424,8 +428,6 @@ class UniversalState:
 
     @classmethod
     def from_Battle(cls, battle: Battle):
-        # TODO: player_fainted
-        breakpoint()
         format = battle.battle_tag.split("-")[1]
         weather = cls.universal_weather(battle.weather)
         battle_field = cls.universal_field(battle.fields)
@@ -438,6 +440,7 @@ class UniversalState:
         player_prev_move = UniversalMove.from_Move(battle.active_pokemon.previous_move)
         opponent_prev_move = UniversalMove.from_Move(battle.opponent_active_pokemon.previous_move)
         opponents_remaining = 6 - sum(p.status == Status.FNT for p in battle.opponent_team.values())
+        player_fainted = [UniversalPokemon.from_Pokemon(p) for p in battle.team.values() if p.fainted]
 
         force_switch = battle.force_switch
         if isinstance(force_switch, list):
@@ -448,6 +451,7 @@ class UniversalState:
             player_active_pokemon=active,
             opponent_active_pokemon=opponent,
             available_switches=switches,
+            player_fainted=player_fainted,
             player_prev_move=player_prev_move,
             opponent_prev_move=opponent_prev_move,
             player_conditions=player_conditions,
