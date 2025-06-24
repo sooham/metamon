@@ -131,7 +131,7 @@ class POVReplay:
         flat = []
         for turn in self.replay.turnlist[start_from_turn:]:
             for subturn in self._flatten_subturns_from_pov(turn):
-                flat.append(subturn)
+                flat.append(subturn.turn)
             flat.append(turn)
         return flat
 
@@ -199,14 +199,14 @@ class POVReplay:
             return action and action.is_switch and action.target == replacement.replaced
 
         def _fix_turn(turn: Turn, replacement: Replacement):
-            for t in self.flatten_turn_from_pov(turn):
+            for t in self._flatten_subturns_from_pov(turn):
                 action = t.action
                 if _broken_switch(action, replacement):
                     action.target = replacement.replaced_with
             for move_action in turn.get_moves(self.from_p1_pov):
                 if _broken_switch(move_action, replacement):
                     move_action.target = replacement.replaced_with
-            for t in [s.turn for s in self.flatten_turn_from_pov(turn)] + [turn]:
+            for t in [s.turn for s in self._flatten_subturns_from_pov(turn)] + [turn]:
                 active = t.get_active_pokemon(self.from_p1_pov)
                 if replacement.replaced_with in active:
                     return True
