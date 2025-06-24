@@ -98,6 +98,7 @@ class SimProtocol:
         "t:",  # timer
         "upkeep",
         "uhtml",
+        "uhtmlchange",
         "unlink",  # disconnect or spectator removed
         "-zbroken",  # z-move hits through protect
     }
@@ -109,7 +110,7 @@ class SimProtocol:
         "Flip Turn",
         "Parting Shot",
         "Shed Tail",
-        #"Teleport", # technically does this but always fails in trainer battles
+        # "Teleport", # technically does this but always fails in trainer battles
         "U-turn",
         "Volt Switch",
     }
@@ -268,10 +269,11 @@ class SimProtocol:
         |choice|PLAYER_CHOICES
 
         https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md#sending-decisions
-        `choice` messaegs reveal players action choices directly instead of waiting to see the outcome of the move/switch.
-        they are not present in every replay, but when they are, they can help us fill missing actions.
-        It would be possible to catch many more choices if we could use the numeric arg format of some
-        messages (e.g. `move 1`). We'd need to infer a mapping between the numeric args and the move names.
+        `choice` messages reveal player action choices directly instead of waiting to see the outcome
+        of the move/switch. They are not present in every replay, but when they are, they can help us
+        fill missing actions. It would be possible to catch many more choices if we could use the numeric
+        arg format of some messages (e.g. `move 1`). We'd need to infer a mapping between the numeric args
+        and the move names.
         """
         for player_idx, player_choice in enumerate(args):
             if not player_choice:
@@ -850,9 +852,7 @@ class SimProtocol:
                 raise TrickError(["-activate"] + args)
         elif effect == PEEffect.MIMIC:
             pokemon.mimic(move_name=args[2], gen=self.replay.gen)
-            self.replay.check_warnings.add(
-                CheckWarning(flag=WarningFlags.MIMIC, pokemon_id=pokemon.unique_id)
-            )
+            self.replay.add_warning(WarningFlags.MIMIC)
         elif effect in [PEEffect.LEPPA_BERRY, PEEffect.MYSTERY_BERRY]:
             # https://bulbapedia.bulbagarden.net/wiki/Category:PP-restoring_items
             pp_gained = 10 if effect == PEEffect.LEPPA_BERRY else 5
@@ -956,9 +956,7 @@ class SimProtocol:
         if found_ability:
             user.reveal_ability(found_ability)
         user.transform(target)
-        self.replay.check_warnings.add(
-            CheckWarning(flag=WarningFlags.TRANSFORM, pokemon_id=user.unique_id)
-        )
+        self.replay.add_warning(WarningFlags.TRANSFORM)
 
     def _parse_field_conditions(self, args: List[str], name: str):
         """
@@ -1005,9 +1003,7 @@ class SimProtocol:
             # 1 of 2 ways PS will tell you which move Mimic copies
             # (depending on gen or replay date it's hard to tell)
             pokemon.mimic(move_name=args[2], gen=self.replay.gen)
-            self.replay.check_warnings.add(
-                CheckWarning(flag=WarningFlags.MIMIC, pokemon_id=pokemon.unique_id)
-            )
+            self.replay.add_warning(WarningFlags.MIMIC)
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(
             args[2:]
         )
@@ -1191,9 +1187,7 @@ class SimProtocol:
             self.curr_turn.replacements_1.append(replacement)
         else:
             self.curr_turn.replacements_2.append(replacement)
-        self.replay.check_warnings.add(
-            CheckWarning(flag=WarningFlags.ZOROARK, pokemon_id=to_replace.unique_id)
-        )
+        self.replay.add_warning(WarningFlags.ZOROARK)
 
     def _parse_burst(self, args: List[str]):
         """

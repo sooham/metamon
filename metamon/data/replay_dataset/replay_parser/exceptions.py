@@ -15,9 +15,6 @@ class WarningFlags(Enum):
     MIMIC = "Mimic"
 
 
-CheckWarning = namedtuple("CheckWarning", ["flag", "pokemon_id"])
-
-
 class ForwardException(Exception):
     def __init__(self, message: str):
         super().__init__(f"Exception on Replay Forward-Fill: {colored(message, 'red')}")
