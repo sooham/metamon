@@ -569,6 +569,9 @@ class Turn:
     def get_available_switches(self, p1: bool) -> List[Pokemon]:
         return self.available_switches_1 if p1 else self.available_switches_2
 
+    def get_replacements(self, p1: bool) -> List[Replacement]:
+        return self.replacements_1 if p1 else self.replacements_2
+
     def on_end_of_turn(self):
         for pokemon in self.all_pokemon:
             if pokemon:
@@ -684,14 +687,6 @@ class Turn:
                 if poke_by_nickname is not None:
                     return poke_by_nickname
         return poke
-
-    def get_turns_from_pov(self, from_p1_pov: bool):
-        subturns = [
-            s.turn
-            for s in self.subturns
-            if s.turn is not None and s.team == (1 if from_p1_pov else 2)
-        ]
-        return [self] + subturns
 
     def get_pokemon_from_nickname(self, s: str) -> Optional[Pokemon]:
         if s in ["", "null"]:

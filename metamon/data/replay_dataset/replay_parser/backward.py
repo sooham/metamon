@@ -111,6 +111,7 @@ class POVReplay:
         self.gen = filled_replay.gen
         self.time_played = filled_replay.time_played
         self.rules = filled_replay.rules
+        self.check_warnings = filled_replay.check_warnings
 
         # rating and winner from POV
         self.rating = filled_replay.ratings[0 if from_p1_pov else 1]
@@ -119,7 +120,7 @@ class POVReplay:
         )
         self.fill_one_side(replay, filled_replay)
         self.resolve_transforms(replay, filled_replay)
-        self.resolve_zoroark(replay, filled_replay)
+        self.resolve_zoroark(replay)
         self.align_states_actions(replay)
 
     def resolve_transforms(self, replay, filled_replay):
@@ -168,54 +169,48 @@ class POVReplay:
                     for move in last_moveset.values():
                         player_pov.reveal_move(move)
 
-    def resolve_zoroark(
-        self, replay: forward.ParsedReplay, filled_replay: forward.ParsedReplay
-    ):
+    def flatten_turn_from_pov(self, turn: Turn):
+        for subturn in turn.subturns:
+            if subturn.turn is not None and subturn.team == (
+                1 if self.from_p1_pov else 2
+            ):
+                yield subturn
+
+    def resolve_zoroark(self, replay: forward.ParsedReplay):
         if not any(w.flag == WarningFlags.ZOROARK for w in replay.check_warnings):
             return
 
-        get_replacements = lambda turn: (
-            turn.replacements_1 if self.from_p1_pov else turn.replacements_2
-        )
+        def _broken_switch(action: Action, replacement: Replacement):
+            return action and action.is_switch and action.target == replacement.replaced
 
-        def _fix_action(action: Action, replacement: Replacement) -> bool:
-            if (
-                action is not None
-                and action.name == "Switch"
-                and action.target == replacement.replaced
-            ):
-                breakpoint()
-                action.target = replacement.replaced_with
-                return True
+        def _fix_turn(turn: Turn, replacement: Replacement):
+            for t in self.flatten_turn_from_pov(turn):
+                action = t.action
+                if _broken_switch(action, replacement):
+                    action.target = replacement.replaced_with
+            for move_action in turn.get_moves(self.from_p1_pov):
+                if _broken_switch(move_action, replacement):
+                    move_action.target = replacement.replaced_with
+            for t in [s.turn for s in self.flatten_turn_from_pov(turn)] + [turn]:
+                active = t.get_active_pokemon(self.from_p1_pov)
+                if replacement.replaced_with in active:
+                    return True
+                for p in t.get_active_pokemon(self.from_p1_pov):
+                    if p is not None and p == replacement.replaced:
+                        true_active_pokemon = t.get_pokemon_by_uid(
+                            replacement.replaced_with.unique_id
+                        )
+                        p.moves = true_active_pokemon.moves
             return False
 
-        replacements = collections.deque()
         for turn in replay.turnlist:
-            for replacement in get_replacements(turn):
-                replacements.append(replacement)
-        while replacements:
-            replacement = replacements.popleft()
-            # go looking for the "Switch" action that says we switched in the wrong Pokemon
-            # and patch it to Zoroark.
-            fixed = False
-            for turn in replay.turnlist[
-                replacement.turn_range[0] : replacement.turn_range[1]
-            ]:
-                for subturn in turn.subturns:
-                    if subturn.turn is not None and subturn.team == (
-                        1 if self.from_p1_pov else 2
-                    ):
-                        action = subturn.action
-                        fixed = _fix_action(action, replacement)
-                        if fixed:
-                            break
-                if not fixed:
-                    for move in turn.moves_1 if self.from_p1_pov else turn.moves_2:
-                        fixed = _fix_action(move, replacement)
-                        if fixed:
-                            break
-            if not fixed:
-                raise ZoroarkException
+            for replacement in turn.get_replacements(self.from_p1_pov):
+                fixed = False
+                for tstep in range(*replacement.turn_range):
+                    turn = replay.turnlist[tstep]
+                    fixed = _fix_turn(turn, replacement)
+                    if fixed:
+                        break
 
     def fill_one_side(self, replay, filled_replay):
         # take spectator replay and reveal one entire team from filled_replay

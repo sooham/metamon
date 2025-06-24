@@ -1244,6 +1244,7 @@ class SimProtocol:
         active_pokemon[replace_slot] = replace_with
 
         # we're going to have to go back and fix all this during the "backward" pass
+        # and it's probably not going to work anyway...
         replacement = Replacement(
             replaced=to_replace,
             replaced_with=replace_with,
