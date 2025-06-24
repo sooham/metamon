@@ -1,17 +1,14 @@
-import os
-import re
 from datetime import datetime
 from logging import Logger
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 
 import poke_env.environment as pe
 
-from metamon.data.replay_dataset.replay_parser import forward
+from metamon.data.replay_dataset.replay_parser.forward import SimProtocol
 from metamon.data.replay_dataset.replay_parser.exceptions import ForwardException
 from metamon.data.replay_dataset.replay_parser.replay_state import (
-    Action,
-    ReplayState,
+    ParsedReplay,
     cleanup_move_id,
 )
 from metamon.data.replay_dataset.replay_parser.replay_state import (
@@ -48,9 +45,11 @@ class MetamonBackendBattle(pe.AbstractBattle):
         self._logger = logger
         self._save_replays = save_replays
         self._gen = gen
-        self._mm_battle = forward.ParsedReplay(
+        self._mm_battle = ParsedReplay(
             gameid=battle_tag, time_played=datetime.now(), gen=gen
         )
+        self._sim_protocol = SimProtocol(self._mm_battle)
+
         # Turn choice attributes
         self.in_teampreview: bool = False
         self._teampreview = False
@@ -72,16 +71,14 @@ class MetamonBackendBattle(pe.AbstractBattle):
 
     @property
     def _current_turn(self) -> Turn:
-        # TODO: incorrectly handles subturns... which are
-        # only valid in hindsight. send most recent turn only?
-        return self._mm_battle.flattened_turnlist[-1]
+        return self._mm_battle.turnlist[-1]
 
     def parse_message(self, split_message: List[str]):
         """
         Completely outsource all PS sim protocol messages to built-in
         Metamon replay parser.
         """
-        forward.parse_row(self._mm_battle, split_message[1:])
+        self._sim_protocol.interpret_message(split_message[1:])
 
     def parse_request(self, request: Dict[str, Any]):
         """
@@ -314,8 +311,10 @@ class MetamonBackendBattle(pe.AbstractBattle):
         p1 = self.player_role == "p1"
         p = pe.Pokemon(gen=self._gen)
         p._base_stats = pokemon.base_stats
-        p._type_1 = pokemon.type[0]
-        p._type_2 = pokemon.type[1] if len(pokemon.type) > 1 else None
+        p._type_1 = pe.PokemonType.from_name(pokemon.type[0])
+        p._type_2 = (
+            pe.PokemonType.from_name(pokemon.type[1]) if len(pokemon.type) > 1 else None
+        )
         p._ability = pokemon.had_ability
         p._level = pokemon.lvl
         p._max_hp = pokemon.max_hp
@@ -334,6 +333,9 @@ class MetamonBackendBattle(pe.AbstractBattle):
         p._status = pokemon.status
         p._temporary_ability = pokemon.active_ability
         p._previous_move = pokemon.last_used_move
+        p._terastallized_type = (
+            pe.PokemonType.from_name(pokemon.tera_type) if pokemon.tera_type else None
+        )
         return p
 
     @property
