@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum, auto
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set, Tuple
+from datetime import datetime
 
 from metamon.data.replay_dataset.replay_parser.exceptions import *
 
@@ -842,17 +843,84 @@ class BackwardMarkers(Enum):
     FORCE_UNKNOWN = auto()
 
 
-def unknown(x):
+def unknown(x: Any) -> bool:
     return x is None or x == BackwardMarkers.FORCE_UNKNOWN
 
 
-@lru_cache
+@lru_cache(maxsize=9)
 def get_pokedex_and_moves(format: str) -> Tuple[dict[str, Any], dict[str, Any]]:
     if format[:3] != "gen":
         raise RareValueError(f"Unknown format: {format}")
     gen = int(format[3])
     gen_data = GenData.from_gen(gen)
     return gen_data.pokedex, gen_data.moves
+
+
+@dataclass
+class ParsedReplay:
+    gameid: str
+    time_played: datetime
+    format: Optional[str] = None
+    ratings: List[Optional[int | str]] = field(default_factory=lambda: [None, None])
+    players: List[Optional[str]] = field(default_factory=lambda: [None, None])
+    gen: Optional[int] = None
+    turnlist: List[Turn] = field(default_factory=lambda: [Turn(turn_number=0)])
+    rules: List[str] = field(default_factory=list)
+    winner: Optional[Winner] = None
+    check_warnings: Set[CheckWarning] = field(default_factory=set)
+
+    def __getitem__(self, i):
+        return self.turnlist[i]
+
+    def has_warning(self, warning: CheckWarning) -> bool:
+        return warning in self.check_warnings
+
+    def get_pov_turnlist(
+        self, from_p1_pov: bool, start_from_turn: int = 0
+    ) -> list[Turn]:
+        flat = []
+        for turn in self.turnlist[start_from_turn:]:
+            for subturn in turn.subturns:
+                if subturn.turn is not None and subturn.team == (
+                    1 if from_p1_pov else 2
+                ):
+                    flat.append(subturn.turn)
+            flat.append(turn)
+        return flat
+
+    @property
+    def flattened_turnlist(self) -> list[Turn]:
+        flat = []
+        for turn in self.turnlist:
+            for subturn in turn.subturns:
+                if subturn.turn is not None:
+                    flat.append(subturn.turn)
+            flat.append(turn)
+        return flat
+
+    @property
+    def replay_url(self) -> str:
+        return f"https://replay.pokemonshowdown.com/{self.gameid}"
+
+    def __str__(self):
+        turnlist_str = "\n\n\t".join(
+            [f"Turn {i} -> {str(x)}" for i, x in enumerate(self.turnlist)]
+        )
+        rules_str = "\n\t".join([str(x) for x in self.rules])
+        poke_1_str = "\n\t".join([str(x) for x in self.turnlist[-1].pokemon_1])
+        poke_2_str = "\n\t".join([str(x) for x in self.turnlist[-1].pokemon_2])
+        items = [
+            f"format={self.format}",
+            f"gen={self.gen}",
+            f"rating={self.rating}",
+            f"players={self.players}",
+            f"pokemon 1={poke_1_str}",
+            f"pokemon 2={poke_2_str}",
+            f"rules={rules_str}",
+            f"winner={self.winner}",
+            f"turnlist={turnlist_str}",
+        ]
+        return ",\n".join(items)
 
 
 @dataclass
