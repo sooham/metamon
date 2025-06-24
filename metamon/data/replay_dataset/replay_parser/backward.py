@@ -1,5 +1,4 @@
 import copy
-import re
 import datetime
 from typing import List, Optional
 import collections
@@ -8,15 +7,10 @@ from metamon.data.replay_dataset.replay_parser import checks, forward
 from metamon.data.replay_dataset.replay_parser.exceptions import *
 from metamon.data.replay_dataset.replay_parser.replay_state import (
     Action,
-    Boosts,
-    Move,
-    Nothing,
     Pokemon,
     Turn,
     Winner,
     BackwardMarkers,
-    get_pokedex_and_moves,
-    unknown,
     Replacement,
 )
 from metamon.data.team_prediction.predictor import TeamPredictor
@@ -100,31 +94,58 @@ class POVReplay:
         if replay.gameid != filled_replay.gameid:
             raise ValueError("Using replays of different games to construct POVReplay")
         self.from_p1_pov = from_p1_pov
+        self.replay = replay
+        self.filled_replay = filled_replay
         self.revealed_team = revealed_team
-        self._povturnlist: list[Turn] = []
-        self._actionlist: list[list[Optional[Action]]] = []
 
         # copy replay metadata
-        self.replay_url = filled_replay.replay_url
         self.gameid = filled_replay.gameid
-        self.format = filled_replay.format
-        self.gen = filled_replay.gen
         self.time_played = filled_replay.time_played
+        self.format = filled_replay.format
+        self.replay_url = filled_replay.replay_url
+        self.gen = filled_replay.gen
         self.rules = filled_replay.rules
         self.check_warnings = filled_replay.check_warnings
-
         # rating and winner from POV
         self.rating = filled_replay.ratings[0 if from_p1_pov else 1]
         self.winner = filled_replay.winner == (
             Winner.PLAYER_1 if from_p1_pov else Winner.PLAYER_2
         )
-        self.fill_one_side(replay, filled_replay)
-        self.resolve_transforms(replay, filled_replay)
-        self.resolve_zoroark(replay)
-        self.align_states_actions(replay)
 
-    def resolve_transforms(self, replay, filled_replay):
-        if not any(w.flag == WarningFlags.TRANSFORM for w in replay.check_warnings):
+        self._povturnlist: list[Turn] = []
+        self._actionlist: list[list[Optional[Action]]] = []
+        self._fill_one_side(replay, filled_replay)
+        self._resolve_transforms()
+        self._resolve_zoroark()
+        self._align_states_actions(replay)
+
+    @property
+    def povturnlist(self) -> list[Turn]:
+        return self._povturnlist
+
+    @property
+    def actionlist(self) -> list[list[Optional[Action]]]:
+        return self._actionlist
+
+    def _flatten_turnlist_from_pov(self, start_from_turn: int = 0) -> list[Turn]:
+        flat = []
+        for turn in self.replay.turnlist[start_from_turn:]:
+            for subturn in self._flatten_subturns_from_pov(turn):
+                flat.append(subturn)
+            flat.append(turn)
+        return flat
+
+    def _flatten_subturns_from_pov(self, turn: Turn):
+        for subturn in turn.subturns:
+            if subturn.turn is not None and subturn.team == (
+                1 if self.from_p1_pov else 2
+            ):
+                yield subturn
+
+    def _resolve_transforms(self):
+        replay = self.replay
+        filled_replay = self.filled_replay
+        if not replay.has_warning(WarningFlags.TRANSFORM):
             return
 
         # find the turn where transformations begin
@@ -157,7 +178,7 @@ class POVReplay:
             # now go through the whole transformation window inserting moves we'll use
             # later (or will never use at at all -- but the opponent had them)
             transform_active = False
-            for turn in replay.get_pov_turnlist(self.from_p1_pov, i):
+            for turn in self._flatten_turnlist_from_pov(start_from_turn=i):
                 # `transform_active` needed in case the transformation actually happens
                 # after a forced switch on the same turn.
                 player_pov = turn.id2pokemon[poke_id]
@@ -169,15 +190,9 @@ class POVReplay:
                     for move in last_moveset.values():
                         player_pov.reveal_move(move)
 
-    def flatten_turn_from_pov(self, turn: Turn):
-        for subturn in turn.subturns:
-            if subturn.turn is not None and subturn.team == (
-                1 if self.from_p1_pov else 2
-            ):
-                yield subturn
-
-    def resolve_zoroark(self, replay: forward.ParsedReplay):
-        if not any(w.flag == WarningFlags.ZOROARK for w in replay.check_warnings):
+    def _resolve_zoroark(self):
+        replay = self.replay
+        if not replay.has_warning(WarningFlags.ZOROARK):
             return
 
         def _broken_switch(action: Action, replacement: Replacement):
@@ -212,7 +227,7 @@ class POVReplay:
                     if fixed:
                         break
 
-    def fill_one_side(self, replay, filled_replay):
+    def _fill_one_side(self, replay, filled_replay):
         # take spectator replay and reveal one entire team from filled_replay
         assert len(replay.flattened_turnlist) == len(filled_replay.flattened_turnlist)
         for turn, filled_turn in zip(
@@ -225,15 +240,7 @@ class POVReplay:
                 turn.pokemon_2 = filled_turn.pokemon_2
                 turn.active_pokemon_2 = filled_turn.active_pokemon_2
 
-    @property
-    def povturnlist(self) -> list[Turn]:
-        return self._povturnlist
-
-    @property
-    def actionlist(self) -> list[list[Action]]:
-        return self._actionlist
-
-    def align_states_actions(self, replay: forward.ParsedReplay):
+    def _align_states_actions(self, replay: forward.ParsedReplay):
         self._povturnlist = []
         self._actionlist = []
         for idx, (turn_t, turn_t1) in enumerate(
