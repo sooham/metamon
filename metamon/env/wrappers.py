@@ -20,11 +20,9 @@ from poke_env.teambuilder import Teambuilder
 
 from metamon.interface import (
     UniversalState,
-    action_idx_to_battle_order,
     RewardFunction,
-    DefaultShapedReward,
     ObservationSpace,
-    DefaultObservationSpace,
+    ActionSpace,
 )
 from metamon.data import DATA_PATH
 from metamon.download import download_teams
@@ -143,6 +141,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
         self,
         battle_format: str,
         observation_space: ObservationSpace,
+        action_space: ActionSpace,
         reward_function: RewardFunction,
         player_team_set: TeamSet,
         opponent_type: Optional[Type[Player]] = None,
@@ -195,6 +194,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
 
         self.reward_function = reward_function
         self.metamon_obs_space = observation_space
+        self.metamon_action_space = action_space
         self.turn_limit = turn_limit
         self.metamon_battle_format = battle_format
 
@@ -229,7 +229,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
         return self._current_opponent
 
     def action_space_size(self):
-        return 9
+        return self.metamon_action_space.gym_space.n
 
     def on_invalid_order(self, battle: Battle):
         return self.choose_random_move(battle)
@@ -244,7 +244,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
         return super().reset(*args, **kwargs)
 
     def action_to_move(self, action: int, battle: Battle):
-        order = action_idx_to_battle_order(battle, action)
+        order = self.metamon_action_space.action_idx_to_battle_order(battle, action)
         if order is None:
             self.invalid_action_counter += 1
             return self.on_invalid_order(battle)
@@ -271,6 +271,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
         self.turn_counter += 1
         next_state, reward, terminated, truncated, info = super().step(action)
         if self.save_trajectories_to is not None:
+            # TODO: need to convert action to battle order
             self.trajectory["actions"].append(int(action))
 
         # enforce simple turn limit
@@ -328,6 +329,7 @@ class BattleAgainstBaseline(PokeEnvWrapper):
         self,
         battle_format: str,
         observation_space: ObservationSpace,
+        action_space: ActionSpace,
         reward_function: RewardFunction,
         team_set: TeamSet,
         opponent_type: Type[Player],
@@ -338,6 +340,7 @@ class BattleAgainstBaseline(PokeEnvWrapper):
         super().__init__(
             battle_format=battle_format,
             observation_space=observation_space,
+            action_space=action_space,
             reward_function=reward_function,
             player_team_set=team_set,
             opponent_team_set=team_set,
@@ -367,6 +370,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         battle_format: str,
         num_battles: int,
         observation_space: ObservationSpace,
+        action_space: ActionSpace,
         reward_function: RewardFunction,
         player_team_set: TeamSet,
         player_username: str,
@@ -378,6 +382,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         super().__init__(
             battle_format=battle_format,
             observation_space=observation_space,
+            action_space=action_space,
             reward_function=reward_function,
             player_team_set=player_team_set,
             player_username=player_username,

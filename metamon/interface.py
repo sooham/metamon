@@ -484,95 +484,142 @@ class UniversalState:
         return cls(**data)
 
 
-def replaystate_action_to_idx(
-    state: ReplayState, action: ReplayAction
-) -> Optional[int]:
-    """Defines the discrete action space when coming from the replay parser.
+class ActionSpace(ABC):
 
+    @property
+    @abstractmethod
+    def gym_space(self) -> gym.spaces.Discrete:
+        raise NotImplementedError
+
+    @abstractmethod
+    def replaystate_action_to_idx(
+        self, state: ReplayState, action: ReplayAction
+    ) -> Optional[int]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def action_idx_to_battle_order(
+        self, battle: Battle, action_idx: int
+    ) -> Optional[BattleOrder]:
+        raise NotImplementedError
+
+
+class DefaultActionSpace(ActionSpace):
+    """
     The action space is defined as follows:
         - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
         - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
-        - 9-13: Tera + move 1-4, sorted by alphabetical order
+        - 9-12: Tera/generational gimmick (if applicable) + move 1-4, sorted by alphabetical order
+
+    Actions of -1 are "missing" and should be replaced/ignored in training data.
     """
-    # *can* return None, but replay parser will throw an exception if it does.
-    action_idx = None
-    if action is None or action.is_noop or (action.name is None and action.is_tera):
-        action_idx = -1
 
-    elif action.name == "Struggle":
-        action_idx = 0
+    @property
+    def gym_space(self) -> gym.spaces.Space:
+        return gym.spaces.Discrete(13)
 
-    elif action.name == "Forced Revival":
-        for switch_idx, fainted_pokemon in enumerate(
-            consistent_pokemon_order(state.player_fainted)
-        ):
-            if fainted_pokemon.unique_id == action.target.unique_id:
-                action_idx = 4 + switch_idx
-                break
+    def _adjust_action_idx_by_gen(self, action_idx: int, gen: int) -> int:
+        return action_idx
 
-    elif action.is_switch:
-        for switch_idx, available_switch in enumerate(
-            consistent_pokemon_order(state.available_switches)
-        ):
-            if available_switch.unique_id == action.target.unique_id:
-                action_idx = 4 + switch_idx
-                break
-    else:
-        move_options = list(state.active_pokemon.moves.values())
-        for move_idx, move in enumerate(consistent_move_order(move_options)):
-            if move.name == action.name:
-                action_idx = move_idx
-                if action.is_tera:
-                    action_idx += 9
-                break
+    def replaystate_action_to_idx(
+        self, state: ReplayState, action: ReplayAction
+    ) -> Optional[int]:
+        """Defines the discrete action space when coming from the replay parser."""
+        gen = int(state.format[3])
 
-    return action_idx
+        action_idx = None  # can return None, but replay parser will discard the replay if it does
+        if action is None or action.is_noop or (action.name is None and action.is_tera):
+            action_idx = -1
 
+        elif action.name == "Struggle":
+            action_idx = 0
 
-def action_idx_to_battle_order(
-    battle: Battle, action_idx: int
-) -> Optional[BattleOrder]:
-    """Defines the discrete action space when coming from the online poke-env env.
+        elif action.name == "Forced Revival":
+            for switch_idx, fainted_pokemon in enumerate(
+                consistent_pokemon_order(state.player_fainted)
+            ):
+                if fainted_pokemon.unique_id == action.target.unique_id:
+                    action_idx = 4 + switch_idx
+                    break
 
-    The action space is defined as follows:
-        - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
-        - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
-    """
-    # TODO: sort out revival blessing
+        elif action.is_switch:
+            for switch_idx, available_switch in enumerate(
+                consistent_pokemon_order(state.available_switches)
+            ):
+                if available_switch.unique_id == action.target.unique_id:
+                    action_idx = 4 + switch_idx
+                    break
+        else:
+            move_options = list(state.active_pokemon.moves.values())
+            for move_idx, move in enumerate(consistent_move_order(move_options)):
+                if move.name == action.name:
+                    action_idx = move_idx
+                    if action.is_tera:
+                        action_idx += 9
+                    break
 
-    if action_idx > 8:
-        raise ValueError(
-            f"Invalid `action_idx` {action_idx}. The global action space is bounded {0, ..., 8}"
+        return self._adjust_action_idx_by_gen(action_idx, gen=gen)
+
+    def action_idx_to_battle_order(
+        self, battle: Battle, action_idx: int
+    ) -> Optional[BattleOrder]:
+        """Defines the discrete action space when coming from the online env."""
+        gen = int(battle.battle_tag.split("-")[1][3])
+        action_idx = self._adjust_action_idx_by_gen(action_idx, gen=gen)
+
+        if action_idx >= self.gym_space.n:
+            raise ValueError(
+                f"Invalid `action_idx` {action_idx} for action space {self.gym_space}"
+            )
+
+        # we'll only submit an action if it's valid, but we pick from a longer list determined
+        # by rules that are easier to keep track of elsewhere
+        valid_moves = {m.id for m in battle.available_moves}
+        valid_switches = {p.name for p in battle.available_switches}
+        move_options = consistent_move_order(list(battle.active_pokemon.moves.values()))
+        switch_options = consistent_pokemon_order(
+            [p for p in list(battle.team.values()) if not p.fainted and not p.active]
         )
 
-    # we'll only submit an action if it's valid, but we pick from a longer list determined
-    # by rules that are easier to keep track of elsewhere
-    valid_moves = {m.id for m in battle.available_moves}
-    valid_switches = {p.name for p in battle.available_switches}
-    move_options = consistent_move_order(list(battle.active_pokemon.moves.values()))
-    switch_options = consistent_pokemon_order(
-        [p for p in list(battle.team.values()) if not p.fainted and not p.active]
-    )
+        # TODO: tera, revival blessing, fall backs on invalid tera/revival blessing
+        order = None
+        if action_idx <= 3 and not battle.force_switch:
+            # pick one of up to 4 available moves
+            if action_idx < len(move_options):
+                selected_move = move_options[action_idx]
+                if selected_move.id in valid_moves:
+                    order = Player.create_order(selected_move)
 
-    order = None
-    if action_idx <= 3 and not battle.force_switch:
-        # pick one of up to 4 available moves
-        if action_idx < len(move_options):
-            selected_move = move_options[action_idx]
-            if selected_move.id in valid_moves:
-                order = Player.create_order(selected_move)
+        elif 4 <= action_idx <= 8:
+            # switch to one of up to 5 alternative pokemon
+            action_idx -= 4
+            if action_idx < len(switch_options):
+                selected_switch = switch_options[action_idx]
+                if selected_switch.name in valid_switches:
+                    order = Player.create_order(selected_switch)
 
-    elif 4 <= action_idx <= 8:
-        # switch to one of up to 5 alternative pokemon
-        action_idx -= 4
-        if action_idx < len(switch_options):
-            selected_switch = switch_options[action_idx]
-            if selected_switch.name in valid_switches:
-                order = Player.create_order(selected_switch)
+        # Q: "what happens when we pick an invalid action? (order = None)"
+        # A : up to env's `on_invalid_order` to pick one
+        return order
 
-    # Q: "what happens when we pick an invalid action? (order = None)"
-    # A : env.ShowdownEnv.on_invalid_order
-    return order
+
+class MinimalActionSpace(DefaultActionSpace):
+
+    @property
+    def gym_space(self) -> gym.spaces.Discrete:
+        return gym.spaces.Discrete(9)
+
+    def _adjust_action_idx_by_gen(self, action_idx: int, gen: int) -> int:
+        if action_idx >= 9:
+            # map all gimmick move actions to regular move actions
+            return action_idx - 9
+        return action_idx
+
+
+ALL_ACTION_SPACES = {
+    "DefaultActionSpace": DefaultActionSpace,
+    "MinimalActionSpace": MinimalActionSpace,
+}
 
 
 class RewardFunction(ABC):
