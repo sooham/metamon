@@ -287,8 +287,6 @@ class UniversalPokemon:
         status = cls.universal_status(pokemon.status)
         effect = cls.universal_effects(pokemon.effects)
         types = cls.universal_types(pokemon.type)
-        # TODO: need to recheck this, especially with forme changes so common
-        # in gen 9
         name = clean_name(pokemon.had_name)
         tera_type = cls.universal_types([pokemon.tera_type], force_two=False)
 
@@ -364,17 +362,6 @@ class UniversalState:
     # version-specific
     player_fainted: List[UniversalPokemon]
 
-    def __post_init__(self):
-        for name, should_be in self.__annotations__.items():
-            if should_be in {
-                str,
-                bool,
-                UniversalPokemon,
-                UniversalMove,
-            } and not isinstance(self.__dict__[name], should_be):
-                actually_is = type(self.__dict__[name])
-                raise TypeError(f"UniversalState `{name}` has type {actually_is}")
-
     @staticmethod
     def universal_conditions(condition_rep) -> str:
         if not condition_rep:
@@ -407,7 +394,10 @@ class UniversalState:
         active = UniversalPokemon.from_ReplayPokemon(state.active_pokemon)
         opponent = UniversalPokemon.from_ReplayPokemon(state.opponent_active_pokemon)
         switches = [UniversalPokemon.from_ReplayPokemon(p) for p in state.available_switches]
-        opponents_remaining = 6 - sum(p.status == Status.FNT for p in state.opponent_team if p is not None)
+        opponent_teamsize = len(state.opponent_team)
+        opponents_remaining = opponent_teamsize - sum(p.status == Status.FNT for p in state.opponent_team if p is not None)
+        if opponents_remaining < 0:
+            breakpoint()
         return cls(
             format=format,
             player_active_pokemon=active,
@@ -439,7 +429,8 @@ class UniversalState:
         switches = [UniversalPokemon.from_Pokemon(p) for p in possible_switches]
         player_prev_move = UniversalMove.from_Move(battle.active_pokemon.previous_move)
         opponent_prev_move = UniversalMove.from_Move(battle.opponent_active_pokemon.previous_move)
-        opponents_remaining = 6 - sum(p.status == Status.FNT for p in battle.opponent_team.values())
+        opponent_teamsize = len(battle.opponent_team)
+        opponents_remaining = opponent_teamsize - sum(p.status == Status.FNT for p in battle.opponent_team.values())
         player_fainted = [UniversalPokemon.from_Pokemon(p) for p in battle.team.values() if p.fainted and not p.active]
 
         force_switch = battle.force_switch
