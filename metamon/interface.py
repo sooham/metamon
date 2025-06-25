@@ -581,26 +581,35 @@ class DefaultActionSpace(ActionSpace):
             [p for p in list(battle.team.values()) if not p.fainted and not p.active]
         )
 
-        # TODO: tera, revival blessing, fall backs on invalid tera/revival blessing
-        order = None
+        # TODO: revival blessing
+        wants_tera = False
+        can_tera = battle.can_tera is not None and gen == 9
+        if action_idx >= 9:
+            wants_tera = True
+            action_idx -= 9
+
         if action_idx <= 3 and not battle.force_switch:
             # pick one of up to 4 available moves
             if action_idx < len(move_options):
                 selected_move = move_options[action_idx]
                 if selected_move.id in valid_moves:
-                    order = Player.create_order(selected_move)
+                    order = Player.create_order(
+                        selected_move, terastallize=wants_tera and can_tera
+                    )
+                    return order
 
-        elif 4 <= action_idx <= 8:
+        if 4 <= action_idx <= 8:
             # switch to one of up to 5 alternative pokemon
             action_idx -= 4
             if action_idx < len(switch_options):
                 selected_switch = switch_options[action_idx]
                 if selected_switch.name in valid_switches:
                     order = Player.create_order(selected_switch)
+                    return order
 
         # Q: "what happens when we pick an invalid action? (order = None)"
         # A : up to env's `on_invalid_order` to pick one
-        return order
+        return None
 
 
 class MinimalActionSpace(DefaultActionSpace):
