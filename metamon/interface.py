@@ -440,7 +440,7 @@ class UniversalState:
         player_prev_move = UniversalMove.from_Move(battle.active_pokemon.previous_move)
         opponent_prev_move = UniversalMove.from_Move(battle.opponent_active_pokemon.previous_move)
         opponents_remaining = 6 - sum(p.status == Status.FNT for p in battle.opponent_team.values())
-        player_fainted = [UniversalPokemon.from_Pokemon(p) for p in battle.team.values() if p.fainted]
+        player_fainted = [UniversalPokemon.from_Pokemon(p) for p in battle.team.values() if p.fainted and not p.active]
 
         force_switch = battle.force_switch
         if isinstance(force_switch, list):
@@ -575,13 +575,25 @@ class DefaultActionSpace(ActionSpace):
         # we'll only submit an action if it's valid, but we pick from a longer list determined
         # by rules that are easier to keep track of elsewhere
         valid_moves = {m.id for m in battle.available_moves}
-        valid_switches = {p.name for p in battle.available_switches}
         move_options = consistent_move_order(list(battle.active_pokemon.moves.values()))
-        switch_options = consistent_pokemon_order(
-            [p for p in list(battle.team.values()) if not p.fainted and not p.active]
-        )
 
-        # TODO: revival blessing
+        valid_switches = {p.name for p in battle.available_switches}
+        if not battle.reviving:
+            switch_options = consistent_pokemon_order(
+                [
+                    p
+                    for p in list(battle.team.values())
+                    if not p.fainted and not p.active
+                ]
+            )
+        else:
+            breakpoint()
+            # NOTE: matching "Forced Revival" logic above. Treat it as a switch
+            # but with different options. Both match poke-env's changes to ava
+            switch_options = consistent_pokemon_order(
+                [p for p in list(battle.team.values()) if p.fainted and not p.active]
+            )
+
         wants_tera = False
         can_tera = battle.can_tera is not None and gen == 9
         if action_idx >= 9:
