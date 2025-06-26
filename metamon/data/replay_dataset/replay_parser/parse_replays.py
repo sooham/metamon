@@ -75,7 +75,9 @@ class ReplayParser:
             player_conditions = turn.conditions_1 if p1 else turn.conditions_2
             opponent_conditions = turn.conditions_2 if p1 else turn.conditions_1
             player_team = turn.pokemon_1 if p1 else turn.pokemon_2
-            player_fainted = [p for p in player_team if p.status == Status.FNT]
+            player_fainted = [
+                p for p in player_team if p.status == Status.FNT and p != active_mon
+            ]
 
             # fill a ReplayState
             states.append(
@@ -118,7 +120,10 @@ class ReplayParser:
                 print(
                     f"forced: {state.force_switch}; {universal_state.player_active_pokemon.name} {universal_state.player_active_pokemon.status} vs. {universal_state.opponent_active_pokemon.name} {universal_state.opponent_active_pokemon.status}; {action}"
                 )
-            action_idx = interface.replaystate_action_to_idx(state, action)
+            universal_action = interface.UniversalAction.from_ReplayAction(
+                state=state, action=action
+            )
+            action_idx = universal_action.action_idx
             if action_idx is None:
                 raise InvalidActionIndex(state, action)
             action_idxs.append(action_idx)
