@@ -394,8 +394,7 @@ class UniversalState:
         active = UniversalPokemon.from_ReplayPokemon(state.active_pokemon)
         opponent = UniversalPokemon.from_ReplayPokemon(state.opponent_active_pokemon)
         switches = [UniversalPokemon.from_ReplayPokemon(p) for p in state.available_switches]
-        opponent_teamsize = len(state.opponent_team)
-        opponents_remaining = opponent_teamsize - sum(p.status == Status.FNT for p in state.opponent_team if p is not None)
+        opponents_remaining = 6 - sum(p.status == Status.FNT for p in state.opponent_team if p is not None)
         return cls(
             format=format,
             player_active_pokemon=active,
@@ -427,8 +426,7 @@ class UniversalState:
         switches = [UniversalPokemon.from_Pokemon(p) for p in possible_switches]
         player_prev_move = UniversalMove.from_Move(battle.active_pokemon.previous_move)
         opponent_prev_move = UniversalMove.from_Move(battle.opponent_active_pokemon.previous_move)
-        opponent_teamsize = len(battle.opponent_team)
-        opponents_remaining = opponent_teamsize - sum(p.status == Status.FNT for p in battle.opponent_team.values())
+        opponents_remaining = 6 - sum(p.status == Status.FNT for p in battle.opponent_team.values())
         player_fainted = [UniversalPokemon.from_Pokemon(p) for p in battle.team.values() if p.fainted and not p.active]
 
         force_switch = battle.force_switch
