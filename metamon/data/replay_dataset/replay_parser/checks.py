@@ -212,7 +212,7 @@ def check_action_alignment(replay):
                 # revealed only the choice to tera (at the start of the turn),
                 # but never found out what the move was...
                 continue
-            elif action.name == "Forced Revival":
+            elif action.is_revival:
                 pokemon = turn.get_pokemon(replay.from_p1_pov)
                 if action.target in pokemon and action.target not in switches:
                     # our revival choice is on our team but had fainted (can't be switched to)
