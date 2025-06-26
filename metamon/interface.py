@@ -480,9 +480,9 @@ class UniversalState:
         return cls(**data)
 
 
-@dataclass
 class UniversalAction:
-    action_idx: Optional[int]
+    def __init__(self, action_idx: Optional[int]):
+        self.action_idx = action_idx
 
     @classmethod
     def from_ReplayAction(cls, state: ReplayState, action: ReplayAction):
@@ -551,7 +551,6 @@ class UniversalAction:
                 ]
             )
         else:
-            breakpoint()
             # NOTE: matching "Forced Revival" logic above. Treat it as a switch
             # but with different options. Both match poke-env's changes to ava
             switch_options = consistent_pokemon_order(
@@ -607,7 +606,7 @@ class DefaultActionSpace(ActionSpace):
         return gym.spaces.Discrete(13)
 
     def to_UniversalAction(self, action: int) -> UniversalAction:
-        return UniversalAction(action_idx=action)
+        return UniversalAction(action_idx=int(action))
 
 
 class MinimalActionSpace(DefaultActionSpace):
@@ -620,7 +619,7 @@ class MinimalActionSpace(DefaultActionSpace):
         if action >= 9:
             # map all gimmick move actions to regular move actions
             action -= 9
-        return UniversalAction(action_idx=action)
+        return UniversalAction(action_idx=int(action))
 
 
 ALL_ACTION_SPACES = {

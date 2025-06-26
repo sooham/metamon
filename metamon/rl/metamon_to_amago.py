@@ -12,7 +12,7 @@ import einops
 import poke_env
 
 
-from metamon.interface import ObservationSpace, RewardFunction
+from metamon.interface import ObservationSpace, RewardFunction, ActionSpace
 from metamon.il.model import TransformerTurnEmbedding
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.datasets import ParsedReplayDataset
@@ -40,7 +40,9 @@ else:
     from amago.envs.amago_env import AMAGO_ENV_LOG_PREFIX
 
 
-def make_placeholder_env(observation_space: ObservationSpace) -> AMAGOEnv:
+def make_placeholder_env(
+    observation_space: ObservationSpace, action_space: ActionSpace
+) -> AMAGOEnv:
     """
     Create an environment that does nothing. Can be used to initialize a policy
     """
@@ -51,7 +53,7 @@ def make_placeholder_env(observation_space: ObservationSpace) -> AMAGOEnv:
         def __init__(self):
             super().__init__()
             self.observation_space = observation_space.gym_space
-            self.action_space = gym.spaces.Discrete(9)
+            self.action_space = action_space.gym_space
             self.metamon_battle_format = "PlaceholderShowdown"
             self.metamon_opponent_name = "PlaceholderOpponent"
 
@@ -76,6 +78,7 @@ def make_ladder_env(
     battle_format: str,
     player_team_set: TeamSet,
     observation_space: ObservationSpace,
+    action_space: ActionSpace,
     reward_function: RewardFunction,
     num_battles: int,
     username: str,
@@ -92,6 +95,7 @@ def make_ladder_env(
         battle_format=battle_format,
         num_battles=num_battles,
         observation_space=observation_space,
+        action_space=action_space,
         reward_function=reward_function,
         player_team_set=player_team_set,
         player_username=username,
@@ -107,6 +111,7 @@ def make_baseline_env(
     battle_format: str,
     player_team_set: TeamSet,
     observation_space: ObservationSpace,
+    action_space: ActionSpace,
     reward_function: RewardFunction,
     opponent_type: Type[poke_env.Player],
     save_trajectories_to: Optional[str] = None,
@@ -120,6 +125,7 @@ def make_baseline_env(
     menv = BattleAgainstBaseline(
         battle_format=battle_format,
         observation_space=observation_space,
+        action_space=action_space,
         reward_function=reward_function,
         team_set=player_team_set,
         opponent_type=opponent_type,
@@ -136,6 +142,7 @@ def make_placeholder_experiment(
     run_name: str,
     log: bool,
     observation_space: ObservationSpace,
+    action_space: ActionSpace,
 ):
     """
     Initialize an AMAGO experiment that will be used to load a pretrained checkpoint
@@ -145,6 +152,7 @@ def make_placeholder_experiment(
     # before loading the correct checkpoint
     penv = make_placeholder_env(
         observation_space=observation_space,
+        action_space=action_space,
     )
     dummy_dset = amago.loading.DoNothingDataset()
     dummy_env = lambda: penv

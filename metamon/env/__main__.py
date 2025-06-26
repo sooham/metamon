@@ -1,7 +1,7 @@
 import time
 from argparse import ArgumentParser
 
-from metamon.baselines.heuristic.basic import GymLeader
+from metamon.baselines.heuristic.basic import GymLeader, RandomBaseline
 from metamon.baselines.model_based.bcrnn_baselines import BaseRNN
 from metamon.interface import (
     TokenizedObservationSpace,

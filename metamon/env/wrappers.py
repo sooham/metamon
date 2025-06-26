@@ -272,7 +272,6 @@ class PokeEnvWrapper(OpenAIGymEnv):
         self.turn_counter += 1
         next_state, reward, terminated, truncated, info = super().step(action)
         if self.save_trajectories_to is not None:
-            # TODO: need to convert action to battle order
             self.trajectory["actions"].append(int(action))
 
         # enforce simple turn limit
