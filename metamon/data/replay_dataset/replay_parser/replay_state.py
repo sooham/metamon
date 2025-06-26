@@ -218,8 +218,6 @@ class Pokemon:
         self.had_type: Optional[List[str]] = None
         self.tera_type: Optional[str] = None
         self.base_stats: Dict[str, int] = {}
-        self.update_pokedex_info(name)
-        assert self.type is not None
 
         self.active_item: Optional[str] = None
         self.had_item: Optional[str] = None
@@ -242,6 +240,7 @@ class Pokemon:
         self.last_target: Optional[Targeting] = None
         self.last_targeted_by: Optional[TargetedBy] = None
         self.tricking: Optional["Pokemon"] = None
+        self.update_pokedex_info(name)
 
     def __eq__(self, other):
         # the unique id is what ultimately matters. the showdown messages
@@ -266,11 +265,8 @@ class Pokemon:
         if len(possible_abilities) == 1:
             only_ability = possible_abilities[0]
             if only_ability == "No Ability":
-                self.active_ability = Nothing.NO_ABILITY
-            else:
-                self.active_ability = only_ability
-            if self.had_ability is None:
-                self.had_ability = self.active_ability
+                only_ability = Nothing.NO_ABILITY
+            self.reveal_ability(only_ability)
 
     def on_switch_out(self):
         # many temporary effects and changes revert on switch out
