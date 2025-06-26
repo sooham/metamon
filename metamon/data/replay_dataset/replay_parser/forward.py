@@ -698,12 +698,18 @@ class SimProtocol:
         |-status|POKEMON|STATUS or |-curestatus|POKEMON|STATUS
         """
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
+        found_item, found_ability, found_move, found_mon = parse_from_effect_of(args)
         assert pokemon is not None
         status = PEStatus[args[1].upper()]
         if name == "-status":
             pokemon.status = status
         elif pokemon.status == status:
             pokemon.status = Nothing.NO_STATUS
+        if found_mon and found_ability:
+            found_mon = self.curr_turn.get_pokemon_from_str(found_mon)
+            found_mon.reveal_ability(found_ability)
+        if found_mon and found_item:
+            breakpoint()
 
     def _parse_boost_unboost(self, args: List[str], name: str):
         """
@@ -1512,12 +1518,10 @@ class SimProtocol:
             and last_targeted_by.move in {"Parting Shot"}
             and extra_condition
         ):
-            other_team_slot, other_team_team = self.curr_turn.pokemon_to_action_idx(
+            opponent_team, opponent_slot = self.curr_turn.pokemon_to_action_idx(
                 last_targeted_by.pokemon
             )
-            self.curr_turn.remove_empty_subturn(
-                team=other_team_team, slot=other_team_slot
-            )
+            self.curr_turn.remove_empty_subturn(team=opponent_team, slot=opponent_slot)
             return True
         return False
 
