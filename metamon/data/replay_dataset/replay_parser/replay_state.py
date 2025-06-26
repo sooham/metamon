@@ -202,38 +202,24 @@ class Move(PEMove):
 class Pokemon:
     def __init__(self, name: str, lvl: int, gen: int):
         # basic info
-        self.name: str = name
-        self.had_name: str = name
-        self.nickname: Optional[str] = None
-        self.unique_id: str = str(uuid.uuid4())
+        self.name: str = name  # changes on forme change
+        self.had_name: str = name  # never changes
+        self.nickname: Optional[str] = None  # player-assigned username
+        self.unique_id: str = str(
+            uuid.uuid4()
+        )  # unique id used internally to avoid matching by names at all
         self.lvl: int = lvl
         self.gen: int = gen
 
         # pokedex lookup
-        pokedex = GenData.from_gen(gen).pokedex
-        self.lookup_name = to_id_str(name)
-        try:
-            pokedex_info = pokedex[self.lookup_name]
-        except KeyError:
-            raise PokedexMissingEntry(name, self.lookup_name)
-        self.type: List[str] = pokedex_info["types"]
-        self.had_type: List[str] = copy.deepcopy(self.type)
-        self.tera_type: Optional[str] = None
-        self.base_stats: Dict[str, int] = pokedex_info["baseStats"]
-
-        # poke-env will assign an abilty as "known" when there
-        # is only one option for a pokemon. showdown displays the
-        # full list of "Possible Abilities" but waits to assign
-        # until the ability is genuinely revealed in sim messages.
-        possible_abilities = list(pokedex_info["abilities"].values())
         self.active_ability: Optional[str] = None
-        if len(possible_abilities) == 1:
-            only_ability = possible_abilities[0]
-            if only_ability == "No Ability":
-                self.active_ability = Nothing.NO_ABILITY
-            else:
-                self.active_ability = only_ability
-        self.had_ability: Optional[str] = self.active_ability
+        self.had_ability: Optional[str] = None
+        self.type: Optional[List[str]] = None
+        self.had_type: Optional[List[str]] = None
+        self.tera_type: Optional[str] = None
+        self.base_stats: Dict[str, int] = {}
+        self.update_pokedex_info(name)
+        assert self.type is not None
 
         self.active_item: Optional[str] = None
         self.had_item: Optional[str] = None
@@ -264,6 +250,27 @@ class Pokemon:
         if other is None:
             return False
         return self.unique_id == other.unique_id
+
+    def update_pokedex_info(self, name: str):
+        pokedex = GenData.from_gen(self.gen).pokedex
+        lookup_name = to_id_str(name)
+        try:
+            new_pokedex_info = pokedex[lookup_name]
+        except KeyError:
+            raise PokedexMissingEntry(name, lookup_name)
+        self.type = new_pokedex_info["types"]
+        if self.had_type is None:
+            self.had_type = copy.deepcopy(self.type)
+        self.base_stats = new_pokedex_info["baseStats"]
+        possible_abilities = list(new_pokedex_info["abilities"].values())
+        if len(possible_abilities) == 1:
+            only_ability = possible_abilities[0]
+            if only_ability == "No Ability":
+                self.active_ability = Nothing.NO_ABILITY
+            else:
+                self.active_ability = only_ability
+            if self.had_ability is None:
+                self.had_ability = self.active_ability
 
     def on_switch_out(self):
         # many temporary effects and changes revert on switch out
