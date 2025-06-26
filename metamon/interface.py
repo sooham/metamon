@@ -338,7 +338,7 @@ class UniversalPokemon:
         for m in p._moves.values():
             m.set_pp(m.pp)
         p._name = pokemon.nickname
-        p._species = pokemon.name
+        p._species = to_id_str(pokemon.name)
         p._active = is_active
         p._boosts = pokemon.boosts.to_dict()
         p._current_hp = pokemon.current_hp
