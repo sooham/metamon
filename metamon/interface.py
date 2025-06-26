@@ -287,7 +287,7 @@ class UniversalPokemon:
         status = cls.universal_status(pokemon.status)
         effect = cls.universal_effects(pokemon.effects)
         types = cls.universal_types(pokemon.type)
-        name = clean_name(pokemon.had_name)
+        name = clean_name(pokemon.name)
         tera_type = cls.universal_types([pokemon.tera_type], force_two=False)
 
         return cls(
@@ -329,6 +329,41 @@ class UniversalPokemon:
             moves=moves,
             **(boosts | stats),
         )
+
+    @staticmethod
+    def metamon_to_poke_env(pokemon: ReplayPokemon, is_active: bool) -> Pokemon:
+        """
+        Straight-through conversion from metamon replay parser Pokemon object
+        to poke-env Pokemon object. An ugly alternative to adding a
+        `update_from_metamon` equivalent in poke-env.Pokemon. Used by metamon
+        battle backend.
+        """
+        p = Pokemon(gen=pokemon.gen)
+        p._base_stats = pokemon.base_stats
+        p._type_1 = PokemonType.from_name(pokemon.type[0])
+        p._type_2 = (
+            PokemonType.from_name(pokemon.type[1]) if len(pokemon.type) > 1 else None
+        )
+        p._ability = pokemon.had_ability
+        p._level = pokemon.lvl
+        p._max_hp = pokemon.max_hp
+        p._moves = {m.lookup_name: m for m in pokemon.moves.values()}
+        for m in p._moves.values():
+            m.set_pp(m.pp)
+        p._name = pokemon.name
+        p._species = pokemon.name
+        p._active = is_active
+        p._boosts = pokemon.boosts.to_dict()
+        p._current_hp = pokemon.current_hp
+        p._effects = pokemon.effects
+        p._item = pokemon.active_item
+        p._status = pokemon.status
+        p._temporary_ability = pokemon.active_ability
+        p._previous_move = pokemon.last_used_move
+        p._terastallized_type = (
+            PokemonType.from_name(pokemon.tera_type) if pokemon.tera_type else None
+        )
+        return p
 
 
 @dataclass
