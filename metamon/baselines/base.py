@@ -120,7 +120,7 @@ class Baseline(Player, ABC):
         """
         if type is None:
             return 0.0
-        elif type == PokemonType.THREE_QUESTION_MARKS:
+        elif type in {PokemonType.THREE_QUESTION_MARKS, PokemonType.STELLAR}:
             return 1.0
 
         gen, _ = self.get_gen_format(battle)
@@ -128,7 +128,11 @@ class Baseline(Player, ABC):
         opp_types = [t for t in opponent_mon.types if t is not None]
         type_advantage = 1.0
         for opp_type in opp_types:
-            type_advantage *= type_chart[opp_type.name][type.name]
+            if opp_type in {PokemonType.THREE_QUESTION_MARKS, PokemonType.STELLAR}:
+                multiplier = 1.0
+            else:
+                multiplier = type_chart[opp_type.name][type.name]
+            type_advantage *= multiplier
         return type_advantage
 
     def _stat_from_base_stats_early_gens(self, mon: Pokemon, stat: str):
