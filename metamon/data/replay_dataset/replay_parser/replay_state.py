@@ -566,6 +566,7 @@ class Action:
     is_noop: bool = False
     is_switch: bool = False
     is_tera: bool = False
+    is_revival: bool = False
 
     def __repr__(self):
         return f"Action: {self.name}"
