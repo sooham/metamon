@@ -4,7 +4,7 @@ import os
 import copy
 import json
 from datetime import datetime
-from typing import Optional, Type
+from typing import Optional, Type, Any
 
 import numpy as np
 import lz4.frame
@@ -243,14 +243,15 @@ class PokeEnvWrapper(OpenAIGymEnv):
         self.trajectory = {"states": [], "actions": []}
         return super().reset(*args, **kwargs)
 
-    def action_to_move(self, action: int, battle: Battle):
-        order = self.metamon_action_space.action_idx_to_battle_order(battle, action)
-        if order is None:
+    def action_to_move(self, action: Any, battle: Battle):
+        universal_action = self.metamon_action_space.to_UniversalAction(action)
+        battle_order = universal_action.to_BattleOrder(battle)
+        if battle_order is None:
             self.invalid_action_counter += 1
             return self.on_invalid_order(battle)
         else:
             self.valid_action_counter += 1
-            return order
+            return battle_order
 
     def describe_embedding(self) -> gym.spaces.Space:
         return self.metamon_obs_space.gym_space
