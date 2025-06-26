@@ -406,9 +406,6 @@ class SimProtocol:
         pokemon = self.curr_turn.get_pokemon_from_str(
             args[0], fallback_to_nickname=False
         )
-        pokemon_team_idx, pokemon_slot_idx = self.curr_turn.pokemon_to_action_idx(
-            pokemon
-        )
         move_name = args[1]
         move = Move(name=move_name, gen=self.replay.gen)
         probably_repeat_move = False

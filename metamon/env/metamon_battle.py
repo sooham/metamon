@@ -11,6 +11,7 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
     ParsedReplay,
     cleanup_move_id,
 )
+from metamon.interface import UniversalPokemon
 from metamon.data.replay_dataset.replay_parser.replay_state import (
     Pokemon,
     Turn,
@@ -307,39 +308,14 @@ class MetamonBackendBattle(pe.AbstractBattle):
         self._available_moves = [m for m, disabled in available_moves if not disabled]
 
     def _convert_pokemon(self, pokemon: Pokemon) -> pe.Pokemon:
-        # an ugly alternative to adding a `update_from_metamon` equivalent
-        # in poke_env.environment.Pokemon.
         p1 = self.player_role == "p1"
-        p = pe.Pokemon(gen=self._gen)
-        p._base_stats = pokemon.base_stats
-        p._type_1 = pe.PokemonType.from_name(pokemon.type[0])
-        p._type_2 = (
-            pe.PokemonType.from_name(pokemon.type[1]) if len(pokemon.type) > 1 else None
-        )
-        p._ability = pokemon.had_ability
-        p._level = pokemon.lvl
-        p._max_hp = pokemon.max_hp
-        p._moves = {m.lookup_name: m for m in pokemon.moves.values()}
-        for m in p._moves.values():
-            m.set_pp(m.pp)
-        p._name = pokemon.name
-        p._species = pokemon.name
         active = self._current_turn.get_active_pokemon(p1)[0]
         if active is not None:
-            p._active = pokemon.unique_id == active.unique_id
+            is_active = pokemon.unique_id == active.unique_id
         else:
-            p._active = False
-        p._boosts = pokemon.boosts.to_dict()
-        p._current_hp = pokemon.current_hp
-        p._effects = pokemon.effects
-        p._item = pokemon.active_item
-        p._status = pokemon.status
-        p._temporary_ability = pokemon.active_ability
-        p._previous_move = pokemon.last_used_move
-        p._terastallized_type = (
-            pe.PokemonType.from_name(pokemon.tera_type) if pokemon.tera_type else None
-        )
-        return p
+            is_active = False
+        pe_p = UniversalPokemon.metamon_to_poke_env(pokemon, is_active=is_active)
+        return pe_p
 
     @property
     def active_pokemon(self) -> Any:
