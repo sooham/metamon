@@ -2,7 +2,7 @@ from functools import lru_cache
 import copy
 import re
 from dataclasses import dataclass, asdict
-from typing import Optional, List
+from typing import Optional, List, Any
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -287,8 +287,6 @@ class UniversalPokemon:
         status = cls.universal_status(pokemon.status)
         effect = cls.universal_effects(pokemon.effects)
         types = cls.universal_types(pokemon.type)
-        # TODO: need to recheck this, especially with forme changes so common
-        # in gen 9
         name = clean_name(pokemon.had_name)
         tera_type = cls.universal_types([pokemon.tera_type], force_two=False)
 
@@ -364,17 +362,6 @@ class UniversalState:
     # version-specific
     player_fainted: List[UniversalPokemon]
 
-    def __post_init__(self):
-        for name, should_be in self.__annotations__.items():
-            if should_be in {
-                str,
-                bool,
-                UniversalPokemon,
-                UniversalMove,
-            } and not isinstance(self.__dict__[name], should_be):
-                actually_is = type(self.__dict__[name])
-                raise TypeError(f"UniversalState `{name}` has type {actually_is}")
-
     @staticmethod
     def universal_conditions(condition_rep) -> str:
         if not condition_rep:
@@ -440,7 +427,7 @@ class UniversalState:
         player_prev_move = UniversalMove.from_Move(battle.active_pokemon.previous_move)
         opponent_prev_move = UniversalMove.from_Move(battle.opponent_active_pokemon.previous_move)
         opponents_remaining = 6 - sum(p.status == Status.FNT for p in battle.opponent_team.values())
-        player_fainted = [UniversalPokemon.from_Pokemon(p) for p in battle.team.values() if p.fainted]
+        player_fainted = [UniversalPokemon.from_Pokemon(p) for p in battle.team.values() if p.fainted and not p.active]
 
         force_switch = battle.force_switch
         if isinstance(force_switch, list):
@@ -463,10 +450,11 @@ class UniversalState:
             battle_lost=battle.lost if battle.lost else False,
             opponents_remaining=opponents_remaining,
         )
-    
+    # fmt: on
+
     def to_dict(self) -> dict:
         return asdict(self)
-    
+
     @classmethod
     def from_dict(cls, data: dict):
         # TODO: possibly defend against missing player_fainted,
@@ -474,9 +462,15 @@ class UniversalState:
         # 9 is done.
 
         # convert nested Pokemon objects
-        data["player_active_pokemon"] = UniversalPokemon.from_dict(data["player_active_pokemon"])
-        data["opponent_active_pokemon"] = UniversalPokemon.from_dict(data["opponent_active_pokemon"])
-        data["available_switches"] = [UniversalPokemon.from_dict(p) for p in data["available_switches"]]
+        data["player_active_pokemon"] = UniversalPokemon.from_dict(
+            data["player_active_pokemon"]
+        )
+        data["opponent_active_pokemon"] = UniversalPokemon.from_dict(
+            data["opponent_active_pokemon"]
+        )
+        data["available_switches"] = [
+            UniversalPokemon.from_dict(p) for p in data["available_switches"]
+        ]
         # convert nested Move objects
         data["player_prev_move"] = UniversalMove(**data["player_prev_move"])
         data["opponent_prev_move"] = UniversalMove(**data["opponent_prev_move"])
@@ -484,95 +478,152 @@ class UniversalState:
         return cls(**data)
 
 
-def replaystate_action_to_idx(
-    state: ReplayState, action: ReplayAction
-) -> Optional[int]:
-    """Defines the discrete action space when coming from the replay parser.
+class UniversalAction:
+    def __init__(self, action_idx: Optional[int]):
+        self.action_idx = action_idx
 
-    The action space is defined as follows:
-        - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
-        - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
-        - 9-13: Tera + move 1-4, sorted by alphabetical order
-    """
-    # *can* return None, but replay parser will throw an exception if it does.
-    action_idx = None
-    if action is None or action.is_noop or (action.name is None and action.is_tera):
-        action_idx = -1
+    @classmethod
+    def from_ReplayAction(cls, state: ReplayState, action: ReplayAction):
+        gen = int(state.format[3])
 
-    elif action.name == "Struggle":
-        action_idx = 0
+        action_idx = None
+        if action is None or (action.name is None and action.is_tera):
+            action_idx = -1
+        elif action.is_noop:
+            assert action.name == "Recharge"
+            action_idx = 0
+        elif action.name == "Struggle":
+            action_idx = 0
+        elif action.is_revival:
+            assert action.name == "$Forced Revival$"
+            for switch_idx, fainted_pokemon in enumerate(
+                consistent_pokemon_order(state.player_fainted)
+            ):
+                if fainted_pokemon.unique_id == action.target.unique_id:
+                    action_idx = 4 + switch_idx
+                    break
+        elif action.is_switch:
+            for switch_idx, available_switch in enumerate(
+                consistent_pokemon_order(state.available_switches)
+            ):
+                if available_switch.unique_id == action.target.unique_id:
+                    action_idx = 4 + switch_idx
+                    break
+        else:
+            move_options = list(state.active_pokemon.moves.values())
+            for move_idx, move in enumerate(consistent_move_order(move_options)):
+                if move.name == action.name:
+                    action_idx = move_idx
+                    if action.is_tera:
+                        action_idx += 9
+                    break
 
-    elif action.name == "Forced Revival":
-        for switch_idx, fainted_pokemon in enumerate(
-            consistent_pokemon_order(state.player_fainted)
-        ):
-            if fainted_pokemon.unique_id == action.target.unique_id:
-                action_idx = 4 + switch_idx
-                break
+        return cls(action_idx)
 
-    elif action.is_switch:
-        for switch_idx, available_switch in enumerate(
-            consistent_pokemon_order(state.available_switches)
-        ):
-            if available_switch.unique_id == action.target.unique_id:
-                action_idx = 4 + switch_idx
-                break
-    else:
-        move_options = list(state.active_pokemon.moves.values())
-        for move_idx, move in enumerate(consistent_move_order(move_options)):
-            if move.name == action.name:
-                action_idx = move_idx
-                if action.is_tera:
-                    action_idx += 9
-                break
+    def to_BattleOrder(self, battle: Battle) -> Optional[BattleOrder]:
+        gen = int(battle.battle_tag.split("-")[1][3])
+        action_idx = self.action_idx
 
-    return action_idx
+        valid_moves = {m.id for m in battle.available_moves}
+        if valid_moves == {"recharge"}:
+            # there is only one option; take it so it doesn't count as an invalid action
+            return Player.create_order(battle.available_moves[0])
+        elif valid_moves == {"struggle"}:
+            # override the options so that all the move indices are struggle but switches are valid.
+            # note that the replay version sets every Struggle in the dataset to index 0, so this
+            # is giving a little room for error.
+            move_options = [battle.available_moves[0]] * 4
+        else:
+            # standard: pick from the active pokemon's moves
+            move_options = consistent_move_order(
+                list(battle.active_pokemon.moves.values())
+            )
+
+        valid_switches = {p.name for p in battle.available_switches}
+        if not battle.reviving:
+            switch_options = consistent_pokemon_order(
+                [
+                    p
+                    for p in list(battle.team.values())
+                    if not p.fainted and not p.active
+                ]
+            )
+        else:
+            # NOTE: matching "Forced Revival" logic above. Treat it as a switch
+            # but with different options. Both match poke-env's changes to ava
+            switch_options = consistent_pokemon_order(
+                [p for p in list(battle.team.values()) if p.fainted and not p.active]
+            )
+
+        wants_tera = False
+        can_tera = battle.can_tera is not None and gen == 9
+        if action_idx >= 9:
+            wants_tera = True
+            action_idx -= 9
+
+        if action_idx <= 3 and not battle.force_switch:
+            # pick one of up to 4 available moves
+            if action_idx < len(move_options):
+                selected_move = move_options[action_idx]
+                if selected_move.id in valid_moves:
+                    # NOTE: giving the player a little help on invalid tera requests here
+                    order = Player.create_order(
+                        selected_move, terastallize=wants_tera and can_tera
+                    )
+                    return order
+        if 4 <= action_idx <= 8:
+            # switch to one of up to 5 alternative pokemon
+            action_idx -= 4
+            if action_idx < len(switch_options):
+                selected_switch = switch_options[action_idx]
+                if selected_switch.name in valid_switches:
+                    order = Player.create_order(selected_switch)
+                    return order
+
+        # Q: "what happens when we pick an invalid action? (order = None)"
+        # A : up to env's `on_invalid_order` to pick one
+        return None
 
 
-def action_idx_to_battle_order(
-    battle: Battle, action_idx: int
-) -> Optional[BattleOrder]:
-    """Defines the discrete action space when coming from the online poke-env env.
+class ActionSpace(ABC):
 
-    The action space is defined as follows:
-        - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
-        - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
-    """
-    # TODO: sort out revival blessing
+    @property
+    @abstractmethod
+    def gym_space(self) -> gym.spaces.Discrete:
+        raise NotImplementedError
 
-    if action_idx > 8:
-        raise ValueError(
-            f"Invalid `action_idx` {action_idx}. The global action space is bounded {0, ..., 8}"
-        )
+    @abstractmethod
+    def to_UniversalAction(self, action: Any) -> UniversalAction:
+        raise NotImplementedError
 
-    # we'll only submit an action if it's valid, but we pick from a longer list determined
-    # by rules that are easier to keep track of elsewhere
-    valid_moves = {m.id for m in battle.available_moves}
-    valid_switches = {p.name for p in battle.available_switches}
-    move_options = consistent_move_order(list(battle.active_pokemon.moves.values()))
-    switch_options = consistent_pokemon_order(
-        [p for p in list(battle.team.values()) if not p.fainted and not p.active]
-    )
 
-    order = None
-    if action_idx <= 3 and not battle.force_switch:
-        # pick one of up to 4 available moves
-        if action_idx < len(move_options):
-            selected_move = move_options[action_idx]
-            if selected_move.id in valid_moves:
-                order = Player.create_order(selected_move)
+class DefaultActionSpace(ActionSpace):
 
-    elif 4 <= action_idx <= 8:
-        # switch to one of up to 5 alternative pokemon
-        action_idx -= 4
-        if action_idx < len(switch_options):
-            selected_switch = switch_options[action_idx]
-            if selected_switch.name in valid_switches:
-                order = Player.create_order(selected_switch)
+    @property
+    def gym_space(self) -> gym.spaces.Space:
+        return gym.spaces.Discrete(13)
 
-    # Q: "what happens when we pick an invalid action? (order = None)"
-    # A : env.ShowdownEnv.on_invalid_order
-    return order
+    def to_UniversalAction(self, action: int) -> UniversalAction:
+        return UniversalAction(action_idx=int(action))
+
+
+class MinimalActionSpace(DefaultActionSpace):
+
+    @property
+    def gym_space(self) -> gym.spaces.Discrete:
+        return gym.spaces.Discrete(9)
+
+    def to_UniversalAction(self, action: int) -> UniversalAction:
+        if action >= 9:
+            # map all gimmick move actions to regular move actions
+            action -= 9
+        return UniversalAction(action_idx=int(action))
+
+
+ALL_ACTION_SPACES = {
+    "DefaultActionSpace": DefaultActionSpace,
+    "MinimalActionSpace": MinimalActionSpace,
+}
 
 
 class RewardFunction(ABC):

@@ -10,7 +10,8 @@ from torch.distributions import Categorical
 import metamon
 from metamon.baselines import Baseline, register_baseline
 from metamon.interface import (
-    action_idx_to_battle_order,
+    ActionSpace,
+    MinimalActionSpace,
     UniversalState,
     DefaultObservationSpace,
 )
@@ -24,6 +25,8 @@ class BCRNNBaseline(Baseline, ABC):
         assert isinstance(self.model, MetamonILModel)
         self.model.eval()
         self.hidden_states = {}
+        # TODO: allow customization if we ever train a gen 9 baseline
+        self.action_space = MinimalActionSpace()
 
     @abstractmethod
     def load_model(self):
@@ -71,7 +74,8 @@ class BCRNNBaseline(Baseline, ABC):
 
         # update hidden state
         self.hidden_states[battle_id] = new_hidden_state
-        order = action_idx_to_battle_order(battle, action_idx)
+        universal_action = self.action_space.to_UniversalAction(action_idx)
+        order = universal_action.to_BattleOrder(battle)
         return order
 
     def choose_move(self, battle):
@@ -106,6 +110,9 @@ class PretrainedOnCPU(BCRNNBaseline, ABC):
 
     def load_model(self):
         return load_pretrained_model_to_cpu(self.model_path)
+
+
+# TODO: force old models to old action space
 
 
 @register_baseline()

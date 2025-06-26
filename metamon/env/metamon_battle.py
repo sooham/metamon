@@ -215,29 +215,30 @@ class MetamonBackendBattle(pe.AbstractBattle):
         Update the turn from a "side" request, and create self.available_switches
         """
         p1 = self.player_role == "p1"
-        t = self._current_turn
+        turn = self._current_turn
         active_pokemon = None
         request_pokemon = side_request.get("pokemon", False)
         if request_pokemon:
             for poke in request_pokemon:
+                if not poke:
+                    continue
                 details = poke["details"]
-                name, lvl = Pokemon.identify_from_details(details)
-                poke_list = t.get_pokemon(p1)
-                known_names = {p.name: p for p in poke_list if p is not None}
-                if name not in known_names:
-                    # discover a new Pokemon before it's discovered by the battle;
-                    # mirrors logic in sim protocol "switch"
-                    insert_at = poke_list.index(None)
-                    metamon_p = Pokemon(name=name, lvl=lvl, gen=self._gen)
-                    poke_list[insert_at] = metamon_p
-                else:
-                    metamon_p = known_names[name]
+                metamon_p = self._sim_protocol.get_or_create_pokemon_from_details(
+                    details=details, poke_list=turn.get_pokemon(p1)
+                )
                 self._update_pokemon_from_side_request(poke, metamon_p)
-
                 # build available_switches
                 if poke["active"]:
                     active_pokemon = metamon_p
-                elif metamon_p.status != pe.Status.FNT:
+                elif (
+                    not self.trapped
+                    and not self.reviving
+                    and metamon_p.status != pe.Status.FNT
+                ):
+                    self._available_switches.append(metamon_p)
+                elif not self.trapped and self.reviving and poke.get("reviving", False):
+                    # poke-env doesn't check that the pokemon hasn't fainted.
+                    # i guess covered by the "reviving" field?
                     self._available_switches.append(metamon_p)
         return active_pokemon
 
@@ -323,9 +324,11 @@ class MetamonBackendBattle(pe.AbstractBattle):
             m.set_pp(m.pp)
         p._name = pokemon.name
         p._species = pokemon.name
-        p._active = (
-            pokemon.unique_id == self._current_turn.get_active_pokemon(p1)[0].unique_id
-        )
+        active = self._current_turn.get_active_pokemon(p1)[0]
+        if active is not None:
+            p._active = pokemon.unique_id == active.unique_id
+        else:
+            p._active = False
         p._boosts = pokemon.boosts.to_dict()
         p._current_hp = pokemon.current_hp
         p._effects = pokemon.effects
@@ -626,7 +629,10 @@ class MetamonBackendBattle(pe.AbstractBattle):
         total_active = 0
         for k, v in metamon_team.items():
             pe_p = self._convert_pokemon(v)
-            pe_p._active = v.unique_id == metamon_active.unique_id
+            if metamon_active is not None:
+                pe_p._active = v.unique_id == metamon_active.unique_id
+            else:
+                pe_p._active = False
             if pe_p._active:
                 total_active += 1
             if total_active > 1:

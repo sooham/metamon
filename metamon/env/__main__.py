@@ -1,12 +1,13 @@
 import time
 from argparse import ArgumentParser
 
-from metamon.baselines.heuristic.basic import GymLeader
+from metamon.baselines.heuristic.basic import GymLeader, RandomBaseline
 from metamon.baselines.model_based.bcrnn_baselines import BaseRNN
 from metamon.interface import (
     TokenizedObservationSpace,
     DefaultPlusObservationSpace,
     DefaultShapedReward,
+    DefaultActionSpace,
 )
 from metamon.tokenizer import get_tokenizer
 from metamon.env.wrappers import get_metamon_teams, BattleAgainstBaseline
@@ -34,6 +35,7 @@ if __name__ == "__main__":
             DefaultPlusObservationSpace(),
             tokenizer=get_tokenizer("DefaultObservationSpace-v0"),
         ),
+        action_space=DefaultActionSpace(),
         reward_function=DefaultShapedReward(),
         battle_backend=args.battle_backend,
     )

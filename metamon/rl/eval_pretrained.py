@@ -34,6 +34,9 @@ from metamon.interface import (
     DefaultObservationSpace,
     DefaultShapedReward,
     TokenizedObservationSpace,
+    ActionSpace,
+    DefaultActionSpace,
+    MinimalActionSpace,
 )
 from metamon.baselines.heuristic.basic import *
 from metamon.baselines.heuristic.kaizo import EmeraldKaizo
@@ -64,7 +67,6 @@ class PretrainedModel:
     """
 
     HF_REPO_ID = "jakegrigsby/metamon"
-    DEFAULT_CKPT = 40  # a.k.a. 1M grad steps w/ default settings
 
     # fmt: off
     def __init__(
@@ -73,15 +75,17 @@ class PretrainedModel:
         gin_config : str,
         # model name is used to identify the model in the HuggingFace Hub
         model_name: str,
-        # whether the model is an IL model (vs RL) (IL expects slightly less params)
+        # whether the model is an IL model (vs RL) (IL expects fewer params)
         is_il_model: bool,
         # tokenize the text component of the observation space
         tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
         # use original paper observation space and reward function
         observation_space: ObservationSpace = DefaultObservationSpace(),
+        action_space: ActionSpace = DefaultActionSpace(),
         reward_function: RewardFunction = DefaultShapedReward(),
         # cache directory for the HuggingFace Hub (note that these files are large)
         hf_cache_dir: Optional[str] = None,
+        default_checkpoint: int = 40,  # a.k.a. 1M grad steps w/ original paper training settings
     ):
     # fmt: on
 
@@ -94,7 +98,9 @@ class PretrainedModel:
             base_obs_space=observation_space,
             tokenizer=tokenizer,
         )
+        self.action_space = action_space
         self.reward_function = reward_function
+        self.default_checkpoint = default_checkpoint
         os.makedirs(self.hf_cache_dir, exist_ok=True)
 
     @property
@@ -137,8 +143,8 @@ class PretrainedModel:
     def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False) -> amago.Experiment:
         # use the base config and the gin file to configure the model
         cli_utils.use_config(self.base_config, [self.gin_config], finalize=False)
-        checkpoint = checkpoint or self.DEFAULT_CKPT
-        ckpt_path = self.get_path_to_checkpoint(checkpoint or self.DEFAULT_CKPT)
+        checkpoint = checkpoint or self.default_checkpoint
+        ckpt_path = self.get_path_to_checkpoint(checkpoint or self.default_checkpoint)
         ckpt_base_dir = str(Path(ckpt_path).parents[2])
         # build an experiment
         experiment = make_placeholder_experiment(
@@ -146,6 +152,7 @@ class PretrainedModel:
             run_name=self.model_name,
             log=log,
             observation_space=self.observation_space,
+            action_space=self.action_space,
         )
         # starting the experiment will build the initial model
         experiment.start()
@@ -183,6 +190,8 @@ class SmallIL(PretrainedModel):
             model_name="small-il",
             gin_config="models/small_agent.gin",
             is_il_model=True,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -192,6 +201,8 @@ class SmallILFA(PretrainedModel):
             model_name="small-il-filled-actions",
             gin_config="models/small_agent.gin",
             is_il_model=True,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -201,6 +212,8 @@ class SmallRL(PretrainedModel):
             model_name="small-rl",
             gin_config="models/small_agent.gin",
             is_il_model=False,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -210,6 +223,8 @@ class SmallRL_ExtremeFilter(PretrainedModel):
             model_name="small-rl-exp-extreme",
             gin_config="models/small_agent.gin",
             is_il_model=False,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -219,6 +234,8 @@ class SmallRL_BinaryFilter(PretrainedModel):
             model_name="small-rl-binary",
             gin_config="models/small_agent.gin",
             is_il_model=False,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -228,6 +245,8 @@ class SmallRL_Aug(PretrainedModel):
             model_name="small-rl-aug",
             gin_config="models/small_agent.gin",
             is_il_model=False,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -237,6 +256,8 @@ class SmallRL_MaxQ(PretrainedModel):
             model_name="small-rl-maxq",
             gin_config="models/small_agent.gin",
             is_il_model=False,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -246,6 +267,8 @@ class MediumIL(PretrainedModel):
             model_name="medium-il",
             gin_config="models/medium_agent.gin",
             is_il_model=True,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -255,6 +278,8 @@ class MediumRL(PretrainedModel):
             model_name="medium-rl",
             gin_config="models/medium_agent.gin",
             is_il_model=False,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -264,6 +289,8 @@ class MediumRL_Aug(PretrainedModel):
             model_name="medium-rl-aug",
             gin_config="models/medium_agent.gin",
             is_il_model=False,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -273,6 +300,8 @@ class MediumRL_MaxQ(PretrainedModel):
             model_name="medium-rl-maxq",
             gin_config="models/medium_agent.gin",
             is_il_model=False,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -282,6 +311,8 @@ class LargeRL(PretrainedModel):
             model_name="large-rl",
             gin_config="models/large_agent.gin",
             is_il_model=False,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -291,6 +322,8 @@ class LargeIL(PretrainedModel):
             model_name="large-il",
             gin_config="models/large_agent.gin",
             is_il_model=True,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -300,6 +333,8 @@ class SyntheticRLV0(PretrainedModel):
             model_name="synthetic-rl-v0",
             gin_config="models/synthetic_agent.gin",
             is_il_model=False,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -309,39 +344,44 @@ class SyntheticRLV1(PretrainedModel):
             model_name="synthetic-rl-v1",
             gin_config="models/synthetic_agent.gin",
             is_il_model=False,
+            default_checkpoint=40,
+            action_space=MinimalActionSpace(),
         )
 
 
 class SyntheticRLV1_SelfPlay(PretrainedModel):
-    DEFAULT_CKPT = 48
 
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1+sp",
             gin_config="models/synthetic_agent.gin",
             is_il_model=False,
+            default_checkpoint=48,
+            action_space=MinimalActionSpace(),
         )
 
 
 class SyntheticRLV1_PlusPlus(PretrainedModel):
-    DEFAULT_CKPT = 38
 
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1++",
             gin_config="models/synthetic_agent.gin",
             is_il_model=False,
+            default_checkpoint=38,
+            action_space=MinimalActionSpace(),
         )
 
 
 class SyntheticRLV2(PretrainedModel):
-    DEFAULT_CKPT = 48
 
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v2",
             gin_config="models/synthetic_multitaskagent.gin",
             is_il_model=False,
+            default_checkpoint=48,
+            action_space=MinimalActionSpace(),
         )
 
 
@@ -474,6 +514,7 @@ if __name__ == "__main__":
                     battle_format=battle_format,
                     player_team_set=player_team_set,
                     observation_space=agent_maker.observation_space,
+                    action_space=agent_maker.action_space,
                     reward_function=agent_maker.reward_function,
                     save_trajectories_to=args.save_trajectories_to,
                     battle_backend=args.battle_backend,

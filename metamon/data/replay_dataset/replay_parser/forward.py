@@ -318,6 +318,31 @@ class SimProtocol:
         insert_at = poke_list.index(None)
         poke_list[insert_at] = Pokemon(name=poke_name, lvl=lvl, gen=self.replay.gen)
 
+    def get_or_create_pokemon_from_details(
+        self, details: str, poke_list: list[Pokemon]
+    ) -> Pokemon:
+        poke_name, lvl = Pokemon.identify_from_details(details)
+        # match against names up to a forme change
+        lookup_poke_name = poke_name.split("-")[0]
+        lookup_known_names = [p.name.split("-")[0] if p else None for p in poke_list]
+        lookup_known_first_names = [
+            p.had_name.split("-")[0] if p else None for p in poke_list
+        ]
+        if lookup_poke_name in lookup_known_names:
+            # previously identified pokemon
+            poke = poke_list[lookup_known_names.index(lookup_poke_name)]
+        elif lookup_poke_name in lookup_known_first_names:
+            # previously identified, but known by name that has been changing (forms)
+            poke = poke_list[lookup_known_first_names.index(lookup_poke_name)]
+        else:
+            # discovered by switching in
+            poke = Pokemon(name=poke_name, lvl=lvl, gen=self.replay.gen)
+            if None not in poke_list:
+                raise CantIDSwitchIn(details, poke_list)
+            insert_at = poke_list.index(None)
+            poke_list[insert_at] = poke
+        return poke
+
     def _parse_switch_drag(self, args: List[str], name: str):
         """
         |switch|POKEMON|DETAILS|HP STATUS or |drag|POKEMON|DETAILS|HP STATUS
@@ -345,26 +370,7 @@ class SimProtocol:
             current_active.on_switch_out()
 
         # id switch in
-        poke_name, lvl = Pokemon.identify_from_details(args[1])
-        # match against names up to a forme change
-        lookup_poke_name = poke_name.split("-")[0]
-        lookup_known_names = [p.name.split("-")[0] if p else None for p in poke_list]
-        lookup_known_first_names = [
-            p.had_name.split("-")[0] if p else None for p in poke_list
-        ]
-        if lookup_poke_name in lookup_known_names:
-            # previously identified pokemon
-            poke = poke_list[lookup_known_names.index(lookup_poke_name)]
-        elif lookup_poke_name in lookup_known_first_names:
-            # previously identified, but known by name that has been changing (forms)
-            poke = poke_list[lookup_known_first_names.index(lookup_poke_name)]
-        else:
-            # discovered by switching in
-            poke = Pokemon(name=poke_name, lvl=lvl, gen=self.replay.gen)
-            if None not in poke_list:
-                raise CantIDSwitchIn(args[1], poke_list)
-            insert_at = poke_list.index(None)
-            poke_list[insert_at] = poke
+        poke = self.get_or_create_pokemon_from_details(args[1], poke_list)
         active_poke_list[switch_slot] = poke
         cur_hp, max_hp = parse_hp_fraction(args[2])
         poke.max_hp = max_hp
@@ -598,10 +604,11 @@ class SimProtocol:
                                 breakpoint()
                             # hardcoded action type that gets converted to similar action idices to "switch"
                             subturn.action = Action(
-                                name="Forced Revival",
+                                name="$Forced Revival$",
                                 user=None,
                                 target=pokemon,
                                 is_switch=False,
+                                is_revival=True,
                             )
                             break
                     if pokemon.status == PEStatus.FNT:
@@ -1100,8 +1107,14 @@ class SimProtocol:
         """
         |-mustrecharge|POKEMON
         """
-        # the action labels default to None, so we do nothing here.
-        pass
+        self.curr_turn.set_move_attribute(
+            s=args[0][:3],
+            move_name="Recharge",
+            is_noop=True,
+            is_switch=False,
+            user=self.curr_turn.get_pokemon_from_str(args[0]),
+            target=None,
+        )
 
     def _parse_cant(self, args: List[str]):
         """
