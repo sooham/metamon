@@ -1141,8 +1141,10 @@ class SimProtocol:
         if pokemon.had_name is None:
             pokemon.had_name = pokemon.name
         name, lvl = Pokemon.identify_from_details(args[1])
+        # poke-env actually blocks the equivalent "species" change here, but confusingly ends
+        # up changing the name anyway on the next request message.
         pokemon.name = name
-        pokemon.lvl = lvl
+        pokemon.update_pokedex_info(name)
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(args)
         if found_ability:
             pokemon.reveal_ability(found_ability)
@@ -1535,4 +1537,5 @@ def forward_fill(
     checks.check_finished(replay)
     checks.check_replay_rules(replay)
     checks.check_forward_consistency(replay)
+    checks.check_name_permanence(replay)
     return replay

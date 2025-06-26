@@ -194,6 +194,7 @@ class UniversalPokemon:
 
     # version-specific
     tera_type: str
+    permanent_name: str
 
     @classmethod
     def from_dict(cls, data: dict):
@@ -281,25 +282,17 @@ class UniversalPokemon:
             f"{stat}boost": getattr(pokemon.boosts, stat)
             for stat in pokemon.boosts.stat_attrs
         }
-
-        item = cls.universal_items(pokemon.active_item)
-        ability = cls.universal_abilities(pokemon.active_ability)
-        status = cls.universal_status(pokemon.status)
-        effect = cls.universal_effects(pokemon.effects)
-        types = cls.universal_types(pokemon.type)
-        name = clean_name(pokemon.name)
-        tera_type = cls.universal_types([pokemon.tera_type], force_two=False)
-
         return cls(
-            name=name,
+            name=clean_name(pokemon.name),
+            permanent_name=clean_name(pokemon.had_name),
             hp_pct=float(pokemon.current_hp) / pokemon.max_hp,
-            types=types,
-            tera_type=tera_type,
-            item=item,
-            ability=ability,
+            types=cls.universal_types(pokemon.type),
+            tera_type=cls.universal_types([pokemon.tera_type], force_two=False),
+            item=cls.universal_items(pokemon.active_item),
+            ability=cls.universal_abilities(pokemon.active_ability),
             lvl=pokemon.lvl,
-            status=status,
-            effect=effect,
+            status=cls.universal_status(pokemon.status),
+            effect=cls.universal_effects(pokemon.effects),
             moves=moves,
             **(boosts | stats),
         )
@@ -309,23 +302,17 @@ class UniversalPokemon:
         moves = [UniversalMove.from_Move(move) for move in pokemon.moves.values()]
         boosts = {f"{stat}_boost": boost for stat, boost in pokemon.boosts.items()}
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
-        status = cls.universal_status(pokemon.status)
-        effect = cls.universal_effects(pokemon.effects)
-        item = cls.universal_items(pokemon.item)
-        ability = cls.universal_abilities(pokemon.ability)
-        types = cls.universal_types(pokemon.types)
-        tera_type = cls.universal_types([pokemon.tera_type], force_two=False)
-
         return cls(
             name=clean_name(pokemon.species),
+            permanent_name=clean_name(pokemon.base_species),
             hp_pct=float(pokemon.current_hp_fraction),
-            types=types,
-            tera_type=tera_type,
-            item=item,
-            ability=ability,
+            types=cls.universal_types(pokemon.types),
+            tera_type=cls.universal_types([pokemon.tera_type], force_two=False),
+            item=cls.universal_items(pokemon.item),
+            ability=cls.universal_abilities(pokemon.ability),
             lvl=pokemon.level,
-            status=status,
-            effect=effect,
+            status=cls.universal_status(pokemon.status),
+            effect=cls.universal_effects(pokemon.effects),
             moves=moves,
             **(boosts | stats),
         )
@@ -350,8 +337,8 @@ class UniversalPokemon:
         p._moves = {m.lookup_name: m for m in pokemon.moves.values()}
         for m in p._moves.values():
             m.set_pp(m.pp)
-        p._name = pokemon.name
-        p._species = pokemon.name
+        p._name = pokemon.nickname
+        p._species = to_id_str(pokemon.name)
         p._active = is_active
         p._boosts = pokemon.boosts.to_dict()
         p._current_hp = pokemon.current_hp
@@ -523,6 +510,8 @@ class UniversalAction:
 
         action_idx = None
         if action is None or (action.name is None and action.is_tera):
+            # action was never revealed
+            # (or tera animation was shown but the rest of the action was never revealed)
             action_idx = -1
         elif action.is_noop:
             assert action.name == "Recharge"
@@ -686,7 +675,7 @@ class DefaultShapedReward(RewardFunction):
             last_state.player_active_pokemon,
             *last_state.available_switches,
         ]:
-            if pokemon.name == active_now.name:
+            if pokemon.permanent_name == active_now.permanent_name:
                 active_prev = pokemon
                 break
         assert active_prev is not None
@@ -696,7 +685,7 @@ class DefaultShapedReward(RewardFunction):
         )
         opp_now = state.opponent_active_pokemon
         opp_prev = last_state.opponent_active_pokemon
-        if opp_now.name == opp_prev.name:
+        if opp_now.permanent_name == opp_prev.permanent_name:
             damage_done = opp_prev.hp_pct - opp_now.hp_pct
             gave_status = float(
                 opp_now.status != "nostatus" and opp_prev.status == "nostatus"
@@ -1020,7 +1009,7 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
 
         # add a list of revealed opponents padded to length 6 while reusing
         # the existing <blank> token to avoid making a new vocabulary.
-        self.revealed_opponents.add(opponent.name)
+        self.revealed_opponents.add(opponent.permanent_name)
         revealed = [opp_name for opp_name in sorted(self.revealed_opponents)]
         while len(revealed) < 6:
             revealed.append("<blank>")

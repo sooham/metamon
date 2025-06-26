@@ -134,6 +134,19 @@ def check_forward_consistency(replay):
                     raise ForwardVerify(f"{pokemon_t.name} PP of {lowest_pp_move} < 0")
 
 
+def check_name_permanence(replay):
+    uid_to_had_name = {}
+    for turn in replay:
+        for pokemon in turn.all_pokemon:
+            if pokemon is None:
+                continue
+            if pokemon.unique_id in uid_to_had_name:
+                if uid_to_had_name[pokemon.unique_id] != pokemon.had_name:
+                    raise ForwardVerify(f"Found had_name change for {pokemon.name}")
+            else:
+                uid_to_had_name[pokemon.unique_id] = pokemon.had_name
+
+
 def check_noun_spelling(replay):
     for turn in replay:
         for pokemon in turn.all_pokemon:
