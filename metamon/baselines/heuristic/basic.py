@@ -89,6 +89,7 @@ class Gen1Trainer(Baseline):
         return self.choose_random_move(battle)
 
 
+@register_baseline()
 class Gen1TrainerGoodSwitching(Baseline):
     def randomize(self):
         pass
@@ -755,6 +756,7 @@ class GymLeader(Baseline):
         return self.choose_random_move(battle)
 
 
+@register_baseline()
 class SmogonSwitcher(Grunt):
     def switch_scores(self, *args, **kwargs):
         if "check_w" in kwargs:

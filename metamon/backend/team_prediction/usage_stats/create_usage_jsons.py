@@ -3,10 +3,10 @@ import json
 import argparse
 from tqdm import tqdm
 
-from metamon.data.team_prediction.usage_stats.format_rules import (
+from metamon.backend.team_prediction.usage_stats.format_rules import (
     Tier,
 )
-from metamon.data.team_prediction.usage_stats.stat_reader import (
+from metamon.backend.team_prediction.usage_stats.stat_reader import (
     SmogonStat,
     merge_movesets,
 )
