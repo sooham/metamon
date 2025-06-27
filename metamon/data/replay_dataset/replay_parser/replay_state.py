@@ -276,6 +276,7 @@ class Pokemon:
         self.active_ability = self.had_ability
         self.move_change_to_from = {}
         self.type = copy.deepcopy(self.had_type)
+        self.effects = {}
 
     def on_end_of_turn(self):
         # "within-turn state" is reset
