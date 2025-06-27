@@ -1,8 +1,4 @@
 from abc import ABC, abstractmethod
-import json
-import os
-import warnings
-from functools import lru_cache
 import copy
 import math
 import random
@@ -15,7 +11,6 @@ from poke_env.environment import (
     Move,
     MoveCategory,
     Battle,
-    DoubleBattle,
     SideCondition,
     Weather,
     Status,

@@ -1,6 +1,5 @@
 import os
 import sys
-import pickle
 from functools import lru_cache
 from abc import ABC, abstractmethod
 
@@ -10,7 +9,7 @@ from torch.distributions import Categorical
 import metamon
 from metamon.baselines import Baseline, register_baseline
 from metamon.interface import (
-    ActionSpace,
+    UniversalAction,
     MinimalActionSpace,
     UniversalState,
     DefaultObservationSpace,
@@ -74,7 +73,7 @@ class BCRNNBaseline(Baseline, ABC):
 
         # update hidden state
         self.hidden_states[battle_id] = new_hidden_state
-        universal_action = self.action_space.to_UniversalAction(action_idx)
+        universal_action = UniversalAction(action_idx)
         order = universal_action.to_BattleOrder(battle)
         return order
 
