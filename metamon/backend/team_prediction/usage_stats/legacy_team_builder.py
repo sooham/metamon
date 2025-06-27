@@ -5,8 +5,8 @@ from typing import Iterable
 
 from termcolor import colored
 import numpy as np
-from metamon.data.team_prediction.usage_stats import get_usage_stats
-from metamon.data.team_prediction.usage_stats.constants import (
+from metamon.backend.team_prediction.usage_stats import get_usage_stats
+from metamon.backend.team_prediction.usage_stats.constants import (
     HIDDEN_POWER_IVS,
     HIDDEN_POWER_DVS,
     INCOMPATIBLE_MOVES,

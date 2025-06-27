@@ -7,8 +7,8 @@ from typing import Optional
 
 from poke_env.data import to_id_str
 
-from metamon.data.download import METAMON_CACHE_DIR
-from metamon.data.team_prediction.usage_stats.format_rules import (
+from metamon import METAMON_CACHE_DIR
+from metamon.backend.team_prediction.usage_stats.format_rules import (
     get_valid_pokemon,
     Tier,
 )

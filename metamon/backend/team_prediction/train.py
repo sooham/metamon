@@ -19,13 +19,13 @@ from torch import nn
 from torch.utils.data import DataLoader
 import wandb
 
-from metamon.data.team_prediction.dataset import (
+from metamon.backend.team_prediction.dataset import (
     TeamPredictionDataset,
     CompetitiveTeamPredictionDataset,
 )
-from metamon.data.team_prediction.model import TeamTransformer
-from metamon.data.team_prediction.vocabulary import Vocabulary
-from metamon.data.team_prediction.team import TeamSet
+from metamon.backend.team_prediction.model import TeamTransformer
+from metamon.backend.team_prediction.vocabulary import Vocabulary
+from metamon.backend.team_prediction.team import TeamSet
 
 
 def compute_loss_and_accuracy(

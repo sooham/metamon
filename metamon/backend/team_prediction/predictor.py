@@ -11,14 +11,14 @@ import numpy as np
 
 
 import metamon
-from metamon.data.team_prediction.usage_stats.legacy_team_builder import (
+from metamon.backend.team_prediction.usage_stats.legacy_team_builder import (
     TeamBuilder,
     PokemonStatsLookupError,
 )
-from metamon.data.team_prediction.usage_stats import (
+from metamon.backend.team_prediction.usage_stats import (
     PreloadedSmogonUsageStats,
 )
-from metamon.data.team_prediction.team import TeamSet, PokemonSet, Roster
+from metamon.backend.team_prediction.team import TeamSet, PokemonSet, Roster
 
 
 class TeamPredictor(ABC):

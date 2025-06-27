@@ -76,7 +76,7 @@ if __name__ == "__main__":
 
     if args.raw_replay_dir is None:
         args.raw_replay_dir = os.path.join(
-            metamon.download.METAMON_CACHE_DIR, "raw-replays"
+            metamon.METAMON_CACHE_DIR, "raw-replays"
         )
 
     gen = args.format[:4]
