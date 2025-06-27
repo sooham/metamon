@@ -247,6 +247,27 @@ def check_action_idxs(action_idxs: list[int], gen: int):
             raise ActionMisaligned(f"Found {tera} Tera actions")
 
 
+def check_tera_consistency(replay):
+    gen = replay.gen
+    can_tera_1 = True
+    can_tera_2 = True
+    ever_tera_1 = False
+    ever_tera_2 = False
+    for turn in replay:
+        if gen != 9 and (turn.can_tera_1 or turn.can_tera_2):
+            raise ForwardVerify("Found Tera in gen != 9")
+        if not can_tera_1 and turn.can_tera_1:
+            raise MultipleTera("p1")
+        if not can_tera_2 and turn.can_tera_2:
+            raise MultipleTera("p2")
+        ever_tera_1 |= turn.can_tera_1
+        ever_tera_2 |= turn.can_tera_2
+        can_tera_1 &= turn.can_tera_1
+        can_tera_2 &= turn.can_tera_2
+    if gen == 9 and not (ever_tera_1 and ever_tera_2):
+        raise ForwardVerify("Found no Tera available in gen 9")
+
+
 def check_forced_switching(turn):
     # was there a turn where we 1) had to switch, 2) could switch, but 3) didn't record it?
     for subturn in turn.subturns:
