@@ -198,6 +198,12 @@ class UniversalPokemon:
     @classmethod
     def from_dict(cls, data: dict):
         data["moves"] = [UniversalMove(**m) for m in data["moves"]]
+        if "tera_type" not in data:
+            # if missing --> old version of the dataset --> gen 1-4 --> no tera
+            data["tera_type"] = cls.universal_types([None], force_two=False)
+        if "permanent_name" not in data:
+            # if missing --> old version of the dataset --> gen 1-4 --> we can get away with this
+            data["permanent_name"] = data["name"]
         return cls(**data)
 
     @staticmethod
@@ -298,6 +304,7 @@ class UniversalPokemon:
 
     @classmethod
     def from_Pokemon(cls, pokemon: Pokemon):
+        # do not use Battle.available_moves
         moves = [UniversalMove.from_Move(move) for move in pokemon.moves.values()]
         boosts = {f"{stat}_boost": boost for stat, boost in pokemon.boosts.items()}
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
@@ -381,7 +388,6 @@ class UniversalState:
     battle_lost: bool
 
     # version-specific
-    player_fainted: List[UniversalPokemon]
     can_tera: bool
 
     @staticmethod
@@ -422,7 +428,6 @@ class UniversalState:
             player_active_pokemon=active,
             opponent_active_pokemon=opponent,
             available_switches=switches,
-            player_fainted=state.player_fainted,
             player_prev_move=UniversalMove.from_ReplayMove(state.player_prev_move),
             opponent_prev_move=UniversalMove.from_ReplayMove(state.opponent_prev_move),
             player_conditions=cls.universal_conditions(state.player_conditions),
@@ -438,6 +443,7 @@ class UniversalState:
 
     @classmethod
     def from_Battle(cls, battle: Battle):
+        # do not use Battle.available_switches or Battle.available_moves
         format = battle.battle_tag.split("-")[1]
         weather = cls.universal_weather(battle.weather)
         battle_field = cls.universal_field(battle.fields)
@@ -445,12 +451,14 @@ class UniversalState:
         opponent_conditions = cls.universal_conditions(battle.opponent_side_conditions)
         active = UniversalPokemon.from_Pokemon(battle.active_pokemon)
         opponent = UniversalPokemon.from_Pokemon(battle.opponent_active_pokemon)
-        possible_switches = [p for p in battle.team.values() if not p.fainted and not p.active]
+        if battle.reviving:
+            possible_switches = [p for p in battle.team.values() if p.fainted and not p.active]
+        else:
+            possible_switches = [p for p in battle.team.values() if not p.fainted and not p.active]
         switches = [UniversalPokemon.from_Pokemon(p) for p in possible_switches]
         player_prev_move = UniversalMove.from_Move(battle.active_pokemon.previous_move)
         opponent_prev_move = UniversalMove.from_Move(battle.opponent_active_pokemon.previous_move)
         opponents_remaining = 6 - sum(p.status == Status.FNT for p in battle.opponent_team.values())
-        player_fainted = [UniversalPokemon.from_Pokemon(p) for p in battle.team.values() if p.fainted and not p.active]
 
         force_switch = battle.force_switch
         if isinstance(force_switch, list):
@@ -461,7 +469,6 @@ class UniversalState:
             player_active_pokemon=active,
             opponent_active_pokemon=opponent,
             available_switches=switches,
-            player_fainted=player_fainted,
             player_prev_move=player_prev_move,
             opponent_prev_move=opponent_prev_move,
             player_conditions=player_conditions,
@@ -481,10 +488,6 @@ class UniversalState:
 
     @classmethod
     def from_dict(cls, data: dict):
-        # TODO: possibly defend against missing player_fainted,
-        # unless we go all the way and update the entire dataset after gen
-        # 9 is done.
-
         # convert nested Pokemon objects
         data["player_active_pokemon"] = UniversalPokemon.from_dict(
             data["player_active_pokemon"]
@@ -498,21 +501,26 @@ class UniversalState:
         # convert nested Move objects
         data["player_prev_move"] = UniversalMove(**data["player_prev_move"])
         data["opponent_prev_move"] = UniversalMove(**data["opponent_prev_move"])
-        # create UniversalState from the processed dict
+
+        if "can_tera" not in data:
+            # backwards compat (if it's missing; it's an old version of the dataset
+            # --> gen 1-4 --> no tera)
+            data["can_tera"] = False
         return cls(**data)
 
 
 class UniversalAction:
-    def __init__(
-        self, action_idx: Optional[int], valid_idxs: Optional[List[int]] = None
-    ):
+    def __init__(self, action_idx: int):
         self.action_idx = action_idx
-        self.valid_idxs = valid_idxs
+
+    @property
+    def missing(self) -> bool:
+        return self.action_idx == -1
 
     @classmethod
-    def from_ReplayAction(cls, state: ReplayState, action: ReplayAction):
-        gen = int(state.format[3])
-
+    def from_ReplayAction(
+        cls, state: ReplayState, action: ReplayAction
+    ) -> Optional["UniversalAction"]:
         action_idx = None
         if action is None or (action.name is None and action.is_tera):
             # action was never revealed
@@ -523,15 +531,7 @@ class UniversalAction:
             action_idx = 0
         elif action.name == "Struggle":
             action_idx = 0
-        elif action.is_revival:
-            assert action.name == "$Forced Revival$"
-            for switch_idx, fainted_pokemon in enumerate(
-                consistent_pokemon_order(state.player_fainted)
-            ):
-                if fainted_pokemon.unique_id == action.target.unique_id:
-                    action_idx = 4 + switch_idx
-                    break
-        elif action.is_switch:
+        elif action.is_switch or action.is_revival:
             for switch_idx, available_switch in enumerate(
                 consistent_pokemon_order(state.available_switches)
             ):
@@ -546,72 +546,34 @@ class UniversalAction:
                     if action.is_tera:
                         action_idx += 9
                     break
-        return cls(action_idx, valid_idxs=None)
-        # return cls(action_idx, valid_idxs=cls._maybe_valid_actions_from_ReplayState(state, action))
+        if action_idx is None:
+            return None
+        return cls(action_idx)
 
     @classmethod
-    def _maybe_valid_actions_from_ReplayState(
-        cls, state: ReplayState, action: ReplayAction
-    ) -> List[int]:
-        # TODO: pause while testing can_tera and poke_name/move_name
+    def maybe_valid_actions(cls, state: UniversalState):
         legal = []
         if not state.force_switch:
             legal.extend(range(4))
             if state.can_tera:
                 legal.extend(range(9, 13))
-
-        if action.is_revival:
-            legal.extend(range(4, 4 + len(state.player_fainted)))
-        else:
-            legal.extend(range(4, 4 + len(state.available_switches)))
-
+        legal.extend(range(4, 4 + len(state.available_switches)))
         return legal
 
-    def valid_actions_from_Battle(self, battle: Battle):
-        # TODO: pause while testing can_tera and poke_name/move_name
-        gen = int(battle.battle_tag.split("-")[1][3])
+    @classmethod
+    def definitely_valid_actions(cls, state: UniversalState, battle: Battle):
+        maybe_legal = cls.maybe_valid_actions(state)
+        definitely_legal = []
+        for action_idx in maybe_legal:
+            order = cls._idx_to_BattleOrder(battle, action_idx)
+            if order is not None:
+                definitely_legal.append(order)
+        return definitely_legal
 
-        valid_idxs = []
-
-        valid_moves = {m.id for m in battle.available_moves}
-        if valid_moves == {"recharge"}:
-            return [0]
-        elif valid_moves == {"struggle"}:
-            valid_idxs.append(0)
-        elif not battle.force_switch:
-            move_options = list(battle.active_pokemon.moves.values())
-            for move_idx, move in enumerate(consistent_move_order(move_options)):
-                if move.id in valid_moves:
-                    valid_idxs.append(move_idx)
-                    if battle.can_tera is not None and gen == 9:
-                        valid_idxs.append(move_idx + 9)
-
-        valid_switches = {p.name for p in battle.available_switches}
-        if not battle.reviving:
-            switch_options = consistent_pokemon_order(
-                [
-                    p
-                    for p in list(battle.team.values())
-                    if not p.fainted and not p.active
-                ]
-            )
-        else:
-            switch_options = consistent_pokemon_order(
-                [p for p in list(battle.team.values()) if p.fainted and not p.active]
-            )
-
-        for switch_idx, switch in enumerate(switch_options):
-            if switch.name in valid_switches:
-                valid_idxs.append(4 + switch_idx)
-                if battle.can_tera is not None and gen == 9:
-                    valid_idxs.append(4 + switch_idx + 9)
-
-        return valid_idxs
-
-    def to_BattleOrder(self, battle: Battle) -> Optional[BattleOrder]:
-        gen = int(battle.battle_tag.split("-")[1][3])
-        action_idx = self.action_idx
-
+    @staticmethod
+    def action_idx_to_BattleOrder(
+        battle: Battle, action_idx: int
+    ) -> Optional[BattleOrder]:
         valid_moves = {m.id for m in battle.available_moves}
         if valid_moves == {"recharge"}:
             # there is only one option; take it so it doesn't count as an invalid action
@@ -670,6 +632,11 @@ class UniversalAction:
         # A : up to env's `on_invalid_order` to pick one
         return None
 
+    def to_BattleOrder(self, battle: Battle) -> Optional[BattleOrder]:
+        return UniversalAction.action_idx_to_BattleOrder(
+            battle, action_idx=self.action_idx
+        )
+
 
 class ActionSpace(ABC):
 
@@ -679,7 +646,15 @@ class ActionSpace(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def to_UniversalAction(self, action: Any) -> UniversalAction:
+    def agent_output_to_action(
+        self, state: UniversalState, agent_output: Any
+    ) -> UniversalAction:
+        raise NotImplementedError
+
+    @abstractmethod
+    def action_to_agent_output(
+        self, state: UniversalState, action: UniversalAction
+    ) -> Any:
         raise NotImplementedError
 
 
@@ -689,8 +664,15 @@ class DefaultActionSpace(ActionSpace):
     def gym_space(self) -> gym.spaces.Space:
         return gym.spaces.Discrete(13)
 
-    def to_UniversalAction(self, action: int) -> UniversalAction:
-        return UniversalAction(action_idx=int(action))
+    def agent_output_to_action(
+        self, state: UniversalState, agent_output: int
+    ) -> UniversalAction:
+        return UniversalAction(action_idx=int(agent_output))
+
+    def action_to_agent_output(
+        self, state: UniversalState, action: UniversalAction
+    ) -> int:
+        return action.action_idx
 
 
 class MinimalActionSpace(DefaultActionSpace):
@@ -699,11 +681,14 @@ class MinimalActionSpace(DefaultActionSpace):
     def gym_space(self) -> gym.spaces.Discrete:
         return gym.spaces.Discrete(9)
 
-    def to_UniversalAction(self, action: int) -> UniversalAction:
-        if action >= 9:
+    def agent_output_to_action(
+        self, state: UniversalState, agent_output: int
+    ) -> UniversalAction:
+        action_idx = int(agent_output)
+        if action_idx >= 9:
             # map all gimmick move actions to regular move actions
-            action -= 9
-        return UniversalAction(action_idx=int(action))
+            action_idx -= 9
+        return UniversalAction(action_idx=action_idx)
 
 
 ALL_ACTION_SPACES = {
