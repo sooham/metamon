@@ -15,7 +15,7 @@ import poke_env
 from metamon.interface import ObservationSpace, RewardFunction, ActionSpace
 from metamon.il.model import TransformerTurnEmbedding
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
-from metamon.datasets import ParsedReplayDataset
+from metamon.data import ParsedReplayDataset
 from metamon.env import (
     PokeEnvWrapper,
     BattleAgainstBaseline,
