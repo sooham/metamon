@@ -226,3 +226,10 @@ class InconsistentTeamPrediction(BackwardException):
         super().__init__(
             f"Team `{team1}` is not consistent with predicted team `{team2}`"
         )
+
+
+class MultipleTera(BackwardException):
+    def __init__(self, player: str):
+        super().__init__(
+            f"Detected multiple Tera moves for player {player} in a single battle."
+        )
