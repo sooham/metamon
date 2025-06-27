@@ -186,6 +186,33 @@ class SimProtocol:
     ITEMS_THAT_SWITCH_THE_USER_OUT = {"Eject Button", "Eject Pack"}
     ITEMS_THAT_SWITCH_THE_ATTACKER_OUT = {"Red Card"}
 
+    # https://bulbapedia.bulbagarden.net/wiki/Skill_Swap_(move)
+    # I can't tell if Showdown will send the skill swap messages when these happen. keep track of them for now...
+    SKILL_SWAP_FAILS = {
+        "Wonder Guard",
+        "Multitype",
+        "Illusion",
+        "Stance Change",
+        "Schooling",
+        "Comatose",
+        "Shields Down",
+        "Disguise",
+        "RKS System",
+        "Battle Bond",
+        "Power Construct",
+        "Ice Face",
+        "Gulp Missile",
+        "Neutralizing Gas",
+        "As One",
+        "Zero to Hero",
+        "Commander",
+        "Protosynthesis",
+        "Quark Drive",
+        "Orichalcum Pulse",
+        "Hadron Engine",
+        "Poison Puppeteer",
+    }
+
     def __init__(self, replay: ParsedReplay):
         self.replay = replay
 
@@ -871,9 +898,21 @@ class SimProtocol:
                 pokemon.moves[move_name].pp += pp_gained
                 if move_name in pokemon.had_moves:
                     pokemon.had_moves[move_name].pp += pp_gained
-        # this catches so much redundant info that probably shouldn't be called
-        # a volatile status (and isn't displayed like that on PS)
-        # but it's 1:1 with poke-env
+        elif (
+            effect == PEEffect.SKILL_SWAP
+            and pokemon.last_target is not None
+            and pokemon.last_target.pokemon is not None
+        ):
+            target = pokemon.last_target.pokemon
+            target_ability = target.active_ability
+            pokemon_ability = pokemon.active_ability
+            if (
+                target_ability in SimProtocol.SKILL_SWAP_FAILS
+                or pokemon_ability in SimProtocol.SKILL_SWAP_FAILS
+            ):
+                breakpoint()
+            target.active_ability = pokemon_ability
+            pokemon.active_ability = target_ability
         pokemon.start_effect(effect)
 
     def _parse_item_enditem(self, args: List[str], name: str):
