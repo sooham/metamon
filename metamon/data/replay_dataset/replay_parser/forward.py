@@ -1,7 +1,5 @@
 import copy
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Callable, List, Optional, Set
+from typing import List
 
 from metamon.data.replay_dataset.replay_parser import checks
 from metamon.data.replay_dataset.replay_parser.exceptions import *
@@ -12,7 +10,6 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
     Move,
     Nothing,
     Pokemon,
-    Turn,
     Winner,
     TargetedBy,
     Targeting,
@@ -227,6 +224,9 @@ class SimProtocol:
         self.replay.gen = int(args[0])
         if not (self.replay.gen <= 4 or self.replay.gen == 9):
             raise SoftLockedGen(self.replay.gen)
+        if self.replay.gen == 9:
+            self.curr_turn.can_tera_1 = True
+            self.curr_turn.can_tera_2 = True
 
     def _parse_player(self, args: List[str]):
         """
@@ -988,6 +988,11 @@ class SimProtocol:
         )
         pokemon.type = [args[1]]
         pokemon.tera_type = args[1]
+        team, _ = self.curr_turn.player_id_to_action_idx(poke_str)
+        if team == 1:
+            self.curr_turn.can_tera_1 = False
+        else:
+            self.curr_turn.can_tera_2 = False
 
     def _parse_zpower_mega(self, args: List[str]):
         """
@@ -1581,4 +1586,5 @@ def forward_fill(
     checks.check_replay_rules(replay)
     checks.check_forward_consistency(replay)
     checks.check_name_permanence(replay)
+    checks.check_tera_consistency(replay)
     return replay

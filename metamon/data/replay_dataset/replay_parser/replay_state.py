@@ -607,6 +607,8 @@ class Turn:
     turn_number: int = None
     is_force_switch: bool = False
     subturns: List = field(default_factory=list)
+    can_tera_1: bool = False
+    can_tera_2: bool = False
 
     def get_active_pokemon(self, p1: bool) -> Optional[Pokemon]:
         return self.active_pokemon_1 if p1 else self.active_pokemon_2
@@ -980,3 +982,4 @@ class ReplayState:
     weather: PEWeather | Nothing
     battle_won: bool
     battle_lost: bool
+    can_tera: bool
