@@ -8,9 +8,8 @@ from collections import defaultdict
 from huggingface_hub import hf_hub_download
 
 import metamon
-from metamon import SUPPORTED_BATTLE_FORMATS
+from metamon import SUPPORTED_BATTLE_FORMATS, METAMON_CACHE_DIR
 
-METAMON_CACHE_DIR = os.environ.get("METAMON_CACHE_DIR", None)
 if METAMON_CACHE_DIR is not None:
     VERSION_REFERENCE_PATH = os.path.join(METAMON_CACHE_DIR, "version_reference.json")
 else:

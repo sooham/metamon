@@ -42,7 +42,7 @@ from metamon.baselines.heuristic.basic import *
 from metamon.baselines.heuristic.kaizo import EmeraldKaizo
 from metamon.baselines.model_based.bcrnn_baselines import BaseRNN, WinsOnlyRNN, MiniRNN
 from metamon.tokenizer import PokemonTokenizer, get_tokenizer
-from metamon.download import METAMON_CACHE_DIR
+from metamon import METAMON_CACHE_DIR
 
 HEURISTIC_COMPOSITE_BASELINES = [
     RandomBaseline,

@@ -1,4 +1,3 @@
-import time
 import random
 import os
 import copy
@@ -25,7 +24,7 @@ from metamon.interface import (
     ActionSpace,
 )
 from metamon.data import DATA_PATH
-from metamon.download import download_teams
+from metamon.data.download import download_teams
 from metamon.env.metamon_player import MetamonPlayer
 
 
