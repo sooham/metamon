@@ -142,7 +142,7 @@ class ReplayParser:
         universal_states, action_idxs = self.state_action_to_obs_action_reward(
             states, actions
         )
-        checks.check_action_idxs(action_idxs, gen=replay.gen)
+        checks.check_action_idxs(universal_states, actions, action_idxs, gen=replay.gen)
         return universal_states, action_idxs
 
     def save_to_disk(

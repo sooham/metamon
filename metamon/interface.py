@@ -553,7 +553,7 @@ class UniversalAction:
     @classmethod
     def maybe_valid_actions(cls, state: UniversalState):
         legal = []
-        if not state.force_switch:
+        if not state.forced_switch:
             legal.extend(range(4))
             if state.can_tera:
                 legal.extend(range(9, 13))
