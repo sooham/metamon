@@ -30,15 +30,8 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
     Action as ReplayAction,
     ReplayState,
     Nothing as ReplayNothing,
+    cleanup_move_id,
 )
-
-
-def pokemon_name(name: str) -> str:
-    return clean_name(name)
-
-
-def clean_name(name: str) -> str:
-    return to_id_str(str(name)).strip()
 
 
 @lru_cache(2**13)
@@ -46,17 +39,29 @@ def clean_no_numbers(name: str) -> str:
     return "".join(char for char in str(name) if char.isalpha()).lower().strip()
 
 
+def clean_name(name: str) -> str:
+    return to_id_str(str(name)).strip()
+
+
+def pokemon_name(name: str) -> str:
+    return clean_name(name)
+
+
+def move_name(name: str) -> str:
+    return cleanup_move_id(clean_name(name))
+
+
 def consistent_pokemon_order(pokemon):
     if not pokemon:
         return []
     if isinstance(pokemon[0], Pokemon):
-        key = lambda p: clean_name(p.species)
+        key = lambda p: pokemon_name(p.species)
     elif isinstance(pokemon[0], str):
-        key = lambda p: clean_name(p)
+        key = lambda p: pokemon_name(p)
     elif isinstance(pokemon[0], UniversalPokemon):
-        key = lambda p: clean_name(p.name)
+        key = lambda p: pokemon_name(p.name)
     elif isinstance(pokemon[0], ReplayPokemon):
-        key = lambda p: clean_name(p.name)
+        key = lambda p: pokemon_name(p.name)
     else:
         raise ValueError(
             f"Unrecognized `pokemon` list format of type {type(pokemon)}: {pokemon}"
@@ -68,13 +73,13 @@ def consistent_move_order(moves):
     if not moves:
         return []
     if isinstance(moves[0], Move):
-        key = lambda m: clean_name(m.id)
+        key = lambda m: move_name(m.id)
     elif isinstance(moves[0], str):
-        key = lambda m: clean_name(m)
+        key = lambda m: move_name(m)
     elif isinstance(moves[0], UniversalMove):
-        key = lambda m: clean_name(m.name)
+        key = lambda m: move_name(m.name)
     elif isinstance(moves[0], ReplayMove):
-        key = lambda m: clean_name(m.name)
+        key = lambda m: move_name(m.name)
     else:
         raise ValueError(
             f"Unrecognized `moves` list format of type {type(moves[0])}: {moves}"
@@ -136,19 +141,13 @@ class UniversalMove:
         if move is None:
             return cls.blank_move()
         assert isinstance(move, Move)
-        if move.id.startswith("hiddenpower"):
-            # we map every hidden power to the typeless version
-            # because the types don't show up in replays
-            reference = hidden_power_reference(move._gen)
-        else:
-            reference = move
         return cls(
-            name=reference.id,
-            category=reference.category.name,
-            base_power=reference.base_power,
-            move_type=reference.type.name,
-            priority=reference.priority,
-            accuracy=reference.accuracy,
+            name=move_name(move.id),
+            category=move.category.name,
+            base_power=move.base_power,
+            move_type=move.type.name,
+            priority=move.priority,
+            accuracy=move.accuracy,
             # always use `move` for pp tracking
             current_pp=move.current_pp,
             max_pp=move.max_pp,
@@ -283,8 +282,8 @@ class UniversalPokemon:
             for stat in pokemon.boosts.stat_attrs
         }
         return cls(
-            name=clean_name(pokemon.name),
-            permanent_name=clean_name(pokemon.had_name),
+            name=pokemon_name(pokemon.name),
+            permanent_name=pokemon_name(pokemon.had_name),
             hp_pct=float(pokemon.current_hp) / pokemon.max_hp,
             types=cls.universal_types(pokemon.type),
             tera_type=cls.universal_types([pokemon.tera_type], force_two=False),
@@ -303,8 +302,8 @@ class UniversalPokemon:
         boosts = {f"{stat}_boost": boost for stat, boost in pokemon.boosts.items()}
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
         return cls(
-            name=clean_name(pokemon.species),
-            permanent_name=clean_name(pokemon.base_species),
+            name=pokemon_name(pokemon.species),
+            permanent_name=pokemon_name(pokemon.base_species),
             hp_pct=float(pokemon.current_hp_fraction),
             types=cls.universal_types(pokemon.types),
             tera_type=cls.universal_types([pokemon.tera_type], force_two=False),
@@ -383,6 +382,7 @@ class UniversalState:
 
     # version-specific
     player_fainted: List[UniversalPokemon]
+    can_tera: bool
 
     @staticmethod
     def universal_conditions(condition_rep) -> str:
@@ -433,6 +433,7 @@ class UniversalState:
             opponents_remaining=opponents_remaining,
             battle_won=state.battle_won,
             battle_lost=state.battle_lost,
+            can_tera=state.can_tera,
         )
 
     @classmethod
@@ -471,6 +472,7 @@ class UniversalState:
             battle_won=battle.won if battle.won else False,
             battle_lost=battle.lost if battle.lost else False,
             opponents_remaining=opponents_remaining,
+            can_tera=battle.can_tera is not None,
         )
     # fmt: on
 
@@ -501,8 +503,11 @@ class UniversalState:
 
 
 class UniversalAction:
-    def __init__(self, action_idx: Optional[int]):
+    def __init__(
+        self, action_idx: Optional[int], valid_idxs: Optional[List[int]] = None
+    ):
         self.action_idx = action_idx
+        self.valid_idxs = valid_idxs
 
     @classmethod
     def from_ReplayAction(cls, state: ReplayState, action: ReplayAction):
@@ -541,8 +546,67 @@ class UniversalAction:
                     if action.is_tera:
                         action_idx += 9
                     break
+        return cls(action_idx, valid_idxs=None)
+        # return cls(action_idx, valid_idxs=cls._maybe_valid_actions_from_ReplayState(state, action))
 
-        return cls(action_idx)
+    @classmethod
+    def _maybe_valid_actions_from_ReplayState(
+        cls, state: ReplayState, action: ReplayAction
+    ) -> List[int]:
+        # TODO: pause while testing can_tera and poke_name/move_name
+        legal = []
+        if not state.force_switch:
+            legal.extend(range(4))
+            if state.can_tera:
+                legal.extend(range(9, 13))
+
+        if action.is_revival:
+            legal.extend(range(4, 4 + len(state.player_fainted)))
+        else:
+            legal.extend(range(4, 4 + len(state.available_switches)))
+
+        return legal
+
+    def valid_actions_from_Battle(self, battle: Battle):
+        # TODO: pause while testing can_tera and poke_name/move_name
+        gen = int(battle.battle_tag.split("-")[1][3])
+
+        valid_idxs = []
+
+        valid_moves = {m.id for m in battle.available_moves}
+        if valid_moves == {"recharge"}:
+            return [0]
+        elif valid_moves == {"struggle"}:
+            valid_idxs.append(0)
+        elif not battle.force_switch:
+            move_options = list(battle.active_pokemon.moves.values())
+            for move_idx, move in enumerate(consistent_move_order(move_options)):
+                if move.id in valid_moves:
+                    valid_idxs.append(move_idx)
+                    if battle.can_tera is not None and gen == 9:
+                        valid_idxs.append(move_idx + 9)
+
+        valid_switches = {p.name for p in battle.available_switches}
+        if not battle.reviving:
+            switch_options = consistent_pokemon_order(
+                [
+                    p
+                    for p in list(battle.team.values())
+                    if not p.fainted and not p.active
+                ]
+            )
+        else:
+            switch_options = consistent_pokemon_order(
+                [p for p in list(battle.team.values()) if p.fainted and not p.active]
+            )
+
+        for switch_idx, switch in enumerate(switch_options):
+            if switch.name in valid_switches:
+                valid_idxs.append(4 + switch_idx)
+                if battle.can_tera is not None and gen == 9:
+                    valid_idxs.append(4 + switch_idx + 9)
+
+        return valid_idxs
 
     def to_BattleOrder(self, battle: Battle) -> Optional[BattleOrder]:
         gen = int(battle.battle_tag.split("-")[1][3])
@@ -573,14 +637,12 @@ class UniversalAction:
                 ]
             )
         else:
-            # NOTE: matching "Forced Revival" logic above. Treat it as a switch
-            # but with different options. Both match poke-env's changes to ava
             switch_options = consistent_pokemon_order(
                 [p for p in list(battle.team.values()) if p.fainted and not p.active]
             )
 
         wants_tera = False
-        can_tera = battle.can_tera is not None and gen == 9
+        can_tera = battle.can_tera is not None
         if action_idx >= 9:
             wants_tera = True
             action_idx -= 9
