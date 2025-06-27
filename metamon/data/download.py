@@ -7,6 +7,7 @@ from collections import defaultdict
 
 from huggingface_hub import hf_hub_download
 
+import metamon
 from metamon import SUPPORTED_BATTLE_FORMATS
 
 METAMON_CACHE_DIR = os.environ.get("METAMON_CACHE_DIR", None)
@@ -184,9 +185,7 @@ def download_raw_replays(version: str = LATEST_RAW_REPLAY_REVISION) -> str:
     """
     if METAMON_CACHE_DIR is None:
         raise ValueError("METAMON_CACHE_DIR environment variable is not set")
-    from metamon.data.replay_dataset.raw_replays.download_from_hf import process_dataset
-
-    process_dataset(
+    metamon.data.raw_replay_util.process_dataset(
         dataset_id="jakegrigsby/metamon-raw-replays",
         output_dir=os.path.join(METAMON_CACHE_DIR, "raw-replays"),
         revision=version,
