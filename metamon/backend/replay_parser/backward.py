@@ -3,18 +3,19 @@ import datetime
 from typing import List, Optional
 import collections
 
-from metamon.data.replay_dataset.replay_parser import checks, forward
-from metamon.data.replay_dataset.replay_parser.exceptions import *
-from metamon.data.replay_dataset.replay_parser.replay_state import (
+from metamon.backend.replay_parser import checks
+from metamon.backend.replay_parser.exceptions import *
+from metamon.backend.replay_parser.replay_state import (
     Action,
     Pokemon,
     Turn,
     Winner,
     BackwardMarkers,
     Replacement,
+    ParsedReplay,
 )
-from metamon.data.team_prediction.predictor import TeamPredictor
-from metamon.data.team_prediction.team import TeamSet, PokemonSet
+from metamon.backend.team_prediction.predictor import TeamPredictor
+from metamon.backend.team_prediction.team import TeamSet, PokemonSet
 
 
 def fill_missing_team_info(
@@ -34,6 +35,10 @@ def fill_missing_team_info(
     # 1. Convert the team to the format expected by the team_prediction module
     # TODO: revisit after name/had_name changes?
     gen = int(battle_format.split("gen")[1][0])
+    for p in poke_list:
+        if p.name != p.had_name:
+            breakpoint()
+            break
     poke_names = [p.name for p in poke_list if p is not None]
     converted_poke = [PokemonSet.from_ReplayPokemon(p, gen=gen) for p in poke_list]
     revealed_team = TeamSet(
@@ -87,8 +92,8 @@ def fill_missing_team_info(
 class POVReplay:
     def __init__(
         self,
-        replay: forward.ParsedReplay,
-        filled_replay: forward.ParsedReplay,
+        replay: ParsedReplay,
+        filled_replay: ParsedReplay,
         from_p1_pov: bool,
         revealed_team: TeamSet,
     ):
@@ -241,7 +246,7 @@ class POVReplay:
                 turn.pokemon_2 = filled_turn.pokemon_2
                 turn.active_pokemon_2 = filled_turn.active_pokemon_2
 
-    def _align_states_actions(self, replay: forward.ParsedReplay):
+    def _align_states_actions(self, replay: ParsedReplay):
         self._povturnlist = []
         self._actionlist = []
         for idx, (turn_t, turn_t1) in enumerate(
@@ -281,8 +286,8 @@ class POVReplay:
 
 
 def add_filled_final_turn(
-    replay: forward.ParsedReplay, team_predictor: TeamPredictor
-) -> tuple[forward.ParsedReplay, tuple[TeamSet, TeamSet]]:
+    replay: ParsedReplay, team_predictor: TeamPredictor
+) -> tuple[ParsedReplay, tuple[TeamSet, TeamSet]]:
     # add an extra turn to a replay with all missing information guessed
     # by sampling from the TeamBuilder. this extra turn can then be moved
     # backwards through the replay and discareded.
@@ -306,7 +311,7 @@ def add_filled_final_turn(
 
 
 def backward_fill(
-    replay: forward.ParsedReplay, team_predictor: TeamPredictor
+    replay: ParsedReplay, team_predictor: TeamPredictor
 ) -> tuple[POVReplay, POVReplay]:
     # fill in missing team info at the end of the forward pass
     replay_filled, (revealed_team_1, revealed_team_2) = add_filled_final_turn(

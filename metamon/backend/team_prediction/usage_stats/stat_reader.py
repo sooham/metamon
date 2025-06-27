@@ -7,8 +7,8 @@ from typing import Optional
 
 from poke_env.data import to_id_str
 
-from metamon.download import METAMON_CACHE_DIR
-from metamon.data.team_prediction.usage_stats.format_rules import (
+import metamon
+from metamon.backend.team_prediction.usage_stats.format_rules import (
     get_valid_pokemon,
     Tier,
 )
@@ -383,16 +383,17 @@ class PreloadedSmogonUsageStats(SmogonStat):
         end_date: datetime.date,
         verbose: bool = True,
     ):
-        self.format = format
+        self.format = format.strip().lower()
         self.rank = None
         self.verbose = verbose
         self._usage = None
-        gen, tier = format[:4], format[4:]
+        gen, tier = int(self.format[3]), self.format[4:]
+        usage_stats_path = metamon.data.download.download_usage_stats(gen)
         movesets_path = os.path.join(
-            METAMON_CACHE_DIR, "usage-stats", "movesets_data", gen, f"{tier}"
+            usage_stats_path, "movesets_data", f"gen{gen}", f"{tier}"
         )
         inclusive_path = os.path.join(
-            METAMON_CACHE_DIR, "usage-stats", "movesets_data", gen, "all_tiers"
+            usage_stats_path, "movesets_data", f"gen{gen}", "all_tiers"
         )
         # data is split by year and month
         if not os.path.exists(movesets_path) or not os.path.exists(inclusive_path):
@@ -427,6 +428,7 @@ class PreloadedSmogonUsageStats(SmogonStat):
         return None
 
     def __getitem__(self, key):
+        # TODO: unify formes with data files
         species_key = key.split("-")[0]
         id_key = to_id_str(key)
         species_id_key = to_id_str(species_key)

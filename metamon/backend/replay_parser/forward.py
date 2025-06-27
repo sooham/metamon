@@ -1,9 +1,9 @@
 import copy
 from typing import List
 
-from metamon.data.replay_dataset.replay_parser import checks
-from metamon.data.replay_dataset.replay_parser.exceptions import *
-from metamon.data.replay_dataset.replay_parser.replay_state import (
+from metamon.backend.replay_parser import checks
+from metamon.backend.replay_parser.exceptions import *
+from metamon.backend.replay_parser.replay_state import (
     Action,
     BackwardMarkers,
     Boosts,
@@ -16,7 +16,7 @@ from metamon.data.replay_dataset.replay_parser.replay_state import (
     Replacement,
     ParsedReplay,
 )
-from metamon.data.replay_dataset.replay_parser.str_parsing import *
+from metamon.backend.replay_parser.str_parsing import *
 
 from poke_env.data import to_id_str
 from poke_env.environment import STACKABLE_CONDITIONS

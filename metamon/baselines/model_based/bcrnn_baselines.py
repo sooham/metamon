@@ -1,16 +1,17 @@
 import os
 import sys
-import pickle
 from functools import lru_cache
 from abc import ABC, abstractmethod
 
 import torch
 from torch.distributions import Categorical
+from poke_env.environment import Battle
+from poke_env.player import BattleOrder
 
 import metamon
 from metamon.baselines import Baseline, register_baseline
 from metamon.interface import (
-    ActionSpace,
+    UniversalAction,
     MinimalActionSpace,
     UniversalState,
     DefaultObservationSpace,
@@ -19,9 +20,10 @@ from metamon.il.model import MetamonILModel
 
 
 class BCRNNBaseline(Baseline, ABC):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, mask_actions: bool = True, **kwargs):
         super().__init__(*args, **kwargs)
         self.model = self.load_model()
+        self.mask_actions = mask_actions
         assert isinstance(self.model, MetamonILModel)
         self.model.eval()
         self.hidden_states = {}
@@ -34,6 +36,19 @@ class BCRNNBaseline(Baseline, ABC):
 
     def randomize(self):
         pass
+
+    def illegal_action_mask(self, state: UniversalState, battle: Battle):
+        valid_univeral_actions = UniversalAction.definitely_valid_actions(state, battle)
+        valid_agent_actions = [
+            self.action_space.action_to_agent_output(state, action=legal_action)
+            for legal_action in valid_univeral_actions
+        ]
+        # set all illegal
+        mask = [1] * self.action_space.gym_space.n
+        for valid_agent_action in valid_agent_actions:
+            # set legal
+            mask[valid_agent_action] = 0
+        return torch.Tensor(mask).bool()
 
     def battle_to_order(self, battle):
         """
@@ -69,12 +84,18 @@ class BCRNNBaseline(Baseline, ABC):
             assert (
                 raw_logits.shape[-1] <= 9
             ), "inference model appears to have too many action outputs, which will go unused"
+
+            if self.mask_actions:
+                mask = self.illegal_action_mask(state=state, battle=battle).view(
+                    1, 1, -1
+                )
+                raw_logits = raw_logits.masked_fill(mask, -float("inf"))
             action_dist = Categorical(logits=raw_logits)
             action_idx = action_dist.sample().item()
 
         # update hidden state
         self.hidden_states[battle_id] = new_hidden_state
-        universal_action = self.action_space.to_UniversalAction(action_idx)
+        universal_action = UniversalAction(action_idx)
         order = universal_action.to_BattleOrder(battle)
         return order
 

@@ -9,9 +9,9 @@ from torch.utils.data import Dataset
 from poke_env.data import to_id_str
 
 import metamon
-from metamon.data.team_prediction.team import TeamSet, Roster, PokemonSet
-from metamon.data.team_prediction.vocabulary import Vocabulary
-from metamon.data import DATA_PATH
+from metamon.backend.team_prediction.team import TeamSet, Roster, PokemonSet
+from metamon.backend.team_prediction.vocabulary import Vocabulary
+from metamon import METAMON_CACHE_DIR
 
 
 class TeamDataset(Dataset):
@@ -264,7 +264,9 @@ class CompetitiveTeamPredictionDataset(TeamPredictionDataset):
         for gen in range(1, 5):
             for tier in ["ou", "uu", "ubers", "nu"]:
                 team_dirs.append(
-                    os.path.join(DATA_PATH, "teams", f"gen{gen}", tier, "competitive")
+                    os.path.join(
+                        METAMON_CACHE_DIR, "teams", f"gen{gen}", tier, "competitive"
+                    )
                 )
         super().__init__(
             data_dir=team_dirs,

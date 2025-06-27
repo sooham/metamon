@@ -11,14 +11,14 @@ import numpy as np
 
 
 import metamon
-from metamon.data.team_prediction.usage_stats.legacy_team_builder import (
+from metamon.backend.team_prediction.usage_stats.legacy_team_builder import (
     TeamBuilder,
     PokemonStatsLookupError,
 )
-from metamon.data.team_prediction.usage_stats import (
+from metamon.backend.team_prediction.usage_stats import (
     PreloadedSmogonUsageStats,
 )
-from metamon.data.team_prediction.team import TeamSet, PokemonSet, Roster
+from metamon.backend.team_prediction.team import TeamSet, PokemonSet, Roster
 
 
 class TeamPredictor(ABC):
@@ -475,7 +475,7 @@ ALL_PREDICTORS = {
 if __name__ == "__main__":
     import argparse
     from metamon.data.team_prediction.dataset import TeamDataset
-    from metamon.download import download_revealed_teams
+    from metamon.data.download import download_revealed_teams
 
     parser = argparse.ArgumentParser(
         description="Predict team from partial information"

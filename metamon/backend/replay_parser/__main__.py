@@ -4,8 +4,8 @@ import random
 import tqdm
 
 import metamon
-from metamon.data.replay_dataset.replay_parser.parse_replays import ReplayParser
-from metamon.data.team_prediction.predictor import ALL_PREDICTORS
+from metamon.backend.replay_parser.parse_replays import ReplayParser
+from metamon.backend.team_prediction.predictor import ALL_PREDICTORS
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
@@ -76,7 +76,7 @@ if __name__ == "__main__":
 
     if args.raw_replay_dir is None:
         args.raw_replay_dir = os.path.join(
-            metamon.download.METAMON_CACHE_DIR, "raw-replays"
+            metamon.METAMON_CACHE_DIR, "raw-replays"
         )
 
     gen = args.format[:4]

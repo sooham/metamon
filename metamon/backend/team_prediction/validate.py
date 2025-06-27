@@ -5,8 +5,9 @@ import argparse
 import os
 import tqdm
 
-from metamon.data.team_prediction.team import TeamSet
 from poke_env.teambuilder import ConstantTeambuilder
+
+from metamon.backend.team_prediction.team import TeamSet
 from metamon.env import BattleAgainstBaseline
 from metamon.baselines.heuristic.basic import RandomBaseline
 from metamon.interface import (

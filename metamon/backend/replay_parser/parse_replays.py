@@ -15,18 +15,18 @@ import lz4.frame
 from poke_env.environment import Status
 
 from metamon import interface
-from metamon.data.replay_dataset.replay_parser import backward, forward
-from metamon.data.replay_dataset.replay_parser.exceptions import (
+from metamon.backend.replay_parser import backward, forward
+from metamon.backend.replay_parser.exceptions import (
     BackwardException,
     ForwardException,
     InvalidActionIndex,
 )
-from metamon.data.replay_dataset.replay_parser.replay_state import (
+from metamon.backend.replay_parser.replay_state import (
     Action,
     ReplayState,
 )
-from metamon.data.replay_dataset.replay_parser import checks
-from metamon.data.team_prediction.predictor import TeamPredictor, NaiveUsagePredictor
+from metamon.backend.replay_parser import checks
+from metamon.backend.team_prediction.predictor import TeamPredictor, NaiveUsagePredictor
 
 
 class ReplayParser:

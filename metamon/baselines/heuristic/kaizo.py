@@ -1,5 +1,4 @@
 import random
-import math
 
 import poke_env
 from poke_env.player import Player

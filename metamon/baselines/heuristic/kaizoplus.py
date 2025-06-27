@@ -1,5 +1,4 @@
 import random
-import math
 
 import poke_env
 from poke_env.player import Player
@@ -16,6 +15,7 @@ from poke_env.environment.status import Status
 from metamon.baselines import register_baseline, Baseline
 
 
+@register_baseline()
 class KaizoPlus(Baseline):
     def randomize(self):
         pass
@@ -94,12 +94,12 @@ class KaizoPlus(Baseline):
             switch_scores = self.switch_scores(
                 switches=battle.available_switches,
                 battle=battle,
-                **self._switch_score_kwargs
+                **self._switch_score_kwargs,
             )
             active_score = self.switch_scores(
                 switches=[battle.active_pokemon],
                 battle=battle,
-                **self._switch_score_kwargs
+                **self._switch_score_kwargs,
             )[battle.active_pokemon]
             best_switch = max(switch_scores, key=switch_scores.get)
             has_better_switch = active_score < switch_scores[best_switch]
@@ -701,12 +701,12 @@ class KaizoPlus(Baseline):
             switch_scores = self.switch_scores(
                 switches=battle.available_switches,
                 battle=battle,
-                **self._switch_score_kwargs
+                **self._switch_score_kwargs,
             )
             active_score = self.switch_scores(
                 switches=[battle.active_pokemon],
                 battle=battle,
-                **self._switch_score_kwargs
+                **self._switch_score_kwargs,
             )[battle.active_pokemon]
             best_switch = max(switch_scores, key=switch_scores.get)
 

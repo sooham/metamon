@@ -24,7 +24,7 @@ from poke_env.data import to_id_str
 
 import metamon
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
-from metamon.data.replay_dataset.replay_parser.replay_state import (
+from metamon.backend.replay_parser.replay_state import (
     Move as ReplayMove,
     Pokemon as ReplayPokemon,
     Action as ReplayAction,
@@ -558,17 +558,20 @@ class UniversalAction:
             if state.can_tera:
                 legal.extend(range(9, 13))
         legal.extend(range(4, 4 + len(state.available_switches)))
-        return legal
+        return [UniversalAction(action_idx=action_idx) for action_idx in legal]
 
     @classmethod
     def definitely_valid_actions(cls, state: UniversalState, battle: Battle):
         maybe_legal = cls.maybe_valid_actions(state)
         definitely_legal = []
-        for action_idx in maybe_legal:
-            order = cls._idx_to_BattleOrder(battle, action_idx)
+        for action in maybe_legal:
+            order = cls.action_idx_to_BattleOrder(battle, action_idx=action.action_idx)
             if order is not None:
-                definitely_legal.append(order)
+                definitely_legal.append(action)
         return definitely_legal
+
+    def __repr__(self):
+        return str(self.action_idx)
 
     @staticmethod
     def action_idx_to_BattleOrder(

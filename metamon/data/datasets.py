@@ -12,7 +12,7 @@ import numpy as np
 import tqdm
 
 from metamon.interface import ObservationSpace, RewardFunction, UniversalState
-from metamon.download import download_parsed_replays
+from metamon.data.download import download_parsed_replays
 
 
 class ParsedReplayDataset(Dataset):

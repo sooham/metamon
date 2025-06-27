@@ -8,12 +8,12 @@ import functools
 from dataclasses import dataclass
 from typing import List, Optional
 
-from metamon.data.replay_dataset.replay_parser.replay_state import (
+from metamon.backend.replay_parser.replay_state import (
     Pokemon,
     Nothing,
     BackwardMarkers,
 )
-from metamon.data.team_prediction.usage_stats import get_usage_stats
+from metamon.backend.team_prediction.usage_stats import get_usage_stats
 
 
 def moveset_size(pokemon_name: str, gen: int) -> int:

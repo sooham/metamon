@@ -7,8 +7,8 @@ import numpy as np
 import torch
 
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
-from metamon.data.team_prediction.team import PokemonSet
-from metamon.data.team_prediction.usage_stats import get_usage_stats
+from metamon.backend.team_prediction.team import PokemonSet
+from metamon.backend.team_prediction.usage_stats import get_usage_stats
 
 
 def create_vocabularies():

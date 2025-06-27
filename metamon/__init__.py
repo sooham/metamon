@@ -34,3 +34,11 @@ SUPPORTED_BATTLE_FORMATS = [
     "gen4ubers",
     "gen9ou",
 ]
+
+METAMON_CACHE_DIR = os.environ.get("METAMON_CACHE_DIR", None)
+
+from . import data
+from . import baselines
+from . import backend
+from . import rl
+from . import il

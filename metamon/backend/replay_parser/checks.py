@@ -1,7 +1,8 @@
 from typing import Optional
 
-from metamon.data.replay_dataset.replay_parser.exceptions import *
+from metamon.backend.replay_parser.exceptions import *
 from metamon.interface import UniversalAction, UniversalState
+
 from poke_env.environment import Effect as PEEffect
 from poke_env.data import to_id_str
 

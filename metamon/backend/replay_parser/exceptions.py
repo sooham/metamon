@@ -1,5 +1,4 @@
 from termcolor import colored
-from collections import namedtuple
 from enum import Enum
 
 

@@ -5,14 +5,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import poke_env.environment as pe
 
-from metamon.data.replay_dataset.replay_parser.forward import SimProtocol
-from metamon.data.replay_dataset.replay_parser.exceptions import ForwardException
-from metamon.data.replay_dataset.replay_parser.replay_state import (
+from metamon.backend.replay_parser.forward import SimProtocol
+from metamon.backend.replay_parser.exceptions import ForwardException
+from metamon.backend.replay_parser.replay_state import (
     ParsedReplay,
     cleanup_move_id,
 )
 from metamon.interface import UniversalPokemon
-from metamon.data.replay_dataset.replay_parser.replay_state import (
+from metamon.backend.replay_parser.replay_state import (
     Pokemon,
     Turn,
     Winner,
