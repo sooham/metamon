@@ -970,7 +970,6 @@ class ReplayState:
     format: str
     force_switch: bool
     active_pokemon: Pokemon
-    player_fainted: List[Pokemon]
     opponent_active_pokemon: Pokemon
     available_switches: List[Pokemon]
     player_prev_move: Move

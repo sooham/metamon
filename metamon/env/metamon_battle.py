@@ -238,8 +238,6 @@ class MetamonBackendBattle(pe.AbstractBattle):
                 ):
                     self._available_switches.append(metamon_p)
                 elif not self.trapped and self.reviving and poke.get("reviving", False):
-                    # poke-env doesn't check that the pokemon hasn't fainted.
-                    # i guess covered by the "reviving" field?
                     self._available_switches.append(metamon_p)
         return active_pokemon
 

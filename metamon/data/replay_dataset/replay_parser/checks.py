@@ -1,5 +1,7 @@
-from metamon.data.replay_dataset.replay_parser.exceptions import *
+from typing import Optional
 
+from metamon.data.replay_dataset.replay_parser.exceptions import *
+from metamon.interface import UniversalAction, UniversalState
 from poke_env.environment import Effect as PEEffect
 from poke_env.data import to_id_str
 
@@ -234,17 +236,55 @@ def check_action_alignment(replay):
             raise ActionMisaligned(active_pokemon, action)
 
 
-def check_action_idxs(action_idxs: list[int], gen: int):
+def check_action_idxs(
+    univeral_states: list[UniversalState],
+    actions: list[Optional[UniversalAction]],
+    action_idxs: list[int],
+    gen: int,
+):
     tera = 0
-    for action_idx in action_idxs:
+    for state, action, action_idx in zip(univeral_states, actions, action_idxs):
+        # check missing actions
+        if action is None and action_idx != -1:
+            raise ActionIndexError(f"Action is None but action_idx is not -1")
+        elif action is None or action_idx == -1:
+            continue
         if action_idx > 13 or action_idx < -1:
-            raise ActionMisaligned(f"Action index {action_idx} is out of bounds")
+            raise ActionIndexError(f"Action index {action_idx} is out of bounds")
+        # check tera by action idx
         if action_idx >= 9:
             tera += 1
         if tera and gen != 9:
-            raise ActionMisaligned(f"Found Tera action in gen {gen}")
+            raise ActionIndexError(f"Found Tera action in gen {gen}")
         if tera > 1:
-            raise ActionMisaligned(f"Found {tera} Tera actions")
+            raise ActionIndexError(f"Found {tera} Tera actions")
+        if action.name in {"Struggle", "Recharge"} and action_idx != 0:
+            # check struggle and recharge special case move overrides
+            raise ActionIndexError(
+                f"{action.name} is action index {action_idx}; expected to be 0"
+            )
+        if state.forced_switch and not action.is_switch:
+            # check forced switch leads to switch
+            raise ActionIndexError(
+                f"Forced switch {state.forced_switch} != action {action.is_switch}"
+            )
+        if action_idx > 9 and (not state.can_tera or not action.is_tera):
+            # check tera action index is valid
+            raise ActionIndexError(
+                f"Found Tera action index {action_idx} but can_tera is False"
+            )
+        if action.is_switch and (action_idx <= 3 or action_idx >= 9):
+            # check move actions become move action indices
+            raise ActionIndexError(f"Expected switch action index")
+        elif not action.is_switch and not action.is_revival and 4 <= action_idx <= 8:
+            # check switch action indices
+            raise ActionIndexError(f"Expected move action index")
+        # check action index is considered legal by mask helper
+        maybe_legal = UniversalAction.maybe_valid_actions(state)
+        if action_idx not in maybe_legal:
+            raise ActionIndexError(
+                f"Action index {action_idx} is not found to be legal by UniversalAction"
+            )
 
 
 def check_tera_consistency(replay):

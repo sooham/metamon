@@ -244,7 +244,10 @@ class PokeEnvWrapper(OpenAIGymEnv):
         return super().reset(*args, **kwargs)
 
     def action_to_move(self, action: Any, battle: Battle):
-        universal_action = self.metamon_action_space.to_UniversalAction(action)
+        universal_state = UniversalState.from_Battle(battle)
+        universal_action = self.metamon_action_space.agent_output_to_action(
+            state=universal_state, agent_output=action
+        )
         battle_order = universal_action.to_BattleOrder(battle)
         if battle_order is None:
             self.invalid_action_counter += 1
@@ -272,7 +275,12 @@ class PokeEnvWrapper(OpenAIGymEnv):
         self.turn_counter += 1
         next_state, reward, terminated, truncated, info = super().step(action)
         if self.save_trajectories_to is not None:
-            self.trajectory["actions"].append(int(action))
+            # TODO: get UniversalState up here...
+            self.trajectory["actions"].append(
+                self.metamon_action_space.agent_output_to_action(
+                    state=None, action=action
+                ).action_idx
+            )
 
         # enforce simple turn limit
         hit_time_limit = self.turn_counter > self.turn_limit

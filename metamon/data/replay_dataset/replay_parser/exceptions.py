@@ -188,6 +188,11 @@ class ActionMisaligned(BackwardException):
         )
 
 
+class ActionIndexError(BackwardException):
+    def __init__(self, message: str):
+        super().__init__(f"Action index error: {message}")
+
+
 class ToNumpyError(BackwardException):
     def __init__(self, obs):
         super().__init__(
