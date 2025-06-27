@@ -78,6 +78,7 @@ class ReplayParser:
             player_fainted = [
                 p for p in player_team if p.status == Status.FNT and p != active_mon
             ]
+            can_tera = turn.can_tera_1 if p1 else turn.can_tera_2
 
             # fill a ReplayState
             states.append(
@@ -97,6 +98,7 @@ class ReplayParser:
                     battle_field=turn.battle_field,
                     battle_won=False,
                     battle_lost=False,
+                    can_tera=can_tera,
                 )
             )
             actions.append(action[0])

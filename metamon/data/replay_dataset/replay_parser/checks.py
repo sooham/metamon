@@ -254,10 +254,12 @@ def check_tera_consistency(replay):
     ever_tera_1 = False
     ever_tera_2 = False
     for turn in replay:
+        if gen != 9 and (turn.can_tera_1 or turn.can_tera_2):
+            raise ForwardVerify("Found Tera in gen != 9")
         if not can_tera_1 and turn.can_tera_1:
-            return MultipleTera("p1")
+            raise MultipleTera("p1")
         if not can_tera_2 and turn.can_tera_2:
-            return MultipleTera("p2")
+            raise MultipleTera("p2")
         ever_tera_1 |= turn.can_tera_1
         ever_tera_2 |= turn.can_tera_2
         can_tera_1 &= turn.can_tera_1
