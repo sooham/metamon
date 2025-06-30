@@ -15,7 +15,15 @@ pasted into this file.
 This is the last piece that sets up a clean split from poke-env below the "Player/Battle" layer.
 """
 
-from poke_env.environment import Effect, Field, Move, SideCondition, Status, Weather
+from poke_env.environment import (
+    Effect,
+    Field,
+    Move,
+    SideCondition,
+    Status,
+    Weather,
+    STACKABLE_CONDITIONS,
+)
 
 PEEffect = Effect
 PEField = Field
@@ -23,3 +31,4 @@ PEMove = Move
 PESideCondition = SideCondition
 PEStatus = Status
 PEWeather = Weather
+PEStackableConditions = STACKABLE_CONDITIONS

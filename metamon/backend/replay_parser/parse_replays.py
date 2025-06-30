@@ -1,6 +1,3 @@
-import glob
-import random
-import tqdm
 import multiprocessing
 import json
 import os
@@ -8,14 +5,12 @@ import warnings
 from datetime import datetime
 from typing import Optional
 
-
+import tqdm
 import termcolor
-import numpy as np
 import lz4.frame
-from poke_env.environment import Status
 
 from metamon import interface
-from metamon.backend.replay_parser import backward, forward
+from metamon.backend.replay_parser import backward, forward, checks
 from metamon.backend.replay_parser.exceptions import (
     BackwardException,
     ForwardException,
@@ -25,7 +20,9 @@ from metamon.backend.replay_parser.replay_state import (
     Action,
     ReplayState,
 )
-from metamon.backend.replay_parser import checks
+from metamon.backend.replay_parser.pe_datatypes import (
+    PEStatus,
+)
 from metamon.backend.team_prediction.predictor import TeamPredictor, NaiveUsagePredictor
 
 
@@ -75,7 +72,9 @@ class ReplayParser:
             player_team = turn.pokemon_1 if p1 else turn.pokemon_2
             if action and action.is_revival:
                 switches = [
-                    p for p in player_team if p.status == Status.FNT and p != active_mon
+                    p
+                    for p in player_team
+                    if p.status == PEStatus.FNT and p != active_mon
                 ]
             else:
                 switches = (
