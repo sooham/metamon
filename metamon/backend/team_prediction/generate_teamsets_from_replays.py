@@ -3,8 +3,8 @@ import tqdm
 from multiprocessing import Pool, cpu_count
 from itertools import islice
 
-from metamon.data.team_prediction.dataset import FilteredTeamsFromReplaysDataset
-from metamon.data.team_prediction.predictor import ReplayPredictor
+from metamon.backend.team_prediction.dataset import FilteredTeamsFromReplaysDataset
+from metamon.backend.team_prediction.predictor import ReplayPredictor
 
 
 def chunk_dataset(dataset, chunk_size):

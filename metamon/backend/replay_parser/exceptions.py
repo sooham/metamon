@@ -134,7 +134,7 @@ class UnimplementedMessage(ForwardException):
 
 class MoveInfoNotFound(ForwardException):
     def __init__(self, move_name: str):
-        super().__init__(f"Move `{move_name}` not found in poke-env GenData info")
+        super().__init__(f"Move `{move_name}` not found in GenData info")
 
 
 class ForwardVerify(ForwardException):

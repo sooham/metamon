@@ -4,10 +4,10 @@ import orjson
 
 from poke_env.player import Player
 from poke_env.environment import AbstractBattle
-from poke_env.data import GenData
 from poke_env.exceptions import ShowdownException
 
 from metamon.env.metamon_battle import MetamonBackendBattle
+from metamon.backend.showdown_dex import Dex
 
 
 class MetamonPlayer(Player):
@@ -24,7 +24,7 @@ class MetamonPlayer(Player):
             if battle_tag in self._battles:
                 return self._battles[battle_tag]
             else:
-                gen = GenData.from_format(self._format).gen
+                gen = Dex.from_format(self._format).gen
                 if self.format_is_doubles:
                     raise NotImplementedError("Metamon does not support doubles")
                 else:

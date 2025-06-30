@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from metamon.data.team_prediction.vocabulary import Vocabulary
+from metamon.backend.team_prediction.vocabulary import Vocabulary
 
 
 class TeamTransformer(nn.Module):

@@ -8,9 +8,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from datetime import datetime
 
 from metamon.backend.replay_parser.exceptions import *
+from metamon.backend.showdown_dex import Dex
 
 from poke_env.data import to_id_str
-from poke_env.data.gen_data import GenData
 from poke_env.environment import Effect as PEEffect
 from poke_env.environment import Field as PEField
 from poke_env.environment import Move as PEMove
@@ -80,7 +80,7 @@ def get_pokedex_and_moves(format: str) -> Tuple[dict[str, Any], dict[str, Any]]:
     if format[:3] != "gen":
         raise RareValueError(f"Unknown format: {format}")
     gen = int(format[3])
-    gen_data = GenData.from_gen(gen)
+    gen_data = Dex.from_gen(gen)
     return gen_data.pokedex, gen_data.moves
 
 
@@ -251,7 +251,7 @@ class Pokemon:
         return self.unique_id == other.unique_id
 
     def update_pokedex_info(self, name: str):
-        pokedex = GenData.from_gen(self.gen).pokedex
+        pokedex = Dex.from_gen(self.gen).pokedex
         lookup_name = to_id_str(name)
         try:
             new_pokedex_info = pokedex[lookup_name]
