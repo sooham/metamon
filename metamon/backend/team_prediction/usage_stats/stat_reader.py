@@ -5,13 +5,12 @@ import datetime
 import functools
 from typing import Optional
 
-from poke_env.data import to_id_str
-
 import metamon
 from metamon.backend.team_prediction.usage_stats.format_rules import (
     get_valid_pokemon,
     Tier,
 )
+from metamon.backend.replay_parser.str_parsing import pokemon_name
 
 
 TIER_MAP = {
@@ -272,7 +271,7 @@ class SmogonStat:
         self._usage = None
         self._load()
         self._name_conversion = {
-            to_id_str(pokemon): pokemon for pokemon in self._movesets.keys()
+            pokemon_name(pokemon): pokemon for pokemon in self._movesets.keys()
         }
 
     def _load(self):
@@ -298,7 +297,9 @@ class SmogonStat:
                 parse_pokemon_moveset(os.path.join(moveset_path, x))
                 for x in format_data
             ]
-        self._movesets = {to_id_str(k): v for k, v in merge_movesets(_movesets).items()}
+        self._movesets = {
+            pokemon_name(k): v for k, v in merge_movesets(_movesets).items()
+        }
 
     def pretty_print(self, key):
         data = self[key]
@@ -430,8 +431,8 @@ class PreloadedSmogonUsageStats(SmogonStat):
     def __getitem__(self, key):
         # TODO: unify formes with data files
         species_key = key.split("-")[0]
-        id_key = to_id_str(key)
-        species_id_key = to_id_str(species_key)
+        id_key = pokemon_name(key)
+        species_id_key = pokemon_name(species_key)
 
         # search by the full name first
         id_search = self._inclusive_search(id_key)

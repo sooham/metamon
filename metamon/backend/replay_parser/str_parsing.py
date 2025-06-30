@@ -1,8 +1,41 @@
 import re
 from typing import Optional
+from functools import lru_cache
 
 from metamon.backend.replay_parser.exceptions import *
-from poke_env.data import to_id_str
+
+
+@lru_cache(2**13)
+def clean_no_numbers(name: str) -> str:
+    return "".join(char for char in str(name) if char.isalpha()).lower()
+
+
+@lru_cache(2**13)
+def clean_name(name: str) -> str:
+    return "".join(char for char in name if char.isalnum()).lower()
+
+
+def pokemon_name(name: str) -> str:
+    return clean_name(name).strip()
+
+
+def _cleanup_move_id(move_id: str) -> str:
+    if move_id.startswith("hiddenpower"):
+        # map all hidden power moves to the same name
+        return "hiddenpower"
+    elif move_id == "vicegrip":
+        return "visegrip"
+    # i think these are covered by clean_no_numbers now, but just in case...
+    elif move_id.startswith("return"):
+        return "return"
+    elif move_id.startswith("frustration"):
+        return "frustration"
+    else:
+        return move_id
+
+
+def move_name(name: str) -> str:
+    return _cleanup_move_id(clean_no_numbers(name)).strip()
 
 
 def parse_hp_fraction(raw: str) -> tuple[int, int]:

@@ -2,7 +2,6 @@ import copy
 from typing import List
 
 from metamon.backend.replay_parser import checks
-from metamon.backend.replay_parser.exceptions import *
 from metamon.backend.replay_parser.replay_state import (
     Action,
     BackwardMarkers,
@@ -16,15 +15,16 @@ from metamon.backend.replay_parser.replay_state import (
     Replacement,
     ParsedReplay,
 )
+from metamon.backend.replay_parser.pe_datatypes import (
+    PEEffect,
+    PEField,
+    PESideCondition,
+    PEStatus,
+    PEWeather,
+    PEStackableConditions,
+)
 from metamon.backend.replay_parser.str_parsing import *
-
-from poke_env.data import to_id_str
-from poke_env.environment import STACKABLE_CONDITIONS
-from poke_env.environment import Effect as PEEffect
-from poke_env.environment import Field as PEField
-from poke_env.environment import SideCondition as PESideCondition
-from poke_env.environment import Status as PEStatus
-from poke_env.environment import Weather as PEWeather
+from metamon.backend.replay_parser.exceptions import *
 
 
 class SimProtocol:
@@ -243,7 +243,7 @@ class SimProtocol:
             raise RareValueError(
                 f"Could not parse player slot from player id `{args[0]}`"
             )
-        self.replay.players[slot] = to_id_str(args[1])
+        self.replay.players[slot] = clean_name(args[1])
         if len(args) >= 4 and args[3]:
             self.replay.ratings[slot] = int(args[3])
         else:
@@ -281,7 +281,7 @@ class SimProtocol:
         """
         |win|USER
         """
-        winner_name = to_id_str(args[0])
+        winner_name = clean_name(args[0])
         if winner_name == self.replay.players[0]:
             self.replay.winner = Winner.PLAYER_1
         elif winner_name == self.replay.players[1]:
@@ -836,7 +836,7 @@ class SimProtocol:
                 raise UnfinishedMessageException([name] + args)
             condition = PESideCondition.from_showdown_message(args[1])
             if "start" in name:
-                if condition in STACKABLE_CONDITIONS:
+                if condition in PEStackableConditions:
                     side[condition] = side.get(condition, 0) + 1
                 elif condition not in side:
                     side[condition] = self.curr_turn.turn_number

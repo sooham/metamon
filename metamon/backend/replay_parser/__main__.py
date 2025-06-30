@@ -75,9 +75,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.raw_replay_dir is None:
-        args.raw_replay_dir = os.path.join(
-            metamon.METAMON_CACHE_DIR, "raw-replays"
-        )
+        args.raw_replay_dir = os.path.join(metamon.METAMON_CACHE_DIR, "raw-replays")
 
     gen = args.format[:4]
     format = args.format[4:].lower()

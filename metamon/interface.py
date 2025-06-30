@@ -1,8 +1,7 @@
-from functools import lru_cache
 import copy
 import re
 from dataclasses import dataclass, asdict
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Set
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -20,7 +19,6 @@ from poke_env.environment import (
     PokemonType,
 )
 from poke_env.player import BattleOrder, Player
-from poke_env.data import to_id_str
 
 import metamon
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
@@ -30,25 +28,13 @@ from metamon.backend.replay_parser.replay_state import (
     Action as ReplayAction,
     ReplayState,
     Nothing as ReplayNothing,
-    cleanup_move_id,
 )
-
-
-@lru_cache(2**13)
-def clean_no_numbers(name: str) -> str:
-    return "".join(char for char in str(name) if char.isalpha()).lower().strip()
-
-
-def clean_name(name: str) -> str:
-    return to_id_str(str(name)).strip()
-
-
-def pokemon_name(name: str) -> str:
-    return clean_name(name)
-
-
-def move_name(name: str) -> str:
-    return cleanup_move_id(clean_name(name))
+from metamon.backend.replay_parser.str_parsing import (
+    clean_no_numbers,
+    clean_name,
+    pokemon_name,
+    move_name,
+)
 
 
 def consistent_pokemon_order(pokemon):
@@ -85,12 +71,6 @@ def consistent_move_order(moves):
             f"Unrecognized `moves` list format of type {type(moves[0])}: {moves}"
         )
     return sorted(moves, key=key)
-
-
-@lru_cache(9)
-def hidden_power_reference(gen: int) -> Move:
-    # we will map all hidden powers to this move
-    return Move(move_id="hiddenpower", gen=gen)
 
 
 @dataclass
@@ -344,7 +324,7 @@ class UniversalPokemon:
         for m in p._moves.values():
             m.set_pp(m.pp)
         p._name = pokemon.nickname
-        p._species = to_id_str(pokemon.name)
+        p._species = clean_name(pokemon.name)
         p._active = is_active
         p._boosts = pokemon.boosts.to_dict()
         p._current_hp = pokemon.current_hp
@@ -517,6 +497,15 @@ class UniversalAction:
     def missing(self) -> bool:
         return self.action_idx == -1
 
+    def __eq__(self, other: "UniversalAction") -> bool:
+        return self.action_idx == other.action_idx
+
+    def __repr__(self):
+        return str(self.action_idx)
+
+    def __hash__(self):
+        return hash(self.action_idx)
+
     @classmethod
     def from_ReplayAction(
         cls, state: ReplayState, action: ReplayAction
@@ -551,27 +540,26 @@ class UniversalAction:
         return cls(action_idx)
 
     @classmethod
-    def maybe_valid_actions(cls, state: UniversalState):
+    def maybe_valid_actions(cls, state: UniversalState) -> Set["UniversalAction"]:
         legal = []
         if not state.forced_switch:
             legal.extend(range(4))
             if state.can_tera:
                 legal.extend(range(9, 13))
         legal.extend(range(4, 4 + len(state.available_switches)))
-        return [UniversalAction(action_idx=action_idx) for action_idx in legal]
+        return set(UniversalAction(action_idx=action_idx) for action_idx in legal)
 
     @classmethod
-    def definitely_valid_actions(cls, state: UniversalState, battle: Battle):
+    def definitely_valid_actions(
+        cls, state: UniversalState, battle: Battle
+    ) -> Set["UniversalAction"]:
         maybe_legal = cls.maybe_valid_actions(state)
-        definitely_legal = []
+        definitely_legal = set()
         for action in maybe_legal:
             order = cls.action_idx_to_BattleOrder(battle, action_idx=action.action_idx)
             if order is not None:
-                definitely_legal.append(action)
+                definitely_legal.add(action)
         return definitely_legal
-
-    def __repr__(self):
-        return str(self.action_idx)
 
     @staticmethod
     def action_idx_to_BattleOrder(

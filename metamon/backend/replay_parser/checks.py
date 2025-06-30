@@ -2,9 +2,7 @@ from typing import Optional
 
 from metamon.backend.replay_parser.exceptions import *
 from metamon.interface import UniversalAction, UniversalState
-
-from poke_env.environment import Effect as PEEffect
-from poke_env.data import to_id_str
+from metamon.backend.replay_parser.str_parsing import clean_name
 
 
 def check_finished(replay):
@@ -164,9 +162,9 @@ def check_noun_spelling(replay):
             ]:
                 val = getattr(pokemon, poke_attr)
                 if isinstance(val, str):
-                    if to_id_str(val) == val:
+                    if clean_name(val) == val:
                         raise ForwardVerify(
-                            f"Potential to_id_str --> Proper Name mismatch: {val}, sometimes caused by all-lowercase logs"
+                            f"Potential clean_name --> Proper Name mismatch: {val}, probably caused by all-lowercase replay logs"
                         )
 
 
@@ -282,7 +280,7 @@ def check_action_idxs(
             raise ActionIndexError(f"Expected move action index")
         # check action index is considered legal by mask helper
         maybe_legal = UniversalAction.maybe_valid_actions(state)
-        if action_idx not in maybe_legal:
+        if UniversalAction(action_idx) not in maybe_legal:
             raise ActionIndexError(
                 f"Action index {action_idx} is not found to be legal by UniversalAction"
             )

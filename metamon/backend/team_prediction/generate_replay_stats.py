@@ -12,8 +12,8 @@ from typing import Set
 import tqdm
 from torch.utils.data import DataLoader
 
-from metamon.data.team_prediction.dataset import TeamDataset
-from metamon.data.team_prediction.team import TeamSet, PokemonSet, Roster
+from metamon.backend.team_prediction.dataset import TeamDataset
+from metamon.backend.team_prediction.team import TeamSet, PokemonSet, Roster
 
 
 def load_replay_teams(
