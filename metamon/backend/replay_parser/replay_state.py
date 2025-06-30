@@ -244,12 +244,22 @@ class Pokemon:
         if self.had_type is None:
             self.had_type = copy.deepcopy(self.type)
         self.base_stats = pokedex_info["baseStats"]
+        # use the pokedex to reveal info
         possible_abilities = list(pokedex_info["abilities"].values())
-        if len(possible_abilities) == 1:
+        required_ability = pokedex_info.get("requiredAbility", None)
+        if required_ability is not None:
+            self.reveal_ability(required_ability)
+        elif len(possible_abilities) == 1:
             only_ability = possible_abilities[0]
             if only_ability == "No Ability":
                 only_ability = Nothing.NO_ABILITY
             self.reveal_ability(only_ability)
+        required_item = pokedex_info.get("requiredItem", None)
+        if required_item is not None:
+            self.reveal_item(required_item)
+        required_tera = pokedex_info.get("requiredTeraType", None)
+        if required_tera is not None and self.gen == 9:
+            self.tera_type = required_tera
 
     def on_switch_out(self):
         # many temporary effects and changes revert on switch out
@@ -461,7 +471,7 @@ class Pokemon:
         else:
             lvl = 100
         dex_name = Pokemon._lookup_pokedex_info(name, gen=gen)["name"]
-        if dex_name != name:
+        if dex_name.lower() != name.lower():
             breakpoint()
         return dex_name, lvl
 
