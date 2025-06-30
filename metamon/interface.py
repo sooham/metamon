@@ -1,4 +1,3 @@
-from functools import lru_cache
 import copy
 import re
 from dataclasses import dataclass, asdict
@@ -20,7 +19,6 @@ from poke_env.environment import (
     PokemonType,
 )
 from poke_env.player import BattleOrder, Player
-from poke_env.data import to_id_str
 
 import metamon
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
@@ -30,25 +28,13 @@ from metamon.backend.replay_parser.replay_state import (
     Action as ReplayAction,
     ReplayState,
     Nothing as ReplayNothing,
-    cleanup_move_id,
 )
-
-
-@lru_cache(2**13)
-def clean_no_numbers(name: str) -> str:
-    return "".join(char for char in str(name) if char.isalpha()).lower().strip()
-
-
-def clean_name(name: str) -> str:
-    return to_id_str(str(name)).strip()
-
-
-def pokemon_name(name: str) -> str:
-    return clean_name(name)
-
-
-def move_name(name: str) -> str:
-    return cleanup_move_id(clean_name(name))
+from metamon.backend.replay_parser.str_parsing import (
+    clean_no_numbers,
+    clean_name,
+    pokemon_name,
+    move_name,
+)
 
 
 def consistent_pokemon_order(pokemon):
@@ -85,12 +71,6 @@ def consistent_move_order(moves):
             f"Unrecognized `moves` list format of type {type(moves[0])}: {moves}"
         )
     return sorted(moves, key=key)
-
-
-@lru_cache(9)
-def hidden_power_reference(gen: int) -> Move:
-    # we will map all hidden powers to this move
-    return Move(move_id="hiddenpower", gen=gen)
 
 
 @dataclass
@@ -344,7 +324,7 @@ class UniversalPokemon:
         for m in p._moves.values():
             m.set_pp(m.pp)
         p._name = pokemon.nickname
-        p._species = to_id_str(pokemon.name)
+        p._species = clean_name(pokemon.name)
         p._active = is_active
         p._boosts = pokemon.boosts.to_dict()
         p._current_hp = pokemon.current_hp
