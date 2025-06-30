@@ -172,6 +172,8 @@ def check_filled_mon(pokemon):
     p = pokemon
     if (
         not isinstance(p.base_stats, dict)
+        or p.name is None
+        or p.had_name is None
         or p.had_ability is None
         or p.active_ability is None
         or p.had_item is None

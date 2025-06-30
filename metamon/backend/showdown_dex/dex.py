@@ -68,14 +68,10 @@ class Dex:
         for name, value in dex.items():
             if name.startswith("pikachu") and name not in {"pikachu", "pikachugmax"}:
                 other_forms_dex[name + "gmax"] = dex["pikachugmax"]
-
         dex.update(other_forms_dex)
 
         for name, value in dex.items():
-            if "baseSpecies" in value:
-                value["species"] = value["baseSpecies"]
-            else:
-                value["baseSpecies"] = pokemon_name(name)
+            value["baseSpecies"] = value.get("baseSpecies", value["name"])
         return dex
 
     def load_type_chart(self, gen: int) -> Dict[str, Dict[str, float]]:

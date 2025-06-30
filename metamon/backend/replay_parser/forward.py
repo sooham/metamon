@@ -341,14 +341,14 @@ class SimProtocol:
         assert isinstance(poke_list, list)
         if None not in poke_list:
             raise UnusualTeamSize(len(poke_list) + 1)
-        poke_name, lvl = Pokemon.identify_from_details(args[1])
+        poke_name, lvl = Pokemon.identify_from_details(args[1], gen=self.replay.gen)
         insert_at = poke_list.index(None)
         poke_list[insert_at] = Pokemon(name=poke_name, lvl=lvl, gen=self.replay.gen)
 
     def get_or_create_pokemon_from_details(
         self, details: str, poke_list: list[Pokemon]
     ) -> Pokemon:
-        poke_name, lvl = Pokemon.identify_from_details(details)
+        poke_name, lvl = Pokemon.identify_from_details(details, gen=self.replay.gen)
         # match against names up to a forme change
         lookup_poke_name = poke_name.split("-")[0]
         lookup_known_names = [p.name.split("-")[0] if p else None for p in poke_list]
@@ -888,7 +888,7 @@ class SimProtocol:
             else:
                 raise TrickError(["-activate"] + args)
         elif effect == PEEffect.MIMIC:
-            pokemon.mimic(move_name=args[2], gen=self.replay.gen)
+            pokemon.mimic(move_name=args[2])
             self.replay.add_warning(WarningFlags.MIMIC)
         elif effect in [PEEffect.LEPPA_BERRY, PEEffect.MYSTERY_BERRY]:
             # https://bulbapedia.bulbagarden.net/wiki/Category:PP-restoring_items
@@ -1056,7 +1056,7 @@ class SimProtocol:
         if effect == PEEffect.MIMIC:
             # 1 of 2 ways PS will tell you which move Mimic copies
             # (depending on gen or replay date it's hard to tell)
-            pokemon.mimic(move_name=args[2], gen=self.replay.gen)
+            pokemon.mimic(move_name=args[2])
             self.replay.add_warning(WarningFlags.MIMIC)
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(
             args[2:]
@@ -1190,10 +1190,7 @@ class SimProtocol:
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         if pokemon.had_name is None:
             pokemon.had_name = pokemon.name
-        name, lvl = Pokemon.identify_from_details(args[1])
-        # poke-env actually blocks the equivalent "species" change here, but confusingly ends
-        # up changing the name anyway on the next request message.
-        pokemon.name = name
+        name, lvl = Pokemon.identify_from_details(args[1], gen=self.replay.gen)
         pokemon.update_pokedex_info(name)
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(args)
         if found_ability:
@@ -1211,7 +1208,9 @@ class SimProtocol:
         # find the zoroark that is replacing it
         replace_with = None
         poke_list = self.curr_turn.get_pokemon_list_from_str(args[0])
-        replace_with_name, _ = Pokemon.identify_from_details(args[1])
+        replace_with_name, _ = Pokemon.identify_from_details(
+            args[1], gen=self.replay.gen
+        )
         for p in poke_list:
             if p.name == replace_with_name:
                 replace_with = p

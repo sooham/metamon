@@ -177,8 +177,8 @@ class Move(PEMove):
 class Pokemon:
     def __init__(self, name: str, lvl: int, gen: int):
         # basic info
-        self.name: str = name  # changes on forme change
-        self.had_name: str = name  # never changes
+        self.name: Optional[str] = None  # changes on forme change
+        self.had_name: Optional[str] = None  # never changes
         self.nickname: Optional[str] = None  # player-assigned username
         self.unique_id: str = str(
             uuid.uuid4()
@@ -225,18 +225,26 @@ class Pokemon:
             return False
         return self.unique_id == other.unique_id
 
-    def update_pokedex_info(self, name: str):
-        pokedex = Dex.from_gen(self.gen).pokedex
+    @staticmethod
+    def _lookup_pokedex_info(name: str, gen: int):
+        pokedex = Dex.from_gen(gen).pokedex
         lookup_name = pokemon_name(name)
         try:
-            new_pokedex_info = pokedex[lookup_name]
+            pokedex_info = pokedex[lookup_name]
         except KeyError:
             raise PokedexMissingEntry(name, lookup_name)
-        self.type = new_pokedex_info["types"]
+        return pokedex_info
+
+    def update_pokedex_info(self, name: str):
+        pokedex_info = self._lookup_pokedex_info(name, gen=self.gen)
+        self.name = pokedex_info["name"]
+        if self.had_name is None:
+            self.had_name = pokedex_info["baseSpecies"]
+        self.type = pokedex_info["types"]
         if self.had_type is None:
             self.had_type = copy.deepcopy(self.type)
-        self.base_stats = new_pokedex_info["baseStats"]
-        possible_abilities = list(new_pokedex_info["abilities"].values())
+        self.base_stats = pokedex_info["baseStats"]
+        possible_abilities = list(pokedex_info["abilities"].values())
         if len(possible_abilities) == 1:
             only_ability = possible_abilities[0]
             if only_ability == "No Ability":
@@ -277,7 +285,7 @@ class Pokemon:
         fresh.on_end_of_turn()
         return fresh
 
-    def mimic(self, move_name: str, gen: int):
+    def mimic(self, move_name: str):
         """
         TODO/Dev note: Mimic is really hard from the replay POV and this isn't perfect.
 
@@ -303,11 +311,11 @@ class Pokemon:
             raise MimicMiss("Mimic not in moveset")
         if self.last_target.move != "Mimic":
             raise MimicMiss("Lost reference to Mimic target")
-        copied_move = Move(name=move_name, gen=gen)
+        copied_move = Move(name=move_name, gen=self.gen)
         # discovers a move the PS viewer doesn't reveal...
         self.last_target.pokemon.reveal_move(copy.deepcopy(copied_move))
         # gen1 PP tracking slightly flawed; won't subtract from Mimic
-        pp = self.moves["Mimic"].pp if gen == 1 else 5
+        pp = self.moves["Mimic"].pp if self.gen == 1 else 5
         copied_move.set_pp(pp)
         copied_move.maximum_pp = pp
         self.move_change_to_from[copied_move.name] = "Mimic"
@@ -435,7 +443,7 @@ class Pokemon:
                     self.moves[move_name] = had_move
 
     @staticmethod
-    def identify_from_details(s: str) -> tuple[str, int]:
+    def identify_from_details(s: str, gen: int) -> tuple[str, int]:
         """
         pokemon info from showdown `DETAILS` arg
 
@@ -452,7 +460,10 @@ class Pokemon:
             lvl = int(lvl[3:])
         else:
             lvl = 100
-        return name, lvl
+        dex_name = Pokemon._lookup_pokedex_info(name, gen=gen)["name"]
+        if dex_name != name:
+            breakpoint()
+        return dex_name, lvl
 
     def __repr__(self):
         return f"{self.name} - {self.active_ability} - {self.active_item} : {self._moveset_str}"
