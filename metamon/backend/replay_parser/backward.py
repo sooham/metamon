@@ -35,10 +35,6 @@ def fill_missing_team_info(
     # 1. Convert the team to the format expected by the team_prediction module
     # TODO: revisit after name/had_name changes?
     gen = int(battle_format.split("gen")[1][0])
-    for p in poke_list:
-        if p.name != p.had_name:
-            breakpoint()
-            break
     poke_names = [p.name for p in poke_list if p is not None]
     converted_poke = [PokemonSet.from_ReplayPokemon(p, gen=gen) for p in poke_list]
     revealed_team = TeamSet(

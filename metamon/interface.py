@@ -2,7 +2,7 @@ from functools import lru_cache
 import copy
 import re
 from dataclasses import dataclass, asdict
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Set
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -517,6 +517,15 @@ class UniversalAction:
     def missing(self) -> bool:
         return self.action_idx == -1
 
+    def __eq__(self, other: "UniversalAction") -> bool:
+        return self.action_idx == other.action_idx
+
+    def __repr__(self):
+        return str(self.action_idx)
+
+    def __hash__(self):
+        return hash(self.action_idx)
+
     @classmethod
     def from_ReplayAction(
         cls, state: ReplayState, action: ReplayAction
@@ -551,27 +560,26 @@ class UniversalAction:
         return cls(action_idx)
 
     @classmethod
-    def maybe_valid_actions(cls, state: UniversalState):
+    def maybe_valid_actions(cls, state: UniversalState) -> Set["UniversalAction"]:
         legal = []
         if not state.forced_switch:
             legal.extend(range(4))
             if state.can_tera:
                 legal.extend(range(9, 13))
         legal.extend(range(4, 4 + len(state.available_switches)))
-        return [UniversalAction(action_idx=action_idx) for action_idx in legal]
+        return set(UniversalAction(action_idx=action_idx) for action_idx in legal)
 
     @classmethod
-    def definitely_valid_actions(cls, state: UniversalState, battle: Battle):
+    def definitely_valid_actions(
+        cls, state: UniversalState, battle: Battle
+    ) -> Set["UniversalAction"]:
         maybe_legal = cls.maybe_valid_actions(state)
-        definitely_legal = []
+        definitely_legal = set()
         for action in maybe_legal:
             order = cls.action_idx_to_BattleOrder(battle, action_idx=action.action_idx)
             if order is not None:
-                definitely_legal.append(action)
+                definitely_legal.add(action)
         return definitely_legal
-
-    def __repr__(self):
-        return str(self.action_idx)
 
     @staticmethod
     def action_idx_to_BattleOrder(

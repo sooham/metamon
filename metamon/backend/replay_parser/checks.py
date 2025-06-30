@@ -3,7 +3,6 @@ from typing import Optional
 from metamon.backend.replay_parser.exceptions import *
 from metamon.interface import UniversalAction, UniversalState
 
-from poke_env.environment import Effect as PEEffect
 from poke_env.data import to_id_str
 
 
@@ -282,7 +281,7 @@ def check_action_idxs(
             raise ActionIndexError(f"Expected move action index")
         # check action index is considered legal by mask helper
         maybe_legal = UniversalAction.maybe_valid_actions(state)
-        if action_idx not in maybe_legal:
+        if UniversalAction(action_idx) not in maybe_legal:
             raise ActionIndexError(
                 f"Action index {action_idx} is not found to be legal by UniversalAction"
             )
