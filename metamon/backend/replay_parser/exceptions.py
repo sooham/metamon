@@ -202,14 +202,14 @@ class ToNumpyError(BackwardException):
 class PokedexMissingEntry(BackwardException):
     def __init__(self, raw_name: str, lookup_name: str):
         super().__init__(
-            f"Pokemon '{raw_name}' (w/ lookup name '{lookup_name}') could not be found in the `poke_env` lookup data"
+            f"Pokemon '{raw_name}' (w/ lookup name '{lookup_name}') could not be found in the `showdown_dex` lookup data"
         )
 
 
 class MovedexMissingEntry(BackwardException):
     def __init__(self, raw_name: str, lookup_name: str):
         super().__init__(
-            f"Move '{raw_name}' (w/ lookup name '{lookup_name}') could not be found in the `poke_env` lookup data"
+            f"Move '{raw_name}' (w/ lookup name '{lookup_name}') could not be found in the `showdown_dex` lookup data"
         )
 
 

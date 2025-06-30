@@ -9,8 +9,6 @@ from datetime import datetime
 
 from metamon.backend.replay_parser.exceptions import *
 from metamon.backend.showdown_dex import Dex
-
-from poke_env.data import to_id_str
 from metamon.backend.replay_parser.pe_datatypes import (
     PEEffect,
     PEField,
@@ -19,6 +17,7 @@ from metamon.backend.replay_parser.pe_datatypes import (
     PEStatus,
     PEWeather,
 )
+from metamon.backend.replay_parser.str_parsing import move_name, pokemon_name
 
 
 class Nothing(Enum):
@@ -86,31 +85,6 @@ def get_pokedex_and_moves(format: str) -> Tuple[dict[str, Any], dict[str, Any]]:
     return gen_data.pokedex, gen_data.moves
 
 
-def _one_hidden_power(move_name: str) -> str:
-    """
-    Used to map all hidden power moves to the same name
-    """
-    # used to map all hidden power moves to the same name
-    if move_name.startswith("Hidden Power"):
-        return "Hidden Power"
-    elif move_name.startswith("hiddenpower"):
-        return "hiddenpower"
-    else:
-        return move_name
-
-
-def cleanup_move_id(move_id: str) -> str:
-    move_id = _one_hidden_power(move_id)
-    if move_id == "vicegrip":
-        return "visegrip"
-    elif move_id.startswith("return"):
-        return "return"
-    elif move_id.startswith("frustration"):
-        return "frustration"
-    else:
-        return move_id
-
-
 @dataclass
 class Boosts:
     """
@@ -160,9 +134,8 @@ class Move(PEMove):
 
     def __init__(self, name: str, gen: int):
         # in an attempt to handle `choice` messages that give names in a case/space insensitive format,
-        # we'll go from the name parsed from the replay --> poke_env id --> poke_env's official move name
-        name = _one_hidden_power(name)
-        lookup_name = cleanup_move_id(to_id_str(name))
+        # we'll go from the name parsed from the replay --> dex id --> dex json's official move name
+        lookup_name = move_name(name)
         self.lookup_name = lookup_name
         try:
             super().__init__(move_id=self.lookup_name, gen=gen)
@@ -254,7 +227,7 @@ class Pokemon:
 
     def update_pokedex_info(self, name: str):
         pokedex = Dex.from_gen(self.gen).pokedex
-        lookup_name = to_id_str(name)
+        lookup_name = pokemon_name(name)
         try:
             new_pokedex_info = pokedex[lookup_name]
         except KeyError:
@@ -543,7 +516,7 @@ class Pokemon:
         self.tera_type = tera_type
 
         pokemon_set_moves = set(
-            _one_hidden_power(move)
+            move_name(move)
             for move in pokemon_set.moves
             if (
                 move != pokemon_set.MISSING_MOVE

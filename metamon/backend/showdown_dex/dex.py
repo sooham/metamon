@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional, Union
 
 import orjson
 
-from poke_env import to_id_str
+from metamon.backend.replay_parser.str_parsing import pokemon_name
 
 
 class Dex:
@@ -63,7 +63,7 @@ class Dex:
         for value in dex.values():
             if "cosmeticFormes" in value:
                 for other_form in value["cosmeticFormes"]:
-                    other_forms_dex[to_id_str(other_form)] = value
+                    other_forms_dex[pokemon_name(other_form)] = value
 
         for name, value in dex.items():
             if name.startswith("pikachu") and name not in {"pikachu", "pikachugmax"}:
@@ -75,7 +75,7 @@ class Dex:
             if "baseSpecies" in value:
                 value["species"] = value["baseSpecies"]
             else:
-                value["baseSpecies"] = to_id_str(name)
+                value["baseSpecies"] = pokemon_name(name)
         return dex
 
     def load_type_chart(self, gen: int) -> Dict[str, Dict[str, float]]:

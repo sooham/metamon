@@ -2,8 +2,7 @@ from typing import Optional
 
 from metamon.backend.replay_parser.exceptions import *
 from metamon.interface import UniversalAction, UniversalState
-
-from poke_env.data import to_id_str
+from metamon.backend.replay_parser.str_parsing import clean_name
 
 
 def check_finished(replay):
@@ -163,9 +162,9 @@ def check_noun_spelling(replay):
             ]:
                 val = getattr(pokemon, poke_attr)
                 if isinstance(val, str):
-                    if to_id_str(val) == val:
+                    if clean_name(val) == val:
                         raise ForwardVerify(
-                            f"Potential to_id_str --> Proper Name mismatch: {val}, sometimes caused by all-lowercase logs"
+                            f"Potential clean_name --> Proper Name mismatch: {val}, probably caused by all-lowercase replay logs"
                         )
 
 
