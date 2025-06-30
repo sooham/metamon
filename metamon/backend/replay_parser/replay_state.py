@@ -11,12 +11,14 @@ from metamon.backend.replay_parser.exceptions import *
 from metamon.backend.showdown_dex import Dex
 
 from poke_env.data import to_id_str
-from poke_env.environment import Effect as PEEffect
-from poke_env.environment import Field as PEField
-from poke_env.environment import Move as PEMove
-from poke_env.environment import SideCondition as PESideCondition
-from poke_env.environment import Status as PEStatus
-from poke_env.environment import Weather as PEWeather
+from metamon.backend.replay_parser.pe_datatypes import (
+    PEEffect,
+    PEField,
+    PEMove,
+    PESideCondition,
+    PEStatus,
+    PEWeather,
+)
 
 
 class Nothing(Enum):
