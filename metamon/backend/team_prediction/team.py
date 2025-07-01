@@ -11,7 +11,6 @@ from typing import List, Optional
 from metamon.backend.replay_parser.replay_state import (
     Pokemon,
     Nothing,
-    BackwardMarkers,
     unknown,
 )
 from metamon.backend.team_prediction.usage_stats import get_usage_stats
@@ -285,19 +284,13 @@ class PokemonSet:
         # maintaining the replay parser's distinction between "known to be None" and "unrevealed"
         if pokemon.gen == 1 or pokemon.had_item == Nothing.NO_ITEM:
             item = cls.NO_ITEM
-        elif (
-            pokemon.had_item is None
-            or pokemon.had_item == BackwardMarkers.FORCE_UNKNOWN
-        ):
+        elif unknown(pokemon.had_item):
             item = cls.MISSING_ITEM
         else:
             item = pokemon.had_item
         if pokemon.gen <= 2 or pokemon.had_ability == Nothing.NO_ABILITY:
             ability = cls.NO_ABILITY
-        elif (
-            pokemon.had_ability is None
-            or pokemon.had_ability == BackwardMarkers.FORCE_UNKNOWN
-        ):
+        elif unknown(pokemon.had_ability):
             ability = cls.MISSING_ABILITY
         else:
             ability = pokemon.had_ability
