@@ -12,8 +12,10 @@ from metamon.backend.replay_parser.replay_state import (
     Pokemon,
     Nothing,
     BackwardMarkers,
+    unknown,
 )
 from metamon.backend.team_prediction.usage_stats import get_usage_stats
+from metamon.backend.showdown_dex import Dex
 
 
 def moveset_size(pokemon_name: str, gen: int) -> int:
@@ -35,6 +37,19 @@ def _one_hidden_power(move_name: str) -> str:
         return "hiddenpower"
     else:
         return move_name
+
+
+def get_teamfile_name(given_name: str, gen: int) -> str:
+    dex = Dex.from_gen(gen)
+    try:
+        entry = dex.get_pokedex_entry(given_name)
+    except KeyError:
+        return given_name, given_name
+    name = entry.get("name", given_name)
+    if "battleOnly" in entry:
+        name = entry["battleOnly"]
+    base_species = entry.get("baseSpecies", name)
+    return name, base_species
 
 
 @functools.total_ordering
@@ -87,6 +102,8 @@ class PokemonSet:
         ]
         self.missing_regex = re.compile("|".join(map(re.escape, self.missing_strings)))
         self.moves = [_one_hidden_power(move) for move in self.moves]
+        # override names with official pokedex lookup
+        self.name, self.base_species = get_teamfile_name(self.name, self.gen)
 
     def __hash__(self):
         moves_frozen = frozenset(self.moves) - {self.MISSING_MOVE}
@@ -288,6 +305,7 @@ class PokemonSet:
             tera_type = pokemon.tera_type
         else:
             tera_type = cls.default_tera_type(gen)
+
         return cls(
             name=pokemon.name,
             gen=pokemon.gen,
@@ -308,6 +326,8 @@ class PokemonSet:
             raise ValueError("other must be a PokemonSet")
         if not self.name == other.name:
             raise ValueError("other must have the same name")
+        if not self.base_species == other.base_species:
+            raise ValueError("other must have the same base species")
         new_moves = list(set(other.moves) - set(self.moves))
         for move in self.moves:
             if move == self.MISSING_MOVE:
