@@ -112,6 +112,9 @@ class Dex:
 
         return type_chart
 
+    def get_pokedex_entry(self, name: str) -> Dict[str, Any]:
+        return self.pokedex[pokemon_name(name)]
+
     @property
     def _static_files_root(self) -> str:
         return os.path.join(os.path.dirname(os.path.realpath(__file__)), "static")
