@@ -263,17 +263,10 @@ class MetamonBackendBattle(pe.AbstractBattle):
                 )
                 move = known_active_moves[move_id]
             elif move_id in {"recharge", "struggle"}:
-                # when these happen, the agent's observation is going to be
-                # its base moveset. However, the replay parser has a special case
-                # to handle Struggle with action index 0. On recharge, none of its
-                # moves are going to be considered valid (because this list will
-                # only be Recharge). There will also be no valid switches. Therefore,
-                # it will default on every action index and the only option the env
-                # will pick is Recharge.
+                # these are handled as special cases in the action space, replay parser,
+                # and here. The agent does not see recharge or struggle as its moves.
                 move = Move(move_name, gen=self._gen)
                 move.set_pp(active_move.get("pp", move.pp))
-                # the replay parser never lists Recharge/Struggle as the Pokemon's
-                # current moveset.
                 override_active_moves = False
             else:
                 known_had_moves = {

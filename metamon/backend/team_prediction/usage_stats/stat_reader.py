@@ -11,6 +11,7 @@ from metamon.backend.team_prediction.usage_stats.format_rules import (
     Tier,
 )
 from metamon.backend.replay_parser.str_parsing import pokemon_name
+from metamon.backend.showdown_dex.dex import Dex
 
 
 TIER_MAP = {
@@ -386,9 +387,12 @@ class PreloadedSmogonUsageStats(SmogonStat):
     ):
         self.format = format.strip().lower()
         self.rank = None
+        self.start_date = start_date
+        self.end_date = end_date
         self.verbose = verbose
         self._usage = None
         gen, tier = int(self.format[3]), self.format[4:]
+        self.gen = gen
         usage_stats_path = metamon.data.download.download_usage_stats(gen)
         movesets_path = os.path.join(
             usage_stats_path, "movesets_data", f"gen{gen}", f"{tier}"
@@ -421,29 +425,31 @@ class PreloadedSmogonUsageStats(SmogonStat):
 
     def _inclusive_search(self, key):
         # check the stats for this specific tier and time period first
-        if key in self._movesets:
-            return self._movesets[key]
-        # fallback to stats compiled across all tiers and time periods
-        if key in self._inclusive:
-            return self._inclusive[key]
-        return None
+        key_id = pokemon_name(key)
+        recent = self._movesets.get(key_id, {})
+        alltime = self._inclusive.get(key_id, {})
+        if not (recent or alltime):
+            return None
+
+        if recent and alltime:
+            # use the alltime stats to selectively get keys that exist
+            # in recent but are unhelpful for team prediction.
+            no_info = {"Nothing": 1.0}
+            for key, value in recent.items():
+                if value == no_info and alltime.get(key, {}) != no_info:
+                    recent[key] = alltime[key]
+
+        return recent if recent else alltime
 
     def __getitem__(self, key):
-        # TODO: unify formes with data files
-        species_key = key.split("-")[0]
-        id_key = pokemon_name(key)
-        species_id_key = pokemon_name(species_key)
-
-        # search by the full name first
-        id_search = self._inclusive_search(id_key)
-        if id_search is not None:
-            return id_search
-
-        # check if the "forme" (e.g. "Gastrodon-East") is the problem
-        species_id_search = self._inclusive_search(species_id_key)
-        if species_id_search is not None:
-            return species_id_search
-
+        entry = Dex.from_gen(self.gen).get_pokedex_entry(key)
+        species, base_species = entry.get("name", key), entry.get("baseSpecies", key)
+        lookup = self._inclusive_search(species)
+        if lookup is not None:
+            return lookup
+        lookup = self._inclusive_search(base_species)
+        if lookup is not None:
+            return lookup
         raise KeyError(f"Pokemon {key} not found in {self.format}")
 
 
