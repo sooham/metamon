@@ -76,15 +76,6 @@ class Winner(Enum):
     PLAYER_2 = 2
 
 
-@lru_cache(maxsize=9)
-def get_pokedex_and_moves(format: str) -> Tuple[dict[str, Any], dict[str, Any]]:
-    if format[:3] != "gen":
-        raise RareValueError(f"Unknown format: {format}")
-    gen = int(format[3])
-    gen_data = Dex.from_gen(gen)
-    return gen_data.pokedex, gen_data.moves
-
-
 @dataclass
 class Boosts:
     """
@@ -177,8 +168,8 @@ class Move(PEMove):
 class Pokemon:
     def __init__(self, name: str, lvl: int, gen: int):
         # basic info
-        self.name: str = name  # changes on forme change
-        self.had_name: str = name  # never changes
+        self.name: Optional[str] = None  # changes on forme change
+        self.had_name: Optional[str] = None  # never changes
         self.nickname: Optional[str] = None  # player-assigned username
         self.unique_id: str = str(
             uuid.uuid4()
@@ -225,23 +216,41 @@ class Pokemon:
             return False
         return self.unique_id == other.unique_id
 
-    def update_pokedex_info(self, name: str):
-        pokedex = Dex.from_gen(self.gen).pokedex
+    @staticmethod
+    def _lookup_pokedex_info(name: str, gen: int):
+        pokedex = Dex.from_gen(gen).pokedex
         lookup_name = pokemon_name(name)
         try:
-            new_pokedex_info = pokedex[lookup_name]
+            pokedex_info = pokedex[lookup_name]
         except KeyError:
             raise PokedexMissingEntry(name, lookup_name)
-        self.type = new_pokedex_info["types"]
+        return pokedex_info
+
+    def update_pokedex_info(self, name: str):
+        pokedex_info = self._lookup_pokedex_info(name, gen=self.gen)
+        self.name = pokedex_info["name"]
+        if self.had_name is None:
+            self.had_name = pokedex_info["baseSpecies"]
+        self.type = pokedex_info["types"]
         if self.had_type is None:
             self.had_type = copy.deepcopy(self.type)
-        self.base_stats = new_pokedex_info["baseStats"]
-        possible_abilities = list(new_pokedex_info["abilities"].values())
-        if len(possible_abilities) == 1:
+        self.base_stats = pokedex_info["baseStats"]
+        # use the pokedex to reveal info
+        possible_abilities = list(pokedex_info["abilities"].values())
+        required_ability = pokedex_info.get("requiredAbility", None)
+        if required_ability is not None:
+            self.reveal_ability(required_ability)
+        elif len(possible_abilities) == 1:
             only_ability = possible_abilities[0]
             if only_ability == "No Ability":
                 only_ability = Nothing.NO_ABILITY
             self.reveal_ability(only_ability)
+        required_item = pokedex_info.get("requiredItem", None)
+        if required_item is not None:
+            self.reveal_item(required_item)
+        required_tera = pokedex_info.get("requiredTeraType", None)
+        if required_tera is not None and self.gen == 9:
+            self.tera_type = required_tera
 
     def on_switch_out(self):
         # many temporary effects and changes revert on switch out
@@ -277,7 +286,7 @@ class Pokemon:
         fresh.on_end_of_turn()
         return fresh
 
-    def mimic(self, move_name: str, gen: int):
+    def mimic(self, move_name: str):
         """
         TODO/Dev note: Mimic is really hard from the replay POV and this isn't perfect.
 
@@ -303,11 +312,11 @@ class Pokemon:
             raise MimicMiss("Mimic not in moveset")
         if self.last_target.move != "Mimic":
             raise MimicMiss("Lost reference to Mimic target")
-        copied_move = Move(name=move_name, gen=gen)
+        copied_move = Move(name=move_name, gen=self.gen)
         # discovers a move the PS viewer doesn't reveal...
         self.last_target.pokemon.reveal_move(copy.deepcopy(copied_move))
         # gen1 PP tracking slightly flawed; won't subtract from Mimic
-        pp = self.moves["Mimic"].pp if gen == 1 else 5
+        pp = self.moves["Mimic"].pp if self.gen == 1 else 5
         copied_move.set_pp(pp)
         copied_move.maximum_pp = pp
         self.move_change_to_from[copied_move.name] = "Mimic"
@@ -435,7 +444,9 @@ class Pokemon:
                     self.moves[move_name] = had_move
 
     @staticmethod
-    def identify_from_details(s: str) -> tuple[str, int]:
+    def identify_from_details(
+        s: str, gen: int, get_base_species: bool = False
+    ) -> tuple[str, int]:
         """
         pokemon info from showdown `DETAILS` arg
 
@@ -452,7 +463,22 @@ class Pokemon:
             lvl = int(lvl[3:])
         else:
             lvl = 100
-        return name, lvl
+        # get the standardized name and base species from the pokedex
+        name_out = name
+        dex = Dex.from_gen(gen)
+        try:
+            entry = dex.get_pokedex_entry(name)
+        except KeyError:
+            if get_base_species:
+                # give it a shot i guess. if it's not in the dex,
+                # the replay parser is probably going to fail later anyway.
+                name_out = name_out.split("-")[0].strip()
+        else:
+            name_out = entry.get(
+                "baseSpecies" if get_base_species else "name", name_out
+            )
+
+        return name_out, lvl
 
     def __repr__(self):
         return f"{self.name} - {self.active_ability} - {self.active_item} : {self._moveset_str}"
@@ -491,8 +517,10 @@ class Pokemon:
         """
         Fill unknown details based on the outputs of our team prediction module.
         """
-        if not self.name == pokemon_set.name:
-            raise ValueError("other must have the same name")
+        if not self.had_name == pokemon_set.base_species:
+            raise ValueError(
+                f"species/name mixup: {self.had_name} != {pokemon_set.base_species}"
+            )
 
         item = pokemon_set.item
         if item == pokemon_set.NO_ITEM:

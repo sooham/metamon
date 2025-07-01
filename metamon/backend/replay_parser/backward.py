@@ -3,6 +3,7 @@ import datetime
 from typing import List, Optional
 import collections
 
+import metamon
 from metamon.backend.replay_parser import checks
 from metamon.backend.replay_parser.exceptions import *
 from metamon.backend.replay_parser.replay_state import (
@@ -33,9 +34,8 @@ def fill_missing_team_info(
     """
 
     # 1. Convert the team to the format expected by the team_prediction module
-    # TODO: revisit after name/had_name changes?
-    gen = int(battle_format.split("gen")[1][0])
-    poke_names = [p.name for p in poke_list if p is not None]
+    gen = metamon.backend.format_to_gen(battle_format)
+    existing_species = set(p.had_name for p in poke_list if p is not None)
     converted_poke = [PokemonSet.from_ReplayPokemon(p, gen=gen) for p in poke_list]
     revealed_team = TeamSet(
         lead=converted_poke[0], reserve=converted_poke[1:], format=battle_format
@@ -51,7 +51,9 @@ def fill_missing_team_info(
 
     # 3. Filling missing information with the predicted team
     pokemon_to_add = [
-        poke for poke in predicted_team.pokemon if poke.name not in poke_names
+        poke
+        for poke in predicted_team.pokemon
+        if poke.base_species not in existing_species
     ]
     while None in poke_list and pokemon_to_add:
         generated = pokemon_to_add.pop(0)
@@ -69,17 +71,18 @@ def fill_missing_team_info(
 
     for p in poke_list:
         for match in predicted_team.pokemon:
-            if match.name == p.name:
+            if match.base_species == p.had_name:
                 break
         else:
             raise BackwardException(f"Could not find match for {p.name}")
         p.fill_from_PokemonSet(match)
+
         if (
             p.had_item == BackwardMarkers.FORCE_UNKNOWN
             or p.had_ability == BackwardMarkers.FORCE_UNKNOWN
         ):
             raise BackwardException(
-                f"Leaked BackwardMarkers.FORCE_UNKNOWN for {p.had_item} or {p.had_ability} with predicted match {match}"
+                f"Leaked BackwardMarkers.FORCE_UNKNOWN for {p.had_item} or {p.had_ability} with predicted match {match.name}"
             )
 
     return poke_list, revealed_team

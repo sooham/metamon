@@ -8,12 +8,14 @@ import functools
 from dataclasses import dataclass
 from typing import List, Optional
 
+import metamon
 from metamon.backend.replay_parser.replay_state import (
     Pokemon,
     Nothing,
-    BackwardMarkers,
+    unknown,
 )
 from metamon.backend.team_prediction.usage_stats import get_usage_stats
+from metamon.backend.showdown_dex import Dex
 
 
 def moveset_size(pokemon_name: str, gen: int) -> int:
@@ -72,6 +74,21 @@ class PokemonSet:
     MISSING_NATURE = "$missing_nature$"
     MISSING_TERA_TYPE = "$missing_tera$"
 
+    @classmethod
+    def get_teamfile_name(cls, given_name: str, gen: int) -> tuple[str, str]:
+        if given_name == cls.MISSING_NAME:
+            return given_name, given_name
+        dex = Dex.from_gen(gen)
+        try:
+            entry = dex.get_pokedex_entry(given_name)
+        except KeyError:
+            return given_name, given_name
+        name = entry.get("name", given_name)
+        if "battleOnly" in entry:
+            name = entry["battleOnly"]
+        base_species = entry.get("baseSpecies", name)
+        return name, base_species
+
     def __post_init__(self):
         assert len(self.evs) == 6
         assert len(self.ivs) == 6
@@ -87,6 +104,8 @@ class PokemonSet:
         ]
         self.missing_regex = re.compile("|".join(map(re.escape, self.missing_strings)))
         self.moves = [_one_hidden_power(move) for move in self.moves]
+        # override names with official pokedex lookup
+        self.name, self.base_species = self.get_teamfile_name(self.name, self.gen)
 
     def __hash__(self):
         moves_frozen = frozenset(self.moves) - {self.MISSING_MOVE}
@@ -268,19 +287,13 @@ class PokemonSet:
         # maintaining the replay parser's distinction between "known to be None" and "unrevealed"
         if pokemon.gen == 1 or pokemon.had_item == Nothing.NO_ITEM:
             item = cls.NO_ITEM
-        elif (
-            pokemon.had_item is None
-            or pokemon.had_item == BackwardMarkers.FORCE_UNKNOWN
-        ):
+        elif unknown(pokemon.had_item):
             item = cls.MISSING_ITEM
         else:
             item = pokemon.had_item
         if pokemon.gen <= 2 or pokemon.had_ability == Nothing.NO_ABILITY:
             ability = cls.NO_ABILITY
-        elif (
-            pokemon.had_ability is None
-            or pokemon.had_ability == BackwardMarkers.FORCE_UNKNOWN
-        ):
+        elif unknown(pokemon.had_ability):
             ability = cls.MISSING_ABILITY
         else:
             ability = pokemon.had_ability
@@ -288,6 +301,7 @@ class PokemonSet:
             tera_type = pokemon.tera_type
         else:
             tera_type = cls.default_tera_type(gen)
+
         return cls(
             name=pokemon.name,
             gen=pokemon.gen,
@@ -308,6 +322,12 @@ class PokemonSet:
             raise ValueError("other must be a PokemonSet")
         if not self.name == other.name:
             raise ValueError("other must have the same name")
+        if (
+            self.base_species != self.MISSING_NAME
+            and self.base_species != other.base_species
+        ):
+            raise ValueError("other must have the same base species")
+        self.base_species = other.base_species
         new_moves = list(set(other.moves) - set(self.moves))
         for move in self.moves:
             if move == self.MISSING_MOVE:
@@ -719,7 +739,7 @@ class TeamSet:
         """
         with open(path, "r") as f:
             content = f.read()
-        gen = int(format.split("gen")[1][0])
+        gen = metamon.backend.format_to_gen(format)
         blocks = [block for block in content.strip().split("\n\n") if block.strip()]
         pokemons = [PokemonSet.from_showdown_block(block, gen=gen) for block in blocks]
         if not pokemons:
@@ -757,7 +777,7 @@ class TeamSet:
     @classmethod
     def from_seq(cls, seq: List[str], include_stats: bool = True):
         format = seq[0].split(":")[1].strip()
-        gen = int(format.split("gen")[1][0])
+        gen = metamon.backend.format_to_gen(format)
         poke_seq_len = 20 if include_stats else 7
         lead = PokemonSet.from_seq(
             seq[1 : poke_seq_len + 1], gen=gen, include_stats=include_stats

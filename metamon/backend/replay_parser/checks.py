@@ -1,8 +1,8 @@
 from typing import Optional
 
 from metamon.backend.replay_parser.exceptions import *
-from metamon.interface import UniversalAction, UniversalState
 from metamon.backend.replay_parser.str_parsing import clean_name
+from metamon.backend.replay_parser.replay_state import Nothing, unknown
 
 
 def check_finished(replay):
@@ -172,24 +172,34 @@ def check_filled_mon(pokemon):
     p = pokemon
     if (
         not isinstance(p.base_stats, dict)
-        or p.had_ability is None
-        or p.active_ability is None
-        or p.had_item is None
-        or p.active_item is None
+        or unknown(p.name)
+        or unknown(p.had_name)
+        or unknown(p.had_ability)
+        or unknown(p.active_ability)
+        or unknown(p.had_item)
+        or unknown(p.active_item)
         or (isinstance(p.active_item, str) and not p.active_item.strip())
         or (isinstance(p.active_ability, str) and not p.active_ability.strip())
-        or p.current_hp is None
-        or p.status is None
-        or p.max_hp is None
-        or p.lvl is None
+        or unknown(p.current_hp)
+        or unknown(p.status)
+        or unknown(p.max_hp)
+        or unknown(p.lvl)
         or not p.base_stats
         or None in p.base_stats.values()
-        or p.type is None
+        or unknown(p.type)
     ):
         raise BackwardException(f"Pokemon info has not been filled: {p}")
 
-    moveset_size = len(pokemon.moves)
+    if pokemon.gen == 9 and pokemon.tera_type == Nothing.NO_TERA_TYPE:
+        raise BackwardException(f"Pokemon {pokemon.name} has no tera type")
 
+    if pokemon.gen > 2 and pokemon.had_ability == Nothing.NO_ABILITY:
+        raise BackwardException(f"Pokemon {pokemon.name} has no ability")
+
+    if pokemon.gen > 2 and pokemon.had_item == Nothing.NO_ITEM:
+        raise BackwardException(f"Pokemon {pokemon.name} has no item")
+
+    moveset_size = len(pokemon.moves)
     if moveset_size > 4:
         raise TooManyMoves(p)
 
@@ -236,11 +246,14 @@ def check_action_alignment(replay):
 
 
 def check_action_idxs(
-    univeral_states: list[UniversalState],
-    actions: list[Optional[UniversalAction]],
+    univeral_states: list,
+    actions: list,
     action_idxs: list[int],
     gen: int,
 ):
+    # too lazy to fix circular import for the runtime checks
+    from metamon.interface import UniversalAction
+
     tera = 0
     for state, action, action_idx in zip(univeral_states, actions, action_idxs):
         # check missing actions
@@ -262,7 +275,7 @@ def check_action_idxs(
             raise ActionIndexError(
                 f"{action.name} is action index {action_idx}; expected to be 0"
             )
-        if state.forced_switch and not action.is_switch:
+        if state.forced_switch and not (action.is_switch or action.is_revival):
             # check forced switch leads to switch
             raise ActionIndexError(
                 f"Forced switch {state.forced_switch} != action {action.is_switch}"

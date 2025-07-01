@@ -5,6 +5,8 @@ from typing import Iterable
 
 from termcolor import colored
 import numpy as np
+
+import metamon
 from metamon.backend.team_prediction.usage_stats import get_usage_stats
 from metamon.backend.team_prediction.usage_stats.constants import (
     HIDDEN_POWER_IVS,
@@ -25,7 +27,7 @@ def weighted_random_choice(data: dict[str, float], n: int) -> list[str]:
     if "Nothing" in data:
         del data["Nothing"]
     if not data:
-        return [" "]
+        return [""]
     # random choose four moves from moveset using their percent, should not duplicate
     p = np.array(list(data.values()))
     p = p / np.sum(p)
@@ -43,6 +45,7 @@ class TeamBuilder:
         remove_banned: bool = False,
     ):
         self.format = format
+        self.gen = metamon.backend.format_to_gen(format)
         self.stat = get_usage_stats(format, start_date, end_date)
         if remove_banned:
             self.stat.remove_banned_pm()
@@ -52,7 +55,8 @@ class TeamBuilder:
         self.isgen7 = format.startswith("gen7")
 
     def check_valid_moves(self, pokemon, moves):
-        breakpoint()
+        # TODO: this is probably not needed anymore but further changes will
+        # wait until the next backend update....
         hp_flag = False
         if len(set(moves)) < len(moves):
             return False

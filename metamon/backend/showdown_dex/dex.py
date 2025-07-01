@@ -4,6 +4,8 @@ from typing import Any, Dict, Optional, Union
 
 import orjson
 
+
+import metamon
 from metamon.backend.replay_parser.str_parsing import pokemon_name
 
 
@@ -68,14 +70,10 @@ class Dex:
         for name, value in dex.items():
             if name.startswith("pikachu") and name not in {"pikachu", "pikachugmax"}:
                 other_forms_dex[name + "gmax"] = dex["pikachugmax"]
-
         dex.update(other_forms_dex)
 
         for name, value in dex.items():
-            if "baseSpecies" in value:
-                value["species"] = value["baseSpecies"]
-            else:
-                value["baseSpecies"] = pokemon_name(name)
+            value["baseSpecies"] = value.get("baseSpecies", value["name"])
         return dex
 
     def load_type_chart(self, gen: int) -> Dict[str, Dict[str, float]]:
@@ -116,6 +114,9 @@ class Dex:
 
         return type_chart
 
+    def get_pokedex_entry(self, name: str) -> Dict[str, Any]:
+        return self.pokedex[pokemon_name(name)]
+
     @property
     def _static_files_root(self) -> str:
         return os.path.join(os.path.dirname(os.path.realpath(__file__)), "static")
@@ -130,5 +131,5 @@ class Dex:
     @classmethod
     @lru_cache(None)
     def from_format(cls, format: str):
-        gen = int(format[3])
+        gen = metamon.backend.format_to_gen(format)
         return cls.from_gen(gen)

@@ -173,7 +173,7 @@ class UniversalPokemon:
 
     # version-specific
     tera_type: str
-    permanent_name: str
+    base_species: str
 
     @classmethod
     def from_dict(cls, data: dict):
@@ -181,9 +181,9 @@ class UniversalPokemon:
         if "tera_type" not in data:
             # if missing --> old version of the dataset --> gen 1-4 --> no tera
             data["tera_type"] = cls.universal_types([None], force_two=False)
-        if "permanent_name" not in data:
+        if "base_species" not in data:
             # if missing --> old version of the dataset --> gen 1-4 --> we can get away with this
-            data["permanent_name"] = data["name"]
+            data["base_species"] = data["name"].split("-")[0].strip()
         return cls(**data)
 
     @staticmethod
@@ -269,7 +269,7 @@ class UniversalPokemon:
         }
         return cls(
             name=pokemon_name(pokemon.name),
-            permanent_name=pokemon_name(pokemon.had_name),
+            base_species=pokemon_name(pokemon.had_name),
             hp_pct=float(pokemon.current_hp) / pokemon.max_hp,
             types=cls.universal_types(pokemon.type),
             tera_type=cls.universal_types([pokemon.tera_type], force_two=False),
@@ -290,7 +290,7 @@ class UniversalPokemon:
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
         return cls(
             name=pokemon_name(pokemon.species),
-            permanent_name=pokemon_name(pokemon.base_species),
+            base_species=pokemon_name(pokemon.base_species),
             hp_pct=float(pokemon.current_hp_fraction),
             types=cls.universal_types(pokemon.types),
             tera_type=cls.universal_types([pokemon.tera_type], force_two=False),
@@ -713,7 +713,7 @@ class DefaultShapedReward(RewardFunction):
             last_state.player_active_pokemon,
             *last_state.available_switches,
         ]:
-            if pokemon.permanent_name == active_now.permanent_name:
+            if pokemon.base_species == active_now.base_species:
                 active_prev = pokemon
                 break
         assert active_prev is not None
@@ -723,7 +723,7 @@ class DefaultShapedReward(RewardFunction):
         )
         opp_now = state.opponent_active_pokemon
         opp_prev = last_state.opponent_active_pokemon
-        if opp_now.permanent_name == opp_prev.permanent_name:
+        if opp_now.base_species == opp_prev.base_species:
             damage_done = opp_prev.hp_pct - opp_now.hp_pct
             gave_status = float(
                 opp_now.status != "nostatus" and opp_prev.status == "nostatus"
@@ -1047,7 +1047,7 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
 
         # add a list of revealed opponents padded to length 6 while reusing
         # the existing <blank> token to avoid making a new vocabulary.
-        self.revealed_opponents.add(opponent.permanent_name)
+        self.revealed_opponents.add(opponent.base_species)
         revealed = [opp_name for opp_name in sorted(self.revealed_opponents)]
         while len(revealed) < 6:
             revealed.append("<blank>")

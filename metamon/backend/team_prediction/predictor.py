@@ -153,7 +153,7 @@ def load_replay_stats_by_format(format: str, replay_stats_dir: Optional[str] = N
     This loads large json files that are created by the `generate_replay_stats` script.
     """
     if replay_stats_dir is None:
-        replay_stats_dir = metamon.download.download_replay_stats()
+        replay_stats_dir = metamon.data.download.download_replay_stats()
     pokemon_set_path = os.path.join(
         replay_stats_dir,
         f"{format}_pokemon.json",

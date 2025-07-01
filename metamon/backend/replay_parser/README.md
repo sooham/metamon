@@ -19,9 +19,3 @@ And infers missing information to produce training data like:
 </p>
 
 More information and discussion in Appendix D of the paper.
-
-### Roadmap
-- Improved team inference logic (beyond all-time averages of Showdown usage stats) ✅ 
-- Support arbitrary observation spaces / reward functions ✅
-- Constrain EV guesses based on damage outcomes and move orders
-- Support for Gen1-4 random battles
