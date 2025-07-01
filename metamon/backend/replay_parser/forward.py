@@ -348,26 +348,25 @@ class SimProtocol:
     def get_or_create_pokemon_from_details(
         self, details: str, poke_list: list[Pokemon]
     ) -> Pokemon:
+        # i think matching by `had_name` alone is enough now that it's the official
+        # base species, but am unwilling to risk that change. So, for now, match by
+        # `name` first (like we always have), then fallback to `had_name`.
         poke_name, lvl = Pokemon.identify_from_details(details, gen=self.replay.gen)
-        # match against names up to a forme change
-        lookup_poke_name = poke_name.split("-")[0]
-        lookup_known_names = [p.name.split("-")[0] if p else None for p in poke_list]
-        lookup_known_first_names = [
-            p.had_name.split("-")[0] if p else None for p in poke_list
-        ]
-        if lookup_poke_name in lookup_known_names:
-            # previously identified pokemon
-            poke = poke_list[lookup_known_names.index(lookup_poke_name)]
-        elif lookup_poke_name in lookup_known_first_names:
-            # previously identified, but known by name that has been changing (forms)
-            poke = poke_list[lookup_known_first_names.index(lookup_poke_name)]
-        else:
-            # discovered by switching in
-            poke = Pokemon(name=poke_name, lvl=lvl, gen=self.replay.gen)
-            if None not in poke_list:
-                raise CantIDSwitchIn(details, poke_list)
-            insert_at = poke_list.index(None)
-            poke_list[insert_at] = poke
+        for p in poke_list:
+            if p and p.name == poke_name:
+                return p
+        poke_base_name, _ = Pokemon.identify_from_details(
+            details, gen=self.replay.gen, get_base_species=True
+        )
+        for p in poke_list:
+            if p and p.had_name == poke_base_name:
+                return p
+        # if we get here, it's a newly introduced pokemon.
+        poke = Pokemon(name=poke_name, lvl=lvl, gen=self.replay.gen)
+        if None not in poke_list:
+            raise CantIDSwitchIn(details, poke_list)
+        insert_at = poke_list.index(None)
+        poke_list[insert_at] = poke
         return poke
 
     def _parse_switch_drag(self, args: List[str], name: str):

@@ -76,15 +76,6 @@ class Winner(Enum):
     PLAYER_2 = 2
 
 
-@lru_cache(maxsize=9)
-def get_pokedex_and_moves(format: str) -> Tuple[dict[str, Any], dict[str, Any]]:
-    if format[:3] != "gen":
-        raise RareValueError(f"Unknown format: {format}")
-    gen = int(format[3])
-    gen_data = Dex.from_gen(gen)
-    return gen_data.pokedex, gen_data.moves
-
-
 @dataclass
 class Boosts:
     """
@@ -453,7 +444,9 @@ class Pokemon:
                     self.moves[move_name] = had_move
 
     @staticmethod
-    def identify_from_details(s: str, gen: int) -> tuple[str, int]:
+    def identify_from_details(
+        s: str, gen: int, get_base_species: bool = False
+    ) -> tuple[str, int]:
         """
         pokemon info from showdown `DETAILS` arg
 
@@ -470,10 +463,10 @@ class Pokemon:
             lvl = int(lvl[3:])
         else:
             lvl = 100
-        dex_name = Pokemon._lookup_pokedex_info(name, gen=gen)["name"]
-        if dex_name.lower() != name.lower():
-            breakpoint()
-        return dex_name, lvl
+        entry = Dex.from_gen(gen).get_pokedex_entry(name)
+        if get_base_species:
+            return entry["baseSpecies"], lvl
+        return entry["name"], lvl
 
     def __repr__(self):
         return f"{self.name} - {self.active_ability} - {self.active_item} : {self._moveset_str}"
@@ -512,8 +505,10 @@ class Pokemon:
         """
         Fill unknown details based on the outputs of our team prediction module.
         """
-        if not self.name == pokemon_set.name:
-            raise ValueError("other must have the same name")
+        if not self.had_name == pokemon_set.base_species:
+            raise ValueError(
+                f"species/name mixup: {self.had_name} != {pokemon_set.base_species}"
+            )
 
         item = pokemon_set.item
         if item == pokemon_set.NO_ITEM:
