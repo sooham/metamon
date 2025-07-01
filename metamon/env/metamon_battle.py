@@ -5,14 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import poke_env.environment as pe
 
-
 import metamon.backend.replay_parser as mrp
-from metamon.backend.replay_parser.forward import SimProtocol
-from metamon.backend.replay_parser.exceptions import ForwardException
-from metamon.backend.replay_parser.replay_state import (
-    ParsedReplay,
-)
-from metamon.interface import UniversalPokemon
 from metamon.backend.replay_parser.replay_state import (
     Pokemon,
     Turn,
@@ -20,6 +13,7 @@ from metamon.backend.replay_parser.replay_state import (
     Nothing,
     Move,
 )
+from metamon.interface import UniversalPokemon
 
 
 class MetamonBackendBattle(pe.AbstractBattle):
@@ -47,10 +41,10 @@ class MetamonBackendBattle(pe.AbstractBattle):
         self._logger = logger
         self._save_replays = save_replays
         self._gen = gen
-        self._mm_battle = ParsedReplay(
+        self._mm_battle = mrp.replay_state.ParsedReplay(
             gameid=battle_tag, time_played=datetime.now(), gen=gen
         )
-        self._sim_protocol = SimProtocol(self._mm_battle)
+        self._sim_protocol = mrp.forward.SimProtocol(self._mm_battle)
 
         # Turn choice attributes
         self.in_teampreview: bool = False
@@ -221,6 +215,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         active_pokemon = None
         request_pokemon = side_request.get("pokemon", False)
         if request_pokemon:
+
             for poke in request_pokemon:
                 if not poke:
                     continue
@@ -240,6 +235,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
                     self._available_switches.append(metamon_p)
                 elif not self.trapped and self.reviving and poke.get("reviving", False):
                     self._available_switches.append(metamon_p)
+
         return active_pokemon
 
     def _update_turn_from_active_request(
@@ -283,7 +279,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
                     "mimic",
                 }
                 if not plausible_reasons_to_discover.intersection(known_had_moves):
-                    raise ForwardException(
+                    raise mrp.exceptions.ForwardException(
                         f"Unknown move {move_name} (lookup_name: {move_id}) discovered with known_had_moves: {known_had_moves}, known_active_moves: {known_active_moves}"
                     )
                 move = Move(move_name, gen=self._gen)
@@ -604,7 +600,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
             if pe_p._active:
                 total_active += 1
             if total_active > 1:
-                raise ForwardException(
+                raise mrp.exceptions.ForwardException(
                     f"Multiple active Pokemon in team: {metamon_team}"
                 )
             pe_team[k] = pe_p

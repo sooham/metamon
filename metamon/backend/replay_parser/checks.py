@@ -1,7 +1,6 @@
 from typing import Optional
 
 from metamon.backend.replay_parser.exceptions import *
-from metamon.interface import UniversalAction, UniversalState
 from metamon.backend.replay_parser.str_parsing import clean_name
 from metamon.backend.replay_parser.replay_state import Nothing, unknown
 
@@ -247,11 +246,14 @@ def check_action_alignment(replay):
 
 
 def check_action_idxs(
-    univeral_states: list[UniversalState],
-    actions: list[Optional[UniversalAction]],
+    univeral_states: list,
+    actions: list,
     action_idxs: list[int],
     gen: int,
 ):
+    # too lazy to fix circular import for the runtime checks
+    from metamon.interface import UniversalAction
+
     tera = 0
     for state, action, action_idx in zip(univeral_states, actions, action_idxs):
         # check missing actions

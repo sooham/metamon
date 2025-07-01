@@ -13,6 +13,4 @@ def format_to_gen(format: str) -> int:
         raise ValueError(f"Could not extract generation from format: {format}")
 
 
-from metamon.backend import replay_parser
-from metamon.backend import showdown_dex
-from metamon.backend import team_prediction
+from . import replay_parser
