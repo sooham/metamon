@@ -39,19 +39,6 @@ def _one_hidden_power(move_name: str) -> str:
         return move_name
 
 
-def get_teamfile_name(given_name: str, gen: int) -> str:
-    dex = Dex.from_gen(gen)
-    try:
-        entry = dex.get_pokedex_entry(given_name)
-    except KeyError:
-        return given_name, given_name
-    name = entry.get("name", given_name)
-    if "battleOnly" in entry:
-        name = entry["battleOnly"]
-    base_species = entry.get("baseSpecies", name)
-    return name, base_species
-
-
 @functools.total_ordering
 @dataclass
 class PokemonSet:
@@ -87,6 +74,21 @@ class PokemonSet:
     MISSING_NATURE = "$missing_nature$"
     MISSING_TERA_TYPE = "$missing_tera$"
 
+    @classmethod
+    def get_teamfile_name(cls, given_name: str, gen: int) -> tuple[str, str]:
+        if given_name == cls.MISSING_NAME:
+            return given_name, given_name
+        dex = Dex.from_gen(gen)
+        try:
+            entry = dex.get_pokedex_entry(given_name)
+        except KeyError:
+            return given_name, given_name
+        name = entry.get("name", given_name)
+        if "battleOnly" in entry:
+            name = entry["battleOnly"]
+        base_species = entry.get("baseSpecies", name)
+        return name, base_species
+
     def __post_init__(self):
         assert len(self.evs) == 6
         assert len(self.ivs) == 6
@@ -103,7 +105,7 @@ class PokemonSet:
         self.missing_regex = re.compile("|".join(map(re.escape, self.missing_strings)))
         self.moves = [_one_hidden_power(move) for move in self.moves]
         # override names with official pokedex lookup
-        self.name, self.base_species = get_teamfile_name(self.name, self.gen)
+        self.name, self.base_species = self.get_teamfile_name(self.name, self.gen)
 
     def __hash__(self):
         moves_frozen = frozenset(self.moves) - {self.MISSING_MOVE}
@@ -320,8 +322,12 @@ class PokemonSet:
             raise ValueError("other must be a PokemonSet")
         if not self.name == other.name:
             raise ValueError("other must have the same name")
-        if not self.base_species == other.base_species:
+        if (
+            self.base_species != self.MISSING_NAME
+            and self.base_species != other.base_species
+        ):
             raise ValueError("other must have the same base species")
+        self.base_species = other.base_species
         new_moves = list(set(other.moves) - set(self.moves))
         for move in self.moves:
             if move == self.MISSING_MOVE:

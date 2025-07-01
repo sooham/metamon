@@ -463,10 +463,22 @@ class Pokemon:
             lvl = int(lvl[3:])
         else:
             lvl = 100
-        entry = Dex.from_gen(gen).get_pokedex_entry(name)
-        if get_base_species:
-            return entry["baseSpecies"], lvl
-        return entry["name"], lvl
+        # get the standardized name and base species from the pokedex
+        name_out = name
+        dex = Dex.from_gen(gen)
+        try:
+            entry = dex.get_pokedex_entry(name)
+        except KeyError:
+            if get_base_species:
+                # give it a shot i guess. if it's not in the dex,
+                # the replay parser is probably going to fail later anyway.
+                name_out = name_out.split("-")[0].strip()
+        else:
+            name_out = entry.get(
+                "baseSpecies" if get_base_species else "name", name_out
+            )
+
+        return name_out, lvl
 
     def __repr__(self):
         return f"{self.name} - {self.active_ability} - {self.active_item} : {self._moveset_str}"
