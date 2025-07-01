@@ -3,8 +3,6 @@ import re
 
 BACKEND_PATH = os.path.dirname(__file__)
 
-from metamon.backend import replay_parser
-
 
 def format_to_gen(format: str) -> int:
     pattern = r"gen(\d+)"
@@ -13,3 +11,8 @@ def format_to_gen(format: str) -> int:
         return int(match.group(1))
     else:
         raise ValueError(f"Could not extract generation from format: {format}")
+
+
+from metamon.backend import replay_parser
+from metamon.backend import showdown_dex
+from metamon.backend import team_prediction

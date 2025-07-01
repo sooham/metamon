@@ -5,11 +5,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import poke_env.environment as pe
 
+
+import metamon.backend.replay_parser as mrp
 from metamon.backend.replay_parser.forward import SimProtocol
 from metamon.backend.replay_parser.exceptions import ForwardException
 from metamon.backend.replay_parser.replay_state import (
     ParsedReplay,
-    cleanup_move_id,
 )
 from metamon.interface import UniversalPokemon
 from metamon.backend.replay_parser.replay_state import (
@@ -252,7 +253,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
         override_active_moves = True
         available_moves = []
         for active_move in active_moves:
-            move_id = cleanup_move_id(active_move["id"])
+            move_id = mrp.str_parsing.move_name(active_move["id"])
             move_name = active_move["move"]
             disabled = active_move.get("disabled", False)
             if move_id in known_active_moves:

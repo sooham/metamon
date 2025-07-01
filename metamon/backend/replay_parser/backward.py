@@ -3,6 +3,7 @@ import datetime
 from typing import List, Optional
 import collections
 
+import metamon
 from metamon.backend.replay_parser import checks
 from metamon.backend.replay_parser.exceptions import *
 from metamon.backend.replay_parser.replay_state import (
@@ -33,8 +34,7 @@ def fill_missing_team_info(
     """
 
     # 1. Convert the team to the format expected by the team_prediction module
-    gen = int(battle_format.split("gen")[1][0])
-    # NOTE: any match between replay parser and team prediction is done by base species
+    gen = metamon.backend.format_to_gen(battle_format)
     existing_species = set(p.had_name for p in poke_list if p is not None)
     converted_poke = [PokemonSet.from_ReplayPokemon(p, gen=gen) for p in poke_list]
     revealed_team = TeamSet(
@@ -76,6 +76,7 @@ def fill_missing_team_info(
         else:
             raise BackwardException(f"Could not find match for {p.name}")
         p.fill_from_PokemonSet(match)
+
         if (
             p.had_item == BackwardMarkers.FORCE_UNKNOWN
             or p.had_ability == BackwardMarkers.FORCE_UNKNOWN

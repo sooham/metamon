@@ -4,6 +4,8 @@ from typing import Any, Dict, Optional, Union
 
 import orjson
 
+
+import metamon
 from metamon.backend.replay_parser.str_parsing import pokemon_name
 
 
@@ -129,5 +131,5 @@ class Dex:
     @classmethod
     @lru_cache(None)
     def from_format(cls, format: str):
-        gen = int(format[3])
+        gen = metamon.backend.format_to_gen(format)
         return cls.from_gen(gen)

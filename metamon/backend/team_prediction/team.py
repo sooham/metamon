@@ -8,6 +8,7 @@ import functools
 from dataclasses import dataclass
 from typing import List, Optional
 
+import metamon
 from metamon.backend.replay_parser.replay_state import (
     Pokemon,
     Nothing,
@@ -732,7 +733,7 @@ class TeamSet:
         """
         with open(path, "r") as f:
             content = f.read()
-        gen = int(format.split("gen")[1][0])
+        gen = metamon.backend.format_to_gen(format)
         blocks = [block for block in content.strip().split("\n\n") if block.strip()]
         pokemons = [PokemonSet.from_showdown_block(block, gen=gen) for block in blocks]
         if not pokemons:
@@ -770,7 +771,7 @@ class TeamSet:
     @classmethod
     def from_seq(cls, seq: List[str], include_stats: bool = True):
         format = seq[0].split(":")[1].strip()
-        gen = int(format.split("gen")[1][0])
+        gen = metamon.backend.format_to_gen(format)
         poke_seq_len = 20 if include_stats else 7
         lead = PokemonSet.from_seq(
             seq[1 : poke_seq_len + 1], gen=gen, include_stats=include_stats

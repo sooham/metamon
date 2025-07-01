@@ -362,7 +362,9 @@ Available versions:
         version = args.version or LATEST_USAGE_STATS_REVISION
         if args.formats is None:
             raise ValueError("Must specify at least one battle format (e.g., gen1ou)")
-        generations = set(int(format[3]) for format in args.formats)
+        generations = set(
+            metamon.backend.format_to_gen(format) for format in args.formats
+        )
         for gen in generations:
             download_usage_stats(gen=gen, version=version, force_download=True)
     elif args.dataset == "teams":
