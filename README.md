@@ -60,15 +60,15 @@ We also support the UnderUsed (UU), NeverUsed (NU), and Ubers tiers for Generati
 
 
 ### Table of Contents
-
-0. [Quick Start](#quick-start)
-1. [Pretrained Models](#pretrained-models)
-2. [Battle Datasets](#battle-datasets)
-3. [Team Sets](#team-sets)
-4. [Baselines](#baselines)
-5. [Observation & Rewards](#observation-spaces--reward-functions)
-6. [Training](#training)
-7. [Extra](#extra)
+#### [Quick Start](#quick-start)
+#### [Pretrained Models](#pretrained-models)
+#### [Battle Datasets](#battle-datasets)
+#### [Team Sets](#team-sets)
+#### [Baselines](#baselines)
+#### [Observation & Rewards](#observation-spaces--reward-functions)
+#### [Battle Backends](#battle-backends)
+#### [Training](#training)
+#### [Extra](#extra)
 
 
 
@@ -125,10 +125,6 @@ Metamon provides large datasets of Pokémon team files, human battles, and other
 # add to ~/.bashrc
 export METAMON_CACHE_DIR=/path/to/plenty/of/disk/space
 ```
-
-> [!NOTE]
->
-> `metamon` relies on (and should automatically install) a fork of [poke-env](https://github.com/hsahovic/poke-env) ([here](https://github.com/UT-Austin-RPL/poke-env)). Don't let other packages update `poke-env` in metamon's venv.
 
 <br>
 
@@ -313,9 +309,8 @@ Datasets are stored on huggingface in three formats:
 
 | Name |  Entries | Description |
 |------|------|-------------|
-|**[`metamon-raw-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-raw-replays)** | 544k | Our curated set of Pokémon Showdown replay `.json` files... to save the Showdown API some download requests and to maintain an official reference of our training data. Will be regularly updated as new battles are played and collected. |
+|**[`metamon-raw-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-raw-replays)** | 1.8M | Our curated set of Pokémon Showdown replay `.json` files... to save the Showdown API some download requests and to maintain an official reference of our training data. Will be regularly updated as new battles are played and collected. |
 |**[`metamon-parsed-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-replays)** | 1.07M | The RL-compatible version of the dataset as reconstructed by the [replay parser](metamon/data/replay_dataset/replay_parser/README.md). These datasets have **missing actions** (`action = -1`) where the player's choice is not revelead to spectators. Includes ~100k more trajectories than were used by the paper (because more human battles have been played). The method for predicting partially revealed teams has also been significantly improved.|
-|**[`metamon-synthetic`](https://huggingface.co/datasets/jakegrigsby/metamon-synthetic)** | 5M | A set of real + self-play battles that were used to train the best models in the paper. Unfortunately, this dataset has been deprecated as part of changes that make the parsed replay dataset more future-proof. It provides `amago` trajectory files with a fixed observation space + reward function and missing actions filled by an IL model. We are working to create a new starter dataset of self-play battles.|
 
 
 Parsed replays will download automatically when requested by the `ParsedReplayDataset`, but these datasets are large. See `python -m metamon.download --help` to download them in advance.
@@ -398,7 +393,7 @@ ___
 
 <br>
 
-## Observation Spaces & Reward Functions
+## Observation Spaces, Action Spaces, & Reward Functions
 
 The `DefaultObservationSpace` is the (quite high-dimensional) text/numerical observation space used in our paper. Alternatives are listed in `metamon.interface.ALL_OBSERVATION_SPACES`. Currently there is just one other built-in option (still in testing) (`DefaultPlusObservationSpace`). You may want to create a custom version with more/less features by inheriting from `metamon.interface.ObservationSpace`.
 
