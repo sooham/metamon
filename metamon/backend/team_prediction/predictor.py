@@ -18,6 +18,7 @@ from metamon.backend.team_prediction.usage_stats.legacy_team_builder import (
 from metamon.backend.team_prediction.usage_stats import (
     PreloadedSmogonUsageStats,
 )
+from metamon.backend.replay_parser.str_parsing import pokemon_name
 from metamon.backend.team_prediction.team import TeamSet, PokemonSet, Roster
 
 
@@ -128,7 +129,7 @@ class NaiveUsagePredictor(TeamPredictor):
                 raise e
 
         # Build a mapping from name to PokemonSet for fast lookup
-        sample_team_map = {p.name: p for p in sample_team}
+        sample_team_map = {pokemon_name(p.name): p for p in sample_team}
         # Prepare a queue of new Pokemon to fill missing slots
         new_pokemon = deque([p for p in sample_team if p.name not in existing_names])
         merged_team = []
@@ -137,7 +138,7 @@ class NaiveUsagePredictor(TeamPredictor):
                 new_choice = new_pokemon.popleft()
                 merged_team.append(copy.deepcopy(new_choice))
             else:
-                new_p = sample_team_map.get(p.name)
+                new_p = sample_team_map.get(pokemon_name(p.name))
                 filled_p = copy.deepcopy(p)
                 filled_p.fill_from_PokemonSet(new_p)
                 merged_team.append(filled_p)
