@@ -22,7 +22,7 @@ class TeamDataset(Dataset):
         team_file_dir: Optional[str] = None,
     ):
         if team_file_dir is None:
-            team_file_dir = metamon.download.download_revealed_teams()
+            team_file_dir = metamon.data.download.download_revealed_teams()
         self.team_path = os.path.join(team_file_dir, format)
         if not os.path.exists(self.team_path):
             raise ValueError(f"Team directory {self.team_path} does not exist")

@@ -125,7 +125,6 @@ class ReplayParser:
                 state=state, action=action
             )
             if universal_action is None:
-                breakpoint()
                 raise InvalidActionIndex(state, action)
             if self.verbose:
                 print(
