@@ -3,8 +3,10 @@ import re
 import json
 import datetime
 import functools
+import warnings
 from typing import Optional
 
+from termcolor import colored
 import metamon
 from metamon.backend.team_prediction.usage_stats.format_rules import (
     get_valid_pokemon,
@@ -371,8 +373,11 @@ def load_between_dates(
             data = json.load(file)
         selected_data.append(data)
     if not selected_data:
-        raise FileNotFoundError(
-            f"No Showdown usage stats found in {dir_path} between {start_date} and {end_date}"
+        warnings.warn(
+            colored(
+                f"No Showdown usage stats found in {dir_path} between {start_date} and {end_date}",
+                "red",
+            )
         )
     return merge_movesets(selected_data)
 
