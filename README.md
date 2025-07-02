@@ -29,10 +29,26 @@
 2) A large dataset of RL trajectories "reconstructed" from real human battles.
 3) Starting points for training imitation learning (IL) and RL policies.
 
-Currently, it is focused on singles formats of the **first four generations** (Gen1-4 OverUsed, UnderUsed, NeverUsed, and Ubers).
+Metamon is the codebase behind ["Human-Level Competetitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) (RLC, 2025). Please check out our [project website](https://metamon.tech) for an overview of our results. This README documents the dataset, pretrained models, training, and evaluation details to help you get battling!
+
+<br>
 
 
-Metamon is the codebase behind ["Human-Level Competetitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395). Please check out our [project website](https://metamon.tech) for an overview of our results. This README documents the dataset, pretrained models, training, and evaluation details to help you get battling!
+#### Supported Rulesets
+
+Pokémon Showdown hosts many different rulesets spanning 9 generations of the video game franchise. Metamon was originally focused on the most popular singles ruleset ("OverUsed") for **Generations 1, 2, 3, and 4**. However, we are gradually expanding to Gen 9 in an effort to support the [NeurIPS 2025 PokéAgent Challenge](https://pokeagent.github.io). This is a large project that will not be finalized in time for the competition launch; please stay tuned for updates.
+
+The current status is:
+
+|  | Gen 1 OverUsed (OU) | Gen 2 OU | Gen 3 OU | Gen 4 OU | Gen 9 OU |
+|------------|---------------------|----------|----------|----------|----------|
+| Datasets | ✅ | ✅ | ✅ | ✅ | 🟠 (beta) |
+| Teams | ✅ | ✅ | ✅ | ✅ | ✅  |
+| Heuristic Baselines | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Learned Baselines | ✅ | ✅ | ✅ | ✅ | 🚧 TODO |
+
+We also support the UnderUsed (UU), NeverUsed (NU), and Ubers tiers for Generations 1, 2, 3, and 4 --- though constant rule changes and tiny dataset sizes have always made these a bit of an afterthought.
+
 
 <br>
 
@@ -79,10 +95,7 @@ cd metamon
 pip install -e .
 ```
 
-To install [Pokémon Showdown](https://pokemonshowdown.com/) (PS), you will need a modern version of `npm` / Node.js (instructions [here](https://nodejs.org/en/download/package-manager)). This repo comes packaged with the specific commit that we used during the project.
-
-> [!IMPORTANT]
-> Now updated to handle [breaking changes](https://github.com/smogon/pokemon-showdown/pull/11105) to Pokémon Showdown. Use a June 2025 Showdown commit (or later). The version that downloads with `metamon` (`metamon/server`) is always supported. Team Sets are not yet fully validated for this version. Fix in progress.
+To install [Pokémon Showdown](https://pokemonshowdown.com/) (PS), you will need a modern version of `npm` / Node.js (instructions [here](https://nodejs.org/en/download/package-manager)). Note that PS undergoes constant updates... breaking changes are rare, but do happen. The version that downloads with this repo (`metamon/server`) is always supported.
 
 ```shell
 cd server/pokemon-showdown
@@ -107,13 +120,11 @@ You can verify that installation has gone smoothly with:
 python -m metamon.env
 ```
 
-
 Metamon provides large datasets of Pokémon team files, human battles, and other statistics that will automatically download when requested. You will need to specify a path:
 ```bash
 # add to ~/.bashrc
 export METAMON_CACHE_DIR=/path/to/plenty/of/disk/space
 ```
-
 
 > [!NOTE]
 >
@@ -127,11 +138,11 @@ ____
 
 ## Quick Start
 
-The RL environment is just a "batteries included" wrapper of [poke-env](https://github.com/hsahovic/poke-env). Pick a set of Pokémon teams to play with, an observation space, and a reward function:
+Metamon makes it easy to turn Pokémon into an RL research problem. Pick a set of Pokémon teams to play with, an observation space, an action space, and a reward function:
 
 ```python
 from metamon.env import get_metamon_teams
-from metamon.interface import DefaultObservationSpace, DefaultShapedReward
+from metamon.interface import DefaultObservationSpace, DefaultShapedReward, MinimalActionSpace
 
 # Step 1: grab a set of human-made starter teams for Gen 1 OverUsed.
 # every `reset` will sample a new team for your agent and your opponent.
@@ -140,9 +151,10 @@ team_set = get_metamon_teams("gen1ou", "competitive")
 # Step 2: pick the observation space and reward function from the paper
 obs_space = DefaultObservationSpace()
 reward_fn = DefaultShapedReward()
+action_space = MinimalActionSpace()
 ```
 
-It is easy to battle against built-in baselines (anything in `metamon.baselines` or any `poke_env.Player`):
+Then, battle against built-in baselines (anything in `metamon.baselines` or any `poke_env.Player`):
 
 ```python 
 from metamon.env import BattleAgainstBaseline
@@ -152,6 +164,7 @@ from metamon.baselines.heuristic.basic import Gen1BossAI
 env = BattleAgainstBaseline(
     battle_format="gen1ou",
     observation_space=obs_space,
+    action_space=action_space,
     reward_function=reward_fn,
     team_set=team_set,
     opponent_type=Gen1BossAI,
@@ -171,6 +184,7 @@ env = QueueOnLocalLadder(
     username="my_scary_username",
     num_battles=10,
     observation_space=obs_space,
+    action_space=action_space,
     reward_function=reward_fn,
     team_set=team_set,
 )
@@ -186,6 +200,7 @@ from metamon.datasets import ParsedReplayDataset
 # on-the-fly during dataloading. 
 dset = ParsedReplayDataset(
     observation_space=obs_space,
+    action_space=action_space,
     reward_function=reward_func,
     formats=["gen1ou"],
 )
@@ -204,6 +219,7 @@ env = QueueOnLocalLadder(
 dset = ParsedReplayDataset(
     dset_root="my_data_path",
     observation_space=obs_space,
+    action_space=action_space,
     reward_function=reward_func,
     formats=["gen1ou"],
 )
@@ -230,8 +246,6 @@ ____
 
 We have made every checkpoint of 18 models available on huggingface at [`jakegrigsby/metamon`](https://huggingface.co/jakegrigsby/metamon/tree/main). Pretrained models can run without research GPUs, but you will need to install [`amago`](https://github.com/UT-Austin-RPL/amago), which is an RL codebase by the same authors. Follow instructions [here](https://ut-austin-rpl.github.io/amago/installation.html).
 
-> [!TIP]
-> See the `amago` [documentation](https://ut-austin-rpl.github.io/amago/) for help with training hyperparameters and customization.
 
 <div align="center">
     <img src="media/arch_v6_safe.png" alt="Figure 1" width="450">
