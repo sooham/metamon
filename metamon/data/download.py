@@ -247,7 +247,6 @@ def download_usage_stats(
 
     _download_and_extract(movesets_tar_path, movesets_extract_path)
     _download_and_extract(checks_tar_path, checks_extract_path)
-    _update_version_reference("usage-stats", f"gen{gen}", version)
     return usage_stats_dir
 
 

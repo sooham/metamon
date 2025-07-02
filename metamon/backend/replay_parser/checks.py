@@ -241,7 +241,6 @@ def check_action_alignment(replay):
                 if action.target in pokemon and action.target not in switches:
                     # our revival choice is on our team but had fainted (can't be switched to)
                     continue
-            breakpoint()
             raise ActionMisaligned(active_pokemon, action)
 
 
@@ -330,5 +329,4 @@ def check_forced_switching(turn):
                 else turn.available_switches_2
             )
             if len(switches) > 0:
-                breakpoint()
                 raise ForceSwitchMishandled(subturn)

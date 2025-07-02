@@ -474,7 +474,7 @@ ALL_PREDICTORS = {
 
 if __name__ == "__main__":
     import argparse
-    from metamon.data.team_prediction.dataset import TeamDataset
+    from metamon.backend.team_prediction.dataset import TeamDataset
     from metamon.data.download import download_revealed_teams
 
     parser = argparse.ArgumentParser(

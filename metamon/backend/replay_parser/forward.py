@@ -405,8 +405,6 @@ class SimProtocol:
         if name == "switch":
             # mark intentional "Switch" action
             if is_force_switch:
-                if player_subturn is None:
-                    breakpoint()
                 player_subturn.action = Action(
                     name="Switch", user=current_active, target=poke, is_switch=True
                 )
@@ -502,7 +500,6 @@ class SimProtocol:
                             and target_pokemon.last_used_move_name == move_name
                         ):
                             # the move being stolen by the ability is cancelling the opponent's forced switch
-                            breakpoint()
                             self.curr_turn.remove_empty_subturn(
                                 team=target_team_idx, slot=target_slot_idx
                             )
@@ -623,8 +620,6 @@ class SimProtocol:
                         if subturn.matches_slot(switch_team, switch_slot):
                             if subturn.unfilled:
                                 subturn.fill_turn(self.curr_turn.create_subturn(True))
-                            else:
-                                breakpoint()
                             # hardcoded action type that gets converted to similar action idices to "switch"
                             subturn.action = Action(
                                 name="$Forced Revival$",
@@ -636,8 +631,6 @@ class SimProtocol:
                             break
                     if pokemon.status == PEStatus.FNT:
                         pokemon.status = Nothing.NO_STATUS
-                    else:
-                        breakpoint()
                 if found_move in SimProtocol.RESTORES_PP:
                     for move_name, move in pokemon.moves.items():
                         move.pp = move.maximum_pp
@@ -735,7 +728,9 @@ class SimProtocol:
             found_mon = self.curr_turn.get_pokemon_from_str(found_mon)
             found_mon.reveal_ability(found_ability)
         if found_mon and found_item:
-            breakpoint()
+            raise ForwardException(
+                "Detected `status` message with unimplemented behavior"
+            )
 
     def _parse_boost_unboost(self, args: List[str], name: str):
         """
@@ -909,7 +904,7 @@ class SimProtocol:
                 target_ability in SimProtocol.SKILL_SWAP_FAILS
                 or pokemon_ability in SimProtocol.SKILL_SWAP_FAILS
             ):
-                breakpoint()
+                raise ForwardException("Detected Skill Swap failure with patch TODO")
             target.active_ability = pokemon_ability
             pokemon.active_ability = target_ability
         pokemon.start_effect(effect)
@@ -1307,7 +1302,9 @@ class SimProtocol:
                 user_pokemon=pokemon, extra_condition=True
             )
         else:
-            breakpoint()
+            raise ForwardException(
+                "Detected `block` message with unimplemented behavior"
+            )
 
     def interpret_message(self, message: List[str]):
         """Interpret and process a single Showdown battle protocol message.

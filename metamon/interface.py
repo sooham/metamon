@@ -107,9 +107,7 @@ class UniversalMove:
         )
 
     @classmethod
-    def from_ReplayMove(cls, move: ReplayMove):
-        # ReplayMove overrides Move but has
-        # a different pp tracker
+    def from_ReplayMove(cls, move: Optional[ReplayMove]):
         universal_move = cls.from_Move(move)
         if move is not None:
             universal_move.current_pp = move.pp
@@ -117,18 +115,17 @@ class UniversalMove:
         return universal_move
 
     @classmethod
-    def from_Move(cls, move: Move):
+    def from_Move(cls, move: Optional[Move]):
         if move is None:
             return cls.blank_move()
         assert isinstance(move, Move)
         return cls(
             name=move_name(move.id),
-            category=move.category.name,
+            category=clean_name(move.category.name),
             base_power=move.base_power,
-            move_type=move.type.name,
+            move_type=clean_name(move.type.name),
             priority=move.priority,
             accuracy=move.accuracy,
-            # always use `move` for pp tracking
             current_pp=move.current_pp,
             max_pp=move.max_pp,
         )
@@ -219,13 +216,10 @@ class UniversalPokemon:
         return clean_no_numbers(ability_str)
 
     @staticmethod
-    def universal_effects(effect_rep: dict[Effect, int]) -> str:
-        if not effect_rep:
+    def universal_effects(effect: Optional[Effect]) -> str:
+        if not effect:
             return "noeffect"
-        most_recent = min(effect_rep.keys(), key=effect_rep.get)
-        assert isinstance(most_recent, Effect)
-        # get rid of poke-env's effect timing system (Effect.FALLEN5, ... Effect.FALLEN1)
-        return clean_no_numbers(most_recent.name)
+        return clean_no_numbers(effect.name)
 
     @staticmethod
     def universal_status(status_rep: Status | ReplayNothing) -> str:
@@ -239,9 +233,7 @@ class UniversalPokemon:
         if force_two:
             while len(type_rep) < 2:
                 type_rep.append(None)
-
         type_strs = []
-        # TODO: tera types need a lot of work in this file
         for type in type_rep:
             if type is None or type == ReplayNothing.NO_TERA_TYPE:
                 type_strs.append("notype")
@@ -249,9 +241,6 @@ class UniversalPokemon:
                 type_strs.append(clean_name(type.name))
             elif isinstance(type, str):
                 type_strs.append(clean_name(type))
-
-        if force_two:
-            assert len(type_strs) == 2
         return " ".join(sorted(type_strs))
 
     @classmethod
@@ -267,6 +256,10 @@ class UniversalPokemon:
             f"{stat}boost": getattr(pokemon.boosts, stat)
             for stat in pokemon.boosts.stat_attrs
         }
+        if pokemon.effects:
+            most_recent_effect = min(pokemon.effects.keys(), key=pokemon.effects.get)
+        else:
+            most_recent_effect = None
         return cls(
             name=pokemon_name(pokemon.name),
             base_species=pokemon_name(pokemon.had_name),
@@ -277,7 +270,7 @@ class UniversalPokemon:
             ability=cls.universal_abilities(pokemon.active_ability),
             lvl=pokemon.lvl,
             status=cls.universal_status(pokemon.status),
-            effect=cls.universal_effects(pokemon.effects),
+            effect=cls.universal_effects(most_recent_effect),
             moves=moves,
             **(boosts | stats),
         )
@@ -288,6 +281,10 @@ class UniversalPokemon:
         moves = [UniversalMove.from_Move(move) for move in pokemon.moves.values()]
         boosts = {f"{stat}_boost": boost for stat, boost in pokemon.boosts.items()}
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
+        if pokemon.effects:
+            most_recent_effect = min(pokemon.effects.keys(), key=pokemon.effects.get)
+        else:
+            most_recent_effect = None
         return cls(
             name=pokemon_name(pokemon.species),
             base_species=pokemon_name(pokemon.base_species),
@@ -298,7 +295,7 @@ class UniversalPokemon:
             ability=cls.universal_abilities(pokemon.ability),
             lvl=pokemon.level,
             status=cls.universal_status(pokemon.status),
-            effect=cls.universal_effects(pokemon.effects),
+            effect=cls.universal_effects(most_recent_effect),
             moves=moves,
             **(boosts | stats),
         )

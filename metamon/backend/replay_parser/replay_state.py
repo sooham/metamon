@@ -3,9 +3,9 @@ import re
 import uuid
 from dataclasses import dataclass, field, asdict
 from enum import Enum, auto
-from functools import lru_cache
 from typing import Any, Dict, List, Optional, Set, Tuple
 from datetime import datetime
+from collections import namedtuple
 
 from metamon.backend.replay_parser.exceptions import *
 from metamon.backend.showdown_dex import Dex
@@ -50,24 +50,11 @@ def unknown(x: Any) -> bool:
 
 # organize some info for tracking down edge cases
 
+TargetedBy = namedtuple("TargetedBy", ["pokemon", "move"])
 
-@dataclass
-class TargetedBy:
-    pokemon: "Pokemon"
-    move: str
+Targeting = namedtuple("Targeting", ["pokemon", "move"])
 
-
-@dataclass
-class Targeting:
-    pokemon: "Pokemon"
-    move: str
-
-
-@dataclass
-class Replacement:
-    replaced: "Pokemon"
-    replaced_with: "Pokemon"
-    turn_range: Tuple[int, int]
+Replacement = namedtuple("Replacement", ["replaced", "replaced_with", "turn_range"])
 
 
 class Winner(Enum):
@@ -76,19 +63,19 @@ class Winner(Enum):
     PLAYER_2 = 2
 
 
-@dataclass
 class Boosts:
     """
     Stat stage boosts
     """
 
-    atk_: int = 0
-    spa_: int = 0
-    def_: int = 0
-    spd_: int = 0
-    spe_: int = 0
-    accuracy_: int = 0
-    evasion_: int = 0
+    def __init__(self, atk_=0, spa_=0, def_=0, spd_=0, spe_=0, accuracy_=0, evasion_=0):
+        self.atk_: int = atk_
+        self.spa_: int = spa_
+        self.def_: int = def_
+        self.spd_: int = spd_
+        self.spe_: int = spe_
+        self.accuracy_: int = accuracy_
+        self.evasion_: int = evasion_
 
     @property
     def stat_attrs(self):
@@ -115,7 +102,15 @@ class Boosts:
         return getattr(self, f"{s}_")
 
     def to_dict(self):
-        return {k[:-1]: v for k, v in asdict(self).items()}
+        return {
+            "atk": self.atk_,
+            "spa": self.spa_,
+            "def": self.def_,
+            "spd": self.spd_,
+            "spe": self.spe_,
+            "accuracy": self.accuracy_,
+            "evasion": self.evasion_,
+        }
 
 
 class Move(PEMove):
@@ -166,6 +161,7 @@ class Move(PEMove):
 
 
 class Pokemon:
+
     def __init__(self, name: str, lvl: int, gen: int):
         # basic info
         self.name: Optional[str] = None  # changes on forme change
@@ -259,7 +255,7 @@ class Pokemon:
         self.moves = copy.deepcopy(self.had_moves)
         self.active_ability = self.had_ability
         self.move_change_to_from = {}
-        self.type = copy.deepcopy(self.had_type)
+        self.type = self.had_type
         self.effects = {}
 
     def on_end_of_turn(self):
@@ -282,7 +278,7 @@ class Pokemon:
         fresh.active_ability = fresh.had_ability
         fresh.active_item = fresh.had_item
         fresh.moves = copy.deepcopy(fresh.had_moves)
-        fresh.type = copy.deepcopy(fresh.had_type)
+        fresh.type = fresh.had_type
         fresh.on_end_of_turn()
         return fresh
 
@@ -735,7 +731,6 @@ class Turn:
 
     def create_next_turn(self) -> "Turn":
         next_turn = copy.deepcopy(self)
-        # create blank actions
         next_turn.moves_1 = [None, None]
         next_turn.moves_2 = [None, None]
         next_turn.choices_1 = [None, None]
