@@ -37,6 +37,8 @@ def fill_missing_team_info(
     gen = metamon.backend.format_to_gen(battle_format)
     existing_species = set(p.had_name for p in poke_list if p is not None)
     converted_poke = [PokemonSet.from_ReplayPokemon(p, gen=gen) for p in poke_list]
+    # TODO/NOTE: this method of finding the lead pokemon doesn't hold for gen9,
+    # where the entire team is revealed at the start of the battle in an unrelated order.
     revealed_team = TeamSet(
         lead=converted_poke[0], reserve=converted_poke[1:], format=battle_format
     )

@@ -121,9 +121,9 @@ class UniversalMove:
         assert isinstance(move, Move)
         return cls(
             name=move_name(move.id),
-            category=move.category.name,
+            category=clean_name(move.category.name),
             base_power=move.base_power,
-            move_type=move.type.name,
+            move_type=clean_name(move.type.name),
             priority=move.priority,
             accuracy=move.accuracy,
             current_pp=move.current_pp,
