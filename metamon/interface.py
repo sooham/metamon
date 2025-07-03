@@ -966,7 +966,7 @@ class DefaultObservationSpace(ObservationSpace):
         return {"text": text, "numbers": numbers}
 
 
-class DefaultPlusObservationSpace(DefaultObservationSpace):
+class ExpandedObservationSpace(DefaultObservationSpace):
     """Adds PP, the opponent's revealed party, and edge case sleep/freeze flags to DefaultObservationSpace.
 
     The DefaultObservationSpace used by the paper makes Pokémon more long-term-memory-intensive
@@ -980,7 +980,7 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
     3. The opponent's full team must be inferred from recalling the active Pokémon at previous
         timesteps.
 
-    This observation space moves some of that information into every timestep.
+    This observation space moves some of that information into every timestep. Also adds tera types for gen 9.
     """
 
     def reset(self):
@@ -995,8 +995,8 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
         base_space["numbers"] = gym.spaces.Box(
             low=-10.0,
             high=10.0,
-            # adds 4 PP features + 2 sleep/freeze flags
-            shape=(48 + 6,),
+            # adds 4 PP features + 2 sleep/freeze flags + 1 can_tera flag
+            shape=(48 + 7,),
             dtype=np.float32,
         )
         return base_space
@@ -1004,9 +1004,19 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
     @property
     def tokenizable(self) -> dict[str, int]:
         # adds 6 new tokens for the revealed party
-        return {
-            "text": 87 + 6,
-        }
+        # adds 6 new tokens for the tera types of our party, 1 for the opponent
+        return {"text": 87 + 13}
+
+    def _get_pokemon_string_features(
+        self, pokemon: UniversalPokemon, active: bool
+    ) -> list[str]:
+        base = super()._get_pokemon_string_features(pokemon, active)
+        base.append(pokemon.tera_type)
+        return base
+
+    def _get_pokemon_pad_string(self, active: bool) -> list[str]:
+        blanks = 4 + (4 if active else 5)
+        return ["<blank>"] * blanks
 
     def _get_move_numerical_features(
         self, move: UniversalMove, active: np.bool
@@ -1039,6 +1049,7 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
         new_features = [
             self.any_opponent_asleep,
             self.any_opponent_frozen,
+            state.can_tera,
         ]
         obs["numbers"] = np.concatenate([obs["numbers"], new_features])
 
@@ -1056,7 +1067,7 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
 
 ALL_OBSERVATION_SPACES = {
     "DefaultObservationSpace": DefaultObservationSpace,
-    "DefaultPlusObservationSpace": DefaultPlusObservationSpace,
+    "ExpandedObservationSpace": ExpandedObservationSpace,
 }
 
 
