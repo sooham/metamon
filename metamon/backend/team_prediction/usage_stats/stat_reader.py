@@ -441,9 +441,9 @@ class PreloadedSmogonUsageStats(SmogonStat):
             # in recent but are unhelpful for team prediction.
             no_info = {"Nothing": 1.0}
             for key, value in recent.items():
-                if value == no_info and alltime.get(key, {}) != no_info:
-                    recent[key] = alltime[key]
-
+                if value == no_info:
+                    if alltime.get(key, {}) != no_info:
+                        recent[key] = alltime[key]
         return recent if recent else alltime
 
     def __getitem__(self, key):

@@ -1206,7 +1206,7 @@ class SimProtocol:
             args[1], gen=self.replay.gen
         )
         for p in poke_list:
-            if p.name == replace_with_name:
+            if p is not None and p.name == replace_with_name:
                 replace_with = p
                 break
         if replace_with is None or not replace_with.name.startswith("Zoroark"):
@@ -1557,11 +1557,15 @@ class SimProtocol:
             and last_targeted_by.move in {"Parting Shot"}
             and extra_condition
         ):
-            opponent_team, opponent_slot = self.curr_turn.pokemon_to_action_idx(
+            opponent_team_slot = self.curr_turn.pokemon_to_action_idx(
                 last_targeted_by.pokemon
             )
-            self.curr_turn.remove_empty_subturn(team=opponent_team, slot=opponent_slot)
-            return True
+            if opponent_team_slot is not None:
+                opponent_team, opponent_slot = opponent_team_slot
+                self.curr_turn.remove_empty_subturn(
+                    team=opponent_team, slot=opponent_slot
+                )
+                return True
         return False
 
 

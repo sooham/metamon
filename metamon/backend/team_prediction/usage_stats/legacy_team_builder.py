@@ -27,6 +27,8 @@ def weighted_random_choice(data: dict[str, float], n: int) -> list[str]:
     if "Nothing" in data:
         del data["Nothing"]
     if not data:
+        # blank predictions happen for rare pokemon where usages stats don't exist,
+        # get mapped to "Nothing" in the replay parser, and eventually trigger a skip
         return [""]
     # random choose four moves from moveset using their percent, should not duplicate
     p = np.array(list(data.values()))
