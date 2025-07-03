@@ -14,6 +14,7 @@ from metamon.backend.replay_parser.replay_state import (
     Nothing,
     unknown,
 )
+from metamon.backend.replay_parser.str_parsing import pokemon_name
 from metamon.backend.team_prediction.usage_stats import get_usage_stats
 from metamon.backend.showdown_dex import Dex
 
@@ -320,12 +321,11 @@ class PokemonSet:
         """
         if not isinstance(other, PokemonSet):
             raise ValueError("other must be a PokemonSet")
-        if not self.name == other.name:
+        if not pokemon_name(self.name) == pokemon_name(other.name):
             raise ValueError("other must have the same name")
-        if (
-            self.base_species != self.MISSING_NAME
-            and self.base_species != other.base_species
-        ):
+        if self.base_species != self.MISSING_NAME and pokemon_name(
+            self.base_species
+        ) != pokemon_name(other.base_species):
             raise ValueError("other must have the same base species")
         self.base_species = other.base_species
         new_moves = list(set(other.moves) - set(self.moves))

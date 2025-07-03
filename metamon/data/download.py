@@ -335,9 +335,12 @@ Examples:
         help="""
 Specific version to download. Defaults to latest version.
 Available versions:
-    traw-replays: v1,
-    parsed-replays: v0 (deprecated) v1,
-    teams: v0
+    raw-replays: v1, v2, v3
+    parsed-replays: v0 (deprecated) v1, v2, v3-beta
+    teams: v0, v1, v2, v3
+    usage-stats: v0, v1
+    
+    The huggingface READMEs have changelogs.
 """,
     )
     args = parser.parse_args()

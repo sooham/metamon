@@ -160,7 +160,11 @@ class POVReplay:
         for i, filled_turn in enumerate(filled_replay.turnlist):
             active_pokemon = filled_turn.get_active_pokemon(self.from_p1_pov)
             for p in active_pokemon:
-                if p is not None and p.transformed_this_turn:
+                if (
+                    p is not None
+                    and p.transformed_this_turn
+                    and p.transformed_into is not None
+                ):
                     transforms.append((i, p.unique_id, p.transformed_into.unique_id))
         while transforms:
             i, poke_id, tformed_id = transforms.popleft()
