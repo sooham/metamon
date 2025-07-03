@@ -20,10 +20,15 @@ class MetamonILModel(nn.Module, ABC):
     """
 
     def __init__(
-        self, tokenizer: PokemonTokenizer, numerical_features: int, num_actions: int
+        self,
+        tokenizer: PokemonTokenizer,
+        text_features: int,
+        numerical_features: int,
+        num_actions: int,
     ):
         super().__init__()
         self.tokenizer = tokenizer
+        self.text_features = text_features
         self.num_actions = num_actions
         self.numerical_features = numerical_features
 
@@ -184,6 +189,7 @@ class TurnEmbedding(nn.Module, ABC):
     def __init__(
         self,
         tokenizer: PokemonTokenizer,
+        text_features: int,
         token_embedding_dim: int,
         numerical_features: int,
     ):
@@ -191,6 +197,7 @@ class TurnEmbedding(nn.Module, ABC):
         self.token_embedding = TokenEmbedding(
             tokenizer=tokenizer, emb_dim=token_embedding_dim
         )
+        self.text_features = text_features
         self.numerical_features = numerical_features
         self.tokenizer = tokenizer
 
@@ -212,6 +219,7 @@ class TransformerTurnEmbedding(TurnEmbedding):
         self,
         tokenizer: PokemonTokenizer,
         token_embedding_dim: int,
+        text_features: int,
         numerical_features: int,
         numerical_tokens: int = gin.REQUIRED,
         scratch_tokens: int = gin.REQUIRED,
@@ -223,6 +231,7 @@ class TransformerTurnEmbedding(TurnEmbedding):
         super().__init__(
             tokenizer,
             token_embedding_dim=token_embedding_dim,
+            text_features=text_features,
             numerical_features=numerical_features,
         )
         self.tformer_embedding = TimestepTransformer(
@@ -257,6 +266,7 @@ class FFTurnEmbedding(TurnEmbedding):
         self,
         tokenizer: PokemonTokenizer,
         token_embedding_dim: int,
+        text_features: int,
         numerical_features: int,
         d_hidden: int = gin.REQUIRED,
         d_emb: int = gin.REQUIRED,
@@ -265,10 +275,14 @@ class FFTurnEmbedding(TurnEmbedding):
         super().__init__(
             tokenizer,
             token_embedding_dim=token_embedding_dim,
+            text_features=text_features,
             numerical_features=numerical_features,
         )
         self.d_emb = d_emb
-        inp_dim = self.token_embedding.output_dim * 87 + self.numerical_features
+        inp_dim = (
+            self.token_embedding.output_dim * self.text_features
+            + self.numerical_features
+        )
         self.merge1 = nn.Linear(inp_dim, d_hidden)
         self.merge2 = nn.Linear(d_hidden, d_hidden)
         self.merge3 = nn.Linear(d_hidden, d_emb)
@@ -299,6 +313,7 @@ class GRUModel(MetamonILModel):
     def __init__(
         self,
         tokenizer: PokemonTokenizer,
+        text_features: int,
         numerical_features: int,
         num_actions: int,
         token_embedding_dim: int = gin.REQUIRED,
@@ -309,11 +324,13 @@ class GRUModel(MetamonILModel):
     ):
         super().__init__(
             tokenizer=tokenizer,
+            text_features=text_features,
             numerical_features=numerical_features,
             num_actions=num_actions,
         )
         self.turn_embedding = turn_embedding_Cls(
             tokenizer=tokenizer,
+            text_features=text_features,
             numerical_features=numerical_features,
             token_embedding_dim=token_embedding_dim,
         )
