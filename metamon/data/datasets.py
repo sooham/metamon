@@ -1,17 +1,23 @@
 import os
 import json
 import random
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Any, Set
 from datetime import datetime
 from collections import defaultdict
-
 
 from torch.utils.data import Dataset
 import lz4.frame
 import numpy as np
 import tqdm
 
-from metamon.interface import ObservationSpace, RewardFunction, UniversalState
+import metamon
+from metamon.interface import (
+    ObservationSpace,
+    RewardFunction,
+    UniversalState,
+    ActionSpace,
+    UniversalAction,
+)
 from metamon.data.download import download_parsed_replays
 
 
@@ -84,6 +90,7 @@ class ParsedReplayDataset(Dataset):
     def __init__(
         self,
         observation_space: ObservationSpace,
+        action_space: ActionSpace,
         reward_function: RewardFunction,
         dset_root: Optional[str] = None,
         formats: Optional[List[str]] = None,
@@ -95,9 +102,7 @@ class ParsedReplayDataset(Dataset):
         max_seq_len: Optional[int] = None,
         verbose: bool = False,
     ):
-        formats = formats or [
-            f"gen{g}{t}" for g in range(1, 5) for t in ["ou", "uu", "nu", "ubers"]
-        ]
+        formats = formats or metamon.SUPPORTED_BATTLE_FORMATS
 
         if dset_root is None:
             for format in formats:
@@ -106,6 +111,7 @@ class ParsedReplayDataset(Dataset):
 
         assert dset_root is not None and os.path.exists(dset_root)
         self.observation_space = observation_space
+        self.action_space = action_space
         self.reward_function = reward_function
         self.dset_root = dset_root
         self.formats = formats
@@ -208,8 +214,25 @@ class ParsedReplayDataset(Dataset):
             for k, v in o.items():
                 nested_obs[k].append(v)
         # NOTE: the replay parser currently leaves a blank (-1) final action
-        actions = np.array(data["actions"][:-1], dtype=np.int32)
-        missing_actions = actions == -1
+        action_labels = []
+        for i, (s, a_idx) in enumerate(zip(states, data["actions"])):
+            universal_action = UniversalAction(action_idx=a_idx)
+            missing = universal_action.missing
+            chosen_agent_action = self.action_space.action_to_agent_output(
+                s, universal_action
+            )
+            legal_universal_actions = UniversalAction.maybe_valid_actions(s)
+            legal_agent_actions = set(
+                self.action_space.action_to_agent_output(s, l)
+                for l in legal_universal_actions
+            )
+            action_labels.append(
+                {
+                    "chosen": chosen_agent_action,
+                    "legal": legal_agent_actions,
+                    "missing": missing,
+                }
+            )
         rewards = np.array(
             [
                 self.reward_function(s_t, s_t1)
@@ -225,19 +248,18 @@ class ParsedReplayDataset(Dataset):
             # a a a a a a a
             # r r r r r r r
             # d d d d d d d
-            safe_start = random.randint(0, max(len(actions) - self.max_seq_len, 0))
-            actions = actions[safe_start : safe_start + self.max_seq_len]
+            safe_start = random.randint(
+                0, max(len(action_labels) - self.max_seq_len, 0)
+            )
+            action_labels = action_labels[safe_start : safe_start + self.max_seq_len]
             rewards = rewards[safe_start : safe_start + self.max_seq_len]
             dones = dones[safe_start : safe_start + self.max_seq_len]
-            missing_actions = missing_actions[
-                safe_start : safe_start + self.max_seq_len
-            ]
             nested_obs = {
                 k: v[safe_start : safe_start + 1 + self.max_seq_len]
                 for k, v in nested_obs.items()
             }
 
-        return dict(nested_obs), actions, rewards, dones, missing_actions
+        return dict(nested_obs), action_labels, rewards, dones
 
     def random_sample(self):
         filename = random.choice(self.filenames)
@@ -258,6 +280,7 @@ if __name__ == "__main__":
         DefaultObservationSpace,
         DefaultShapedReward,
         TokenizedObservationSpace,
+        DefaultActionSpace,
     )
     from metamon.tokenizer import get_tokenizer
 
@@ -266,9 +289,10 @@ if __name__ == "__main__":
             DefaultObservationSpace(),
             tokenizer=get_tokenizer("allreplays-v3"),
         ),
+        action_space=DefaultActionSpace(),
         reward_function=DefaultShapedReward(),
         formats=["gen1ou"],
         verbose=True,
     )
     for i in tqdm.tqdm(range(min(2000, len(dset)))):
-        obs, actions, rewards, dones, missing_actions = dset[i]
+        obs, actions, rewards, dones = dset[i]
