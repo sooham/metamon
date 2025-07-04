@@ -52,7 +52,7 @@ The current status is:
 | Heuristic Baselines | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Learned Baselines | ✅ | ✅ | ✅ | ✅ | 🚧 TODO |
 
-We also support the UnderUsed (UU), NeverUsed (NU), and Uber tiers for Generations 1, 2, 3, and 4 —-- though constant rule changes and small dataset sizes have always made these a bit of an afterthought.
+We also support the UnderUsed (UU), NeverUsed (NU), and Ubers tiers for Generations 1, 2, 3, and 4 —-- though constant rule changes and small dataset sizes have always made these a bit of an afterthought.
 
 
 <br>
@@ -121,15 +121,15 @@ node pokemon-showdown start --no-security
 # no-security removes battle speed throttling and password requirements on your local server
 ```
 
-If necessary, you can customize the server settings (`config/config.js`) or [the rules for each game mode](https://github.com/smogon/pokemon-showdown/blob/master/config/CUSTOM-RULES.md).
+If necessary, we can customize the server settings (`config/config.js`) or [the rules for each game mode](https://github.com/smogon/pokemon-showdown/blob/master/config/CUSTOM-RULES.md).
 
-We can verify that installation has gone smoothly with:
+Verify that installation has gone smoothly with:
 ```bash
 # run a few test battles on the local server
 python -m metamon.env
 ```
 
-Metamon provides large datasets of Pokémon team files, human battles, and other statistics that will automatically download when requested. You will need to specify a path:
+Metamon provides large datasets of Pokémon team files, human battles, and other statistics that will automatically download when requested. Specify a path with:
 ```bash
 # add to ~/.bashrc
 export METAMON_CACHE_DIR=/path/to/plenty/of/disk/space
@@ -155,7 +155,7 @@ reward_fn = DefaultShapedReward()
 action_space = DefaultActionSpace()
 ```
 
-Then, battle against built-in baselines (anything in `metamon.baselines` or any [`poke_env.Player`](https://github.com/hsahovic/poke-env):
+Then, battle against built-in baselines (anything in `metamon.baselines` or any [`poke_env.Player`](https://github.com/hsahovic/poke-env)):
 
 ```python 
 from metamon.env import BattleAgainstBaseline
@@ -550,7 +550,7 @@ python train.py --run_name any_name_will_do --model_config configs/transformer_e
 To support the main [raw-replays](https://huggingface.co/datasets/jakegrigsby/metamon-raw-replays), [parsed-replays](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-replays), and [teams](https://huggingface.co/datasets/jakegrigsby/metamon-teams) datasets, metamon creates a few resources that may be useful for other purposes:
 
 
- ### Usage Stats
+ #### Usage Stats
 Showdown records the frequency of team choices (items, moves, abilities, etc.) brought to battles in a given month. The community mainly uses this data to consider rule changes, but we use it to help predict missing details of partially revealed teams. We load data for an arbitrary window of history around the date a battle was played, and fall back to all-time stats for rare Pokémon where data is limited:
 
 ```python
@@ -563,9 +563,14 @@ usage_stats = get_usage_stats("gen1ou",
 alakazam_info: dict = usage_stats["Alakazam"] # non alphanum chars and case are flexible
 ```
 
-HF here: [`jakegrigsby/metamon-usage-stats`](https://huggingface.co/datasets/jakegrigsby/metamon-usage-stats)
+Download usage stats in advance with:
+```shell
+python -m metamon.data.download usage-stats
+```
 
-### Revealed Teams
+The data is stored on huggingface at [`jakegrigsby/metamon-usage-stats`](https://huggingface.co/datasets/jakegrigsby/metamon-usage-stats).
+
+#### Revealed Teams
 One of the main problems the replay parser has to solve is predicting a player's full team based on the "partially revealed" team at the end of the battle. As part of this, we record the revealed team in the [standard Showdown team builder format](https://pokepast.es/syntax.html), but with some magic keywords for missing elements. For example:
 
 ```
