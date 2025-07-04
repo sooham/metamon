@@ -12,7 +12,12 @@ import einops
 import poke_env
 
 
-from metamon.interface import ObservationSpace, RewardFunction, ActionSpace
+from metamon.interface import (
+    ObservationSpace,
+    RewardFunction,
+    ActionSpace,
+    UniversalAction,
+)
 from metamon.il.model import TransformerTurnEmbedding
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.data import ParsedReplayDataset
@@ -219,6 +224,7 @@ class MetamonAMAGOWrapper(AMAGOEnv):
             print("Force resetting due to long-tail error")
             self.reset()
             next_state, reward, terminated, truncated, info = self.step(action)
+            # TODO: add legal actions
             reward *= 0.0
             terminated[:] = False
             truncated[:] = True
@@ -286,9 +292,11 @@ class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
         self.token_mask_aug = token_mask_aug
         self.extra_emb = nn.Linear(rl2_space.shape[-1], extra_emb_dim)
         base_numerical_features = obs_space["numbers"].shape[0]
+        base_text_features = obs_space["text_tokens"].shape[0]
         self.turn_embedding = TransformerTurnEmbedding(
             tokenizer=tokenizer,
             token_embedding_dim=d_model,
+            text_features=base_text_features,
             numerical_features=base_numerical_features + extra_emb_dim,
             numerical_tokens=numerical_tokens,
             scratch_tokens=scratch_tokens,
@@ -352,21 +360,41 @@ class MetamonAMAGODataset(RLDataset):
 
     def sample_random_trajectory(self) -> RLData:
         data = self.parsed_replay_dset.random_sample()
-        obs, actions, rewards, dones, missing_acts = data
+        obs, action_infos, rewards, dones = data
         # amago expects discrete actions to be one-hot encoded
+        num_actions = self.parsed_replay_dset.action_space.gym_space.n
         actions_torch = F.one_hot(
-            torch.from_numpy(actions).long().clamp(min=0), num_classes=9
+            torch.tensor(action_infos["chosen"]).long().clamp(min=0),
+            num_classes=num_actions,
         ).float()
-        # a bit of a hack: make the action mask (which is the same size as actions)
-        # one timestep longer to match the size of observations, then put it in the amago
-        # observation dict, let the network ignore it, and make it accessible to
-        # mask the actor/critic loss later on.
-        missing_acts = np.concatenate([missing_acts, np.ones(1, dtype=bool)], axis=0)
+
+        # set all illegal. needs to be one timestep longer than the actions to match the size of observations
+        illegal_actions = torch.ones(
+            (len(action_infos["chosen"]) + 1, num_actions)
+        ).bool()
+        for i, legal_actions in enumerate(action_infos["legal"]):
+            for legal_action in legal_actions:
+                legal_universal_action = UniversalAction(action_idx=legal_action)
+                # ok, i didn't think far enough ahead on the action space refactor; no easy way to get the
+                # state here. we are lucky that the discrete action spaces don't need one....
+                legal_agent_action = (
+                    self.parsed_replay_dset.action_space.action_to_agent_output(
+                        state=None, action=legal_universal_action
+                    )
+                )
+                # set the action legal
+                illegal_actions[i, legal_agent_action] = False
+
+        # a bit of a hack: put action info in the amago observation dict, let the network ignore it,
+        # and make it accessible to mask the actor/critic loss later on.
         obs_torch = {k: torch.from_numpy(np.stack(v, axis=0)) for k, v in obs.items()}
-        obs_torch["missing_action_mask"] = torch.from_numpy(missing_acts).unsqueeze(-1)
+        # add a final missing action to match the size of observations
+        missing_acts = torch.tensor(action_infos["missing"] + [True]).unsqueeze(-1)
+        obs_torch["missing_action_mask"] = missing_acts
+        obs_torch["illegal_actions"] = illegal_actions
         rewards_torch = torch.from_numpy(rewards).unsqueeze(-1)
         dones_torch = torch.from_numpy(dones).unsqueeze(-1)
-        time_idxs = torch.arange(len(actions) + 1).long().unsqueeze(-1)
+        time_idxs = torch.arange(len(action_infos["chosen"]) + 1).long().unsqueeze(-1)
         rl_data = RLData(
             obs=obs_torch,
             actions=actions_torch,
