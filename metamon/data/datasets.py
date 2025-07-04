@@ -223,7 +223,8 @@ class ParsedReplayDataset(Dataset):
             "legal": [],
             "missing": [],
         }
-        for s, a_idx in zip(states, data["actions"]):
+        # NOTE: the replay parser leaves a blank final action
+        for s, a_idx in zip(states, data["actions"][:-1]):
             universal_action = UniversalAction(action_idx=a_idx)
             missing = universal_action.missing
             chosen_agent_action = self.action_space.action_to_agent_output(
