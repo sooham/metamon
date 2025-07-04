@@ -101,6 +101,7 @@ class ParsedReplayDataset(Dataset):
         max_date: Optional[datetime] = None,
         max_seq_len: Optional[int] = None,
         verbose: bool = False,
+        shuffle: bool = False,
     ):
         formats = formats or metamon.SUPPORTED_BATTLE_FORMATS
 
@@ -122,6 +123,7 @@ class ParsedReplayDataset(Dataset):
         self.wins_losses_both = wins_losses_both
         self.verbose = verbose
         self.max_seq_len = max_seq_len
+        self.shuffle = shuffle
         self.refresh_files()
 
     def parse_battle_date(self, filename: str) -> datetime:
@@ -185,6 +187,9 @@ class ParsedReplayDataset(Dataset):
                     continue
                 self.filenames.append(os.path.join(path, filename))
 
+        if self.shuffle:
+            random.shuffle(self.filenames)
+
         if self.verbose:
             print(f"Dataset contains {len(self.filenames)} battles")
 
@@ -193,7 +198,7 @@ class ParsedReplayDataset(Dataset):
 
     def load_filename(self, filename: str):
         if filename.endswith(".json.lz4"):
-            # compressed (v2 format)
+            # compressed (v2+ format)
             with lz4.frame.open(filename, "rb") as f:
                 data = json.loads(f.read().decode("utf-8"))
         elif filename.endswith(".json"):
@@ -213,9 +218,12 @@ class ParsedReplayDataset(Dataset):
         for o in obs:
             for k, v in o.items():
                 nested_obs[k].append(v)
-        # NOTE: the replay parser currently leaves a blank (-1) final action
-        action_labels = []
-        for i, (s, a_idx) in enumerate(zip(states, data["actions"])):
+        action_infos = {
+            "chosen": [],
+            "legal": [],
+            "missing": [],
+        }
+        for s, a_idx in zip(states, data["actions"]):
             universal_action = UniversalAction(action_idx=a_idx)
             missing = universal_action.missing
             chosen_agent_action = self.action_space.action_to_agent_output(
@@ -226,13 +234,9 @@ class ParsedReplayDataset(Dataset):
                 self.action_space.action_to_agent_output(s, l)
                 for l in legal_universal_actions
             )
-            action_labels.append(
-                {
-                    "chosen": chosen_agent_action,
-                    "legal": legal_agent_actions,
-                    "missing": missing,
-                }
-            )
+            action_infos["chosen"].append(chosen_agent_action)
+            action_infos["legal"].append(legal_agent_actions)
+            action_infos["missing"].append(missing)
         rewards = np.array(
             [
                 self.reward_function(s_t, s_t1)
@@ -249,26 +253,28 @@ class ParsedReplayDataset(Dataset):
             # r r r r r r r
             # d d d d d d d
             safe_start = random.randint(
-                0, max(len(action_labels) - self.max_seq_len, 0)
+                0, max(len(action_infos["chosen"]) - self.max_seq_len, 0)
             )
-            action_labels = action_labels[safe_start : safe_start + self.max_seq_len]
-            rewards = rewards[safe_start : safe_start + self.max_seq_len]
-            dones = dones[safe_start : safe_start + self.max_seq_len]
             nested_obs = {
                 k: v[safe_start : safe_start + 1 + self.max_seq_len]
                 for k, v in nested_obs.items()
             }
+            action_infos = {
+                k: v[safe_start : safe_start + self.max_seq_len]
+                for k, v in action_infos.items()
+            }
+            rewards = rewards[safe_start : safe_start + self.max_seq_len]
+            dones = dones[safe_start : safe_start + self.max_seq_len]
 
-        return dict(nested_obs), action_labels, rewards, dones
+        return dict(nested_obs), action_infos, rewards, dones
 
     def random_sample(self):
         filename = random.choice(self.filenames)
         return self.load_filename(filename)
 
     def __getitem__(self, i) -> Tuple[
-        Dict[str, list[np.ndarray]] | list[np.ndarray],
-        np.ndarray,
-        np.ndarray,
+        Dict[str, list[np.ndarray]],
+        Dict[str, list[Any]],
         np.ndarray,
         np.ndarray,
     ]:
@@ -287,7 +293,7 @@ if __name__ == "__main__":
     dset = ParsedReplayDataset(
         observation_space=TokenizedObservationSpace(
             DefaultObservationSpace(),
-            tokenizer=get_tokenizer("allreplays-v3"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
         ),
         action_space=DefaultActionSpace(),
         reward_function=DefaultShapedReward(),
