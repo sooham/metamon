@@ -23,7 +23,7 @@
 
 
 
-**Metamon** enables reinforcement learning (RL) research on [Pokémon Showdown](https://pokemonshowdown.com/) (PS) by providing:
+**Metamon** enables reinforcement learning (RL) research on [Pokémon Showdown](https://pokemonshowdown.com/) by providing:
 
 1) A standardized suite of teams and opponents for evaluation.
 2) A large dataset of RL trajectories "reconstructed" from real human battles.
@@ -114,7 +114,7 @@ cd server/pokemon-showdown
 npm install
 ```
 
-We will need to have the PS server running in the background while using Metamon:
+We will need to have the Showdown server running in the background while using Metamon:
 ```shell
 # in the background (`screen`, etc.)
 node pokemon-showdown start --no-security
@@ -293,7 +293,7 @@ ____
 
 ## Battle Datasets
 
-PS creates "replays" of battles that players can choose to upload to the website before they expire. We gathered all surviving historical replays for Gen 1-4 OU/NU/UU/Ubers and Gen 9 OU, and continuously save new battles to grow the dataset.
+Showdown creates "replays" of battles that players can choose to upload to the website before they expire. We gathered all surviving historical replays for Gen 1-4 OU/NU/UU/Ubers and Gen 9 OU, and continuously save new battles to grow the dataset.
 
 
 
@@ -318,9 +318,9 @@ Parsed replays will download automatically when requested by the `ParsedReplayDa
 
 #### Server/Replay Sim2Sim Gap
 
-In PS RL, we have to embrace a **mismatch between the trajectories we *observe in our own battles* and those we *gather from other player's replays***. In short, replays are meant for re*watching* battles, not re*playing* them; they are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. The server sends info to the players that it does not save to its replay, and we need to try and simulate that missing info. Metamon goes to great lengths to handle this, and is always improving ([more info here](metamon/data/replay_dataset/replay_parser/README.md)), but there is no way to be perfect. 
+In Showdown RL, we have to embrace a **mismatch between the trajectories we *observe in our own battles* and those we *gather from other player's replays***. In short, replays are meant for re*watching* battles, not re*playing* them; they are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. The server sends info to the players that it does not save to its replay, and we need to try and simulate that missing info. Metamon goes to great lengths to handle this, and is always improving ([more info here](metamon/data/replay_dataset/replay_parser/README.md)), but there is no way to be perfect. 
 
-**Therefore, replay data in PS RL is perhaps best viewed as pretraining data for an offline-to-online finetuning problem.** Self-collected data from the online env fixes inaccuracies and can help concentrate on teams we'll be using on the ladder. This does not necessarily require multi-round policy improvement through self-play in the usual sense (e.g., chess or Go); the best models in our paper were trained from scratch on frozen datasets that combined replay data with battles played by a few previous versions. The whole project is now set up to do this (see [Quick Start](#quick-start)).
+**Therefore, replay data is perhaps best viewed as pretraining data for an offline-to-online finetuning problem.** Self-collected data from the online env fixes inaccuracies and can help concentrate on teams we'll be using on the ladder. This does not necessarily require multi-round policy improvement through self-play in the usual sense (e.g., chess or Go); the best models in our paper were trained from scratch on frozen datasets that combined replay data with battles played by a few previous versions. The whole project is now set up to do this (see [Quick Start](#quick-start)).
 
 
 
@@ -332,7 +332,7 @@ ___
 
  ## Team Sets
 
- Team sets are dirs of PS team files that are randomly sampled between episodes. They are stored on huggingface at [`jakegrigsby/metamon-teams`](https://huggingface.co/datasets/jakegrigsby/metamon-teams) and can be downloaded in advance with `python -m metamon.data.download teams`
+ Team sets are dirs of Showdown team files that are randomly sampled between episodes. They are stored on huggingface at [`jakegrigsby/metamon-teams`](https://huggingface.co/datasets/jakegrigsby/metamon-teams) and can be downloaded in advance with `python -m metamon.data.download teams`
 
 ```python
 metamon.env.get_metamon_teams(battle_format : str, set_name : str)
