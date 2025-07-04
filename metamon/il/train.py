@@ -51,8 +51,8 @@ class Run:
     # Optimization
     model_Cls: Callable = GRUModel
     mask_actions: bool = True
-    batch_size: int = 32
-    dloader_workers: int = 16
+    batch_size: int = 48
+    dloader_workers: int = 8
     learning_rate: float = 1e-4
     grad_clip: float = 2.0
     l2_coeff: float = 1e-4
@@ -118,10 +118,10 @@ class Run:
             action_idxs = []
             illegal_action_masks = []
             action_infos = sample[1]
-            for action_info in action_infos:
-                action_idxs.append(action_info["chosen"])
+            for i in range(len(action_infos["chosen"])):
+                action_idxs.append(action_infos["chosen"][i])
                 illegal = torch.ones(num_actions, dtype=bool)
-                for legal_action in action_info["legal"]:
+                for legal_action in action_infos["legal"][i]:
                     illegal[legal_action] = False
                 illegal_action_masks.append(illegal)
             batched_action_idxs.append(torch.tensor(action_idxs, dtype=torch.int32))

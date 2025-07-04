@@ -61,7 +61,7 @@ class ParsedReplayDataset(Dataset):
             verbose=True,
         )
 
-        obs, actions, rewards, dones, missing_actions = dset[0]
+        obs, action_infos, rewards, dones = dset[0]
         ```
 
     Args:
