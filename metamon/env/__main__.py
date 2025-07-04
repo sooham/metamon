@@ -33,7 +33,7 @@ if __name__ == "__main__":
         opponent_type=GymLeader,
         observation_space=TokenizedObservationSpace(
             ExpandedObservationSpace(),
-            tokenizer=get_tokenizer("DefaultObservationSpace-v0"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
         ),
         action_space=DefaultActionSpace(),
         reward_function=DefaultShapedReward(),

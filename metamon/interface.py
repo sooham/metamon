@@ -713,11 +713,15 @@ class DefaultShapedReward(RewardFunction):
             if pokemon.base_species == active_now.base_species:
                 active_prev = pokemon
                 break
-        assert active_prev is not None
-        hp_gain = active_now.hp_pct - active_prev.hp_pct
-        took_status = float(
-            active_now.status != "nostatus" and active_prev.status == "nostatus"
-        )
+        if active_prev is None:
+            # this used to trigger a crash, but is now allowed because revival blessing in gen9 will break it
+            hp_gain = 0.0
+            took_status = 0.0
+        else:
+            hp_gain = active_now.hp_pct - active_prev.hp_pct
+            took_status = float(
+                active_now.status != "nostatus" and active_prev.status == "nostatus"
+            )
         opp_now = state.opponent_active_pokemon
         opp_prev = last_state.opponent_active_pokemon
         if opp_now.base_species == opp_prev.base_species:
