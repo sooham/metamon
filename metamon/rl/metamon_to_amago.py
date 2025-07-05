@@ -58,7 +58,11 @@ def make_placeholder_env(
         def __init__(self):
             super().__init__()
             self.observation_space = observation_space.gym_space
+            self.metamon_action_space = action_space
             self.action_space = action_space.gym_space
+            self.observation_space["illegal_actions"] = gym.spaces.Box(
+                low=0, high=1, shape=(self.action_space.n,), dtype=bool
+            )
             self.metamon_battle_format = "PlaceholderShowdown"
             self.metamon_opponent_name = "PlaceholderOpponent"
 
@@ -67,7 +71,7 @@ def make_placeholder_env(
                 key: np.zeros(value.shape, dtype=value.dtype)
                 for key, value in self.observation_space.items()
             }
-            return obs, {}
+            return obs, {"legal_actions": []}
 
         def take_long_break(self):
             pass
@@ -197,20 +201,44 @@ def make_placeholder_experiment(
     return experiment
 
 
-class MetamonAMAGOWrapper(AMAGOEnv):
+class MetamonAMAGOWrapper(amago.envs.AMAGOEnv):
     """AMAGOEnv wrapper with success rate and valid action rate logging."""
 
     def __init__(self, metamon_env: PokeEnvWrapper):
-        self.reset_counter = 0
+        self.metamon_action_space = metamon_env.metamon_action_space
         super().__init__(
             env=metamon_env,
             env_name="metamon",
             batched_envs=1,
         )
+        assert isinstance(self.action_space, gym.spaces.Discrete)
+        self.observation_space["illegal_actions"] = gym.spaces.Box(
+            low=0, high=1, shape=(self.action_space.n,), dtype=bool
+        )
+
+    def add_illegal_action_mask_to_obs(self, obs: dict, info: dict):
+        # move legal action from info to obs
+        legal_actions = info["legal_actions"]
+        illegal_actions = np.ones((self.action_space.n,), dtype=bool)
+        for agent_legal_action in legal_actions:
+            illegal_actions[agent_legal_action] = False
+        obs["illegal_actions"] = illegal_actions
+
+    def inner_reset(self, *args, **kwargs):
+        # move legal action from info to obs
+        obs, info = self.env.reset(*args, **kwargs)
+        self.add_illegal_action_mask_to_obs(obs, info)
+        return obs, info
+
+    def inner_step(self, action):
+        # move legal action from info to obs
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self.add_illegal_action_mask_to_obs(obs, info)
+        return obs, reward, terminated, truncated, info
 
     def step(self, action):
         try:
-            *out, info = super().step(action)
+            next_tstep, reward, terminated, truncated, info = super().step(action)
             # amago will average these stats over episodes, devices, and parallel actors.
             if "won" in info:
                 info[f"{AMAGO_ENV_LOG_PREFIX} Win Rate"] = info["won"]
@@ -218,21 +246,66 @@ class MetamonAMAGOWrapper(AMAGOEnv):
                 info[f"{AMAGO_ENV_LOG_PREFIX} Valid Actions"] = info[
                     "valid_action_count"
                 ] / (info["valid_action_count"] + info["invalid_action_count"])
-            return *out, info
+            return next_tstep, reward, terminated, truncated, info
         except Exception as e:
             print(e)
             print("Force resetting due to long-tail error")
             self.reset()
-            next_state, reward, terminated, truncated, info = self.step(action)
-            # TODO: add legal actions
+            next_tstep, reward, terminated, truncated, info = self.step(action)
             reward *= 0.0
             terminated[:] = False
-            truncated[:] = True
-            return next_state, reward, terminated, truncated, info
+            truncated[:] = True  # force a proper reset asap
+            return next_tstep, reward, terminated, truncated, info
 
     @property
     def env_name(self):
         return f"{self.env.metamon_battle_format}_vs_{self.env.metamon_opponent_name}"
+
+
+@gin.configurable
+class MetamonMaskedActor(amago.nets.actor_critic.Actor):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        discrete: bool,
+        gammas: torch.Tensor,
+        n_layers: int = 2,
+        d_hidden: int = 256,
+        activation: str = "leaky_relu",
+        dropout_p: float = 0.0,
+        continuous_dist_type=None,
+        mask_illegal_actions: bool = True,
+    ):
+        super().__init__(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            discrete=discrete,
+            gammas=gammas,
+            n_layers=n_layers,
+            d_hidden=d_hidden,
+            activation=activation,
+            dropout_p=dropout_p,
+            continuous_dist_type=continuous_dist_type,
+        )
+        self.mask_illegal_actions = mask_illegal_actions
+
+    def actor_network_forward(
+        self,
+        state: torch.Tensor,
+        log_dict: Optional[dict[str, Any]] = None,
+        straight_from_obs: Optional[dict[str, torch.Tensor]] = None,
+    ):
+        dist_params = super().actor_network_forward(
+            state, log_dict=log_dict, straight_from_obs=straight_from_obs
+        )
+        if self.mask_illegal_actions:
+            B, L, G, N = dist_params.shape
+            mask = einops.repeat(
+                straight_from_obs["illegal_actions"], f"b l n -> b l {G} n"
+            )
+            dist_params.masked_fill_(mask, -float("inf"))
+        return dist_params
 
 
 class PSLadderAMAGOWrapper(MetamonAMAGOWrapper):
@@ -268,7 +341,8 @@ def unknown_token_mask(tokens, skip_prob: float = 0.2, batch_max_prob: float = 0
 
 @gin.configurable
 class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
-    """Token + numerical embedding for Metamon.
+    """
+    Token + numerical embedding for Metamon.
 
     Fuses multi-modal input with attention and summary tokens.
     Visualized on the README and in the paper architecture figure.
@@ -391,6 +465,7 @@ class MetamonAMAGODataset(RLDataset):
         # add a final missing action to match the size of observations
         missing_acts = torch.tensor(action_infos["missing"] + [True]).unsqueeze(-1)
         obs_torch["missing_action_mask"] = missing_acts
+        # the environment wrappers also add illegal_actions to the obs
         obs_torch["illegal_actions"] = illegal_actions
         rewards_torch = torch.from_numpy(rewards).unsqueeze(-1)
         dones_torch = torch.from_numpy(dones).unsqueeze(-1)

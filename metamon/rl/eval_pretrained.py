@@ -2,9 +2,8 @@ import os
 from pathlib import Path
 import json
 from functools import partial
-import multiprocessing as mp
 import warnings
-from typing import Type, Optional
+from typing import Optional
 
 warnings.filterwarnings("ignore")
 
@@ -13,12 +12,9 @@ def red_warning(msg: str):
     print(f"\033[91m{msg}\033[0m")
 
 
-import gymnasium as gym
-from huggingface_hub import hf_hub_download
+import huggingface_hub
 import torch
-import numpy as np
 import amago
-from amago import cli_utils
 
 from metamon.env import get_metamon_teams
 from metamon.rl.metamon_to_amago import (
@@ -133,7 +129,7 @@ class PretrainedModel:
     
     def get_path_to_checkpoint(self, checkpoint: int) -> str:
         # Download checkpoint from HF Hub
-        checkpoint_path = hf_hub_download(
+        checkpoint_path = huggingface_hub.hf_hub_download(
             repo_id=self.HF_REPO_ID,
             filename=f"{self.model_name}/ckpts/policy_weights/policy_epoch_{checkpoint}.pt",
             cache_dir=self.hf_cache_dir,
@@ -142,9 +138,9 @@ class PretrainedModel:
 
     def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False) -> amago.Experiment:
         # use the base config and the gin file to configure the model
-        cli_utils.use_config(self.base_config, [self.gin_config], finalize=False)
-        checkpoint = checkpoint or self.default_checkpoint
-        ckpt_path = self.get_path_to_checkpoint(checkpoint or self.default_checkpoint)
+        amago.cli_utils.use_config(self.base_config, [self.gin_config], finalize=False)
+        checkpoint = checkpoint if checkpoint is not None else self.default_checkpoint
+        ckpt_path = self.get_path_to_checkpoint(checkpoint)
         ckpt_base_dir = str(Path(ckpt_path).parents[2])
         # build an experiment
         experiment = make_placeholder_experiment(

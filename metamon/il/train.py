@@ -231,6 +231,7 @@ class Run:
         )
         if self.mask_actions:
             predictions.masked_fill_(action_masks.to(self.DEVICE), -float("inf"))
+
         loss = F.cross_entropy(
             rearrange(predictions, "b l d -> (b l) d"),
             rearrange(labels.to(dtype=torch.long), "b l -> (b l)"),
