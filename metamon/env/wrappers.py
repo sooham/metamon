@@ -19,6 +19,7 @@ from poke_env.teambuilder import Teambuilder
 
 from metamon.interface import (
     UniversalState,
+    UniversalAction,
     RewardFunction,
     ObservationSpace,
     ActionSpace,
@@ -240,7 +241,9 @@ class PokeEnvWrapper(OpenAIGymEnv):
         self.turn_counter = 0
         self.battle_reference = self.agent.n_won_battles
         self.trajectory = {"states": [], "actions": []}
-        return super().reset(*args, **kwargs)
+        obs, info = super().reset(*args, **kwargs)
+        info["legal_actions"] = self._most_recent_legal_actions
+        return obs, info
 
     def action_to_move(self, action: Any, battle: Battle):
         universal_state = UniversalState.from_Battle(battle)
@@ -266,18 +269,28 @@ class PokeEnvWrapper(OpenAIGymEnv):
 
     def embed_battle(self, battle: Battle):
         universal_state = UniversalState.from_Battle(battle)
+        self._most_recent_state = universal_state
+        legal_actions = UniversalAction.definitely_valid_actions(
+            state=universal_state, battle=battle
+        )
+        self._most_recent_legal_actions = [
+            self.metamon_action_space.action_to_agent_output(
+                state=universal_state, action=action
+            )
+            for action in legal_actions
+        ]
         if self.save_trajectories_to is not None:
             self.trajectory["states"].append(universal_state)
         return self.metamon_obs_space.state_to_obs(universal_state)
 
     def step(self, action):
         self.turn_counter += 1
-        next_state, reward, terminated, truncated, info = super().step(action)
+        next_obs, reward, terminated, truncated, info = super().step(action)
+        info["legal_actions"] = self._most_recent_legal_actions
         if self.save_trajectories_to is not None:
-            # TODO: get UniversalState up here...
             self.trajectory["actions"].append(
                 self.metamon_action_space.agent_output_to_action(
-                    state=None, action=action
+                    state=self._most_recent_state, agent_output=action
                 ).action_idx
             )
 
@@ -312,7 +325,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
                     f.write(json.dumps(output_json).encode("utf-8"))
                 os.rename(temp_path, path)
 
-        return next_state, reward, terminated, truncated, info
+        return next_obs, reward, terminated, truncated, info
 
     def take_long_break(self):
         self.close(purge=False)

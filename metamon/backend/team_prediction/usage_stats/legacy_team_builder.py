@@ -221,7 +221,6 @@ class TeamBuilder:
         items = poke_stat["items"]
         spreads = poke_stat["spreads"]
         moves = poke_stat["moves"]
-        breakpoint()
         if selected_moves is not None and not self.check_valid_moves(
             pokemon, selected_moves
         ):

@@ -42,3 +42,4 @@ from . import baselines
 from . import backend
 from . import rl
 from . import il
+from . import env

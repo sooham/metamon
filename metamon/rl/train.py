@@ -11,9 +11,10 @@ from metamon.interface import (
     TokenizedObservationSpace,
     ALL_OBSERVATION_SPACES,
     ALL_REWARD_FUNCTIONS,
+    ALL_ACTION_SPACES,
 )
 from metamon.tokenizer import get_tokenizer
-from metamon.datasets import ParsedReplayDataset
+from metamon.data import ParsedReplayDataset
 from metamon.rl.metamon_to_amago import (
     MetamonAMAGOExperiment,
     MetamonAMAGODataset,
@@ -32,6 +33,7 @@ def add_cli(parser):
     parser.add_argument("--run_name", required=True, help="Give the run a name to identify logs and checkpoints.")
     parser.add_argument("--obs_space", type=str, default="DefaultObservationSpace")
     parser.add_argument("--reward_function", type=str, default="DefaultShapedReward")
+    parser.add_argument("--action_space", type=str, default="DefaultActionSpace")
     parser.add_argument("--parsed_replay_dir", type=str, default=None, help="Path to the parsed replay directory. Defaults to the official huggingface version.")
     parser.add_argument("--ckpt_dir", type=str, required=True, help="Path to save checkpoints. Find checkpoints under {ckpt_dir}/{run_name}/ckpts/")
     parser.add_argument("--ckpt", type=int, default=None, help="Resume training from an existing run with this run_name. Provide the epoch checkpoint to load.")
@@ -41,7 +43,7 @@ def add_cli(parser):
     parser.add_argument("--il", action="store_true", help="Overrides amago settings to use imitation learning.")
     parser.add_argument("--model_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the model architecture). See provided rl/configs/models/)")
     parser.add_argument("--train_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the training or hparams).")
-    parser.add_argument("--tokenizer", type=str, default="DefaultObservationSpace-v0", help="The tokenizer to use for the text observation space. See metamon.tokenizer for options.")
+    parser.add_argument("--tokenizer", type=str, default="DefaultObservationSpace-v1", help="The tokenizer to use for the text observation space. See metamon.tokenizer for options.")
     parser.add_argument("--dloader_workers", type=int, default=10, help="Number of workers for the data loader.")
     parser.add_argument("--log", action="store_true", help="Log to wandb.")
     # fmt: on
@@ -91,9 +93,11 @@ if __name__ == "__main__":
         ALL_OBSERVATION_SPACES[args.obs_space](), get_tokenizer(args.tokenizer)
     )
     reward_function = ALL_REWARD_FUNCTIONS[args.reward_function]()
+    action_space = ALL_ACTION_SPACES[args.action_space]()
     parsed_replay_dataset = ParsedReplayDataset(
         dset_root=args.parsed_replay_dir,
         observation_space=obs_space,
+        action_space=action_space,
         reward_function=reward_function,
         # amago will handle sequence lengths
         max_seq_len=None,
@@ -110,6 +114,7 @@ if __name__ == "__main__":
             make_baseline_env,
             battle_format=f"gen{i}ou",
             observation_space=obs_space,
+            action_space=action_space,
             reward_function=reward_function,
             player_team_set=get_metamon_teams(f"gen{i}ou", "competitive"),
             opponent_type=opponent,
@@ -128,9 +133,9 @@ if __name__ == "__main__":
         # tstep_encoder_type = should be set in the gin file
         # traj_encoder_type = should be set in the gin file
         # agent_type = should be set in the gin file
-        val_timesteps_per_epoch=300,
+        val_timesteps_per_epoch=300,  # per actor
         ## environment ##
-        make_train_env=partial(make_placeholder_env, obs_space),
+        make_train_env=partial(make_placeholder_env, obs_space, action_space),
         make_val_env=make_envs,
         env_mode="async",
         async_env_mp_context="spawn",

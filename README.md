@@ -29,14 +29,19 @@
 2) A large dataset of RL trajectories "reconstructed" from real human battles.
 3) Starting points for training imitation learning (IL) and RL policies.
 
-Metamon is the codebase behind ["Human-Level Competetitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) (RLC, 2025). Please check out our [project website](https://metamon.tech) for an overview of our results. This README documents the dataset, pretrained models, training, and evaluation details to help you get battling!
+Metamon is the codebase behind ["Human-Level Competitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) (RLC, 2025). Please check out our [project website](https://metamon.tech) for an overview of our results. This README documents the dataset, pretrained models, training, and evaluation details to help you get battling!
 
 <br>
 
+<div align="center">
+    <img src="media/figure1.png" alt="Figure 1" width="700">
+</div>
+
+<br>
 
 #### Supported Rulesets
 
-Pokémon Showdown hosts many different rulesets spanning 9 generations of the video game franchise. Metamon was originally focused on the most popular singles ruleset ("OverUsed") for **Generations 1, 2, 3, and 4**. However, we are gradually expanding to Gen 9 in an effort to support the [NeurIPS 2025 PokéAgent Challenge](https://pokeagent.github.io). This is a large project that will not be finalized in time for the competition launch; please stay tuned for updates.
+Pokémon Showdown hosts many different rulesets spanning nine generations of the video game franchise. Metamon initially focused on the most popular singles ruleset ("OverUsed") for **Generations 1, 2, 3, and 4**. However, we are gradually expanding to Gen 9 to support the [NeurIPS 2025 PokéAgent Challenge](https://pokeagent.github.io). This is a large project that will not be finalized in time for the competition launch; please stay tuned for updates.
 
 The current status is:
 
@@ -47,29 +52,36 @@ The current status is:
 | Heuristic Baselines | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Learned Baselines | ✅ | ✅ | ✅ | ✅ | 🚧 TODO |
 
-We also support the UnderUsed (UU), NeverUsed (NU), and Ubers tiers for Generations 1, 2, 3, and 4 --- though constant rule changes and tiny dataset sizes have always made these a bit of an afterthought.
+We also support the UnderUsed (UU), NeverUsed (NU), and Ubers tiers for Generations 1, 2, 3, and 4 —-- though constant rule changes and small dataset sizes have always made these a bit of an afterthought.
 
-
-<br>
-
-<div align="center">
-    <img src="media/figure1.png" alt="Figure 1" width="700">
-</div>
 
 <br>
 
 
 ### Table of Contents
-#### [Quick Start](#quick-start)
-#### [Pretrained Models](#pretrained-models)
-#### [Battle Datasets](#battle-datasets)
-#### [Team Sets](#team-sets)
-#### [Baselines](#baselines)
-#### [Observation, Actions, & Rewards](#observation-spaces--reward-functions)
-#### [Battle Backends](#battle-backends)
-#### [Training and Evaluation](#training)
-#### [Acknowledgements](#acknowledgements)
+1. [**Installation**](#installation)
 
+2. [**Quick Start**](#quick-start)
+
+3. [**Pretrained Models**](#pretrained-models)
+
+4. [**Battle Datasets**](#battle-datasets)
+
+5. [**Team Sets**](#team-sets)
+
+6. [**Baselines**](#baselines)
+
+7. [**Observation Spaces, Action Spaces, & Reward Functions**](#observation-spaces-action-spaces--reward-functions)
+
+8. [**Training and Evaluation**](#training-and-evaluation)
+
+9. [**Other Datasets**](#other-datasets)
+
+10. [**Battle Backends**](#battle-backends)
+
+11. [**Acknowledgement**](#acknowledgement)
+
+12. [**Citation**](#citation)
 
 
 <br>
@@ -95,32 +107,29 @@ cd metamon
 pip install -e .
 ```
 
-To install [Pokémon Showdown](https://pokemonshowdown.com/) (PS), we'll need a modern version of `npm` / Node.js (instructions [here](https://nodejs.org/en/download/package-manager)). Note that PS undergoes constant updates... breaking changes are rare, but do happen. The version that downloads with this repo (`metamon/server`) is always supported.
+To install [Pokémon Showdown](https://pokemonshowdown.com/), we'll need a modern version of `npm` / Node.js (instructions [here](https://nodejs.org/en/download/package-manager)). Note that Showdown undergoes constant updates... breaking changes are rare, but do happen. The version that downloads with this repo (`metamon/server`) is always supported.
 
 ```shell
 cd server/pokemon-showdown
 npm install
 ```
 
-Then, we will start a local PS server to handle our battle traffic. The server settings are determined by a configuration file which we'll copy from the provided example (`server/config.js`):
-```shell
-cp ../config.js config/
-```
-
-We will need to have the PS server running in the background while using Metamon:
+We will need to have the Showdown server running in the background while using Metamon:
 ```shell
 # in the background (`screen`, etc.)
 node pokemon-showdown start --no-security
 # no-security removes battle speed throttling and password requirements on your local server
 ```
 
-We can verify that installation has gone smoothly with:
+If necessary, we can customize the server settings (`config/config.js`) or [the rules for each game mode](https://github.com/smogon/pokemon-showdown/blob/master/config/CUSTOM-RULES.md).
+
+Verify that installation has gone smoothly with:
 ```bash
 # run a few test battles on the local server
 python -m metamon.env
 ```
 
-Metamon provides large datasets of Pokémon team files, human battles, and other statistics that will automatically download when requested. You will need to specify a path:
+Metamon provides large datasets of Pokémon team files, human battles, and other statistics that will automatically download when requested. Specify a path with:
 ```bash
 # add to ~/.bashrc
 export METAMON_CACHE_DIR=/path/to/plenty/of/disk/space
@@ -146,7 +155,7 @@ reward_fn = DefaultShapedReward()
 action_space = DefaultActionSpace()
 ```
 
-Then, battle against built-in baselines (anything in `metamon.baselines` or any `poke_env.Player`):
+Then, battle against built-in baselines (anything in `metamon.baselines` or any [`poke_env.Player`](https://github.com/hsahovic/poke-env)):
 
 ```python 
 from metamon.env import BattleAgainstBaseline
@@ -166,7 +175,7 @@ obs, info = env.reset()
 next_obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
 ```
 
-The more flexible option is to request battles on our local Showdown server and battle anyone else who is online (ourself, pretrained agents, or other Pokémon AI projects). If it plays Showdown, we can battle against it!
+The more flexible option is to request battles on our local Showdown server and battle anyone else who is online (humans, pretrained agents, or other Pokémon AI projects). If it plays Showdown, we can battle against it!
 
 ```python
 from metamon.env import QueueOnLocalLadder
@@ -182,11 +191,10 @@ env = QueueOnLocalLadder(
 )
 ```
 
-**Metamon's main feature is that it creates a dataset of "reconstructed" human demonstrations for these environments**:
+Metamon's main feature is that it creates a dataset of "reconstructed" human demonstrations for these environments:
 
 ```python
 from metamon.data import ParsedReplayDataset
-
 # pytorch dataset. examples are converted to 
 # the chosen obs/actions/rewards on-the-fly.
 offline_dset = ParsedReplayDataset(
@@ -195,15 +203,13 @@ offline_dset = ParsedReplayDataset(
     reward_function=reward_func,
     formats=["gen1ou"],
 )
-
-obs_seq, action_seq, reward_seq, done_seq, missing_action_mask_seq = offline_dset[0]
+obs_seq, action_seq, reward_seq, done_seq = offline_dset[0]
 ```
 
 We can save our own agents' experience in the same format:
 
 ```python
 env = QueueOnLocalLadder(
-    battle_format="gen1ou",
     .., # rest of args
     save_trajectories_to="my_data_path",
 )
@@ -212,10 +218,7 @@ online_dset = ParsedReplayDataset(
     observation_space=obs_space,
     action_space=action_space,
     reward_function=reward_func,
-    formats=["gen1ou"],
 )
-
-# interact with the environment
 terminated = False
 while not terminated:
     *_, terminated, _, _ = env.step(env.action_space.sample())
@@ -271,7 +274,7 @@ Some model sizes have several variants testing different RL objectives. See `met
 | **`SyntheticRLV0`**           | 200M actor-critic model trained on 1M human + 1M diverse self-play battles          |
 | **`SyntheticRLV1`**           | 200M actor-critic model trained on 1M human + 2M diverse self-play battles  |
 | **`SyntheticRLV1_SelfPlay`**   | SyntheticRLV1 fine-tuned on 2M extra battles against itself                 |
-| **`SyntheticRLV1_PlusPlus`**          | SyntheticRLV1 fine-tuned on 2M extra battles against diverse opponents      |
+| **`SyntheticRLV1_PlusPlus`**          | SyntheticRLV1 finetuned on 2M extra battles against diverse opponents      |
 | **`SyntheticRLV2`**           | Final 200M actor-critic model with value classification trained on 1M human + 4M diverse self-play battles. |
 
 Here is a reference of human evals for key models according to our paper:
@@ -290,9 +293,9 @@ ____
 
 ## Battle Datasets
 
-PS creates "replays" of battles that players can choose to upload to the website before they expire. We gathered all surviving historical replays for Gen 1-4 OU/NU/UU/Ubers and Gen 9 OU, and continuously save new battles to grow the dataset.
+Showdown creates "replays" of battles that players can choose to upload to the website before they expire. We gathered all surviving historical replays for Gen 1-4 OU/NU/UU/Ubers and Gen 9 OU, and continuously save new battles to grow the dataset.
 
-PS replays are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. We unlock the replay dataset for RL by "reconstructing" the point-of-view of each player. This is a hard problem; the dataset is frequently updated with improvements and new replays.
+
 
 <div align="center">
     <img src="media/dataset.png" alt="Dataset Overview" width="800">
@@ -307,11 +310,19 @@ Datasets are stored on huggingface in two formats:
 |**[`metamon-raw-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-raw-replays)** | 1.8M Battles | Our curated set of Pokémon Showdown replay `.json` files... to save the Showdown API some download requests and to maintain an official reference of our training data. Will be regularly updated as new battles are played and collected. |
 |**[`metamon-parsed-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-replays)** | 3.5M Trajectories | The RL-compatible version of the dataset as reconstructed by the [replay parser](metamon/data/replay_dataset/replay_parser/README.md). This dataset has been significantly expanded and improved since the original paper.|
 
-Parsed replays will download automatically when requested by the `ParsedReplayDataset`, but these datasets are large. See `python -m metamon.data.download --help` to download them in advance.
-
+Parsed replays will download automatically when requested by the `ParsedReplayDataset`, but these datasets are large. Use `python -m metamon.data.download parsed-replays` to download them in advance.
 
 > [!WARNING]
 > The parsed replay system received a [large update](https://github.com/UT-Austin-RPL/metamon/pull/26) to support Gen 9, which was rushed to be available in time for the [PokéAgent Challenge](https://pokeagent.github.io/index.html) launch. Until we can retrain and validate new policies, the latest version of the dataset (`"v3-beta"`) should be considered experimental. `python -m metamon.data.download parsed-replays --version v2` gets the previous version, which has been confirmed to replicate the paper results for Gen 1-4.
+
+
+#### Server/Replay Sim2Sim Gap
+
+In Showdown RL, we have to embrace a **mismatch between the trajectories we *observe in our own battles* and those we *gather from other player's replays***. In short, replays are meant for re*watching* battles, not re*playing* them; they are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. The server sends info to the players that it does not save to its replay, and we need to try and simulate that missing info. Metamon goes to great lengths to handle this, and is always improving ([more info here](metamon/data/replay_dataset/replay_parser/README.md)), but there is no way to be perfect. 
+
+**Therefore, replay data is perhaps best viewed as pretraining data for an offline-to-online finetuning problem.** Self-collected data from the online env fixes inaccuracies and can help concentrate on teams we'll be using on the ladder. This does not necessarily require multi-round policy improvement through self-play in the usual sense (e.g., chess or Go); the best models in our paper were trained from scratch on frozen datasets that combined replay data with battles played by a few previous versions. The whole project is now set up to do this (see [Quick Start](#quick-start)).
+
+
 
 <br>
 
@@ -321,7 +332,7 @@ ___
 
  ## Team Sets
 
- Team sets are dirs of PS team files that are randomly sampled between episodes. They are stored on huggingface at [`jakegrigsby/metamon-teams`](https://huggingface.co/datasets/jakegrigsby/metamon-teams) and can be downloaded in advance with `python -m metamon.data.download teams`
+ Team sets are dirs of Showdown team files that are randomly sampled between episodes. They are stored on huggingface at [`jakegrigsby/metamon-teams`](https://huggingface.co/datasets/jakegrigsby/metamon-teams) and can be downloaded in advance with `python -m metamon.data.download teams`
 
 ```python
 metamon.env.get_metamon_teams(battle_format : str, set_name : str)
@@ -330,9 +341,9 @@ metamon.env.get_metamon_teams(battle_format : str, set_name : str)
  | `set_name` | Teams Per Battle Format | Description |
 |------|---------------------------|-----------------------|
 |`"competitive"`| Varies (< 30) | Human-made teams scraped from forum threads. These are usually official "sample teams" designed by experts for beginners, but we are less selective for non-OU tiers. This is the set used for human ladder evaluations in the paper. |
-|`"paper_variety"`| 1k | Procedurally generated teams with unrealistic OOD lead-off Pokémon. The paper calls this the "variety set". Movests were generated by the legacy `data.team_prediction.predictor.NaiveUsagePredictor` strategy. |
-| `"paper_replays"` | 1k (OU Only) | *Predicted* teams from replays. The paper calls this the "replay set". Surpassed by the "modern_replays" set below but included for reproducibilty. Uses a simple team prediction strategy that is now defined by `data.team_prediction.predictor.NaiveUsagePredictor`|
-| `"modern_replays"` | 8k-12k<br> (OU Only) | *Predicted* teams based on recent replays (currently: since May 20th, 2024). Predictions use the `data.team_prediction.predictor.ReplayPredictor`. The result is a set representing the recent metagame with blanks filled by a mixture of historical trends. Teams are validated against the Showdown version that comes with the repo (`metamon/server`). We plan to update to current Showdown rules soon.|
+|`"paper_variety"`| (Gen 1-4 Only) 1k | Procedurally generated teams with unrealistic OOD lead-off Pokémon. The paper calls this the "variety set". Movesets were generated by sampling from all-time usage stats. |
+| `"paper_replays"` | 1k (Gen 1-4 OU Only) | *Predicted* teams from replays. The paper calls this the "replay set". Surpassed by the "modern_replays" set below but included for reproducibility. Used the original prediction strategy of sampling from all-time usage stats.|
+| `"modern_replays"` | 8k-12k<br> (OU Only) | *Predicted* teams based on recent replays (currently: since May 20th, 2024) using the best prediction strategy we have available for each generation. The result is a diverse set representing the recent metagame with blanks filled by a mixture of historical trends. |
 
 We can also use our own directory of team files with, for example:
 ```python
@@ -343,7 +354,7 @@ team_set = TeamSet("/path/to/your/team/dir", battle_format: str) # e.g. gen3ou
 But note that files would need to have the extension `".{battle_format}_team"` (e.g., .gen3nu_team).
 
 > [!WARNING]
-> Teams in these datasets were always legal *on the Showdown version we were using when they were generated*, but may not be legal today. We do release new versions, but cannot keep up with rule changes. You can always edit the rules on your local server to make them legal, but should be careful to verify teams before deploying to another server.
+> Teams in these datasets were legal *on the Showdown version we were using when they were generated*, but may not be legal today. We do release new versions, but cannot keep up with rule changes. You can always edit the rules on your local server to make them legal, but you should be careful to verify teams before deploying to another server.
 
 
 <br>
@@ -358,7 +369,7 @@ ___
 `baselines/` contains baseline opponents that we can battle against via `BattleAgainstBasline`. `baselines/heuritics` provides more than a dozen heuristic opponents and starter code for developing new ones (or mixing ground-truth Pokémon knowledge into ML agents). `baselines/model_based` ties the simple `il` model checkpoints to `poke-env` (with CPU inference).
 
 
-Here is an overview of opponents mentioned in the paper:
+Here is an overview of the opponents mentioned in the paper:
 
 ```python
 from metamon.baselines import ALL_BASELINES
@@ -372,7 +383,7 @@ opponent = ALL_BASELINES[name]
 |`Gen1BossAI`| Emulates opponents in the original Pokémon Generation 1 games. Usually chooses random moves. However, it prefers using stat-boosting moves on the second turn and “super effective” moves when available. |
 | `Grunt` | A maximally offensive player that selects the move that will deal the greatest damage against the current opposing Pokémon using Pokémon’s damage equation and a type chart and selects the best matchup by type when forced to switch.|
 | `GymLeader` | Improves upon Grunt by additionally taking into account factors such as health. It prioritizes using stat boosts when the current Pokémon is very healthy, and heal moves when unhealthy.|
-| `PokeEnvHeuristic` | The `SimpleHeuristicsPlayer` baseline provided by `poke-env` with configurable difficulty (shortcuts like `EasyPokeEnvHeuristic`).|
+| `PokeEnvHeuristic` | The `SimpleHeuristicsPlayer` baseline provided by [`poke-env`](https://github.com/hsahovic/poke-env) with configurable difficulty (shortcuts like `EasyPokeEnvHeuristic`).|
 | `EmeraldKaizo` | An adaptation of the AI in a Pokémon Emerald ROM hack intended to be as difficult as possible. It selects actions by scoring the available options against a rule set that includes handwritten conditional statements for a large portion of the moves in the game.|
 | `BaseRNN` | A simple RNN IL policy trained on an early version of our parsed replay dataset. Runs inference on CPU.|
 
@@ -396,7 +407,7 @@ ___
 
 ## Observation Spaces, Action Spaces, & Reward Functions
  
- Pokémon Showdown is a great RL problem, but a terrible RL benchmark environment. To make a long story short, it is too complicated and updated too often to get any version control. Metamon tries to split the RL from Pokémon, which lets the Pokémon stuff receive large updates --- [and even be replaced with other implementations](#battle-backends) --- without breaking existing policies. We hope this also lets unrelated projects use our dataset.
+ Pokémon Showdown is a great RL problem, but a bad benchmark environment, because it is too complicated and updated too often to get any version control. Metamon tries to split the RL away from Pokémon, which lets the Pokémon "backend" receive large updates --- [and even be replaced with other implementations](#battle-backends) --- without breaking existing policies. We hope **this also lets unrelated projects use our dataset.**
 
  All we need to do is pick an `ObservationSpace`, `ActionSpace`, and `RewardFunction`:
 
@@ -414,10 +425,10 @@ ___
 `UniversalState` defines all the features we have access to at each timestep.
 
 The `ObservationSpace` packs those features into a policy input.
-- `DefaultObservationSpace` is the (quite high-dimensional) text/numerical observation space used in our paper. 
+- `DefaultObservationSpace` is the text/numerical observation space used in our paper. 
 - `ExpandedObservationSpace` is a slight improvement based on lessons learned from the paper. It also adds tera types for Gen 9. 
 
-Alternatives are listed in `metamon.interface.ALL_OBSERVATION_SPACES`. We could create a custom version with more/less features by inheriting from `metamon.interface.ObservationSpace`.
+ We could create a custom version with more/less features by inheriting from `metamon.interface.ObservationSpace`.
 
 
 ##### Tokenization
@@ -449,7 +460,7 @@ words across the entire replay dataset, with an unknown token for rare cases we 
 Metamon uses a fixed `UniversalAction` space of 13 discrete choices:
 - `{0, 1, 2, 3}` use the active Pokémon's moves in alphabetical order.
 - `{4, 5, 6, 7, 8}` switch to the other Pokémon in the party in alphabetical order.
-- `{9, 10, 11, 12}` are wildcards for generation-specific gimmicks. Currently they only apply to gen9, where they pick moves (in alphabetical order) *with terastallization*.
+- `{9, 10, 11, 12}` are wildcards for generation-specific gimmicks. Currently, they only apply to Gen 9, where they pick moves (in alphabetical order) *with terastallization*.
 
 That might not be how we want to set up our agent. The `ActionSpace` converts between whatever the output of the policy might be and the `UniversalAction`.
 
@@ -460,32 +471,12 @@ That might not be how we want to set up our agent. The `ActionSpace` converts be
 
 #### Rewards
 
-Reward functions assign scalar reward based on consecutive states (R(s, s')). `DefaultShapedReward` is the shaped reward used by the paper. `BinaryReward` removes the smaller shaping terms and simply provides +/- 100 for win/loss. Any new reward functions would be added to `metamon.interface.ALL_REWARD_FUNCTIONS`, and we can implement a new one by inheriting from `metamon.interface.RewardFunction`.
+Reward functions assign a scalar reward based on consecutive states (R(s, s')). `DefaultShapedReward` is the shaped reward used by the paper. `BinaryReward` removes the smaller shaping terms and simply provides +/- 100 for win/loss. Any new reward functions would be added to `metamon.interface.ALL_REWARD_FUNCTIONS`, and we can implement a new one by inheriting from `metamon.interface.RewardFunction`.
 
 ---
 
 <br>
 
-## Battle Backends
-
-<details>
-
-We always use [`poke-env`](https://github.com/hsahovic/poke-env) to communicate with the Showdown server. The "battle backend" is in charge of interpreting messages from Showdown to figure out the current state of the environment. `battle_backend` is an arg for all the envs. There are two choices:
-
-1. `"poke-env"` keeps using poke-env. We install a [frozen fork](https://github.com/UT-Austin-RPL/poke-env) that preserves backwards compatibility for our strongest pretrained models. No Pokémon logic bugs are fixed and nothing ever changes.
-2. `"metamon"` repurposes the "replay parser" that generates our human battle datasets. This lets us reduce (but, unfortuantely, not eliminate) the gap between the data we see in the offline dataset and the data we see in online battles. It also lets metamon take the wheel on future maintenance such that any improvements made from having to parse and predict every replay ever saved can directly translate to the online env.
-
-The two are intentionally similar and can be used interchangeably. `"poke-env"` is deprecated and meant for backwards compatibility, but is more stable, and a good default for now. `"metamon"` is more accurate (at least in Gens 1-4) and closer to the offline dataset, but this gap is impossible to fully close and you'll need self-play data to fix it regardless. `"poke-env"` is meaningfully faster than `"metamon"`, but we are working on that.
-
-**The choice only really matters when collecting online self-play data; at test-time, you can just try both!**
-
-If you want more information on why this gap exists at all, and what the implications on performance might be, see the [`metamon/backend` README](backend/README.md). Other options may be added in the future.
-
-</details>
-
-____
-
- <br>
 
  ## Training and Evaluation
 
@@ -533,7 +524,7 @@ And now we can evaluate it just like any of the huggingface models.
 
 #### Customize
 
-Customize the agent architecture by creating new `rl/configs/models/` `.gin` files. Customize the RL hyperparameters by creating new `rl/configs/training/` files. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/configuration.html) to a lot more information about configuring training runs. `amago` is modular and you can swap just about any piece of the agent with your own ideas. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/customization.html) to more information about custom components.
+Customize the agent architecture by creating new `rl/configs/models/` `.gin` files. Customize the RL hyperparameters by creating new `rl/configs/training/` files. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/configuration.html) to a lot more information about configuring training runs. `amago` is modular, and you can swap just about any piece of the agent with your own ideas. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/customization.html) to more information about custom components.
 
 
 #### Standalone Toy `il` (Deprecated)
@@ -550,16 +541,79 @@ python train.py --run_name any_name_will_do --model_config configs/transformer_e
 
 </details>
 
-
  ---
 
  <br>
 
+ ## Other Datasets
+
+To support the main [raw-replays](https://huggingface.co/datasets/jakegrigsby/metamon-raw-replays), [parsed-replays](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-replays), and [teams](https://huggingface.co/datasets/jakegrigsby/metamon-teams) datasets, metamon creates a few resources that may be useful for other purposes:
 
 
-## Acknowledgement
+ #### Usage Stats
+Showdown records the frequency of team choices (items, moves, abilities, etc.) brought to battles in a given month. The community mainly uses this data to consider rule changes, but we use it to help predict missing details of partially revealed teams. We load data for an arbitrary window of history around the date a battle was played, and fall back to all-time stats for rare Pokémon where data is limited:
 
-This project owes a huge debt to the amazing [`poke-env`](https://github.com/jakegrigsby/poke-env/tree/master/src/poke_env), as well Pokémon resources like [Bulbapedia](https://bulbapedia.bulbagarden.net/wiki/Main_Page) --- without which I never would've been able to figure this out.
+```python
+from metamon.backend.team_prediction.usage_stats import get_usage_stats
+from datetime import date
+usage_stats = get_usage_stats("gen1ou",
+    start_date=date(month=12, day=13, year=2017),
+    end_date=date(month=3, day=17, year=2018),
+)
+alakazam_info: dict = usage_stats["Alakazam"] # non alphanum chars and case are flexible
+```
+
+Download usage stats in advance with:
+```shell
+python -m metamon.data.download usage-stats
+```
+
+The data is stored on huggingface at [`jakegrigsby/metamon-usage-stats`](https://huggingface.co/datasets/jakegrigsby/metamon-usage-stats).
+
+#### Revealed Teams
+One of the main problems the replay parser has to solve is predicting a player's full team based on the "partially revealed" team at the end of the battle. As part of this, we record the revealed team in the [standard Showdown team builder format](https://pokepast.es/syntax.html), but with some magic keywords for missing elements. For example:
+
+```
+Tyranitar @ Custap Berry
+Ability: Sand Stream
+EVs: $missing_ev$ HP / $missing_ev$ Atk / $missing_ev$ Def / $missing_ev$ SpA / $missing_ev$ SpD / $missing_ev$ Spe
+$missing_nature$ Nature
+IVs: 31 HP / 31 Atk / 31 Def / 31 SpA / 31 SpD / 31 Spe
+- Stealth Rock
+- Stone Edge
+- Pursuit
+- $missing_move$
+```
+
+Given the size of our replay dataset, this creates a massive set of real (but incomplete) human team choices. The files are stored alongside the parsed-replay dataset and downloaded with:
+
+```shell
+python -m metamon.data.download revealed-teams
+```
+
+`metamon/backend/team_prediction` contains tools for filling in the blanks of these files, but this is all poorly documented and changes frequently, so we'll leave it at that for now.
+
+----
+
+<br>
+
+
+## Battle Backends
+
+Originally, metamon handled reconstruction of training data from old replays but used [`poke-env`](https://github.com/hsahovic/poke-env) to play new battles:
+
+<div align="center">
+  <img src="media/offline_metamon_diagram.png" alt="Metamon Offline Diagram" width="85%">
+</div>
+
+In an experimental new feature, we now allow all of the Pokémon logic (the "battle backend") to switch to the replay version. Pass `battle_backend="metamon"` to any of the environments. `poke-env` still handles all communication with Showdown, but this helps reduce the [sim2sim gap](#serverreplay-sim2sim-gap). Because it is focused on Gens 1-4 without privileged player info --- and tested on every replay ever saved --- the metamon backend is more accurate for our use case and will be significantly easier to maintain. However, the `"poke-env"` option is still faster and more stable. It uses a [frozen fork](https://github.com/UT-Austin-RPL/poke-env) that preserves backwards compatibility for the gymnasium interface and battle backend used by our best baseline models. For now, the two choices are so similar that they can be used interchangeably at test time. However, a serious superhuman self-play effort would probably want to pick one option and be consistent with it. `"poke-env"` will only be deprecated after the [PokéAgent Challenge](https://pokeagent.github.io).
+____
+
+ <br>
+
+## Acknowledgements
+
+This project owes a huge debt to the amazing [`poke-env`](https://github.com/jakegrigsby/poke-env/tree/master/src/poke_env), as well Pokémon resources like [Bulbapedia](https://bulbapedia.bulbagarden.net/wiki/Main_Page), [Smogon](https://www.smogon.com), and of course [Pokémon Showdown](https://github.com/smogon/pokemon-showdown).
 
 ---
 

@@ -476,7 +476,7 @@ def get_usage_stats(
     return _cached_smogon_stats(format, start_date, end_date)
 
 
-@functools.lru_cache(maxsize=32)
+@functools.lru_cache(maxsize=64)
 def _cached_smogon_stats(format, start_date: datetime.date, end_date: datetime.date):
     print(f"Loading usage stats for {format} between {start_date} and {end_date}")
     return PreloadedSmogonUsageStats(

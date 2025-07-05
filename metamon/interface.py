@@ -172,17 +172,6 @@ class UniversalPokemon:
     tera_type: str
     base_species: str
 
-    @classmethod
-    def from_dict(cls, data: dict):
-        data["moves"] = [UniversalMove(**m) for m in data["moves"]]
-        if "tera_type" not in data:
-            # if missing --> old version of the dataset --> gen 1-4 --> no tera
-            data["tera_type"] = cls.universal_types([None], force_two=False)
-        if "base_species" not in data:
-            # if missing --> old version of the dataset --> gen 1-4 --> we can get away with this
-            data["base_species"] = data["name"].split("-")[0].strip()
-        return cls(**data)
-
     @staticmethod
     def universal_items(item_rep: Optional[str | ReplayNothing]) -> str:
         if item_rep is None or item_rep == "unknown_item":
@@ -246,11 +235,12 @@ class UniversalPokemon:
     @classmethod
     def from_ReplayPokemon(cls, pokemon: ReplayPokemon):
         assert isinstance(pokemon, ReplayPokemon)
+        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
         moves = [
             UniversalMove.from_ReplayMove(move)
             for move in pokemon.moves.values()
             if move is not None
-        ]
+        ][:4]
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
         boosts = {
             f"{stat}boost": getattr(pokemon.boosts, stat)
@@ -278,7 +268,8 @@ class UniversalPokemon:
     @classmethod
     def from_Pokemon(cls, pokemon: Pokemon):
         # do not use Battle.available_moves
-        moves = [UniversalMove.from_Move(move) for move in pokemon.moves.values()]
+        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
+        moves = [UniversalMove.from_Move(move) for move in pokemon.moves.values()][:4]
         boosts = {f"{stat}_boost": boost for stat, boost in pokemon.boosts.items()}
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
         if pokemon.effects:
@@ -299,6 +290,18 @@ class UniversalPokemon:
             moves=moves,
             **(boosts | stats),
         )
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
+        data["moves"] = [UniversalMove(**m) for m in data["moves"]][:4]
+        if "tera_type" not in data:
+            # if missing --> old version of the dataset --> gen 1-4 --> no tera
+            data["tera_type"] = cls.universal_types([None], force_two=False)
+        if "base_species" not in data:
+            # if missing --> old version of the dataset --> gen 1-4 --> we can get away with this
+            data["base_species"] = data["name"].split("-")[0].strip()
+        return cls(**data)
 
     @staticmethod
     def metamon_to_poke_env(pokemon: ReplayPokemon, is_active: bool) -> Pokemon:
@@ -713,11 +716,15 @@ class DefaultShapedReward(RewardFunction):
             if pokemon.base_species == active_now.base_species:
                 active_prev = pokemon
                 break
-        assert active_prev is not None
-        hp_gain = active_now.hp_pct - active_prev.hp_pct
-        took_status = float(
-            active_now.status != "nostatus" and active_prev.status == "nostatus"
-        )
+        if active_prev is None:
+            # this used to trigger a crash, but is now allowed because revival blessing in gen9 will break it
+            hp_gain = 0.0
+            took_status = 0.0
+        else:
+            hp_gain = active_now.hp_pct - active_prev.hp_pct
+            took_status = float(
+                active_now.status != "nostatus" and active_prev.status == "nostatus"
+            )
         opp_now = state.opponent_active_pokemon
         opp_prev = last_state.opponent_active_pokemon
         if opp_now.base_species == opp_prev.base_species:
@@ -966,7 +973,7 @@ class DefaultObservationSpace(ObservationSpace):
         return {"text": text, "numbers": numbers}
 
 
-class DefaultPlusObservationSpace(DefaultObservationSpace):
+class ExpandedObservationSpace(DefaultObservationSpace):
     """Adds PP, the opponent's revealed party, and edge case sleep/freeze flags to DefaultObservationSpace.
 
     The DefaultObservationSpace used by the paper makes Pokémon more long-term-memory-intensive
@@ -980,7 +987,7 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
     3. The opponent's full team must be inferred from recalling the active Pokémon at previous
         timesteps.
 
-    This observation space moves some of that information into every timestep.
+    This observation space moves some of that information into every timestep. Also adds tera types for gen 9.
     """
 
     def reset(self):
@@ -995,8 +1002,8 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
         base_space["numbers"] = gym.spaces.Box(
             low=-10.0,
             high=10.0,
-            # adds 4 PP features + 2 sleep/freeze flags
-            shape=(48 + 6,),
+            # adds 4 PP features + 2 sleep/freeze flags + 1 can_tera flag
+            shape=(48 + 7,),
             dtype=np.float32,
         )
         return base_space
@@ -1004,9 +1011,19 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
     @property
     def tokenizable(self) -> dict[str, int]:
         # adds 6 new tokens for the revealed party
-        return {
-            "text": 87 + 6,
-        }
+        # adds 6 new tokens for the tera types of our party, 1 for the opponent
+        return {"text": 87 + 13}
+
+    def _get_pokemon_string_features(
+        self, pokemon: UniversalPokemon, active: bool
+    ) -> list[str]:
+        base = super()._get_pokemon_string_features(pokemon, active)
+        base.append(pokemon.tera_type)
+        return base
+
+    def _get_pokemon_pad_string(self, active: bool) -> list[str]:
+        blanks = 4 + (4 if active else 5)
+        return ["<blank>"] * blanks
 
     def _get_move_numerical_features(
         self, move: UniversalMove, active: np.bool
@@ -1039,6 +1056,7 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
         new_features = [
             self.any_opponent_asleep,
             self.any_opponent_frozen,
+            state.can_tera,
         ]
         obs["numbers"] = np.concatenate([obs["numbers"], new_features])
 
@@ -1056,7 +1074,7 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
 
 ALL_OBSERVATION_SPACES = {
     "DefaultObservationSpace": DefaultObservationSpace,
-    "DefaultPlusObservationSpace": DefaultPlusObservationSpace,
+    "ExpandedObservationSpace": ExpandedObservationSpace,
 }
 
 
