@@ -1,5 +1,6 @@
 import os
 import tqdm
+import datetime
 from multiprocessing import Pool, cpu_count
 from itertools import islice
 
@@ -21,7 +22,9 @@ def process_chunk(args):
     for i, result in tqdm.tqdm(enumerate(chunk), total=len(chunk)):
         try:
             team, *_ = result
-            predicted_team = predictor.predict(team)
+            predicted_team = predictor.predict(
+                team, date=datetime.datetime.now().date()
+            )
             output = os.path.join(output_dir, f"team_{i + offset}.{format_name}_team")
             predicted_team.write_to_file(output)
             success_count += 1

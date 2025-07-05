@@ -1,4 +1,5 @@
 import subprocess
+import random
 from typing import List, Tuple
 import gc
 import argparse
@@ -14,6 +15,7 @@ from metamon.interface import (
     TokenizedObservationSpace,
     DefaultObservationSpace,
     DefaultShapedReward,
+    MinimalActionSpace,
 )
 from metamon.tokenizer import get_tokenizer
 
@@ -47,6 +49,7 @@ def env_verify_team(team_str: str, format_id: str = "gen1ou") -> bool:
         team_set=team_set,
         opponent_type=RandomBaseline,
         observation_space=obs_space,
+        action_space=MinimalActionSpace(),
         reward_function=reward_fn,
     )
     env._INIT_RETRIES = 2
@@ -85,7 +88,9 @@ if __name__ == "__main__":
 
     path = os.path.join(args.input_path, args.format)
     if os.path.isdir(path):
-        for file in tqdm.tqdm(os.listdir(path)):
+        files = os.listdir(path)
+        random.shuffle(files)
+        for file in tqdm.tqdm(files):
             if file.endswith("team"):
                 filename = os.path.join(path, file)
                 format = path.split("/")[-1]
@@ -96,7 +101,9 @@ if __name__ == "__main__":
                     print(e)
                     continue
 
-                if not validate_showdown_team(team_str, format):
+                # if not validate_showdown_team(team_str, format):
+                #    continue
+                if not env_verify_team(team_str, format):
                     continue
 
                 os.makedirs(os.path.join(args.output_path, format), exist_ok=True)

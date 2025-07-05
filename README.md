@@ -557,8 +557,8 @@ Showdown records the frequency of team choices (items, moves, abilities, etc.) b
 from metamon.backend.team_prediction.usage_stats import get_usage_stats
 from datetime import date
 usage_stats = get_usage_stats("gen1ou",
-    start_date=date(month=12, day=13, year=2017),
-    end_date=date(month=3, day=17, year=2018),
+    start_date=date(2017, 12, 1),
+    end_date=date(2018, 3, 30)
 )
 alakazam_info: dict = usage_stats["Alakazam"] # non alphanum chars and case are flexible
 ```
