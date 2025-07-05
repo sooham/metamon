@@ -188,6 +188,8 @@ class POVReplay:
                     last_moveset[opp_move_name] = fixed_move
             # now go through the whole transformation window inserting moves we'll use
             # later (or will never use at at all -- but the opponent had them)
+            # TODO: v3-beta lets movesets go over 4... forcing a fix on the interface side.
+            # need to revisit.
             transform_active = False
             for turn in self._flatten_turnlist_from_pov(start_from_turn=i):
                 # `transform_active` needed in case the transformation actually happens

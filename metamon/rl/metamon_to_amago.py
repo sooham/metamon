@@ -449,8 +449,7 @@ class MetamonAMAGODataset(RLDataset):
         for i, legal_actions in enumerate(action_infos["legal"]):
             for legal_action in legal_actions:
                 legal_universal_action = UniversalAction(action_idx=legal_action)
-                # ok, i didn't think far enough ahead on the action space refactor; no easy way to get the
-                # state here. we are lucky that the discrete action spaces don't need one....
+                # discrete action spaces don't need a state input...
                 legal_agent_action = (
                     self.parsed_replay_dset.action_space.action_to_agent_output(
                         state=None, action=legal_universal_action

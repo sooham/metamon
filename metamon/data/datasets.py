@@ -287,19 +287,20 @@ if __name__ == "__main__":
         DefaultObservationSpace,
         DefaultShapedReward,
         TokenizedObservationSpace,
+        ExpandedObservationSpace,
         DefaultActionSpace,
     )
     from metamon.tokenizer import get_tokenizer
 
     dset = ParsedReplayDataset(
         observation_space=TokenizedObservationSpace(
-            DefaultObservationSpace(),
+            ExpandedObservationSpace(),
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
         ),
         action_space=DefaultActionSpace(),
         reward_function=DefaultShapedReward(),
-        formats=["gen1ou"],
         verbose=True,
+        shuffle=True,
     )
-    for i in tqdm.tqdm(range(min(2000, len(dset)))):
+    for i in tqdm.tqdm(range(len(dset))):
         obs, actions, rewards, dones = dset[i]

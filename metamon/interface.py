@@ -172,17 +172,6 @@ class UniversalPokemon:
     tera_type: str
     base_species: str
 
-    @classmethod
-    def from_dict(cls, data: dict):
-        data["moves"] = [UniversalMove(**m) for m in data["moves"]]
-        if "tera_type" not in data:
-            # if missing --> old version of the dataset --> gen 1-4 --> no tera
-            data["tera_type"] = cls.universal_types([None], force_two=False)
-        if "base_species" not in data:
-            # if missing --> old version of the dataset --> gen 1-4 --> we can get away with this
-            data["base_species"] = data["name"].split("-")[0].strip()
-        return cls(**data)
-
     @staticmethod
     def universal_items(item_rep: Optional[str | ReplayNothing]) -> str:
         if item_rep is None or item_rep == "unknown_item":
@@ -246,11 +235,12 @@ class UniversalPokemon:
     @classmethod
     def from_ReplayPokemon(cls, pokemon: ReplayPokemon):
         assert isinstance(pokemon, ReplayPokemon)
+        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
         moves = [
             UniversalMove.from_ReplayMove(move)
             for move in pokemon.moves.values()
             if move is not None
-        ]
+        ][:4]
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
         boosts = {
             f"{stat}boost": getattr(pokemon.boosts, stat)
@@ -278,7 +268,8 @@ class UniversalPokemon:
     @classmethod
     def from_Pokemon(cls, pokemon: Pokemon):
         # do not use Battle.available_moves
-        moves = [UniversalMove.from_Move(move) for move in pokemon.moves.values()]
+        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
+        moves = [UniversalMove.from_Move(move) for move in pokemon.moves.values()][:4]
         boosts = {f"{stat}_boost": boost for stat, boost in pokemon.boosts.items()}
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
         if pokemon.effects:
@@ -299,6 +290,18 @@ class UniversalPokemon:
             moves=moves,
             **(boosts | stats),
         )
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
+        data["moves"] = [UniversalMove(**m) for m in data["moves"]][:4]
+        if "tera_type" not in data:
+            # if missing --> old version of the dataset --> gen 1-4 --> no tera
+            data["tera_type"] = cls.universal_types([None], force_two=False)
+        if "base_species" not in data:
+            # if missing --> old version of the dataset --> gen 1-4 --> we can get away with this
+            data["base_species"] = data["name"].split("-")[0].strip()
+        return cls(**data)
 
     @staticmethod
     def metamon_to_poke_env(pokemon: ReplayPokemon, is_active: bool) -> Pokemon:
