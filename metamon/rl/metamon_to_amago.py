@@ -37,7 +37,7 @@ except ImportError:
     )
 else:
     assert (
-        hasattr(amago, "__version__") and amago.__version__ >= "3.1.0"
+        hasattr(amago, "__version__") and amago.__version__ >= "3.1.1"
     ), "Update to the latest AMAGO version!"
     from amago.envs import AMAGOEnv
     from amago.nets.utils import symlog
@@ -202,7 +202,12 @@ def make_placeholder_experiment(
 
 
 class MetamonAMAGOWrapper(amago.envs.AMAGOEnv):
-    """AMAGOEnv wrapper with success rate and valid action rate logging."""
+    """AMAGOEnv wrapper for poke-env gymnasium environments.
+
+    - Extends the observation space with an illegal action mask, which will
+    be passed along to the actor network.
+    - Adds success rate and valid action rate logging.
+    """
 
     def __init__(self, metamon_env: PokeEnvWrapper):
         self.metamon_action_space = metamon_env.metamon_action_space
@@ -264,6 +269,15 @@ class MetamonAMAGOWrapper(amago.envs.AMAGOEnv):
 
 @gin.configurable
 class MetamonMaskedActor(amago.nets.actor_critic.Actor):
+    """
+    Default AMAGO Actor with optional logit masking of illegal actions.
+
+    Note that all the original models were trained with the equivalent of
+    mask_illegal_actions=False... the dataset would not have illegal actions,
+    and in self-play data an illegal action triggers a random one to be taken,
+    so it's always a bad idea, and critic nets have no problem learning this.
+    """
+
     def __init__(
         self,
         state_dim: int,

@@ -76,6 +76,7 @@ class PretrainedModel:
         # tokenize the text component of the observation space
         tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
         # use original paper observation space and reward function
+        # (paper action space is now called MinimalActionSpace)
         observation_space: ObservationSpace = DefaultObservationSpace(),
         action_space: ActionSpace = DefaultActionSpace(),
         reward_function: RewardFunction = DefaultShapedReward(),

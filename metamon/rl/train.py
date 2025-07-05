@@ -112,16 +112,14 @@ if __name__ == "__main__":
     make_envs = [
         partial(
             make_baseline_env,
-            battle_format=f"gen{i}ou",
+            battle_format=f"gen{gen}ou",
             observation_space=obs_space,
             action_space=action_space,
             reward_function=reward_function,
-            player_team_set=get_metamon_teams(f"gen{i}ou", "competitive"),
+            player_team_set=get_metamon_teams(f"gen{gen}ou", "competitive"),
             opponent_type=opponent,
         )
-        for i in range(
-            1, 4
-        )  # TODO: gen4ou teams are illegal after updating to latest Showdown due to tiering change.
+        for gen in {1, 2, 3, 4, 9}
         for opponent in live_opponents
     ]
     experiment = MetamonAMAGOExperiment(

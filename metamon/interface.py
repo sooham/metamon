@@ -38,6 +38,11 @@ from metamon.backend.replay_parser.str_parsing import (
 
 
 def consistent_pokemon_order(pokemon):
+    """
+    Sorts Pokémon alphabetically according to their active species
+    name (which would include "formes") in lowercase with special
+    characters removed.
+    """
     if not pokemon:
         return []
     if isinstance(pokemon[0], Pokemon):
@@ -56,6 +61,10 @@ def consistent_pokemon_order(pokemon):
 
 
 def consistent_move_order(moves):
+    """
+    Sorts moves alphabetically according to their name in lowercase
+    with special characters removed.
+    """
     if not moves:
         return []
     if isinstance(moves[0], Move):
@@ -294,7 +303,7 @@ class UniversalPokemon:
     @classmethod
     def from_dict(cls, data: dict):
         # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
-        data["moves"] = [UniversalMove(**m) for m in data["moves"]][:4]
+        data["moves"] = [UniversalMove(**m) for m in data["moves"][:4]]
         if "tera_type" not in data:
             # if missing --> old version of the dataset --> gen 1-4 --> no tera
             data["tera_type"] = cls.universal_types([None], force_two=False)
