@@ -18,7 +18,7 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--battle_format", type=str, default="gen1ou")
     parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--team_set", type=str, default="paper_replays")
+    parser.add_argument("--team_set", type=str, default="competitive")
     parser.add_argument(
         "--battle_backend",
         type=str,
@@ -54,6 +54,7 @@ if __name__ == "__main__":
             state, reward, terminated, truncated, info = env.step(
                 env.action_space.sample()
             )
+            legal_actions = info["legal_actions"]
             return_ += reward
             done = terminated or truncated
             timesteps += 1
