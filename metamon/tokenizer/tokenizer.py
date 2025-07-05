@@ -55,6 +55,10 @@ class PokemonTokenizer:
             self._initial_ids = json.load(f)
         return self
 
+    def load_tokens(self, tokens: dict[str, int]):
+        self._initial_ids = tokens
+        return self
+
     def add_token_for(self, string: str) -> None:
         if string in self._initial_ids:
             return

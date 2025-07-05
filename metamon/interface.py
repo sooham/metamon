@@ -690,6 +690,14 @@ class MinimalActionSpace(DefaultActionSpace):
             action_idx -= 9
         return UniversalAction(action_idx=action_idx)
 
+    def action_to_agent_output(
+        self, state: UniversalState, action: UniversalAction
+    ) -> int:
+        if action.action_idx >= 9:
+            # map all gimmick move actions to regular move actions
+            action.action_idx -= 9
+        return action.action_idx
+
 
 ALL_ACTION_SPACES = {
     "DefaultActionSpace": DefaultActionSpace,

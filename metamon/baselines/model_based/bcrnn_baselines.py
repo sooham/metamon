@@ -17,6 +17,7 @@ from metamon.interface import (
     DefaultObservationSpace,
 )
 from metamon.il.model import MetamonILModel
+from metamon.tokenizer import PokemonTokenizer
 
 
 class BCRNNBaseline(Baseline, ABC):
@@ -95,7 +96,7 @@ class BCRNNBaseline(Baseline, ABC):
 
         # update hidden state
         self.hidden_states[battle_id] = new_hidden_state
-        universal_action = UniversalAction(action_idx)
+        universal_action = self.action_space.agent_output_to_action(state, action_idx)
         order = universal_action.to_BattleOrder(battle)
         return order
 
@@ -114,11 +115,17 @@ class BCRNNBaseline(Baseline, ABC):
 
 
 @lru_cache(maxsize=32)
-def load_pretrained_model_to_cpu(model_filename):
-    # hack to handle models trained when tokenizers were buried in metamon/data/
+def load_prerelease_model_to_cpu(model_filename):
+    # the "BaseRNN", "WinsOnlyRNN", and "MiniRNN" models were trained
+    # way before release and need some hacks to keep working.
     sys.modules["metamon.data.tokenizer"] = metamon.tokenizer
     path = os.path.join(os.path.dirname(__file__), "pretrained_models", model_filename)
     model = torch.load(path, map_location="cpu", weights_only=False)
+    new_tokenizer = PokemonTokenizer()
+    new_tokenizer.load_tokens(model.turn_embedding.tokenizer._data)
+    model.turn_embedding.tokenizer = new_tokenizer
+    model.turn_embedding.token_embedding.tokenizer = new_tokenizer
+    model.tokenizer = new_tokenizer
     model.to("cpu")
     return model
 
@@ -130,7 +137,7 @@ class PretrainedOnCPU(BCRNNBaseline, ABC):
         pass
 
     def load_model(self):
-        return load_pretrained_model_to_cpu(self.model_path)
+        return load_prerelease_model_to_cpu(self.model_path)
 
 
 # TODO: force old models to old action space

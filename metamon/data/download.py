@@ -382,6 +382,9 @@ Available versions:
                 if "ou" not in format and "replays" in set_name:
                     # only OU tiers have replay sets currently
                     continue
+                if "gen9" in format and "paper" in set_name:
+                    # gen 9 was not supported
+                    continue
                 download_teams(
                     battle_format=format,
                     set_name=set_name,
