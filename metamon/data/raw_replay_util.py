@@ -95,37 +95,3 @@ def process_dataset(
             print(f"Cleared cache for {dataset_id}")
         else:
             print(f"No cache found for {dataset_id}")
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Download Pokemon Showdown replays from HuggingFace and save as raw replay files"
-    )
-    parser.add_argument(
-        "--dataset-id",
-        type=str,
-        default="jakegrigsby/metamon-raw-replays",
-        help="HuggingFace dataset ID (e.g., 'username/dataset-name')",
-    )
-    parser.add_argument(
-        "--revision",
-        type=str,
-        default="v1",
-        help="HuggingFace dataset revision",
-    )
-    parser.add_argument(
-        "--output-dir", type=str, required=True, help="Directory to save replay files"
-    )
-    args = parser.parse_args()
-
-    os.makedirs(args.output_dir, exist_ok=True)
-    process_dataset(
-        dataset_id=args.dataset_id,
-        output_dir=args.output_dir,
-        revision=args.revision,
-    )
-    print("\nDone! ✅")
-
-
-if __name__ == "__main__":
-    main()

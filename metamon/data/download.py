@@ -16,7 +16,7 @@ else:
     VERSION_REFERENCE_PATH = None
 
 LATEST_RAW_REPLAY_REVISION = "v3"
-LATEST_PARSED_REPLAY_REVISION = "v2"
+LATEST_PARSED_REPLAY_REVISION = "v3-beta"
 LATEST_TEAMS_REVISION = "v2"
 LATEST_USAGE_STATS_REVISION = "v1"
 
@@ -273,17 +273,18 @@ Available datasets include:
     - parsed-replays: RL-compatible version of replays with reconstructed player actions  
     - revealed-teams: Teams that were revealed during replay battles
     - replay-stats: Statistics generated from revealed teams
+    - usage-stats: Team composition stats from Showdown
     - teams: Various team sets (competitive, paper_variety, paper_replays, modern_replays)
 
 Examples:
     # Download all team files for Gen 1-4 OU
-    python -m metamon.download teams --formats gen1ou gen2ou gen3ou gen4ou
+    python -m metamon.data.download teams --formats gen1ou gen2ou gen3ou gen4ou
 
     # Download parsed replays for Gen 1 UU  
-    python -m metamon.download parsed-replays --formats gen1uu
+    python -m metamon.data.download parsed-replays --formats gen1uu
 
     # Download (anonymized) Showdown replay logs (all formats)
-    python -m metamon.download raw-replays
+    python -m metamon.data.download raw-replays
 
 Note: Requires METAMON_CACHE_DIR environment variable to be set.
 
