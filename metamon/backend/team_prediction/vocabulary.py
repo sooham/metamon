@@ -93,7 +93,6 @@ class TeamTokenizer(PokemonTokenizer):
         for i, token in enumerate(out):
             if token == UNKNOWN_TOKEN:
                 print(f"Unknown token: {seq[i]}")
-                breakpoint()
         return out
 
     def invert(self, tokens: np.ndarray) -> list[str]:

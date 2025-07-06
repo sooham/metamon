@@ -228,7 +228,12 @@ class MetamonBackendBattle(pe.AbstractBattle):
                     and metamon_p.status != pe.Status.FNT
                 ):
                     self._available_switches.append(metamon_p)
-                elif not self.trapped and self.reviving and poke.get("reviving", False):
+                elif (
+                    not self.trapped
+                    and self.reviving
+                    and poke.get("reviving", False)
+                    and metamon_p.status == pe.Status.FNT
+                ):
                     self._available_switches.append(metamon_p)
 
         return active_pokemon
