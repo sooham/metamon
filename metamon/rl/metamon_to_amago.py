@@ -314,10 +314,17 @@ class MetamonMaskedActor(amago.nets.actor_critic.Actor):
             state, log_dict=log_dict, straight_from_obs=straight_from_obs
         )
         if self.mask_illegal_actions:
-            B, L, G, N = dist_params.shape
-            mask = einops.repeat(
-                straight_from_obs["illegal_actions"], f"b l n -> b l {G} n"
-            )
+            Batch, Len, Gammas, N = dist_params.shape
+            mask = straight_from_obs["illegal_actions"]
+            no_options = mask.all(dim=-1, keepdim=True)
+            # TODO: having no legal options should be considered a problem
+            # with action masking / action space, but seems to happen
+            # for two reasons: 1) battle is over and there's nothing left to do
+            # (harmless) and 2) gen 9 revival blessing edge case (need to revisit).
+            # prevent crash by letting agent pick its own action and dealing with
+            # legality on the env side (probably falling back to a default choice).
+            mask = torch.logical_and(mask, ~no_options)
+            mask = einops.repeat(mask, f"b l n -> b l {Gammas} n")
             dist_params.masked_fill_(mask, -float("inf"))
         return dist_params
 

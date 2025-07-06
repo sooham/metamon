@@ -119,6 +119,14 @@ class MetamonPlayer(Player):
                 ):
                     await self._handle_battle_request(battle, maybe_default_order=True)
                 elif split_message[2].startswith(
+                    "[Invalid choice] Can't switch: You do not have a Pokémon named"
+                ):
+                    await self._handle_battle_request(battle, maybe_default_order=True)
+                elif split_message[2].startswith(
+                    "[Invalid choice] Can't switch: You have to pass to a fainted"
+                ):
+                    await self._handle_battle_request(battle, maybe_default_order=True)
+                elif split_message[2].startswith(
                     "[Invalid choice] Can't move: Invalid target for"
                 ):
                     await self._handle_battle_request(battle, maybe_default_order=True)

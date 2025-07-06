@@ -79,7 +79,9 @@ class FilteredTeamsFromReplaysDataset(TeamDataset):
         self.max_date = max_date
         self.min_rating = min_rating
         self.max_rating = max_rating
-        super().__init__(replay_teamfile_dir, format=format, max_teams=max_teams)
+        super().__init__(
+            team_file_dir=replay_teamfile_dir, format=format, max_teams=max_teams
+        )
 
     def load_filenames(self, max_teams: Optional[int] = None):
         self.filenames = []

@@ -270,7 +270,6 @@ class SimProtocol:
         """
         |turn|NUMBER
         """
-        checks.check_forced_switching(self.curr_turn)
         assert self.curr_turn.turn_number is not None
         new_turn = self.curr_turn.create_next_turn()
         # saves the within-turn-state for the previous turn, but does not continue it
@@ -1580,6 +1579,7 @@ def forward_fill(
             print(f"{replay.gameid} {message}")
         sim_protocol.interpret_message(message)
 
+    checks.check_forced_switching(replay)
     checks.check_noun_spelling(replay)
     checks.check_finished(replay)
     checks.check_replay_rules(replay)

@@ -552,9 +552,10 @@ class UniversalAction:
     def maybe_valid_actions(cls, state: UniversalState) -> Set["UniversalAction"]:
         legal = []
         if not state.forced_switch:
-            legal.extend(range(4))
+            moves = len(state.player_active_pokemon.moves)
+            legal.extend(range(moves))
             if state.can_tera:
-                legal.extend(range(9, 13))
+                legal.extend(range(9, 9 + moves))
         legal.extend(range(4, 4 + len(state.available_switches)))
         return set(UniversalAction(action_idx=action_idx) for action_idx in legal)
 
@@ -689,6 +690,14 @@ class MinimalActionSpace(DefaultActionSpace):
             # map all gimmick move actions to regular move actions
             action_idx -= 9
         return UniversalAction(action_idx=action_idx)
+
+    def action_to_agent_output(
+        self, state: UniversalState, action: UniversalAction
+    ) -> int:
+        if action.action_idx >= 9:
+            # map all gimmick move actions to regular move actions
+            action.action_idx -= 9
+        return action.action_idx
 
 
 ALL_ACTION_SPACES = {

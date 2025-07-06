@@ -1,7 +1,7 @@
 from datetime import datetime
 from logging import Logger
 from typing import Any, Dict, List, Optional, Tuple
-
+import warnings
 
 import poke_env.environment as pe
 
@@ -129,16 +129,11 @@ class MetamonBackendBattle(pe.AbstractBattle):
 
         active_pokemon = None
         side = request.get("side", False)
-        if side and not self.trapped and not self.reviving:
+        if side and not self.reviving:
             active_pokemon = self._update_turn_from_side_request(side)
 
         active = request.get("active", False)
-        if (
-            active
-            and active_pokemon is not None
-            and not self.trapped
-            and not self.reviving
-        ):
+        if active and active_pokemon is not None and not self.reviving:
             self._update_turn_from_active_request(active[0], active_pokemon)
 
     def _parse_condition_from_side_request(
@@ -233,7 +228,12 @@ class MetamonBackendBattle(pe.AbstractBattle):
                     and metamon_p.status != pe.Status.FNT
                 ):
                     self._available_switches.append(metamon_p)
-                elif not self.trapped and self.reviving and poke.get("reviving", False):
+                elif (
+                    not self.trapped
+                    and self.reviving
+                    and poke.get("reviving", False)
+                    and metamon_p.status == pe.Status.FNT
+                ):
                     self._available_switches.append(metamon_p)
 
         return active_pokemon
@@ -279,7 +279,7 @@ class MetamonBackendBattle(pe.AbstractBattle):
                     "mimic",
                 }
                 if not plausible_reasons_to_discover.intersection(known_had_moves):
-                    raise mrp.exceptions.ForwardException(
+                    warnings.warn(
                         f"Unknown move {move_name} (lookup_name: {move_id}) discovered with known_had_moves: {known_had_moves}, known_active_moves: {known_active_moves}"
                     )
                 move = Move(move_name, gen=self._gen)

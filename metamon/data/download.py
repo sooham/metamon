@@ -17,7 +17,7 @@ else:
 
 LATEST_RAW_REPLAY_REVISION = "v3"
 LATEST_PARSED_REPLAY_REVISION = "v3-beta"
-LATEST_TEAMS_REVISION = "v2"
+LATEST_TEAMS_REVISION = "v3"
 LATEST_USAGE_STATS_REVISION = "v1"
 
 
@@ -381,6 +381,9 @@ Available versions:
             for format in args.formats:
                 if "ou" not in format and "replays" in set_name:
                     # only OU tiers have replay sets currently
+                    continue
+                if "gen9" in format and "paper" in set_name:
+                    # gen 9 was not supported
                     continue
                 download_teams(
                     battle_format=format,
