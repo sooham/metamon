@@ -1,12 +1,13 @@
 import time
 from argparse import ArgumentParser
 
-from metamon.baselines.heuristic.basic import GymLeader
+from metamon.baselines.heuristic.basic import GymLeader, RandomBaseline
 from metamon.baselines.model_based.bcrnn_baselines import BaseRNN
 from metamon.interface import (
     TokenizedObservationSpace,
-    DefaultPlusObservationSpace,
+    ExpandedObservationSpace,
     DefaultShapedReward,
+    DefaultActionSpace,
 )
 from metamon.tokenizer import get_tokenizer
 from metamon.env.wrappers import get_metamon_teams, BattleAgainstBaseline
@@ -17,7 +18,7 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--battle_format", type=str, default="gen1ou")
     parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--team_set", type=str, default="paper_replays")
+    parser.add_argument("--team_set", type=str, default="competitive")
     parser.add_argument(
         "--battle_backend",
         type=str,
@@ -29,11 +30,12 @@ if __name__ == "__main__":
     env = BattleAgainstBaseline(
         battle_format=args.battle_format,
         team_set=get_metamon_teams(args.battle_format, args.team_set),
-        opponent_type=BaseRNN,
+        opponent_type=GymLeader,
         observation_space=TokenizedObservationSpace(
-            DefaultPlusObservationSpace(),
-            tokenizer=get_tokenizer("DefaultObservationSpace-v0"),
+            ExpandedObservationSpace(),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
         ),
+        action_space=DefaultActionSpace(),
         reward_function=DefaultShapedReward(),
         battle_backend=args.battle_backend,
     )
@@ -52,6 +54,7 @@ if __name__ == "__main__":
             state, reward, terminated, truncated, info = env.step(
                 env.action_space.sample()
             )
+            legal_actions = info["legal_actions"]
             return_ += reward
             done = terminated or truncated
             timesteps += 1

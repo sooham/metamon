@@ -1,16 +1,26 @@
 import json
 import os
+from datetime import date
 
 import numpy as np
+
+from metamon import SUPPORTED_BATTLE_FORMATS
+from metamon.backend.replay_parser.str_parsing import (
+    clean_no_numbers,
+    pokemon_name,
+    move_name,
+    clean_name,
+)
 
 UNKNOWN_TOKEN: int = -1
 
 
 class PokemonTokenizer:
     def __init__(self):
-        self._data = {}
-        self._frozen = True
-        self.name = "custom"
+        self._initial_ids: dict[str, int] = {}
+        self._new_ids: dict[str, int] = {}
+        self._frozen: bool = True
+        self.name: str = "custom"
 
     def unfreeze(self):
         self._frozen = False
@@ -19,38 +29,49 @@ class PokemonTokenizer:
         self._frozen = True
 
     def __len__(self):
-        return len(self._data.keys())
+        return len(self._initial_ids.keys()) + len(self._new_ids.keys())
 
     @property
     def all_words(self) -> list[str]:
-        return list(self._data.keys())
+        return list(self._initial_ids.keys()) + list(self._new_ids.keys())
 
     @property
     def new_token(self):
         return len(self)
 
     def __getitem__(self, string: str) -> int:
-        if string in self._data:
-            return self._data[string]
+        if string in self._initial_ids:
+            return self._initial_ids[string]
+        if string in self._new_ids:
+            return self._new_ids[string]
         return UNKNOWN_TOKEN
 
     def save_tokens_to_disk(self, path):
         with open(path, "w") as f:
-            json.dump(self._data, f)
+            json.dump({**self._initial_ids, **self._new_ids}, f)
 
     def load_tokens_from_disk(self, path):
         with open(path, "r") as f:
-            self._data = json.load(f)
+            self._initial_ids = json.load(f)
         return self
 
-    def add_token_for(self, string: str):
-        if string in self._data:
+    def load_tokens(self, tokens: dict[str, int]):
+        self._initial_ids = tokens
+        return self
+
+    def add_token_for(self, string: str) -> None:
+        if string in self._initial_ids:
+            return
+        if string in self._new_ids:
             return
         print(f"Adding: `{string}`")
-        self._data[string] = self.new_token
+        self._new_ids[string] = self.new_token
 
-    def sort_tokens(self):
-        self._data = {k: i for i, k in enumerate(sorted(self._data.keys()))}
+    def sort_tokens(self) -> None:
+        self._new_ids = {
+            k: i + len(self._initial_ids)
+            for i, k in enumerate(sorted(self._new_ids.keys()))
+        }
 
     def tokenize(self, text: str) -> np.ndarray:
         words = text.split(" ")
@@ -69,6 +90,8 @@ PREMADE_TOKEN_LISTS = {
     # post v1.0 official token lists -- now named by the observation space
     # they are confirmed to be compatible with
     "DefaultObservationSpace-v0": "DefaultObservationSpace-v0.json",
+    # adds ~1k new words for gen 9
+    "DefaultObservationSpace-v1": "DefaultObservationSpace-v1.json",
 }
 
 
@@ -88,9 +111,13 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
     import tqdm
 
-    from metamon.interface import *
-    from metamon.datasets import ParsedReplayDataset
-    from metamon.data.legacy_team_builder.stat_reader import PreloadedSmogonStat
+    from metamon.interface import (
+        ALL_OBSERVATION_SPACES,
+        DefaultShapedReward,
+        DefaultActionSpace,
+    )
+    from metamon.data import ParsedReplayDataset
+    from metamon.backend.team_prediction.usage_stats import get_usage_stats
 
     parser = ArgumentParser()
     parser.add_argument("--parsed_replay_root", required=True)
@@ -104,46 +131,61 @@ if __name__ == "__main__":
     if args.start_tokens:
         tokenizer.load_tokens_from_disk(args.start_tokens)
 
+    # catch stray names from Smogon stats
+    for format in SUPPORTED_BATTLE_FORMATS:
+        stat = get_usage_stats(format)
+        for pokemon_name_str, data in tqdm.tqdm(stat._inclusive.items()):
+            tokenizer.add_token_for(pokemon_name(pokemon_name_str))
+
+            for ability in data["abilities"]:
+                ability = ability.strip()
+                if ability != "No Ability":
+                    tokenizer.add_token_for(clean_no_numbers(ability))
+
+            for move in data["moves"]:
+                move = move.strip()
+                tokenizer.tokenize(move_name(move))
+
+            for item in data["items"]:
+                item = item.strip()
+                if item != "Nothing":
+                    tokenizer.tokenize(clean_no_numbers(item))
+
+            for spread in data["spreads"]:
+                nature = spread.split(":")[0].strip()
+                tokenizer.tokenize(clean_no_numbers(nature))
+
     dset = ParsedReplayDataset(
         dset_root=args.parsed_replay_root,
-        observation_space=eval(args.obs_space)(),
+        observation_space=ALL_OBSERVATION_SPACES[args.obs_space](),
+        action_space=DefaultActionSpace(),
         reward_function=DefaultShapedReward(),
         verbose=True,
+        shuffle=True,
     )
-
-    for (obs_seq, *_) in tqdm.tqdm(dset):
+    total_dataset_size = 0
+    for obs_seq, *_ in tqdm.tqdm(dset):
         for text_obs in obs_seq["text"]:
+            total_dataset_size += 1
             tokenizer.tokenize(text_obs.tolist())
-
-    # catch stray names from Smogon stats
-    for gen in range(1, 5):
-        for tier in ["ou", "uu", "ubers", "nu"]:
-            format = f"gen{gen}{tier}"
-            stat = PreloadedSmogonStat(format, inclusive=True)
-            for pokemon_name_str, data in tqdm.tqdm(stat._inclusive.items()):
-                tokenizer.add_token_for(pokemon_name(pokemon_name_str))
-
-                for ability in data["abilities"]:
-                    ability = ability.strip()
-                    if ability != "No Ability":
-                        tokenizer.add_token_for(clean_no_numbers(ability))
-
-                for move in data["moves"]:
-                    move = move.strip()
-                    if move.startswith("Hidden Power"):
-                        move = "Hidden Power"
-                    tokenizer.tokenize(clean_no_numbers(move))
-
-                for item in data["items"]:
-                    item = item.strip()
-                    if item != "Nothing":
-                        tokenizer.tokenize(clean_no_numbers(item))
-
-                for spread in data["spreads"]:
-                    nature = spread.split(":")[0].strip()
-                    tokenizer.tokenize(clean_no_numbers(nature))
+    print(f"Total dataset size: {total_dataset_size}")
 
     tokenizer.sort_tokens()
 
     if args.save_tokens:
         tokenizer.save_tokens_to_disk(args.save_tokens)
+
+    original_tokenizer = PokemonTokenizer()
+    original_tokenizer.load_tokens_from_disk(args.start_tokens)
+    new_tokenizer = PokemonTokenizer()
+    new_tokenizer.load_tokens_from_disk(args.save_tokens)
+
+    for token, id in original_tokenizer._initial_ids.items():
+        if token not in new_tokenizer._initial_ids:
+            print(f"Token `{token}` is missing from the new tokenizer")
+        elif new_tokenizer._initial_ids[token] != id:
+            print(f"Token `{token}` has the wrong id in the new tokenizer")
+
+    for word in original_tokenizer.all_words:
+        if word not in new_tokenizer.all_words:
+            print(f"Word `{word}` is missing from the new tokenizer")

@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Dict
 from functools import partial
 
 import torch
@@ -14,33 +14,22 @@ from tqdm import tqdm
 from einops import rearrange
 import gin
 
+import metamon
 from metamon.il.model import (
     GRUModel,
     MetamonILModel,
-    TransformerTurnEmbedding,
-    FFTurnEmbedding,
 )
 from metamon.tokenizer import get_tokenizer
 from metamon.interface import (
     TokenizedObservationSpace,
     DefaultObservationSpace,
     DefaultShapedReward,
+    DefaultActionSpace,
 )
-from metamon.datasets import ParsedReplayDataset
+from metamon.data import ParsedReplayDataset
 
 MAGIC_PAD_VAL = -1  # note we set the seq pad value to the same value as missing actions
 pad = partial(pad_sequence, batch_first=True, padding_value=MAGIC_PAD_VAL)
-
-
-def pad_collate_replay_data_for_il(samples):
-    # each sample is (obs, action, reward, done, missing_action_mask)
-    # we don't need the mission action mask because we'll ignore all -1s anyway
-    obs = {
-        k: pad([torch.from_numpy(np.array(s[0][k])) for s in samples])
-        for k in samples[0][0].keys()
-    }
-    actions = pad([torch.from_numpy(np.array(s[1])) for s in samples])
-    return obs, actions
 
 
 @dataclass
@@ -61,7 +50,8 @@ class Run:
 
     # Optimization
     model_Cls: Callable = GRUModel
-    batch_size: int = 32
+    mask_actions: bool = True
+    batch_size: int = 48
     dloader_workers: int = 8
     learning_rate: float = 1e-4
     grad_clip: float = 2.0
@@ -112,6 +102,37 @@ class Run:
             model_name = f"{self.run_name}_BEST.pt"
             torch.save(self.policy, os.path.join(self.ckpt_dir, model_name))
 
+    def pad_collate_replay_data_for_il(self, samples):
+        # each sample is (obs, action_info, reward, done)
+        # we don't need the mission action mask because we'll ignore all -1s anyway
+        obs = {
+            k: pad([torch.from_numpy(np.array(s[0][k])) for s in samples])
+            for k in samples[0][0].keys()
+        }
+
+        # build action masks from action info dicts
+        batched_action_idxs = []
+        batched_illegal_action_masks = []
+        num_actions = self.parsed_replay_dataset.action_space.gym_space.n
+        for sample in samples:
+            action_idxs = []
+            illegal_action_masks = []
+            action_infos = sample[1]
+            for i in range(len(action_infos["chosen"])):
+                action_idxs.append(action_infos["chosen"][i])
+                illegal = torch.ones(num_actions, dtype=bool)
+                for legal_action in action_infos["legal"][i]:
+                    illegal[legal_action] = False
+                illegal_action_masks.append(illegal)
+            batched_action_idxs.append(torch.tensor(action_idxs, dtype=torch.int32))
+            batched_illegal_action_masks.append(
+                torch.stack(illegal_action_masks, dim=0)
+            )
+        action_idxs = pad(batched_action_idxs)
+        illegal_action_masks = pad(batched_illegal_action_masks)
+
+        return obs, action_idxs, illegal_action_masks
+
     def init_dsets(self):
         train_size = int(0.9 * len(self.parsed_replay_dataset))
         val_size = len(self.parsed_replay_dataset) - train_size
@@ -129,7 +150,7 @@ class Run:
             batch_size=self.batch_size,
             num_workers=self.dloader_workers,
             pin_memory=True,
-            collate_fn=pad_collate_replay_data_for_il,
+            collate_fn=self.pad_collate_replay_data_for_il,
             shuffle=True,
         )
         self.train_dloader = DataLoader(self.train_dset, **dloader_kwargs)
@@ -166,11 +187,13 @@ class Run:
     def init_model(self):
         # build model, move to GPU
         obs_space = self.parsed_replay_dataset.observation_space
+        action_space = self.parsed_replay_dataset.action_space
         assert isinstance(obs_space, TokenizedObservationSpace)
         self.policy = self.model_Cls(
             tokenizer=obs_space.tokenizer,
+            text_features=obs_space.base_obs_space.tokenizable["text"],
             numerical_features=obs_space.gym_space["numbers"].shape[0],
-            num_actions=9,
+            num_actions=action_space.gym_space.n,
         )
         assert isinstance(self.policy, MetamonILModel)
         self.policy.to(self.DEVICE)
@@ -183,7 +206,7 @@ class Run:
         if self.verbose:
             print(f"Initialized Model with {total_params:,d} Parameters")
 
-    def log(self, key, metrics_dict):
+    def log(self, key: str, metrics_dict: Dict[str, float | torch.Tensor]):
         log_dict = {}
         for k, v in metrics_dict.items():
             if isinstance(v, torch.Tensor):
@@ -194,13 +217,21 @@ class Run:
         if self.log_to_wandb:
             wandb.log({f"{key}/{subkey}": val for subkey, val in log_dict.items()})
 
-    def compute_loss(self, inputs, labels):
+    def compute_loss(
+        self,
+        inputs: Dict[str, torch.Tensor],
+        labels: torch.Tensor,
+        action_masks: torch.Tensor,
+    ):
         # the last observation does not have an action (label)
         inputs = {k: v[:, :-1, ...].to(self.DEVICE) for k, v in inputs.items()}
         labels = labels.to(self.DEVICE)
         predictions, _ = self.policy(
             token_inputs=inputs["text_tokens"], numerical_inputs=inputs["numbers"]
         )
+        if self.mask_actions:
+            predictions.masked_fill_(action_masks.to(self.DEVICE), -float("inf"))
+
         loss = F.cross_entropy(
             rearrange(predictions, "b l d -> (b l) d"),
             rearrange(labels.to(dtype=torch.long), "b l -> (b l)"),
@@ -228,8 +259,16 @@ class Run:
         total_norm = total_norm ** (1.0 / 2)
         return total_norm
 
-    def train_step(self, inputs, labels, log_step: bool):
-        loss, acc, top2_acc = self.compute_loss(inputs, labels)
+    def train_step(
+        self,
+        inputs: Dict[str, torch.Tensor],
+        labels: torch.Tensor,
+        action_masks: torch.Tensor,
+        log_step: bool,
+    ):
+        loss, acc, top2_acc = self.compute_loss(
+            inputs, labels, action_masks=action_masks
+        )
         self.optimizer.zero_grad()
         loss.backward()
         if log_step:
@@ -240,9 +279,16 @@ class Run:
         self.optimizer.step()
         return loss, acc, top2_acc
 
-    def val_step(self, inputs, labels):
+    def val_step(
+        self,
+        inputs: Dict[str, torch.Tensor],
+        labels: torch.Tensor,
+        action_masks: torch.Tensor,
+    ):
         with torch.no_grad():
-            loss, acc, top2_acc = self.compute_loss(inputs, labels)
+            loss, acc, top2_acc = self.compute_loss(
+                inputs, labels, action_masks=action_masks
+            )
         return loss, acc, top2_acc
 
     def learn(self):
@@ -251,7 +297,7 @@ class Run:
             train_acc = []
             train_top2_acc = []
             self.policy.train()
-            for step, (inputs, labels, *_) in tqdm(
+            for step, (inputs, labels, action_masks) in tqdm(
                 enumerate(self.train_dloader),
                 colour="white",
                 total=len(self.train_dloader),
@@ -259,7 +305,7 @@ class Run:
             ):
                 log_step = step % self.log_interval == 0
                 step_loss, step_acc, step_top2_acc = self.train_step(
-                    inputs, labels, log_step=log_step
+                    inputs, labels, action_masks=action_masks, log_step=log_step
                 )
                 train_acc.append(step_acc)
                 train_top2_acc.append(step_top2_acc)
@@ -279,10 +325,12 @@ class Run:
 
             val_acc, val_loss, val_top2_acc = [], [], []
             self.policy.eval()
-            for step, (inputs, labels, *_) in tqdm(
+            for step, (inputs, labels, action_masks) in tqdm(
                 enumerate(self.val_dloader), colour="red", desc=f"Epoch: {epoch} (Val)"
             ):
-                step_loss, step_acc, step_top2_acc = self.val_step(inputs, labels)
+                step_loss, step_acc, step_top2_acc = self.val_step(
+                    inputs, labels, action_masks=action_masks
+                )
                 val_acc.append(step_acc)
                 val_top2_acc.append(step_top2_acc)
                 val_loss.append(step_loss)
@@ -341,11 +389,7 @@ if __name__ == "__main__":
     parser.add_argument("--trials", type=int, default=1)
     parser.add_argument(
         "--formats",
-        default=[
-            f"gen{gen}{format}"
-            for gen in range(1, 5)
-            for format in ["nu", "uu", "ou", "ubers"]
-        ],
+        default=metamon.SUPPORTED_BATTLE_FORMATS,
         nargs="+",
         help="Filter the dataset directory by pokemon format (e.g., `--formats gen1ou gen2nu gen3ou`",
     )
@@ -403,6 +447,7 @@ if __name__ == "__main__":
             tokenizer=get_tokenizer(args.tokenizer),
             base_obs_space=DefaultObservationSpace(),
         ),
+        action_space=DefaultActionSpace(),
         reward_function=DefaultShapedReward(),
         formats=args.formats,
         wins_losses_both=args.wins_losses_both,

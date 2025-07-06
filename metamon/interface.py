@@ -1,8 +1,7 @@
-from functools import lru_cache
 import copy
 import re
 from dataclasses import dataclass, asdict
-from typing import Optional, List
+from typing import Optional, List, Any, Set
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -20,43 +19,40 @@ from poke_env.environment import (
     PokemonType,
 )
 from poke_env.player import BattleOrder, Player
-from poke_env.data import to_id_str
 
 import metamon
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
-from metamon.data.replay_dataset.replay_parser.replay_state import (
+from metamon.backend.replay_parser.replay_state import (
     Move as ReplayMove,
     Pokemon as ReplayPokemon,
     Action as ReplayAction,
     ReplayState,
     Nothing as ReplayNothing,
 )
-
-
-def pokemon_name(name: str) -> str:
-    return clean_name(name)
-
-
-def clean_name(name: str) -> str:
-    return to_id_str(str(name)).strip()
-
-
-@lru_cache(2**13)
-def clean_no_numbers(name: str) -> str:
-    return "".join(char for char in str(name) if char.isalpha()).lower().strip()
+from metamon.backend.replay_parser.str_parsing import (
+    clean_no_numbers,
+    clean_name,
+    pokemon_name,
+    move_name,
+)
 
 
 def consistent_pokemon_order(pokemon):
+    """
+    Sorts Pokémon alphabetically according to their active species
+    name (which would include "formes") in lowercase with special
+    characters removed.
+    """
     if not pokemon:
         return []
     if isinstance(pokemon[0], Pokemon):
-        key = lambda p: clean_name(p.species)
+        key = lambda p: pokemon_name(p.species)
     elif isinstance(pokemon[0], str):
-        key = lambda p: clean_name(p)
+        key = lambda p: pokemon_name(p)
     elif isinstance(pokemon[0], UniversalPokemon):
-        key = lambda p: clean_name(p.name)
+        key = lambda p: pokemon_name(p.name)
     elif isinstance(pokemon[0], ReplayPokemon):
-        key = lambda p: clean_name(p.name)
+        key = lambda p: pokemon_name(p.name)
     else:
         raise ValueError(
             f"Unrecognized `pokemon` list format of type {type(pokemon)}: {pokemon}"
@@ -65,27 +61,25 @@ def consistent_pokemon_order(pokemon):
 
 
 def consistent_move_order(moves):
+    """
+    Sorts moves alphabetically according to their name in lowercase
+    with special characters removed.
+    """
     if not moves:
         return []
     if isinstance(moves[0], Move):
-        key = lambda m: clean_name(m.id)
+        key = lambda m: move_name(m.id)
     elif isinstance(moves[0], str):
-        key = lambda m: clean_name(m)
+        key = lambda m: move_name(m)
     elif isinstance(moves[0], UniversalMove):
-        key = lambda m: clean_name(m.name)
+        key = lambda m: move_name(m.name)
     elif isinstance(moves[0], ReplayMove):
-        key = lambda m: clean_name(m.name)
+        key = lambda m: move_name(m.name)
     else:
         raise ValueError(
             f"Unrecognized `moves` list format of type {type(moves[0])}: {moves}"
         )
     return sorted(moves, key=key)
-
-
-@lru_cache(9)
-def hidden_power_reference(gen: int) -> Move:
-    # we will map all hidden powers to this move
-    return Move(move_id="hiddenpower", gen=gen)
 
 
 @dataclass
@@ -122,9 +116,7 @@ class UniversalMove:
         )
 
     @classmethod
-    def from_ReplayMove(cls, move: ReplayMove):
-        # ReplayMove overrides Move but has
-        # a different pp tracker
+    def from_ReplayMove(cls, move: Optional[ReplayMove]):
         universal_move = cls.from_Move(move)
         if move is not None:
             universal_move.current_pp = move.pp
@@ -132,24 +124,17 @@ class UniversalMove:
         return universal_move
 
     @classmethod
-    def from_Move(cls, move: Move):
+    def from_Move(cls, move: Optional[Move]):
         if move is None:
             return cls.blank_move()
         assert isinstance(move, Move)
-        if move.id.startswith("hiddenpower"):
-            # we map every hidden power to the typeless version
-            # because the types don't show up in replays
-            reference = hidden_power_reference(move._gen)
-        else:
-            reference = move
         return cls(
-            name=reference.id,
-            category=reference.category.name,
-            base_power=reference.base_power,
-            move_type=reference.type.name,
-            priority=reference.priority,
-            accuracy=reference.accuracy,
-            # always use `move` for pp tracking
+            name=move_name(move.id),
+            category=clean_name(move.category.name),
+            base_power=move.base_power,
+            move_type=clean_name(move.type.name),
+            priority=move.priority,
+            accuracy=move.accuracy,
             current_pp=move.current_pp,
             max_pp=move.max_pp,
         )
@@ -192,10 +177,9 @@ class UniversalPokemon:
     base_spe: int
     base_hp: int
 
-    @classmethod
-    def from_dict(cls, data: dict):
-        data["moves"] = [UniversalMove(**m) for m in data["moves"]]
-        return cls(**data)
+    # version-specific
+    tera_type: str
+    base_species: str
 
     @staticmethod
     def universal_items(item_rep: Optional[str | ReplayNothing]) -> str:
@@ -230,13 +214,10 @@ class UniversalPokemon:
         return clean_no_numbers(ability_str)
 
     @staticmethod
-    def universal_effects(effect_rep: dict[Effect, int]) -> str:
-        if not effect_rep:
+    def universal_effects(effect: Optional[Effect]) -> str:
+        if not effect:
             return "noeffect"
-        most_recent = min(effect_rep.keys(), key=effect_rep.get)
-        assert isinstance(most_recent, Effect)
-        # get rid of poke-env's effect timing system (Effect.FALLEN5, ... Effect.FALLEN1)
-        return clean_no_numbers(most_recent.name)
+        return clean_no_numbers(effect.name)
 
     @staticmethod
     def universal_status(status_rep: Status | ReplayNothing) -> str:
@@ -246,79 +227,125 @@ class UniversalPokemon:
         return clean_no_numbers(status_rep.name)
 
     @staticmethod
-    def universal_types(type_rep: list) -> str:
-        while len(type_rep) < 2:
-            type_rep.append(None)
-
+    def universal_types(type_rep: list, force_two: bool = True) -> str:
+        if force_two:
+            while len(type_rep) < 2:
+                type_rep.append(None)
         type_strs = []
         for type in type_rep:
-            if type is None:
+            if type is None or type == ReplayNothing.NO_TERA_TYPE:
                 type_strs.append("notype")
             elif isinstance(type, PokemonType):
                 type_strs.append(clean_name(type.name))
             elif isinstance(type, str):
                 type_strs.append(clean_name(type))
-
-        assert len(type_strs) == 2
         return " ".join(sorted(type_strs))
 
     @classmethod
     def from_ReplayPokemon(cls, pokemon: ReplayPokemon):
         assert isinstance(pokemon, ReplayPokemon)
+        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
         moves = [
             UniversalMove.from_ReplayMove(move)
             for move in pokemon.moves.values()
             if move is not None
-        ]
+        ][:4]
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
         boosts = {
             f"{stat}boost": getattr(pokemon.boosts, stat)
             for stat in pokemon.boosts.stat_attrs
         }
-
-        item = cls.universal_items(pokemon.active_item)
-        ability = cls.universal_abilities(pokemon.active_ability)
-        status = cls.universal_status(pokemon.status)
-        effect = cls.universal_effects(pokemon.effects)
-        types = cls.universal_types(pokemon.type)
-        name = clean_name(pokemon.had_name)
-
+        if pokemon.effects:
+            most_recent_effect = min(pokemon.effects.keys(), key=pokemon.effects.get)
+        else:
+            most_recent_effect = None
         return cls(
-            name=name,
+            name=pokemon_name(pokemon.name),
+            base_species=pokemon_name(pokemon.had_name),
             hp_pct=float(pokemon.current_hp) / pokemon.max_hp,
-            types=types,
-            item=item,
-            ability=ability,
+            types=cls.universal_types(pokemon.type),
+            tera_type=cls.universal_types([pokemon.tera_type], force_two=False),
+            item=cls.universal_items(pokemon.active_item),
+            ability=cls.universal_abilities(pokemon.active_ability),
             lvl=pokemon.lvl,
-            status=status,
-            effect=effect,
+            status=cls.universal_status(pokemon.status),
+            effect=cls.universal_effects(most_recent_effect),
             moves=moves,
             **(boosts | stats),
         )
 
     @classmethod
     def from_Pokemon(cls, pokemon: Pokemon):
-        moves = [UniversalMove.from_Move(move) for move in pokemon.moves.values()]
+        # do not use Battle.available_moves
+        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
+        moves = [UniversalMove.from_Move(move) for move in pokemon.moves.values()][:4]
         boosts = {f"{stat}_boost": boost for stat, boost in pokemon.boosts.items()}
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
-        status = cls.universal_status(pokemon.status)
-        effect = cls.universal_effects(pokemon.effects)
-        item = cls.universal_items(pokemon.item)
-        ability = cls.universal_abilities(pokemon.ability)
-        types = cls.universal_types(pokemon.types)
-
+        if pokemon.effects:
+            most_recent_effect = min(pokemon.effects.keys(), key=pokemon.effects.get)
+        else:
+            most_recent_effect = None
         return cls(
-            name=clean_name(pokemon.species),
+            name=pokemon_name(pokemon.species),
+            base_species=pokemon_name(pokemon.base_species),
             hp_pct=float(pokemon.current_hp_fraction),
-            types=types,
-            item=item,
-            ability=ability,
+            types=cls.universal_types(pokemon.types),
+            tera_type=cls.universal_types([pokemon.tera_type], force_two=False),
+            item=cls.universal_items(pokemon.item),
+            ability=cls.universal_abilities(pokemon.ability),
             lvl=pokemon.level,
-            status=status,
-            effect=effect,
+            status=cls.universal_status(pokemon.status),
+            effect=cls.universal_effects(most_recent_effect),
             moves=moves,
             **(boosts | stats),
         )
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
+        data["moves"] = [UniversalMove(**m) for m in data["moves"][:4]]
+        if "tera_type" not in data:
+            # if missing --> old version of the dataset --> gen 1-4 --> no tera
+            data["tera_type"] = cls.universal_types([None], force_two=False)
+        if "base_species" not in data:
+            # if missing --> old version of the dataset --> gen 1-4 --> we can get away with this
+            data["base_species"] = data["name"].split("-")[0].strip()
+        return cls(**data)
+
+    @staticmethod
+    def metamon_to_poke_env(pokemon: ReplayPokemon, is_active: bool) -> Pokemon:
+        """
+        Straight-through conversion from metamon replay parser Pokemon object
+        to poke-env Pokemon object. An ugly alternative to adding a
+        `update_from_metamon` equivalent in poke-env.Pokemon. Used by metamon
+        battle backend.
+        """
+        p = Pokemon(gen=pokemon.gen)
+        p._base_stats = pokemon.base_stats
+        p._type_1 = PokemonType.from_name(pokemon.type[0])
+        p._type_2 = (
+            PokemonType.from_name(pokemon.type[1]) if len(pokemon.type) > 1 else None
+        )
+        p._ability = pokemon.had_ability
+        p._level = pokemon.lvl
+        p._max_hp = pokemon.max_hp
+        p._moves = {m.lookup_name: m for m in pokemon.moves.values()}
+        for m in p._moves.values():
+            m.set_pp(m.pp)
+        p._name = pokemon.nickname
+        p._species = clean_name(pokemon.name)
+        p._active = is_active
+        p._boosts = pokemon.boosts.to_dict()
+        p._current_hp = pokemon.current_hp
+        p._effects = pokemon.effects
+        p._item = pokemon.active_item
+        p._status = pokemon.status
+        p._temporary_ability = pokemon.active_ability
+        p._previous_move = pokemon.last_used_move
+        p._terastallized_type = (
+            PokemonType.from_name(pokemon.tera_type) if pokemon.tera_type else None
+        )
+        return p
 
 
 @dataclass
@@ -349,16 +376,8 @@ class UniversalState:
     battle_won: bool
     battle_lost: bool
 
-    def __post_init__(self):
-        for name, should_be in self.__annotations__.items():
-            if should_be in {
-                str,
-                bool,
-                UniversalPokemon,
-                UniversalMove,
-            } and not isinstance(self.__dict__[name], should_be):
-                actually_is = type(self.__dict__[name])
-                raise TypeError(f"UniversalState `{name}` has type {actually_is}")
+    # version-specific
+    can_tera: bool
 
     @staticmethod
     def universal_conditions(condition_rep) -> str:
@@ -385,7 +404,6 @@ class UniversalState:
         return clean_no_numbers(weather_rep.name)
 
     # fmt: off
-
     @classmethod
     def from_ReplayState(cls, state: ReplayState):
         assert isinstance(state, ReplayState)
@@ -409,10 +427,12 @@ class UniversalState:
             opponents_remaining=opponents_remaining,
             battle_won=state.battle_won,
             battle_lost=state.battle_lost,
+            can_tera=state.can_tera,
         )
 
     @classmethod
     def from_Battle(cls, battle: Battle):
+        # do not use Battle.available_switches or Battle.available_moves
         format = battle.battle_tag.split("-")[1]
         weather = cls.universal_weather(battle.weather)
         battle_field = cls.universal_field(battle.fields)
@@ -420,7 +440,10 @@ class UniversalState:
         opponent_conditions = cls.universal_conditions(battle.opponent_side_conditions)
         active = UniversalPokemon.from_Pokemon(battle.active_pokemon)
         opponent = UniversalPokemon.from_Pokemon(battle.opponent_active_pokemon)
-        possible_switches = [p for p in battle.team.values() if not p.fainted and not p.active]
+        if battle.reviving:
+            possible_switches = [p for p in battle.team.values() if p.fainted and not p.active]
+        else:
+            possible_switches = [p for p in battle.team.values() if not p.fainted and not p.active]
         switches = [UniversalPokemon.from_Pokemon(p) for p in possible_switches]
         player_prev_move = UniversalMove.from_Move(battle.active_pokemon.previous_move)
         opponent_prev_move = UniversalMove.from_Move(battle.opponent_active_pokemon.previous_move)
@@ -445,100 +468,242 @@ class UniversalState:
             battle_won=battle.won if battle.won else False,
             battle_lost=battle.lost if battle.lost else False,
             opponents_remaining=opponents_remaining,
+            can_tera=battle.can_tera is not None,
         )
-    
+    # fmt: on
+
     def to_dict(self) -> dict:
         return asdict(self)
-    
+
     @classmethod
     def from_dict(cls, data: dict):
         # convert nested Pokemon objects
-        data["player_active_pokemon"] = UniversalPokemon.from_dict(data["player_active_pokemon"])
-        data["opponent_active_pokemon"] = UniversalPokemon.from_dict(data["opponent_active_pokemon"])
-        data["available_switches"] = [UniversalPokemon.from_dict(p) for p in data["available_switches"]]
+        data["player_active_pokemon"] = UniversalPokemon.from_dict(
+            data["player_active_pokemon"]
+        )
+        data["opponent_active_pokemon"] = UniversalPokemon.from_dict(
+            data["opponent_active_pokemon"]
+        )
+        data["available_switches"] = [
+            UniversalPokemon.from_dict(p) for p in data["available_switches"]
+        ]
         # convert nested Move objects
         data["player_prev_move"] = UniversalMove(**data["player_prev_move"])
         data["opponent_prev_move"] = UniversalMove(**data["opponent_prev_move"])
-        # create UniversalState from the processed dict
+
+        if "can_tera" not in data:
+            # backwards compat (if it's missing; it's an old version of the dataset
+            # --> gen 1-4 --> no tera)
+            data["can_tera"] = False
         return cls(**data)
 
 
-def replaystate_action_to_idx(
-    state: ReplayState, action: ReplayAction
-) -> Optional[int]:
-    """Defines the discrete action space when coming from the replay parser.
+class UniversalAction:
+    def __init__(self, action_idx: int):
+        self.action_idx = action_idx
 
-    The action space is defined as follows:
-        - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
-        - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
-    """
-    # *can* return None, but replay parser will throw an exception if it does.
-    action_idx = None
-    if action is None or action.is_noop:
-        action_idx = -1
+    @property
+    def missing(self) -> bool:
+        return self.action_idx == -1
 
-    elif action.name == "Struggle":
-        action_idx = 0
+    def __eq__(self, other: "UniversalAction") -> bool:
+        return self.action_idx == other.action_idx
 
-    elif action.is_switch:
-        for switch_idx, available_switch in enumerate(
-            consistent_pokemon_order(state.available_switches)
-        ):
-            if available_switch.unique_id == action.target.unique_id:
-                action_idx = 4 + switch_idx
-                break
-    else:
-        move_options = list(state.active_pokemon.moves.values())
-        for move_idx, move in enumerate(consistent_move_order(move_options)):
-            if move.name == action.name:
-                action_idx = move_idx
-                break
+    def __repr__(self):
+        return str(self.action_idx)
 
-    return action_idx
+    def __hash__(self):
+        return hash(self.action_idx)
 
+    @classmethod
+    def from_ReplayAction(
+        cls, state: ReplayState, action: ReplayAction
+    ) -> Optional["UniversalAction"]:
+        action_idx = None
+        if action is None or (action.name is None and action.is_tera):
+            # action was never revealed
+            # (or tera animation was shown but the rest of the action was never revealed)
+            action_idx = -1
+        elif action.is_noop:
+            assert action.name == "Recharge"
+            action_idx = 0
+        elif action.name == "Struggle":
+            action_idx = 0
+        elif action.is_switch or action.is_revival:
+            for switch_idx, available_switch in enumerate(
+                consistent_pokemon_order(state.available_switches)
+            ):
+                if available_switch.unique_id == action.target.unique_id:
+                    action_idx = 4 + switch_idx
+                    break
+        else:
+            move_options = list(state.active_pokemon.moves.values())
+            for move_idx, move in enumerate(consistent_move_order(move_options)):
+                if move.name == action.name:
+                    action_idx = move_idx
+                    if action.is_tera:
+                        action_idx += 9
+                    break
+        if action_idx is None:
+            return None
+        return cls(action_idx)
 
-def action_idx_to_battle_order(
-    battle: Battle, action_idx: int
-) -> Optional[BattleOrder]:
-    """Defines the discrete action space when coming from the online poke-env env.
+    @classmethod
+    def maybe_valid_actions(cls, state: UniversalState) -> Set["UniversalAction"]:
+        legal = []
+        if not state.forced_switch:
+            moves = len(state.player_active_pokemon.moves)
+            legal.extend(range(moves))
+            if state.can_tera:
+                legal.extend(range(9, 9 + moves))
+        legal.extend(range(4, 4 + len(state.available_switches)))
+        return set(UniversalAction(action_idx=action_idx) for action_idx in legal)
 
-    The action space is defined as follows:
-        - 0-3: Use the active Pokémon's move 1-4, sorted by alphabetical order
-        - 4-8: Switch to available (non-active) Pokémon, sorted by alphabetical order
-    """
-    if action_idx > 8:
-        raise ValueError(
-            f"Invalid `action_idx` {action_idx}. The global action space is bounded {0, ..., 8}"
+    @classmethod
+    def definitely_valid_actions(
+        cls, state: UniversalState, battle: Battle
+    ) -> Set["UniversalAction"]:
+        maybe_legal = cls.maybe_valid_actions(state)
+        definitely_legal = set()
+        for action in maybe_legal:
+            order = cls.action_idx_to_BattleOrder(battle, action_idx=action.action_idx)
+            if order is not None:
+                definitely_legal.add(action)
+        return definitely_legal
+
+    @staticmethod
+    def action_idx_to_BattleOrder(
+        battle: Battle, action_idx: int
+    ) -> Optional[BattleOrder]:
+        valid_moves = {m.id for m in battle.available_moves}
+        if valid_moves == {"recharge"}:
+            # there is only one option; take it so it doesn't count as an invalid action
+            return Player.create_order(battle.available_moves[0])
+        elif valid_moves == {"struggle"}:
+            # override the options so that all the move indices are struggle but switches are valid.
+            # note that the replay version sets every Struggle in the dataset to index 0, so this
+            # is giving a little room for error.
+            move_options = [battle.available_moves[0]] * 4
+        else:
+            # standard: pick from the active pokemon's moves
+            move_options = consistent_move_order(
+                list(battle.active_pokemon.moves.values())
+            )
+
+        valid_switches = {p.name for p in battle.available_switches}
+        if not battle.reviving:
+            switch_options = consistent_pokemon_order(
+                [
+                    p
+                    for p in list(battle.team.values())
+                    if not p.fainted and not p.active
+                ]
+            )
+        else:
+            switch_options = consistent_pokemon_order(
+                [p for p in list(battle.team.values()) if p.fainted and not p.active]
+            )
+
+        wants_tera = False
+        can_tera = battle.can_tera is not None
+        if action_idx >= 9:
+            wants_tera = True
+            action_idx -= 9
+
+        if action_idx <= 3 and not battle.force_switch:
+            # pick one of up to 4 available moves
+            if action_idx < len(move_options):
+                selected_move = move_options[action_idx]
+                if selected_move.id in valid_moves:
+                    # NOTE: giving the player a little help on invalid tera requests here
+                    order = Player.create_order(
+                        selected_move, terastallize=wants_tera and can_tera
+                    )
+                    return order
+        if 4 <= action_idx <= 8:
+            # switch to one of up to 5 alternative pokemon
+            action_idx -= 4
+            if action_idx < len(switch_options):
+                selected_switch = switch_options[action_idx]
+                if selected_switch.name in valid_switches:
+                    order = Player.create_order(selected_switch)
+                    return order
+
+        # Q: "what happens when we pick an invalid action? (order = None)"
+        # A : up to env's `on_invalid_order` to pick one
+        return None
+
+    def to_BattleOrder(self, battle: Battle) -> Optional[BattleOrder]:
+        return UniversalAction.action_idx_to_BattleOrder(
+            battle, action_idx=self.action_idx
         )
 
-    # we'll only submit an action if it's valid, but we pick from a longer list determined
-    # by rules that are easier to keep track of elsewhere
-    valid_moves = {m.id for m in battle.available_moves}
-    valid_switches = {p.name for p in battle.available_switches}
-    move_options = consistent_move_order(list(battle.active_pokemon.moves.values()))
-    switch_options = consistent_pokemon_order(
-        [p for p in list(battle.team.values()) if not p.fainted and not p.active]
-    )
 
-    order = None
-    if action_idx <= 3 and not battle.force_switch:
-        # pick one of up to 4 available moves
-        if action_idx < len(move_options):
-            selected_move = move_options[action_idx]
-            if selected_move.id in valid_moves:
-                order = Player.create_order(selected_move)
+class ActionSpace(ABC):
 
-    elif 4 <= action_idx <= 8:
-        # switch to one of up to 5 alternative pokemon
-        action_idx -= 4
-        if action_idx < len(switch_options):
-            selected_switch = switch_options[action_idx]
-            if selected_switch.name in valid_switches:
-                order = Player.create_order(selected_switch)
+    @property
+    @abstractmethod
+    def gym_space(self) -> gym.spaces.Discrete:
+        raise NotImplementedError
 
-    # Q: "what happens when we pick an invalid action? (order = None)"
-    # A : env.ShowdownEnv.on_invalid_order
-    return order
+    @abstractmethod
+    def agent_output_to_action(
+        self, state: UniversalState, agent_output: Any
+    ) -> UniversalAction:
+        raise NotImplementedError
+
+    @abstractmethod
+    def action_to_agent_output(
+        self, state: UniversalState, action: UniversalAction
+    ) -> Any:
+        raise NotImplementedError
+
+
+class DefaultActionSpace(ActionSpace):
+
+    @property
+    def gym_space(self) -> gym.spaces.Space:
+        return gym.spaces.Discrete(13)
+
+    def agent_output_to_action(
+        self, state: UniversalState, agent_output: int
+    ) -> UniversalAction:
+        return UniversalAction(action_idx=int(agent_output))
+
+    def action_to_agent_output(
+        self, state: UniversalState, action: UniversalAction
+    ) -> int:
+        return action.action_idx
+
+
+class MinimalActionSpace(DefaultActionSpace):
+
+    @property
+    def gym_space(self) -> gym.spaces.Discrete:
+        return gym.spaces.Discrete(9)
+
+    def agent_output_to_action(
+        self, state: UniversalState, agent_output: int
+    ) -> UniversalAction:
+        action_idx = int(agent_output)
+        if action_idx >= 9:
+            # map all gimmick move actions to regular move actions
+            action_idx -= 9
+        return UniversalAction(action_idx=action_idx)
+
+    def action_to_agent_output(
+        self, state: UniversalState, action: UniversalAction
+    ) -> int:
+        if action.action_idx >= 9:
+            # map all gimmick move actions to regular move actions
+            action.action_idx -= 9
+        return action.action_idx
+
+
+ALL_ACTION_SPACES = {
+    "DefaultActionSpace": DefaultActionSpace,
+    "MinimalActionSpace": MinimalActionSpace,
+}
 
 
 class RewardFunction(ABC):
@@ -566,17 +731,21 @@ class DefaultShapedReward(RewardFunction):
             last_state.player_active_pokemon,
             *last_state.available_switches,
         ]:
-            if pokemon.name == active_now.name:
+            if pokemon.base_species == active_now.base_species:
                 active_prev = pokemon
                 break
-        assert active_prev is not None
-        hp_gain = active_now.hp_pct - active_prev.hp_pct
-        took_status = float(
-            active_now.status != "nostatus" and active_prev.status == "nostatus"
-        )
+        if active_prev is None:
+            # this used to trigger a crash, but is now allowed because revival blessing in gen9 will break it
+            hp_gain = 0.0
+            took_status = 0.0
+        else:
+            hp_gain = active_now.hp_pct - active_prev.hp_pct
+            took_status = float(
+                active_now.status != "nostatus" and active_prev.status == "nostatus"
+            )
         opp_now = state.opponent_active_pokemon
         opp_prev = last_state.opponent_active_pokemon
-        if opp_now.name == opp_prev.name:
+        if opp_now.base_species == opp_prev.base_species:
             damage_done = opp_prev.hp_pct - opp_now.hp_pct
             gave_status = float(
                 opp_now.status != "nostatus" and opp_prev.status == "nostatus"
@@ -822,7 +991,7 @@ class DefaultObservationSpace(ObservationSpace):
         return {"text": text, "numbers": numbers}
 
 
-class DefaultPlusObservationSpace(DefaultObservationSpace):
+class ExpandedObservationSpace(DefaultObservationSpace):
     """Adds PP, the opponent's revealed party, and edge case sleep/freeze flags to DefaultObservationSpace.
 
     The DefaultObservationSpace used by the paper makes Pokémon more long-term-memory-intensive
@@ -836,7 +1005,7 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
     3. The opponent's full team must be inferred from recalling the active Pokémon at previous
         timesteps.
 
-    This observation space moves some of that information into every timestep.
+    This observation space moves some of that information into every timestep. Also adds tera types for gen 9.
     """
 
     def reset(self):
@@ -851,8 +1020,8 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
         base_space["numbers"] = gym.spaces.Box(
             low=-10.0,
             high=10.0,
-            # adds 4 PP features + 2 sleep/freeze flags
-            shape=(48 + 6,),
+            # adds 4 PP features + 2 sleep/freeze flags + 1 can_tera flag
+            shape=(48 + 7,),
             dtype=np.float32,
         )
         return base_space
@@ -860,9 +1029,19 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
     @property
     def tokenizable(self) -> dict[str, int]:
         # adds 6 new tokens for the revealed party
-        return {
-            "text": 87 + 6,
-        }
+        # adds 6 new tokens for the tera types of our party, 1 for the opponent
+        return {"text": 87 + 13}
+
+    def _get_pokemon_string_features(
+        self, pokemon: UniversalPokemon, active: bool
+    ) -> list[str]:
+        base = super()._get_pokemon_string_features(pokemon, active)
+        base.append(pokemon.tera_type)
+        return base
+
+    def _get_pokemon_pad_string(self, active: bool) -> list[str]:
+        blanks = 4 + (4 if active else 5)
+        return ["<blank>"] * blanks
 
     def _get_move_numerical_features(
         self, move: UniversalMove, active: np.bool
@@ -895,12 +1074,13 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
         new_features = [
             self.any_opponent_asleep,
             self.any_opponent_frozen,
+            state.can_tera,
         ]
         obs["numbers"] = np.concatenate([obs["numbers"], new_features])
 
         # add a list of revealed opponents padded to length 6 while reusing
         # the existing <blank> token to avoid making a new vocabulary.
-        self.revealed_opponents.add(opponent.name)
+        self.revealed_opponents.add(opponent.base_species)
         revealed = [opp_name for opp_name in sorted(self.revealed_opponents)]
         while len(revealed) < 6:
             revealed.append("<blank>")
@@ -912,7 +1092,7 @@ class DefaultPlusObservationSpace(DefaultObservationSpace):
 
 ALL_OBSERVATION_SPACES = {
     "DefaultObservationSpace": DefaultObservationSpace,
-    "DefaultPlusObservationSpace": DefaultPlusObservationSpace,
+    "ExpandedObservationSpace": ExpandedObservationSpace,
 }
 
 

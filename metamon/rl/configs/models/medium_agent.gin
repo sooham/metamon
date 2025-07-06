@@ -9,10 +9,11 @@ MetamonAMAGOExperiment.traj_encoder_type = @traj_encoders.TformerTrajEncoder
 MetamonAMAGOExperiment.max_seq_len = 200
 
 # actor
-Agent.actor_type = @actor_critic.Actor
-actor_critic.Actor.activation = "leaky_relu"
-actor_critic.Actor.n_layers = 2
-actor_critic.Actor.d_hidden = 400
+Agent.actor_type = @MetamonMaskedActor
+Agent.pass_obs_keys_to_actor = ["illegal_actions"]
+MetamonMaskedActor.activation = "leaky_relu"
+MetamonMaskedActor.n_layers = 2
+MetamonMaskedActor.d_hidden = 400
 
 # critic
 Agent.critic_type = @actor_critic.NCritics

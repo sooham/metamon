@@ -1,7 +1,4 @@
 from abc import ABC, abstractmethod
-import json
-import os
-from functools import lru_cache
 import copy
 import math
 import random
@@ -14,7 +11,6 @@ from poke_env.environment import (
     Move,
     MoveCategory,
     Battle,
-    DoubleBattle,
     SideCondition,
     Weather,
     Status,
@@ -22,41 +18,13 @@ from poke_env.environment import (
 )
 
 from metamon.baselines import GEN_DATA
-from metamon.data import DATA_PATH
+from metamon.backend.team_prediction.usage_stats import get_usage_stats
 
 
 class Baseline(Player, ABC):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.randomize()
-
-    @lru_cache(maxsize=64)
-    def load_checks_for_format(self, gen: int, format: str) -> dict | None:
-        """
-        Use Smogon (human player) statistics to find "checks and counters" for a pokemon.
-
-        Pokemon B "checks" Pokemon A if B often wins a 1v1 matchup when it can
-        switch in for free (meaning both pokemon start at full health and have
-        and have the same number of turns). B "counters" A when you can switch in
-        unforced - sacrificing a turn (and probably taking damage) - and still win 1v1.
-
-        This is a useful heuristic for picking which pokemon to switch in.
-        """
-        # this info has been compiled into jsons so we don't force users
-        # to download the large raw dataset.
-        path = os.path.join(DATA_PATH, "checks_data", f"gen{gen}{format}.json")
-        if not os.path.exists(path):
-            return None
-        with open(path, "r") as f:
-            data = json.load(f)
-        # resolve spelling differences between poke-env and smogon data scrape
-        cleaned = {}
-        for name, checks in data.items():
-            entry = {}
-            for check, freq in checks.items():
-                entry[check.lower().replace("-", "")] = freq
-            cleaned[name.lower().replace("-", "")] = entry
-        return cleaned
 
     def get_gen_format(self, battle: Battle) -> tuple[int, str]:
         """
@@ -120,7 +88,7 @@ class Baseline(Player, ABC):
         """
         if type is None:
             return 0.0
-        elif type == PokemonType.THREE_QUESTION_MARKS:
+        elif type in {PokemonType.THREE_QUESTION_MARKS, PokemonType.STELLAR}:
             return 1.0
 
         gen, _ = self.get_gen_format(battle)
@@ -128,7 +96,11 @@ class Baseline(Player, ABC):
         opp_types = [t for t in opponent_mon.types if t is not None]
         type_advantage = 1.0
         for opp_type in opp_types:
-            type_advantage *= type_chart[opp_type.name][type.name]
+            if opp_type in {PokemonType.THREE_QUESTION_MARKS, PokemonType.STELLAR}:
+                multiplier = 1.0
+            else:
+                multiplier = type_chart[opp_type.name][type.name]
+            type_advantage *= multiplier
         return type_advantage
 
     def _stat_from_base_stats_early_gens(self, mon: Pokemon, stat: str):
@@ -571,18 +543,23 @@ class Baseline(Player, ABC):
         gen, format = self.get_gen_format(battle)
 
         if check_w > 0:
-            # lru cache keeps this from actually loading from disk
-            # when this is called every turn
-            check_data = self.load_checks_for_format(gen, format)
+            smogon_stats = get_usage_stats(f"gen{gen}{format.lower()}")
 
         switch_scores = {}
         for switch in switches:
             score = 0
 
             # Human "checks and counters" statistics [0, 1] or N/A
-            if check_w > 0 and opp.species in check_data:
-                if switch.species in check_data[opp.species]:
-                    check_val = check_data[opp.species][switch.species]
+            if check_w > 0:
+                # TODO: maybe revisit species/base_species after forme overhaul but it's
+                # probably fine.
+                opp_stats = smogon_stats[opp.base_species]
+                if opp_stats is not None:
+                    check_stats = {
+                        poke_env.to_id_str(k): v
+                        for k, v in opp_stats.get("checks", {}).items()
+                    }
+                    check_val = check_stats.get(switch.base_species, 0)
                     if check_val > min_check_val:
                         score += check_w * check_val
 
