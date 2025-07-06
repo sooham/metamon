@@ -68,7 +68,7 @@ def configure(args):
         "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
     }
     if args.il:
-        # NOTE: would break for a custom agent, but ultimately just creates some wasted params that aren't trained
+        # NOTE: would break for a custom agent, but just spares us some wasted params that aren't trained
         config.update(
             {
                 "amago.agent.Agent.use_multigamma": False,
@@ -94,6 +94,10 @@ if __name__ == "__main__":
     )
     reward_function = ALL_REWARD_FUNCTIONS[args.reward_function]()
     action_space = ALL_ACTION_SPACES[args.action_space]()
+
+    # TODO: there is 2x more gen9ou data than every other format combined,
+    # so it's possible this now needs multiple ParsedReplayDatasets
+    # and the amago MixtureOfDatasets to manually rebalance sampling.
     parsed_replay_dataset = ParsedReplayDataset(
         dset_root=args.parsed_replay_dir,
         observation_space=obs_space,
