@@ -319,14 +319,15 @@ def check_tera_consistency(replay):
         raise ForwardVerify("Found no Tera available in gen 9")
 
 
-def check_forced_switching(turn):
-    # was there a turn where we 1) had to switch, 2) could switch, but 3) didn't record it?
-    for subturn in turn.subturns:
-        if subturn.turn is None or subturn.action is None:
-            switches = (
-                turn.available_switches_1
-                if subturn.team == 1
-                else turn.available_switches_2
-            )
-            if len(switches) > 0:
-                raise ForceSwitchMishandled(subturn)
+def check_forced_switching(replay):
+    for turn in replay.turnlist:
+        # was there a turn where we 1) had to switch, 2) could switch, but 3) didn't record it?
+        for subturn in turn.subturns:
+            if subturn.turn is None or subturn.action is None:
+                switches = (
+                    turn.available_switches_1
+                    if subturn.team == 1
+                    else turn.available_switches_2
+                )
+                if len(switches) > 0:
+                    raise ForceSwitchMishandled(subturn)

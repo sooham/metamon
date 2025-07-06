@@ -250,15 +250,15 @@ We have made every checkpoint of 18 models available on huggingface at [`jakegri
 Load and run pretrained models with `metamon.rl.eval_pretrained`. For example:
 
 ```bash
-python -m metamon.rl.eval_pretrained --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 50 --eval_type heuristic
+python -m metamon.rl.eval_pretrained --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 100 --eval_type heuristic
 ```
 
-Will run the default checkpoint of the best model for 50 battles against a set of heuristic baselines highlighted in the paper.
+Will run the default checkpoint of the best model for 100 battles against a set of heuristic baselines highlighted in the paper.
 
 Or to battle against whatever is logged onto the local Showdown server (including other pretrained models that are already waiting):
 
 ```bash
-python -m metamon.rl.eval_pretrained --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 50 --eval_type ladder --username <pick unique username> --team_set paper_replays
+python -m metamon.rl.eval_pretrained --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 50 --eval_type ladder --username <pick unique username> --team_set competitive
 ```
 
 Some model sizes have several variants testing different RL objectives. See `metamon/rl/eval_pretrained.py` for a complete list.
@@ -283,6 +283,9 @@ Here is a reference of human evals for key models according to our paper:
 <div align="center">
     <img src="media/human_ratings.png" alt="Figure 1" width="800">
 </div>
+
+> [!TIP]
+> All of these policies predate our expansion to Gen 9. They *can* play Gen 9 OU, but won't play it well. Gen 9 training in progress.
 
 <br>
 
