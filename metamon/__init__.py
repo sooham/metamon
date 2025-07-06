@@ -36,10 +36,3 @@ SUPPORTED_BATTLE_FORMATS = [
 ]
 
 METAMON_CACHE_DIR = os.environ.get("METAMON_CACHE_DIR", None)
-
-from . import data
-from . import baselines
-from . import backend
-from . import rl
-from . import il
-from . import env
