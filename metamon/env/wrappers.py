@@ -192,9 +192,9 @@ class PokeEnvWrapper(OpenAIGymEnv):
             self._current_opponent = None
             self.metamon_opponent_name = "Ladder"
 
-        self.reward_function = reward_function
-        self.metamon_obs_space = observation_space
-        self.metamon_action_space = action_space
+        self.reward_function = copy.deepcopy(reward_function)
+        self.metamon_obs_space = copy.deepcopy(observation_space)
+        self.metamon_action_space = copy.deepcopy(action_space)
         self.turn_limit = turn_limit
         self.metamon_battle_format = battle_format
 

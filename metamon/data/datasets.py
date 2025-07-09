@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import copy
 from typing import Optional, Dict, Tuple, List, Any, Set
 from datetime import datetime
 from collections import defaultdict
@@ -111,9 +112,9 @@ class ParsedReplayDataset(Dataset):
             dset_root = os.path.dirname(path_to_format_data)
 
         assert dset_root is not None and os.path.exists(dset_root)
-        self.observation_space = observation_space
-        self.action_space = action_space
-        self.reward_function = reward_function
+        self.observation_space = copy.deepcopy(observation_space)
+        self.action_space = copy.deepcopy(action_space)
+        self.reward_function = copy.deepcopy(reward_function)
         self.dset_root = dset_root
         self.formats = formats
         self.min_rating = min_rating
