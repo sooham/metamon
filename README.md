@@ -517,6 +517,7 @@ class PsyduckIsUbers(LocalPretrainedModel):
         super().__init__(
             # absolute path to where amago saves the run's outputs
             amago_run_path="/my_metamon_ckpts/psyduck_is_ubers/",
+            model_name="psyduck_is_ubers",
             # relative path within rl/configs/ to the model hparams
             gin_config="models/gigantic_agent.gin",
             # if the training command had --il in it...

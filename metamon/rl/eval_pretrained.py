@@ -28,6 +28,7 @@ from metamon.interface import (
     ALL_OBSERVATION_SPACES,
     ALL_REWARD_FUNCTIONS,
     DefaultObservationSpace,
+    ExpandedObservationSpace,
     DefaultShapedReward,
     TokenizedObservationSpace,
     ActionSpace,
