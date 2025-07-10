@@ -140,6 +140,7 @@ if __name__ == "__main__":
         make_train_env=partial(make_placeholder_env, obs_space, action_space),
         make_val_env=make_envs,
         env_mode="async",
+        # NOTE: may need to switch "spawn" --> "forkserver" if using multiple GPUs
         async_env_mp_context="spawn",
         parallel_actors=len(make_envs),
         # no exploration
