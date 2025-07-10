@@ -16,6 +16,7 @@ from poke_env import (
 from poke_env.environment import Battle
 from poke_env.player import OpenAIGymEnv, Player
 from poke_env.teambuilder import Teambuilder
+from poke_env.ps_client.server_configuration import ServerConfiguration
 
 from metamon.interface import (
     UniversalState,
@@ -73,6 +74,15 @@ def get_metamon_teams(battle_format: str, set_name: str) -> TeamSet:
         battle_format: The battle format of the team files (e.g. "gen1ou", "gen2ubers", etc.).
         set_name: The name of the set of teams to download. See the README for options.
     """
+    if set_name not in {
+        "competitive",
+        "paper_replays",
+        "paper_variety",
+        "modern_replays",
+    }:
+        raise ValueError(
+            f"Invalid set name: {set_name}. Must be one of: competitive, paper_replays, paper_variety, modern_replays"
+        )
     path = download_teams(battle_format, set_name=set_name)
     if not os.path.exists(path):
         raise ValueError(
@@ -371,6 +381,12 @@ class BattleAgainstBaseline(PokeEnvWrapper):
         )
 
 
+PokeAgentServerConfiguration = ServerConfiguration(
+    "ws://35.222.191.218:8000/showdown/websocket",
+    "https://play.pokemonshowdown.com/action.php?",
+)
+
+
 class QueueOnLocalLadder(PokeEnvWrapper):
     """
     Battle against an opponent by queueing for ladder matches on the local server.
@@ -397,6 +413,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         player_avatar: Optional[str] = None,
         start_timer_on_battle_start: bool = True,
         save_trajectories_to: Optional[str] = None,
+        player_password: Optional[str] = None,
         battle_backend: str = "poke-env",
     ):
         super().__init__(
@@ -406,6 +423,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
             reward_function=reward_function,
             player_team_set=player_team_set,
             player_username=player_username,
+            player_password=player_password,
             player_avatar=player_avatar,
             start_timer_on_battle_start=start_timer_on_battle_start,
             opponent_type=None,
@@ -421,3 +439,10 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         next_state, reward, terminated, truncated, info = super().step(action)
         self.render()
         return next_state, reward, terminated, truncated, info
+
+
+class PokeAgentLadder(QueueOnLocalLadder):
+
+    @property
+    def server_configuration(self):
+        return PokeAgentServerConfiguration

@@ -92,6 +92,7 @@ def make_ladder_env(
     num_battles: int,
     username: str,
     avatar: str,
+    password: Optional[str] = None,
     save_trajectories_to: Optional[str] = None,
     battle_backend: str = "poke-env",
 ):
@@ -109,6 +110,7 @@ def make_ladder_env(
         player_team_set=player_team_set,
         player_username=username,
         player_avatar=avatar,
+        player_password=password,
         save_trajectories_to=save_trajectories_to,
         battle_backend=battle_backend,
     )
