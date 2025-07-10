@@ -415,6 +415,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         save_trajectories_to: Optional[str] = None,
         player_password: Optional[str] = None,
         battle_backend: str = "poke-env",
+        print_battle_bar: bool = True,
     ):
         super().__init__(
             battle_format=battle_format,
@@ -433,11 +434,13 @@ class QueueOnLocalLadder(PokeEnvWrapper):
             battle_backend=battle_backend,
         )
         print(f"Laddering for {num_battles} battles")
+        self.print_battle_bar = print_battle_bar
         self.start_laddering(n_challenges=num_battles)
 
     def step(self, action):
         next_state, reward, terminated, truncated, info = super().step(action)
-        self.render()
+        if self.print_battle_bar:
+            self.render()
         return next_state, reward, terminated, truncated, info
 
 
