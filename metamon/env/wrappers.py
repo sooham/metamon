@@ -436,7 +436,12 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         )
         print(f"Laddering for {num_battles} battles")
         self.print_battle_bar = print_battle_bar
-        self.start_laddering(n_challenges=num_battles)
+        self.num_battles = num_battles
+        self.handle_ladder_start(n_challenges=num_battles)
+
+    def handle_ladder_start(self, n_challenges: int):
+        # hook to allow throttling on pokeagent ladder
+        return self.start_laddering(n_challenges=n_challenges)
 
     def step(self, action):
         next_state, reward, terminated, truncated, info = super().step(action)

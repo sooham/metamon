@@ -333,7 +333,26 @@ class MetamonMaskedActor(amago.nets.actor_critic.Actor):
 
 class PSLadderAMAGOWrapper(MetamonAMAGOWrapper):
     def __init__(self, env):
+        assert isinstance(env, QueueOnLocalLadder)
+        self.placeholder_obs = None
+        self.battle_counter = 0
         super().__init__(env)
+
+    def inner_reset(self, *args, **kwargs):
+        if self.battle_counter >= self.env.num_battles:
+            # quirk of amago's parallel actor auto-resets that matters
+            # for online ladder.
+            warnings.warn(
+                "Blocking auto-reset to avoid creating a battle that will not be completed!"
+            )
+            return self.placeholder_obs, {}
+        obs, info = self.env.reset(*args, **kwargs)
+        self.battle_counter += 1
+        if self.placeholder_obs is None:
+            self.placeholder_obs = obs
+        # move legal action from info to obs
+        self.add_illegal_action_mask_to_obs(obs, info)
+        return obs, info
 
     @property
     def env_name(self):

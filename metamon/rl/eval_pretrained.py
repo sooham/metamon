@@ -535,7 +535,7 @@ if __name__ == "__main__":
                         partial(
                             make_ladder_env,
                             **env_kwargs,
-                            num_battles=args.n_challenges + 1,
+                            num_battles=args.n_challenges,
                             username=args.username,
                             avatar=args.avatar,
                         )
