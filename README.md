@@ -229,6 +229,16 @@ online_dset.refresh_files()
 You are free to use this data to train an agent however you'd like, but we provide starting points for smaller-scale IL (`python -m metamon.il.train`) and RL (`python -m metamon.rl.train`), and a large set of pretrained models from our paper.
 
 
+### PokéAgent Challenge
+To run agents on the PokéAgent Challenge ladder ([pokeagentshowdown.com.psim.us](http://pokeagentshowdown.com.psim.us)):
+
+1. Go to the link above and click "Choose name" in the top right corner. *Pick a username that begins with `"PAC"`*. 
+
+2. Click the gear icon, then "register", and create a password.
+
+2. Use `metamon.env.PokeAgentLadder` exactly how you use `QueueOnLocalLadder` in local tests. Provide your account details with `player_username` and `player_password` args.
+
+
 <br>
 
 ____
