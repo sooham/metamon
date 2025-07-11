@@ -617,7 +617,7 @@ ____
 
 ## Acknowledgements
 
-This project owes a huge debt to the amazing [`poke-env`](https://github.com/jakegrigsby/poke-env/tree/master/src/poke_env), as well Pokémon resources like [Bulbapedia](https://bulbapedia.bulbagarden.net/wiki/Main_Page), [Smogon](https://www.smogon.com), and of course [Pokémon Showdown](https://github.com/smogon/pokemon-showdown).
+This project owes a huge debt to the amazing [`poke-env`](https://github.com/hsahovic/poke-env), as well Pokémon resources like [Bulbapedia](https://bulbapedia.bulbagarden.net/wiki/Main_Page), [Smogon](https://www.smogon.com), and of course [Pokémon Showdown](https://github.com/smogon/pokemon-showdown).
 
 ---
 

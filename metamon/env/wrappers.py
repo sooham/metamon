@@ -79,6 +79,7 @@ def get_metamon_teams(battle_format: str, set_name: str) -> TeamSet:
         "paper_replays",
         "paper_variety",
         "modern_replays",
+        "pokeagent_modern_replays",
     }:
         raise ValueError(
             f"Invalid set name: {set_name}. Must be one of: competitive, paper_replays, paper_variety, modern_replays"
@@ -404,7 +405,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
     def __init__(
         self,
         battle_format: str,
-        num_battles: int,
+        num_battles: Optional[int],
         observation_space: ObservationSpace,
         action_space: ActionSpace,
         reward_function: RewardFunction,
