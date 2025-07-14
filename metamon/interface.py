@@ -320,6 +320,8 @@ class UniversalPokemon:
         `update_from_metamon` equivalent in poke-env.Pokemon. Used by metamon
         battle backend.
         """
+        if pokemon is None:
+            return None
         p = Pokemon(gen=pokemon.gen)
         p._base_stats = pokemon.base_stats
         p._type_1 = PokemonType.from_name(pokemon.type[0])

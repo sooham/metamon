@@ -382,12 +382,6 @@ class BattleAgainstBaseline(PokeEnvWrapper):
         )
 
 
-PokeAgentServerConfiguration = ServerConfiguration(
-    "ws://35.222.191.218:8000/showdown/websocket",
-    "https://play.pokemonshowdown.com/action.php?",
-)
-
-
 class QueueOnLocalLadder(PokeEnvWrapper):
     """
     Battle against an opponent by queueing for ladder matches on the local server.
@@ -448,6 +442,12 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         if self.print_battle_bar:
             self.render()
         return next_state, reward, terminated, truncated, info
+
+
+PokeAgentServerConfiguration = ServerConfiguration(
+    "wss://pokeagentshowdown.com/showdown/websocket",
+    "https://play.pokemonshowdown.com/action.php?",
+)
 
 
 class PokeAgentLadder(QueueOnLocalLadder):
