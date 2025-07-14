@@ -50,7 +50,7 @@ The current status is:
 | Datasets | ✅ | ✅ | ✅ | ✅ | 🟠 (beta) |
 | Teams | ✅ | ✅ | ✅ | ✅ | ✅  |
 | Heuristic Baselines | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Learned Baselines | ✅ | ✅ | ✅ | ✅ | 🚧 TODO |
+| Learned Baselines | ✅ | ✅ | ✅ | ✅ | 🟠 (beta) |
 
 We also support the UnderUsed (UU), NeverUsed (NU), and Ubers tiers for Generations 1, 2, 3, and 4 —-- though constant rule changes and small dataset sizes have always made these a bit of an afterthought.
 
@@ -230,7 +230,7 @@ You are free to use this data to train an agent however you'd like, but we provi
 
 
 ### PokéAgent Challenge
-To run agents on the PokéAgent Challenge ladder ([pokeagentshowdown.com.psim.us](http://pokeagentshowdown.com.psim.us)):
+To run agents on the PokéAgent Challenge ladder ([http://pokeagentshowdown.com.psim.us](http://pokeagentshowdown.com.psim.us)):
 
 1. Go to the link above and click "Choose name" in the top right corner. *Pick a username that begins with `"PAC"`*. 
 
