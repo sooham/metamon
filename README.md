@@ -325,9 +325,6 @@ Datasets are stored on huggingface in two formats:
 
 Parsed replays will download automatically when requested by the `ParsedReplayDataset`, but these datasets are large. Use `python -m metamon.data.download parsed-replays` to download them in advance.
 
-> [!WARNING]
-> The parsed replay system received a [large update](https://github.com/UT-Austin-RPL/metamon/pull/26) to support Gen 9, which was rushed to be available in time for the [PokéAgent Challenge](https://pokeagent.github.io/index.html) launch. Until we can retrain and validate new policies, the latest version of the dataset (`"v3-beta"`) should be considered experimental. `python -m metamon.data.download parsed-replays --version v2` gets the previous version, which has been confirmed to replicate the paper results for Gen 1-4.
-
 
 #### Server/Replay Sim2Sim Gap
 
@@ -620,7 +617,7 @@ Originally, metamon handled reconstruction of training data from old replays but
   <img src="media/offline_metamon_diagram.png" alt="Metamon Offline Diagram" width="85%">
 </div>
 
-In an experimental new feature, we now allow all of the Pokémon logic (the "battle backend") to switch to the replay version. Pass `battle_backend="metamon"` to any of the environments. `poke-env` still handles all communication with Showdown, but this helps reduce the [sim2sim gap](#serverreplay-sim2sim-gap). Because it is focused on Gens 1-4 without privileged player info --- and tested on every replay ever saved --- the metamon backend is more accurate for our use case and will be significantly easier to maintain. However, the `"poke-env"` option is still faster and more stable. It uses a [frozen fork](https://github.com/UT-Austin-RPL/poke-env) that preserves backwards compatibility for the gymnasium interface and battle backend used by our best baseline models. For now, the two choices are so similar that they can be used interchangeably at test time. However, a serious superhuman self-play effort would probably want to pick one option and be consistent with it. `"poke-env"` will only be deprecated after the [PokéAgent Challenge](https://pokeagent.github.io).
+In an experimental new feature, we now allow all of the Pokémon logic (the "battle backend") to switch to the replay version. Pass `battle_backend="metamon"` to any of the environments. `poke-env` still handles all communication with Showdown, but this helps reduce the [sim2sim gap](#serverreplay-sim2sim-gap). Because it is focused on Gens 1-4 without privileged player info --- and tested on every replay ever saved --- the metamon backend is more accurate for our use case and will be significantly easier to maintain. However, the `"poke-env"` option is still faster and more stable and will only be deprecated after the [PokéAgent Challenge](https://pokeagent.github.io).
 ____
 
  <br>
