@@ -159,7 +159,9 @@ class ParsedReplayDataset(Dataset):
             path = os.path.join(self.dset_root, format)
             if not os.path.exists(path):
                 if self.verbose:
-                    print(f"Requested data for format `{format}`, but did not find {path}")
+                    print(
+                        f"Requested data for format `{format}`, but did not find {path}"
+                    )
                 continue
             for filename in bar(os.listdir(path), desc=f"Finding {format} battles"):
                 if not (filename.endswith(".json") or filename.endswith(".json.lz4")):
@@ -203,7 +205,7 @@ class ParsedReplayDataset(Dataset):
 
     def __len__(self):
         return len(self.filenames)
-    
+
     def _load_json(self, filename: str) -> dict:
         if filename.endswith(".json.lz4"):
             with lz4.frame.open(filename, "rb") as f:
@@ -216,13 +218,7 @@ class ParsedReplayDataset(Dataset):
         return data
 
     def load_filename(self, filename: str):
-        try:
-            data = self._load_json(filename)
-        except Exception as e:
-            if self.verbose:
-                print(f"Error loading {filename}: {e}")
-            return [None] * 4
-
+        data = self._load_json(filename)
         states = [UniversalState.from_dict(s) for s in data["states"]]
         # reset the observation space, then call once on each state, which lets
         # any history-dependent features behave as they would in an online battle
@@ -300,10 +296,9 @@ class ParsedReplayDataset(Dataset):
 if __name__ == "__main__":
     from argparse import ArgumentParser
     from metamon.interface import (
-        DefaultObservationSpace,
         DefaultShapedReward,
+        ALL_OBSERVATION_SPACES,
         TokenizedObservationSpace,
-        ExpandedObservationSpace,
         DefaultActionSpace,
     )
     from metamon.tokenizer import get_tokenizer
@@ -311,12 +306,13 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--dset_root", type=str, default=None)
     parser.add_argument("--formats", type=str, default=None, nargs="+")
+    parser.add_argument("--obs_space", type=str, default="DefaultObservationSpace")
     args = parser.parse_args()
 
     dset = ParsedReplayDataset(
         dset_root=args.dset_root,
         observation_space=TokenizedObservationSpace(
-            ExpandedObservationSpace(),
+            ALL_OBSERVATION_SPACES[args.obs_space](),
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
         ),
         action_space=DefaultActionSpace(),
