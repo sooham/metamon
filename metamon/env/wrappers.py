@@ -321,7 +321,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
                 result = "WIN" if info["won"] == 1 else "LOSS"
                 battle_id = "".join(str(random.randint(0, 9)) for _ in range(10))
                 timestamp = datetime.now().strftime("%m-%d-%Y-%H:%M:%S")
-                filename = f"metamon-{self.metamon_battle_format}-{battle_id}_Unrated_{self.player_username}_vs_{self.metamon_opponent_name}_{timestamp}_{result}.json"
+                filename = f"metamon-{self.metamon_battle_format}-{battle_id}_Unrated_{self.player_username}_vs_{self.metamon_opponent_name}_{timestamp}_{result}.json.lz4"
                 # matches the format of the parsed replay dataset
                 output_json = {
                     "states": [s.to_dict() for s in self.trajectory["states"]],
