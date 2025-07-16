@@ -83,6 +83,7 @@ class ReplayParser:
             player_conditions = turn.conditions_1 if p1 else turn.conditions_2
             opponent_conditions = turn.conditions_2 if p1 else turn.conditions_1
             can_tera = turn.can_tera_1 if p1 else turn.can_tera_2
+            opponent_teampreview = turn.teampreview_2 if p1 else turn.teampreview_1
 
             # fill a ReplayState
             states.append(
@@ -102,6 +103,7 @@ class ReplayParser:
                     battle_won=False,
                     battle_lost=False,
                     can_tera=can_tera,
+                    opponent_teampreview=opponent_teampreview,
                 )
             )
             actions.append(action)
