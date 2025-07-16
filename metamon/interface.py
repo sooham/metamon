@@ -1103,9 +1103,28 @@ class ExpandedObservationSpace(DefaultObservationSpace):
         return obs
 
 
+class TeamPreviewObservationSpace(ExpandedObservationSpace):
+
+    @property
+    def tokenizable(self) -> dict[str, int]:
+        # adds 6 new tokens for teampreview
+        return {"text": 87 + 13 + 6}
+
+    def state_to_obs(self, state: UniversalState):
+        obs = super().state_to_obs(state)
+        teampreview = [opp_name for opp_name in sorted(state.opponent_teampreview)]
+        while len(teampreview) < 6:
+            teampreview.append("<blank>")
+        obs["text"] = np.array(
+            obs["text"].item() + " " + " ".join(teampreview[:6]), dtype=np.str_
+        )
+        return obs
+
+
 ALL_OBSERVATION_SPACES = {
     "DefaultObservationSpace": DefaultObservationSpace,
     "ExpandedObservationSpace": ExpandedObservationSpace,
+    "TeamPreviewObservationSpace": TeamPreviewObservationSpace,
 }
 
 
