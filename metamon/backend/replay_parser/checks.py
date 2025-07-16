@@ -320,7 +320,7 @@ def check_tera_consistency(replay):
 
 
 def check_forced_switching(replay):
-    for turn in replay.turnlist:
+    for turn in replay.turnlist[:-1]:
         # was there a turn where we 1) had to switch, 2) could switch, but 3) didn't record it?
         for subturn in turn.subturns:
             if subturn.turn is None or subturn.action is None:
