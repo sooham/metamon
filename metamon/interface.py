@@ -379,7 +379,8 @@ class UniversalState:
     battle_lost: bool
 
     # version-specific
-    can_tera: bool
+    can_tera: bool  # added v3-beta
+    opponent_teampreview: List[str]  # added v3
 
     @staticmethod
     def universal_conditions(condition_rep) -> str:
@@ -414,6 +415,7 @@ class UniversalState:
         opponent = UniversalPokemon.from_ReplayPokemon(state.opponent_active_pokemon)
         switches = [UniversalPokemon.from_ReplayPokemon(p) for p in state.available_switches]
         opponents_remaining = 6 - sum(p.status == Status.FNT for p in state.opponent_team if p is not None)
+        opponent_teampreview = [pokemon_name(p.had_name) for p in state.opponent_teampreview]
         return cls(
             format=format,
             player_active_pokemon=active,
@@ -430,6 +432,7 @@ class UniversalState:
             battle_won=state.battle_won,
             battle_lost=state.battle_lost,
             can_tera=state.can_tera,
+            opponent_teampreview=opponent_teampreview,
         )
 
     @classmethod
@@ -449,8 +452,9 @@ class UniversalState:
         switches = [UniversalPokemon.from_Pokemon(p) for p in possible_switches]
         player_prev_move = UniversalMove.from_Move(battle.active_pokemon.previous_move)
         opponent_prev_move = UniversalMove.from_Move(battle.opponent_active_pokemon.previous_move)
+        # NOTE: always assumes 6 in the party, and this will probably never change for backwards compat
         opponents_remaining = 6 - sum(p.status == Status.FNT for p in battle.opponent_team.values())
-
+        opponent_teampreview = [pokemon_name(p.base_species) for p in battle.teampreview_opponent_team if p is not None]
         force_switch = battle.force_switch
         if isinstance(force_switch, list):
             force_switch = force_switch[0]
@@ -471,6 +475,7 @@ class UniversalState:
             battle_lost=battle.lost if battle.lost else False,
             opponents_remaining=opponents_remaining,
             can_tera=battle.can_tera is not None,
+            opponent_teampreview=opponent_teampreview,
         )
     # fmt: on
 
@@ -497,6 +502,12 @@ class UniversalState:
             # backwards compat (if it's missing; it's an old version of the dataset
             # --> gen 1-4 --> no tera)
             data["can_tera"] = False
+
+        if "opponent_teampreview" not in data:
+            # backwards compat (if it's missing; it's an old version of the dataset
+            # --> gen 1-4 --> no teampreview)
+            data["opponent_teampreview"] = []
+
         return cls(**data)
 
 
