@@ -27,17 +27,19 @@ class ParsedReplayDataset(Dataset):
 
     Parsed replays are records of Pokémon Showdown battles that have been converted to the partially observed
     point-of-view of a single player, matching the problem our agents face in the RL environment. They are created by the
-    `metamon.data.replay_dataset.replay_parser` module from "raw" Showdown replay logs
+    `metamon.backend.replay_parser` module from "raw" Showdown replay logs
     downloaded from publicly available battles.
 
-    This is a pytorch `Dataset` that returns (nested_obs, actions, rewards, dones, missing_actions) trajectory tuples,
+    This is a pytorch `Dataset` that returns (nested_obs, actions, rewards, dones) trajectory tuples,
     where:
-    - nested_obs: lists of numpy arrays with length seq_len (arrays may have different shapes). If the observation space
-    is a dict, this becomes a dict of lists of arrays for each key....
-    - actions: A numpy array of shape (seq_len, dim)
-    - rewards: A numpy array of shape (seq_len, dim)
-    - dones: A numpy array of shape (seq_len, dim)
-    - missing_actions: A numpy array of shape (seq_len, dim)
+    - nested_obs: List of numpy arrays of length seq_len (arrays may have different shapes).
+      If the observation space is a dict, this becomes a dict of lists of arrays for each key.
+    - actions: Dict with keys:
+        - "chosen": list (length seq_len) of actions taken by the agent in the chosen action space
+        - "legal": list (length seq_len) of sets of legal actions available at each timestep in the chosen action space
+        - "missing": list (length seq_len) of bools indicating the action is missing (should probably be masked)
+    - rewards: Numpy array of shape (seq_len,)
+    - dones: Numpy array of shape (seq_len,)
 
     Note that depending on the observation space, you may need a custom pad_collate_fn in the pytorch dataloader
     to handle the variable-shaped arrays in nested_obs.
@@ -55,7 +57,7 @@ class ParsedReplayDataset(Dataset):
         dset = ParsedReplayDataset(
             observation_space=TokenizedObservationSpace(
                 DefaultObservationSpace(),
-                tokenizer=get_tokenizer("allreplays-v3"),
+                tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
             ),
             reward_function=DefaultShapedReward(),
             formats=["gen1nu"],
@@ -155,8 +157,15 @@ class ParsedReplayDataset(Dataset):
 
         for format in self.formats:
             path = os.path.join(self.dset_root, format)
+            if not os.path.exists(path):
+                if self.verbose:
+                    print(
+                        f"Requested data for format `{format}`, but did not find {path}"
+                    )
+                continue
             for filename in bar(os.listdir(path), desc=f"Finding {format} battles"):
                 if not (filename.endswith(".json") or filename.endswith(".json.lz4")):
+                    print(f"Skipping {filename} because it does not match the criteria")
                     continue
                 try:
                     (
@@ -197,18 +206,19 @@ class ParsedReplayDataset(Dataset):
     def __len__(self):
         return len(self.filenames)
 
-    def load_filename(self, filename: str):
+    def _load_json(self, filename: str) -> dict:
         if filename.endswith(".json.lz4"):
-            # compressed (v2+ format)
             with lz4.frame.open(filename, "rb") as f:
                 data = json.loads(f.read().decode("utf-8"))
         elif filename.endswith(".json"):
-            # uncompressed (v1 format)
             with open(filename, "r") as f:
                 data = json.load(f)
         else:
             raise ValueError(f"Unknown file extension: {filename}")
+        return data
 
+    def load_filename(self, filename: str):
+        data = self._load_json(filename)
         states = [UniversalState.from_dict(s) for s in data["states"]]
         # reset the observation space, then call once on each state, which lets
         # any history-dependent features behave as they would in an online battle
@@ -284,22 +294,30 @@ class ParsedReplayDataset(Dataset):
 
 
 if __name__ == "__main__":
+    from argparse import ArgumentParser
     from metamon.interface import (
-        DefaultObservationSpace,
         DefaultShapedReward,
+        ALL_OBSERVATION_SPACES,
         TokenizedObservationSpace,
-        ExpandedObservationSpace,
         DefaultActionSpace,
     )
     from metamon.tokenizer import get_tokenizer
 
+    parser = ArgumentParser()
+    parser.add_argument("--dset_root", type=str, default=None)
+    parser.add_argument("--formats", type=str, default=None, nargs="+")
+    parser.add_argument("--obs_space", type=str, default="DefaultObservationSpace")
+    args = parser.parse_args()
+
     dset = ParsedReplayDataset(
+        dset_root=args.dset_root,
         observation_space=TokenizedObservationSpace(
-            ExpandedObservationSpace(),
+            ALL_OBSERVATION_SPACES[args.obs_space](),
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
         ),
         action_space=DefaultActionSpace(),
         reward_function=DefaultShapedReward(),
+        formats=args.formats,
         verbose=True,
         shuffle=True,
     )

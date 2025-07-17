@@ -608,6 +608,8 @@ class Turn:
     subturns: List = field(default_factory=list)
     can_tera_1: bool = False
     can_tera_2: bool = False
+    teampreview_1: List[Pokemon] = field(default_factory=list)
+    teampreview_2: List[Pokemon] = field(default_factory=list)
 
     def get_active_pokemon(self, p1: bool) -> Optional[Pokemon]:
         return self.active_pokemon_1 if p1 else self.active_pokemon_2
@@ -703,6 +705,9 @@ class Turn:
                 if poke_by_nickname is not None:
                     return poke_by_nickname
         return poke
+
+    def get_teampreview(self, p1: bool) -> List[Optional[Pokemon]]:
+        return self.teampreview_1 if p1 else self.teampreview_2
 
     def player_id_to_action_idx(self, move_str: str) -> Tuple[int, int]:
         sub_str = move_str[1:3]
@@ -980,3 +985,4 @@ class ReplayState:
     battle_won: bool
     battle_lost: bool
     can_tera: bool
+    opponent_teampreview: List[Pokemon]

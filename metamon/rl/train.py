@@ -34,17 +34,20 @@ def add_cli(parser):
     parser.add_argument("--obs_space", type=str, default="DefaultObservationSpace")
     parser.add_argument("--reward_function", type=str, default="DefaultShapedReward")
     parser.add_argument("--action_space", type=str, default="DefaultActionSpace")
-    parser.add_argument("--parsed_replay_dir", type=str, default=None, help="Path to the parsed replay directory. Defaults to the official huggingface version.")
     parser.add_argument("--ckpt_dir", type=str, required=True, help="Path to save checkpoints. Find checkpoints under {ckpt_dir}/{run_name}/ckpts/")
     parser.add_argument("--ckpt", type=int, default=None, help="Resume training from an existing run with this run_name. Provide the epoch checkpoint to load.")
+    parser.add_argument("--finetune_from_path", type=str, default=None, help="Path to a checkpoint (from another run) to initialize weights.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. In offline RL model, an epoch is an arbitrary interval (here: 25k) of training steps on a fixed dataset.")
     parser.add_argument("--batch_size_per_gpu", type=int, default=12, help="Batch size per GPU. Total batch size is batch_size_per_gpu * num_gpus.")
     parser.add_argument("--grad_accum", type=int, default=1, help="Number of gradient accumulations per update.")
     parser.add_argument("--il", action="store_true", help="Overrides amago settings to use imitation learning.")
-    parser.add_argument("--model_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the model architecture). See provided rl/configs/models/)")
-    parser.add_argument("--train_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the training or hparams).")
+    parser.add_argument("--model_gin_config", type=str, required=True, help="Path to a gin config file that edits the model architecture. See provided rl/configs/models/")
+    parser.add_argument("--train_gin_config", type=str, required=True, help="Path to a gin config file that edits the training or hparams. See provided rl/configs/training/")
     parser.add_argument("--tokenizer", type=str, default="DefaultObservationSpace-v1", help="The tokenizer to use for the text observation space. See metamon.tokenizer for options.")
     parser.add_argument("--dloader_workers", type=int, default=10, help="Number of workers for the data loader.")
+    parser.add_argument("--parsed_replay_dir", type=str, default=None, help="Path to the parsed replay directory. Defaults to the official huggingface version.")
+    parser.add_argument("--custom_replay_dir", type=str, default=None, help="Path to an optional second parsed replay dataset (e.g., self-play data you've collected).")
+    parser.add_argument("--custom_replay_sample_weight", type=float, default=.25, help="[0, 1] portion of each batch to sample from the custom dataset (if provided).")
     parser.add_argument("--log", action="store_true", help="Log to wandb.")
     # fmt: on
     return parser
@@ -95,22 +98,42 @@ if __name__ == "__main__":
     reward_function = ALL_REWARD_FUNCTIONS[args.reward_function]()
     action_space = ALL_ACTION_SPACES[args.action_space]()
 
+    dset_kwargs = {
+        "observation_space": obs_space,
+        "action_space": action_space,
+        "reward_function": reward_function,
+        # amago will handle sequence lengths on its side
+        "max_seq_len": None,
+        "verbose": True,  # False to hide dset setup progress bar
+    }
     # TODO: there is 2x more gen9ou data than every other format combined,
     # so it's possible this now needs multiple ParsedReplayDatasets
-    # and the amago MixtureOfDatasets to manually rebalance sampling.
+    # and the amago MixtureOfDatasets to manually rebalance sampling across formats.
     parsed_replay_dataset = ParsedReplayDataset(
-        dset_root=args.parsed_replay_dir,
-        observation_space=obs_space,
-        action_space=action_space,
-        reward_function=reward_function,
-        # amago will handle sequence lengths
-        max_seq_len=None,
-        verbose=True,
+        dset_root=args.parsed_replay_dir, **dset_kwargs
     )
-    amago_dataset = MetamonAMAGODataset(
+    parsed_replays_amago = MetamonAMAGODataset(
         dset_name="Metamon Parsed Replays",
         parsed_replay_dset=parsed_replay_dataset,
     )
+    if args.custom_replay_dir is not None:
+        # mix in another replay dataset
+        custom_dset = ParsedReplayDataset(
+            dset_root=args.custom_replay_dir, **dset_kwargs
+        )
+        custom_dset_amago = MetamonAMAGODataset(
+            dset_name="Custom Parsed Replays",
+            parsed_replay_dset=custom_dset,
+        )
+        amago_dataset = amago.loading.MixtureOfDatasets(
+            datasets=[parsed_replays_amago, custom_dset_amago],
+            sampling_weights=[
+                1 - args.custom_replay_sample_weight,
+                args.custom_replay_sample_weight,
+            ],
+        )
+    else:
+        amago_dataset = parsed_replays_amago
 
     # validation environments (evaluated throughout training)
     make_envs = [
@@ -173,6 +196,14 @@ if __name__ == "__main__":
 
     experiment.start()
     if args.ckpt is not None:
+        assert (
+            args.finetune_from_path is None
+        ), "Provide --ckpt or --finetune_from_path, not both"
         experiment.load_checkpoint(args.ckpt)
+    elif args.finetune_from_path is not None:
+        experiment.load_checkpoint_from_path(
+            args.finetune_from_path,
+            is_accelerate_state=not args.finetune_from_path.endswith(".pt"),
+        )
     experiment.learn()
     wandb.finish()

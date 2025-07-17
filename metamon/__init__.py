@@ -1,7 +1,7 @@
 import os
 from importlib.metadata import version
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 poke_env_version = version("poke-env")
 
@@ -36,3 +36,10 @@ SUPPORTED_BATTLE_FORMATS = [
 ]
 
 METAMON_CACHE_DIR = os.environ.get("METAMON_CACHE_DIR", None)
+
+from . import data
+from . import backend
+from . import env
+from . import il
+from . import rl
+from . import baselines

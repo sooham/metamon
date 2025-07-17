@@ -251,9 +251,11 @@ class PokeEnvWrapper(OpenAIGymEnv):
         self.valid_action_counter = 0
         self.turn_counter = 0
         self.battle_reference = self.agent.n_won_battles
-        self.trajectory = {"states": [], "actions": []}
         obs, info = super().reset(*args, **kwargs)
+        self._most_recent_state = UniversalState.from_Battle(self.current_battle)
+        self._update_legal_actions(self._most_recent_state, self.current_battle)
         info["legal_actions"] = self._most_recent_legal_actions
+        self.trajectory = {"states": [self._most_recent_state], "actions": []}
         return obs, info
 
     def action_to_move(self, action: Any, battle: Battle):
@@ -278,20 +280,20 @@ class PokeEnvWrapper(OpenAIGymEnv):
         reward = self.reward_function(last_state, state)
         return reward
 
+    def _update_legal_actions(self, state: UniversalState, battle: Battle):
+        legal_actions = UniversalAction.definitely_valid_actions(
+            state=state, battle=battle
+        )
+        self._most_recent_legal_actions = [
+            self.metamon_action_space.action_to_agent_output(state=state, action=action)
+            for action in legal_actions
+        ]
+        return self._most_recent_legal_actions
+
     def embed_battle(self, battle: Battle):
         universal_state = UniversalState.from_Battle(battle)
         self._most_recent_state = universal_state
-        legal_actions = UniversalAction.definitely_valid_actions(
-            state=universal_state, battle=battle
-        )
-        self._most_recent_legal_actions = [
-            self.metamon_action_space.action_to_agent_output(
-                state=universal_state, action=action
-            )
-            for action in legal_actions
-        ]
-        if self.save_trajectories_to is not None:
-            self.trajectory["states"].append(universal_state)
+        self._update_legal_actions(universal_state, battle)
         return self.metamon_obs_space.state_to_obs(universal_state)
 
     def step(self, action):
@@ -299,6 +301,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
         next_obs, reward, terminated, truncated, info = super().step(action)
         info["legal_actions"] = self._most_recent_legal_actions
         if self.save_trajectories_to is not None:
+            self.trajectory["states"].append(self._most_recent_state)
             self.trajectory["actions"].append(
                 self.metamon_action_space.agent_output_to_action(
                     state=self._most_recent_state, agent_output=action
@@ -321,7 +324,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
                 result = "WIN" if info["won"] == 1 else "LOSS"
                 battle_id = "".join(str(random.randint(0, 9)) for _ in range(10))
                 timestamp = datetime.now().strftime("%m-%d-%Y-%H:%M:%S")
-                filename = f"metamon-{self.metamon_battle_format}-{battle_id}_Unrated_{self.player_username}_vs_{self.metamon_opponent_name}_{timestamp}_{result}.json"
+                filename = f"metamon-{self.metamon_battle_format}-{battle_id}_Unrated_{self.player_username}_vs_{self.metamon_opponent_name}_{timestamp}_{result}.json.lz4"
                 # matches the format of the parsed replay dataset
                 output_json = {
                     "states": [s.to_dict() for s in self.trajectory["states"]],

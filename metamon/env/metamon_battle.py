@@ -1,6 +1,6 @@
 from datetime import datetime
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import warnings
 
 import poke_env.environment as pe
@@ -618,6 +618,12 @@ class MetamonBackendBattle(pe.AbstractBattle):
         """
         p1 = self.player_role == "p1"
         return len(self._current_turn.get_pokemon(p1))
+
+    @property
+    def teampreview_opponent_team(self) -> Set[pe.Pokemon]:
+        p1 = self.player_role == "p1"
+        teampreview = self._current_turn.get_teampreview(not p1)
+        return set(self._convert_pokemon(p) for p in teampreview)
 
     @property
     def trapped(self) -> Any:

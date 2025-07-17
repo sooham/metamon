@@ -336,13 +336,24 @@ class SimProtocol:
         """
         |poke|PLAYER|DETAILS|ITEM
         """
+        gen = self.replay.gen
         poke_list = self.curr_turn.get_pokemon_list_from_str(args[0])
         assert isinstance(poke_list, list)
         if None not in poke_list:
             raise UnusualTeamSize(len(poke_list) + 1)
-        poke_name, lvl = Pokemon.identify_from_details(args[1], gen=self.replay.gen)
+        poke_name, lvl = Pokemon.identify_from_details(args[1], gen=gen)
         insert_at = poke_list.index(None)
-        poke_list[insert_at] = Pokemon(name=poke_name, lvl=lvl, gen=self.replay.gen)
+        new_pokemon = Pokemon(name=poke_name, lvl=lvl, gen=gen)
+        # add to team, where it will change throughout the battle
+        poke_list[insert_at] = new_pokemon
+        sub_str = args[0][0:2]
+        # add to teampreview, where it will be frozen
+        if sub_str == "p1":
+            self.curr_turn.teampreview_1.append(copy.deepcopy(new_pokemon))
+        elif sub_str == "p2":
+            self.curr_turn.teampreview_2.append(copy.deepcopy(new_pokemon))
+        else:
+            raise RareValueError(f"Unknown player: {sub_str}")
 
     def get_or_create_pokemon_from_details(
         self, details: str, poke_list: list[Pokemon]

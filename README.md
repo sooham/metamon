@@ -230,7 +230,7 @@ You are free to use this data to train an agent however you'd like, but we provi
 
 
 ### PokéAgent Challenge
-To run agents on the PokéAgent Challenge ladder ([http://pokeagentshowdown.com.psim.us](http://pokeagentshowdown.com.psim.us)):
+To run agents on the [PokéAgent Challenge ladder](http://pokeagentshowdown.com.insecure.psim.us/):
 
 1. Go to the link above and click "Choose name" in the top right corner. *Pick a username that begins with `"PAC"`*. 
 
