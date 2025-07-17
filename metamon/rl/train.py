@@ -36,17 +36,18 @@ def add_cli(parser):
     parser.add_argument("--action_space", type=str, default="DefaultActionSpace")
     parser.add_argument("--ckpt_dir", type=str, required=True, help="Path to save checkpoints. Find checkpoints under {ckpt_dir}/{run_name}/ckpts/")
     parser.add_argument("--ckpt", type=int, default=None, help="Resume training from an existing run with this run_name. Provide the epoch checkpoint to load.")
+    parser.add_argument("--finetune_from_path", type=str, default=None, help="Path to a checkpoint (from another run) to initialize weights.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs to train for. In offline RL model, an epoch is an arbitrary interval (here: 25k) of training steps on a fixed dataset.")
     parser.add_argument("--batch_size_per_gpu", type=int, default=12, help="Batch size per GPU. Total batch size is batch_size_per_gpu * num_gpus.")
     parser.add_argument("--grad_accum", type=int, default=1, help="Number of gradient accumulations per update.")
     parser.add_argument("--il", action="store_true", help="Overrides amago settings to use imitation learning.")
-    parser.add_argument("--model_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the model architecture). See provided rl/configs/models/)")
-    parser.add_argument("--train_gin_config", type=str, required=True, help="Path to a gin config file (that might edit the training or hparams).")
+    parser.add_argument("--model_gin_config", type=str, required=True, help="Path to a gin config file that edits the model architecture. See provided rl/configs/models/")
+    parser.add_argument("--train_gin_config", type=str, required=True, help="Path to a gin config file that edits the training or hparams. See provided rl/configs/training/")
     parser.add_argument("--tokenizer", type=str, default="DefaultObservationSpace-v1", help="The tokenizer to use for the text observation space. See metamon.tokenizer for options.")
     parser.add_argument("--dloader_workers", type=int, default=10, help="Number of workers for the data loader.")
     parser.add_argument("--parsed_replay_dir", type=str, default=None, help="Path to the parsed replay directory. Defaults to the official huggingface version.")
     parser.add_argument("--custom_replay_dir", type=str, default=None, help="Path to an optional second parsed replay dataset (e.g., self-play data you've collected).")
-    parser.add_argument("--custom_replay_sample_weight", type=float, default=.25, help="[0, 1] portion of each batch to sample from the custom dataset.")
+    parser.add_argument("--custom_replay_sample_weight", type=float, default=.25, help="[0, 1] portion of each batch to sample from the custom dataset (if provided).")
     parser.add_argument("--log", action="store_true", help="Log to wandb.")
     # fmt: on
     return parser
@@ -195,6 +196,14 @@ if __name__ == "__main__":
 
     experiment.start()
     if args.ckpt is not None:
+        assert (
+            args.finetune_from_path is None
+        ), "Provide --ckpt or --finetune_from_path, not both"
         experiment.load_checkpoint(args.ckpt)
+    elif args.finetune_from_path is not None:
+        experiment.load_checkpoint_from_path(
+            args.finetune_from_path,
+            is_accelerate_state=not args.finetune_from_path.endswith(".pt"),
+        )
     experiment.learn()
     wandb.finish()
