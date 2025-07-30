@@ -125,7 +125,7 @@ class PretrainedModel:
             "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": attn_type,
             "MetamonTstepEncoder.tokenizer": self.tokenizer,
             # skip cpu-intensive init, because we're going to be replacing the weights
-            # with a checkpoint anyway.... If you get an error about this, pull `amago`.
+            # with a checkpoint anyway....
             "amago.nets.transformer.SigmaReparam.fast_init": True,
         }
     
@@ -495,6 +495,12 @@ if __name__ == "__main__":
             "replay dataset."
         ),
     )
+    parser.add_argument(
+        "--heuristic_async_mp_context",
+        type=str,
+        default="spawn",
+        help="Async environment setup method. Does not apply to `--eval_type ladder`. Try 'forkserver' or 'fork' if you run into issues!",
+    )
     args = parser.parse_args()
 
     agent_maker = eval(args.agent)()
@@ -518,12 +524,14 @@ if __name__ == "__main__":
                     battle_backend=args.battle_backend,
                 )
                 if args.eval_type == "heuristic":
+                    args.env_mode = args.heuristic_async_mp_context
                     make_envs = [
                         partial(make_baseline_env, **env_kwargs, opponent_type=o)
                         for o in HEURISTIC_COMPOSITE_BASELINES
                     ]
                     make_envs *= 5
                 elif args.eval_type == "il":
+                    args.env_mode = args.heuristic_async_mp_context
                     make_envs = [
                         partial(make_baseline_env, **env_kwargs, opponent_type=o)
                         for o in IL
