@@ -121,11 +121,13 @@ class PretrainedModel:
         default_checkpoint: int = 40,
     ):
         self.model_name = model_name
-        self.model_gin_config = os.path.join(
-            os.path.dirname(__file__), "configs", model_gin_config
+        self.model_gin_config = model_gin_config
+        self.train_gin_config = train_gin_config
+        self.model_gin_config_path = os.path.join(
+            os.path.dirname(__file__), "configs", self.model_gin_config
         )
-        self.train_gin_config = os.path.join(
-            os.path.dirname(__file__), "configs", train_gin_config
+        self.train_gin_config_path = os.path.join(
+            os.path.dirname(__file__), "configs", self.train_gin_config
         )
         self.hf_cache_dir = hf_cache_dir or MODEL_DOWNLOAD_DIR
         self.tokenizer = tokenizer
@@ -181,7 +183,7 @@ class PretrainedModel:
         # use the base config and the gin file to configure the model
         amago.cli_utils.use_config(
             self.base_config,
-            [self.model_gin_config, self.train_gin_config],
+            [self.model_gin_config_path, self.train_gin_config_path],
             finalize=False,
         )
         checkpoint = checkpoint if checkpoint is not None else self.default_checkpoint

@@ -1,0 +1,149 @@
+import wandb
+
+from metamon.rl.train import (
+    create_offline_dataset,
+    create_offline_rl_trainer,
+    WANDB_PROJECT,
+    WANDB_ENTITY,
+)
+from metamon.rl.pretrained import get_pretrained_model_names, get_pretrained_model
+
+
+def add_cli(parser):
+    parser.add_argument(
+        "--run_name",
+        required=True,
+        help="Give the run a name to identify logs and checkpoints.",
+    )
+    parser.add_argument(
+        "--save_dir",
+        type=str,
+        required=True,
+        help="Path to save your custom checkpoints. Find checkpoints under save_dir/run_name/ckpts/",
+    )
+    parser.add_argument(
+        "--finetune_from_model",
+        type=str,
+        required=True,
+        choices=get_pretrained_model_names(),
+        help="Name of a pretrained model to finetune from.",
+    )
+    parser.add_argument(
+        "--finetune_from_checkpoint",
+        type=int,
+        default=None,
+        help="Checkpoint number to finetune from. You can find a full list on HuggingFace: jakegrigsby/metamon. Most models have checkpoints in range(2, 42, 2). Defaults to the default evaluation checkpoint of the base model.",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=10,
+        help="Number of epochs to finetune for. In offline RL mode, an epoch is an arbitrary interval (here: 25k) of training steps on a fixed dataset.",
+    )
+    parser.add_argument(
+        "--batch_size_per_gpu",
+        type=int,
+        default=12,
+        help="Batch size per GPU. Total batch size is batch_size_per_gpu * num_gpus.",
+    )
+    parser.add_argument(
+        "--grad_accum",
+        type=int,
+        default=1,
+        help="Number of gradient accumulations per update.",
+    )
+    parser.add_argument(
+        "--train_gin_config",
+        type=str,
+        default=None,
+        help="Path to a gin config file that edits the training parameters. Note that when finetuning, you are not able to change settings that impact the model architecture (e.g., cannot switch an IL model to an RL update). Defaults to the same config as the base model.",
+    )
+    parser.add_argument(
+        "--dloader_workers",
+        type=int,
+        default=10,
+        help="Number of workers for the data loader.",
+    )
+    parser.add_argument(
+        "--parsed_replay_dir",
+        type=str,
+        default=None,
+        help="Path to the parsed replay directory. Defaults to the official huggingface version.",
+    )
+    parser.add_argument(
+        "--custom_replay_dir",
+        type=str,
+        default=None,
+        help="Path to an optional second parsed replay dataset (e.g., self-play data you've collected).",
+    )
+    parser.add_argument(
+        "--custom_replay_sample_weight",
+        type=float,
+        default=0.25,
+        help="[0, 1] portion of each batch to sample from the custom dataset (if provided).",
+    )
+    parser.add_argument(
+        "--async_env_mp_context",
+        type=str,
+        default="spawn",
+        help="Async environment setup method. Try 'forkserver' or 'fork' if using multiple GPUs or if you run into issues.",
+    )
+    parser.add_argument(
+        "--eval_gens",
+        type=int,
+        nargs="+",
+        default=[1, 2, 3, 4, 9],
+        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch!",
+    )
+    parser.add_argument("--log", action="store_true", help="Log to wandb.")
+    return parser
+
+
+if __name__ == "__main__":
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser()
+    add_cli(parser)
+    args = parser.parse_args()
+
+    pretrained = get_pretrained_model(args.finetune_from_model)
+    # create the dataset we'll be finetuning on
+    amago_dataset = create_offline_dataset(
+        obs_space=pretrained.observation_space,
+        action_space=pretrained.action_space,
+        reward_function=pretrained.reward_function,
+        parsed_replay_dir=args.parsed_replay_dir,
+        custom_replay_dir=args.custom_replay_dir,
+        custom_replay_sample_weight=args.custom_replay_sample_weight,
+    )
+    # create a new model that handles 1:1 matching of the pretrained model's settings
+    experiment = create_offline_rl_trainer(
+        ckpt_dir=args.save_dir,
+        run_name=args.run_name,
+        model_gin_config=pretrained.model_gin_config_path,
+        train_gin_config=args.train_gin_config or pretrained.train_gin_config_path,
+        obs_space=pretrained.observation_space,
+        action_space=pretrained.action_space,
+        reward_function=pretrained.reward_function,
+        amago_dataset=amago_dataset,
+        eval_gens=args.eval_gens,
+        async_env_mp_context=args.async_env_mp_context,
+        dloader_workers=args.dloader_workers,
+        epochs=args.epochs,
+        grad_accum=args.grad_accum,
+        batch_size_per_gpu=args.batch_size_per_gpu,
+        log=args.log,
+        wandb_project=WANDB_PROJECT,
+        wandb_entity=WANDB_ENTITY,
+    )
+    experiment.start()
+    # load the pretrained checkpoint
+    checkpoint = args.finetune_from_checkpoint or pretrained.default_checkpoint
+    start_checkpoint = pretrained.get_path_to_checkpoint(checkpoint)
+    experiment.load_checkpoint_from_path(
+        start_checkpoint,
+        is_accelerate_state=False,
+    )
+    # finetune!
+    experiment.learn()
+    wandb.finish()

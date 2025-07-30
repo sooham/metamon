@@ -128,7 +128,7 @@ def add_cli(parser):
         help="Async environment setup method. Try 'forkserver' or 'fork' if using multiple GPUs or if you run into issues.",
     )
     parser.add_argument(
-        "--eval_generations",
+        "--eval_gens",
         type=int,
         nargs="+",
         default=[1, 2, 3, 4, 9],
@@ -188,7 +188,7 @@ def create_offline_rl_trainer(
     action_space: ActionSpace,
     reward_function: RewardFunction,
     amago_dataset: amago.loading.Dataset,
-    eval_generations: List[int] = [1, 2, 3, 4, 9],
+    eval_gens: List[int] = [1, 2, 3, 4, 9],
     async_env_mp_context: str = "spawn",
     dloader_workers: int = 8,
     epochs: int = 40,
@@ -213,7 +213,7 @@ def create_offline_rl_trainer(
             player_team_set=get_metamon_teams(f"gen{gen}ou", "competitive"),
             opponent_type=opponent,
         )
-        for gen in set(eval_generations)
+        for gen in set(eval_gens)
         for opponent in EVAL_OPPONENTS
     ]
     experiment = MetamonAMAGOExperiment(
@@ -298,7 +298,7 @@ if __name__ == "__main__":
         action_space=action_space,
         reward_function=reward_function,
         amago_dataset=amago_dataset,
-        eval_generations=args.eval_generations,
+        eval_gens=args.eval_gens,
         async_env_mp_context=args.async_env_mp_context,
         dloader_workers=args.dloader_workers,
         epochs=args.epochs,
