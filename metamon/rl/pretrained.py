@@ -1,7 +1,5 @@
 import os
 from pathlib import Path
-import json
-from functools import partial
 import warnings
 from typing import Optional
 
@@ -16,57 +14,22 @@ import huggingface_hub
 import torch
 import amago
 
-from metamon.env import get_metamon_teams
 from metamon.rl.metamon_to_amago import (
     make_placeholder_experiment,
-    make_baseline_env,
-    make_ladder_env,
 )
 from metamon.interface import (
     ObservationSpace,
     RewardFunction,
-    ALL_OBSERVATION_SPACES,
-    ALL_REWARD_FUNCTIONS,
     DefaultObservationSpace,
-    ExpandedObservationSpace,
     DefaultShapedReward,
     TokenizedObservationSpace,
     ActionSpace,
     DefaultActionSpace,
     MinimalActionSpace,
 )
-from metamon.baselines import ALL_BASELINES
-
-# Import baseline modules to ensure registration happens
-from metamon.baselines import heuristic, model_based
 from metamon.tokenizer import PokemonTokenizer, get_tokenizer
 from metamon import METAMON_CACHE_DIR
 
-
-def get_heuristic_baselines():
-    """Get all heuristic baseline classes from the registration system."""
-    # Filter for heuristic baselines (exclude model-based ones like BCRNN)
-    heuristic_names = [
-        "RandomBaseline",
-        "PokeEnvHeuristic",
-        "Gen1BossAI",
-        "Grunt",
-        "GymLeader",
-        "EmeraldKaizo",
-    ]
-    return [ALL_BASELINES[name] for name in heuristic_names if name in ALL_BASELINES]
-
-
-def get_il_baselines():
-    """Get all imitation learning baseline classes from the registration system."""
-    # Filter for IL baselines
-    il_names = ["BaseRNN", "WinsOnlyRNN", "MiniRNN"]
-    return [ALL_BASELINES[name] for name in il_names if name in ALL_BASELINES]
-
-
-# Get baselines from registration system
-HEURISTIC_COMPOSITE_BASELINES = get_heuristic_baselines()
-IL = get_il_baselines()
 
 if METAMON_CACHE_DIR is None:
     raise ValueError("Set METAMON_CACHE_DIR environment variable")
@@ -109,7 +72,6 @@ def get_pretrained_model_names():
 
 
 def get_pretrained_model(name: str):
-    """Get a pretrained model class by name."""
     if name not in ALL_PRETRAINED_MODELS:
         raise ValueError(
             f"Unknown pretrained model '{name}' (available models: {get_pretrained_model_names()})"
@@ -119,36 +81,52 @@ def get_pretrained_model(name: str):
 
 class PretrainedModel:
     """
-    Create an AMAGO agent and load a pretrained checkpoint from the HuggingFace Hub
+    Create an AMAGO agent and load a pretrained checkpoint from the HuggingFace Hub.
+
+    This class handles downloading pretrained model weights from HuggingFace Hub,
+    configuring the model architecture using gin files, and initializing AMAGO
+    experiments for evaluation.
+
+    Args:
+        model_gin_config: Path to gin config file that modifies the model architecture
+            (layers, size, etc.)
+        train_gin_config: Path to training gin config file. Does not have to be 1:1
+            with training, but should match any architecture changes that were used.
+        model_name: Model identifier used to locate the model in the HuggingFace Hub.
+        tokenizer: Tokenizer for the text component of the observation space.
+        observation_space: Observation space configuration. Uses original paper
+            observation space by default.
+        action_space: Action space configuration. The paper action space is now
+            called MinimalActionSpace.
+        reward_function: Reward function configuration. Uses original paper reward
+            function by default.
+        hf_cache_dir: Cache directory for HuggingFace Hub downloads. Note that
+            these checkpoint files are large.
+        default_checkpoint: Default checkpoint epoch to load. 40 corresponds to
+            approximately 1M gradient steps with original paper training settings.
     """
 
     HF_REPO_ID = "jakegrigsby/metamon"
 
-    # fmt: off
     def __init__(
         self,
-        # gin files modify the model architecture (layers, size, etc.)
-        model_gin_config : str,
-        # training gin file does not have to be 1:1 with training, but should match any architecture changes that were used
-        train_gin_config : str,
-        # model name is used to identify the model in the HuggingFace Hub
+        model_gin_config: str,
+        train_gin_config: str,
         model_name: str,
-        # tokenize the text component of the observation space
         tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
-        # use original paper observation space and reward function
-        # (paper action space is now called MinimalActionSpace)
         observation_space: ObservationSpace = DefaultObservationSpace(),
         action_space: ActionSpace = DefaultActionSpace(),
         reward_function: RewardFunction = DefaultShapedReward(),
-        # cache directory for the HuggingFace Hub (note that these files are large)
         hf_cache_dir: Optional[str] = None,
-        default_checkpoint: int = 40,  # a.k.a. 1M grad steps w/ original paper training settings
+        default_checkpoint: int = 40,
     ):
-    # fmt: on
-
         self.model_name = model_name
-        self.model_gin_config = os.path.join(os.path.dirname(__file__), "configs", model_gin_config)
-        self.train_gin_config = os.path.join(os.path.dirname(__file__), "configs", train_gin_config)
+        self.model_gin_config = os.path.join(
+            os.path.dirname(__file__), "configs", model_gin_config
+        )
+        self.train_gin_config = os.path.join(
+            os.path.dirname(__file__), "configs", train_gin_config
+        )
         self.hf_cache_dir = hf_cache_dir or MODEL_DOWNLOAD_DIR
         self.tokenizer = tokenizer
         self.observation_space = TokenizedObservationSpace(
@@ -162,9 +140,16 @@ class PretrainedModel:
 
     @property
     def base_config(self) -> dict:
+        """
+        Override to set one-off changes to the gin config files
+
+        By default, adds ability to fallback to vanilla attention if flash attention is not available.
+        """
+
         has_gpu = torch.cuda.is_available()
         try:
             import flash_attn
+
             has_flash_attn = True
         except ImportError:
             has_flash_attn = False
@@ -180,7 +165,7 @@ class PretrainedModel:
             # with a checkpoint anyway....
             "amago.nets.transformer.SigmaReparam.fast_init": True,
         }
-    
+
     def get_path_to_checkpoint(self, checkpoint: int) -> str:
         # Download checkpoint from HF Hub
         checkpoint_path = huggingface_hub.hf_hub_download(
@@ -190,9 +175,15 @@ class PretrainedModel:
         )
         return checkpoint_path
 
-    def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False) -> amago.Experiment:
+    def initialize_agent(
+        self, checkpoint: Optional[int] = None, log: bool = False
+    ) -> amago.Experiment:
         # use the base config and the gin file to configure the model
-        amago.cli_utils.use_config(self.base_config, [self.model_gin_config, self.train_gin_config], finalize=False)
+        amago.cli_utils.use_config(
+            self.base_config,
+            [self.model_gin_config, self.train_gin_config],
+            finalize=False,
+        )
         checkpoint = checkpoint if checkpoint is not None else self.default_checkpoint
         ckpt_path = self.get_path_to_checkpoint(checkpoint)
         ckpt_base_dir = str(Path(ckpt_path).parents[2])

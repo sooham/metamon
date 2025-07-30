@@ -2,13 +2,13 @@ import json
 from typing import Optional, Dict, Any
 from functools import partial
 
+import metamon
 from metamon.rl.pretrained import (
     get_pretrained_model,
     get_pretrained_model_names,
     PretrainedModel,
 )
-from metamon.baselines import ALL_BASELINES, heuristic, model_based
-from metamon.env import get_metamon_teams, TeamSet
+from metamon.baselines import ALL_BASELINES
 from metamon.rl.metamon_to_amago import make_baseline_env, make_ladder_env
 
 
@@ -16,7 +16,7 @@ def standard_eval(
     pretrained_model: PretrainedModel,
     eval_type: str,
     battle_format: str,
-    player_team_set: TeamSet,
+    player_team_set: metamon.env.TeamSet,
     n_challenges: int,
     checkpoint: Optional[int] = None,
     async_mp_context: str = "spawn",
@@ -186,15 +186,16 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    agent_maker = get_pretrained_model(args.agent)()
-
+    pretrained_model = get_pretrained_model(args.agent)()
     for gen in args.gens:
         for format in args.formats:
             battle_format = f"gen{gen}{format.lower()}"
-            player_team_set = get_metamon_teams(battle_format, args.team_set)
+            player_team_set = metamon.env.get_metamon_teams(
+                battle_format, args.team_set
+            )
             for checkpoint in args.checkpoints:
                 results = standard_eval(
-                    pretrained_model=agent_maker,
+                    pretrained_model=pretrained_model,
                     eval_type=args.eval_type,
                     battle_format=battle_format,
                     player_team_set=player_team_set,

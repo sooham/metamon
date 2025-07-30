@@ -79,7 +79,7 @@ We also support the UnderUsed (UU), NeverUsed (NU), and Ubers tiers for Generati
 
 10. [**Battle Backends**](#battle-backends)
 
-11. [**Acknowledgement**](#acknowledgement)
+11. [**Acknowledgement**](#acknowledgements)
 
 12. [**Citation**](#citation)
 
@@ -328,7 +328,7 @@ Parsed replays will download automatically when requested by the `ParsedReplayDa
 
 #### Server/Replay Sim2Sim Gap
 
-In Showdown RL, we have to embrace a **mismatch between the trajectories we *observe in our own battles* and those we *gather from other player's replays***. In short, replays are meant for re*watching* battles, not re*playing* them; they are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. The server sends info to the players that it does not save to its replay, and we need to try and simulate that missing info. Metamon goes to great lengths to handle this, and is always improving ([more info here](metamon/data/replay_dataset/replay_parser/README.md)), but there is no way to be perfect. 
+In Showdown RL, we have to embrace a **mismatch between the trajectories we *observe in our own battles* and those we *gather from other player's replays***. In short, replays are meant for re*watching* battles, not re*playing* them; they are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. The server sends info to the players that it does not save to its replay, and we need to try and simulate that missing info. Metamon goes to great lengths to handle this, and is always improving ([more info here](metamon/backend/replay_parser/README.md)), but there is no way to be perfect. 
 
 **Therefore, replay data is perhaps best viewed as pretraining data for an offline-to-online finetuning problem.** Self-collected data from the online env fixes inaccuracies and can help concentrate on teams we'll be using on the ladder. This does not necessarily require multi-round policy improvement through self-play in the usual sense (e.g., chess or Go); the best models in our paper were trained from scratch on frozen datasets that combined replay data with battles played by a few previous versions. The whole project is now set up to do this (see [Quick Start](#quick-start)).
 
