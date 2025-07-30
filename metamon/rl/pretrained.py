@@ -35,27 +35,86 @@ from metamon.interface import (
     DefaultActionSpace,
     MinimalActionSpace,
 )
-from metamon.baselines.heuristic.basic import *
-from metamon.baselines.heuristic.kaizo import EmeraldKaizo
-from metamon.baselines.model_based.bcrnn_baselines import BaseRNN, WinsOnlyRNN, MiniRNN
+from metamon.baselines import ALL_BASELINES
+
+# Import baseline modules to ensure registration happens
+from metamon.baselines import heuristic, model_based
 from metamon.tokenizer import PokemonTokenizer, get_tokenizer
 from metamon import METAMON_CACHE_DIR
 
-HEURISTIC_COMPOSITE_BASELINES = [
-    RandomBaseline,
-    PokeEnvHeuristic,
-    Gen1BossAI,
-    Grunt,
-    GymLeader,
-    EmeraldKaizo,
-]
 
-IL = [BaseRNN]
+def get_heuristic_baselines():
+    """Get all heuristic baseline classes from the registration system."""
+    # Filter for heuristic baselines (exclude model-based ones like BCRNN)
+    heuristic_names = [
+        "RandomBaseline",
+        "PokeEnvHeuristic",
+        "Gen1BossAI",
+        "Grunt",
+        "GymLeader",
+        "EmeraldKaizo",
+    ]
+    return [ALL_BASELINES[name] for name in heuristic_names if name in ALL_BASELINES]
+
+
+def get_il_baselines():
+    """Get all imitation learning baseline classes from the registration system."""
+    # Filter for IL baselines
+    il_names = ["BaseRNN", "WinsOnlyRNN", "MiniRNN"]
+    return [ALL_BASELINES[name] for name in il_names if name in ALL_BASELINES]
+
+
+# Get baselines from registration system
+HEURISTIC_COMPOSITE_BASELINES = get_heuristic_baselines()
+IL = get_il_baselines()
 
 if METAMON_CACHE_DIR is None:
     raise ValueError("Set METAMON_CACHE_DIR environment variable")
 # downloads checkpoints to the metamon cache dir where we're putting all the other data
 MODEL_DOWNLOAD_DIR = os.path.join(METAMON_CACHE_DIR, "pretrained_models")
+
+# Registry for pretrained models
+ALL_PRETRAINED_MODELS = {}
+
+
+def pretrained_model(name: Optional[str] = None):
+    """
+    Decorator to register pretrained model classes.
+
+    Args:
+        name: Optional custom name for the model. If not provided, uses the class name.
+
+    Usage:
+        @pretrained_model()
+        class MyModel(PretrainedModel):
+            pass
+
+        @pretrained_model("CustomName")
+        class AnotherModel(PretrainedModel):
+            pass
+    """
+
+    def _register(cls):
+        model_name = name if name is not None else cls.__name__
+        if model_name in ALL_PRETRAINED_MODELS:
+            raise ValueError(f"Pretrained model '{model_name}' is already registered!")
+        ALL_PRETRAINED_MODELS[model_name] = cls
+        return cls
+
+    return _register
+
+
+def get_pretrained_model_names():
+    return sorted(ALL_PRETRAINED_MODELS.keys())
+
+
+def get_pretrained_model(name: str):
+    """Get a pretrained model class by name."""
+    if name not in ALL_PRETRAINED_MODELS:
+        raise ValueError(
+            f"Unknown pretrained model '{name}' (available models: {get_pretrained_model_names()})"
+        )
+    return ALL_PRETRAINED_MODELS[name]
 
 
 class PretrainedModel:
@@ -69,11 +128,11 @@ class PretrainedModel:
     def __init__(
         self,
         # gin files modify the model architecture (layers, size, etc.)
-        gin_config : str,
+        model_gin_config : str,
+        # training gin file does not have to be 1:1 with training, but should match any architecture changes that were used
+        train_gin_config : str,
         # model name is used to identify the model in the HuggingFace Hub
         model_name: str,
-        # whether the model is an IL model (vs RL) (IL expects fewer params)
-        is_il_model: bool,
         # tokenize the text component of the observation space
         tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
         # use original paper observation space and reward function
@@ -88,8 +147,8 @@ class PretrainedModel:
     # fmt: on
 
         self.model_name = model_name
-        self.gin_config = os.path.join(os.path.dirname(__file__), "configs", gin_config)
-        self.is_il_model = is_il_model
+        self.model_gin_config = os.path.join(os.path.dirname(__file__), "configs", model_gin_config)
+        self.train_gin_config = os.path.join(os.path.dirname(__file__), "configs", train_gin_config)
         self.hf_cache_dir = hf_cache_dir or MODEL_DOWNLOAD_DIR
         self.tokenizer = tokenizer
         self.observation_space = TokenizedObservationSpace(
@@ -115,13 +174,6 @@ class PretrainedModel:
             attn_type = amago.nets.transformer.VanillaAttention
             red_warning("Warning: Using unofficial VanillaAttention implementation")
         return {
-            # NOTE: assumes the pretrained models in this file are using
-            # built-in agents we know about and can change the settings for...
-            "amago.agent.Agent.fake_filter": self.is_il_model,
-            "amago.agent.MultiTaskAgent.fake_filter": self.is_il_model,
-            "amago.agent.Agent.use_multigamma": not self.is_il_model,
-            "amago.agent.MultiTaskAgent.use_multigamma": not self.is_il_model,
-            # attention and tokenizer
             "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": attn_type,
             "MetamonTstepEncoder.tokenizer": self.tokenizer,
             # skip cpu-intensive init, because we're going to be replacing the weights
@@ -140,7 +192,7 @@ class PretrainedModel:
 
     def initialize_agent(self, checkpoint: Optional[int] = None, log: bool = False) -> amago.Experiment:
         # use the base config and the gin file to configure the model
-        amago.cli_utils.use_config(self.base_config, [self.gin_config], finalize=False)
+        amago.cli_utils.use_config(self.base_config, [self.model_gin_config, self.train_gin_config], finalize=False)
         checkpoint = checkpoint if checkpoint is not None else self.default_checkpoint
         ckpt_path = self.get_path_to_checkpoint(checkpoint)
         ckpt_base_dir = str(Path(ckpt_path).parents[2])
@@ -182,385 +234,220 @@ class LocalPretrainedModel(PretrainedModel):
         )
 
 
+@pretrained_model()
 class SmallIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-il",
-            gin_config="models/small_agent.gin",
-            is_il_model=True,
+            model_gin_config="models/small_agent.gin",
+            train_gin_config="training/base_il.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class SmallILFA(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-il-filled-actions",
-            gin_config="models/small_agent.gin",
-            is_il_model=True,
+            model_gin_config="models/small_agent.gin",
+            train_gin_config="training/base_il.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class SmallRL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl",
-            gin_config="models/small_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/small_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class SmallRL_ExtremeFilter(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-exp-extreme",
-            gin_config="models/small_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/small_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class SmallRL_BinaryFilter(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-binary",
-            gin_config="models/small_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/small_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class SmallRL_Aug(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-aug",
-            gin_config="models/small_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/small_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class SmallRL_MaxQ(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-maxq",
-            gin_config="models/small_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/small_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class MediumIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-il",
-            gin_config="models/medium_agent.gin",
-            is_il_model=True,
+            model_gin_config="models/medium_agent.gin",
+            train_gin_config="training/base_il.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class MediumRL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl",
-            gin_config="models/medium_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/medium_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class MediumRL_Aug(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl-aug",
-            gin_config="models/medium_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/medium_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class MediumRL_MaxQ(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl-maxq",
-            gin_config="models/medium_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/medium_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class LargeRL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="large-rl",
-            gin_config="models/large_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/large_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class LargeIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="large-il",
-            gin_config="models/large_agent.gin",
-            is_il_model=True,
+            model_gin_config="models/large_agent.gin",
+            train_gin_config="training/base_il.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class SyntheticRLV0(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v0",
-            gin_config="models/synthetic_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/synthetic_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class SyntheticRLV1(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1",
-            gin_config="models/synthetic_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/synthetic_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class SyntheticRLV1_SelfPlay(PretrainedModel):
 
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1+sp",
-            gin_config="models/synthetic_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/synthetic_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=48,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class SyntheticRLV1_PlusPlus(PretrainedModel):
 
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1++",
-            gin_config="models/synthetic_agent.gin",
-            is_il_model=False,
+            model_gin_config="models/synthetic_agent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=38,
             action_space=MinimalActionSpace(),
         )
 
 
+@pretrained_model()
 class SyntheticRLV2(PretrainedModel):
 
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v2",
-            gin_config="models/synthetic_multitaskagent.gin",
-            is_il_model=False,
+            model_gin_config="models/synthetic_multitaskagent.gin",
+            train_gin_config="training/base_offline_rl.gin",
             default_checkpoint=48,
             action_space=MinimalActionSpace(),
         )
-
-
-if __name__ == "__main__":
-    from argparse import ArgumentParser
-
-    parser = ArgumentParser()
-    parser.add_argument(
-        "--agent",
-        required=True,
-        choices=[
-            "SmallIL",
-            "SmallILFA",
-            "SmallRL",
-            "SmallRL_ExtremeFilter",
-            "SmallRL_BinaryFilter",
-            "SmallRL_Aug",
-            "SmallRL_MaxQ",
-            "SmallRLPostPaper",
-            "MediumIL",
-            "MediumRL",
-            "MediumRL_Aug",
-            "MediumRL_MaxQ",
-            "LargeIL",
-            "LargeRL",
-            "SyntheticRLV0",
-            "SyntheticRLV1",
-            "SyntheticRLV1_SelfPlay",
-            "SyntheticRLV1_PlusPlus",
-            "SyntheticRLV2",
-        ],
-        help="Choose a pretrained model to evaluate.",
-    )
-    parser.add_argument(
-        "--gens",
-        type=int,
-        nargs="+",
-        default=1,
-        help="Specify the Pokémon generations to evaluate.",
-    )
-    parser.add_argument(
-        "--log_to_wandb",
-        action="store_true",
-        help="Log results to Weights & Biases.",
-    )
-    parser.add_argument(
-        "--formats",
-        nargs="+",
-        default="ou",
-        choices=["ubers", "ou", "uu", "nu"],
-        help="Specify the battle format/tier.",
-    )
-    parser.add_argument(
-        "--username",
-        default="Metamon",
-        help="Username for the Showdown server.",
-    )
-    parser.add_argument(
-        "--n_challenges",
-        type=int,
-        default=10,
-        help=(
-            "Number of battles to run before returning eval stats. "
-            "Note this is the total sample size across all parallel actors."
-        ),
-    )
-    parser.add_argument(
-        "--avatar",
-        default="red-gen1main",
-        help="Avatar to use for the battles.",
-    )
-    parser.add_argument(
-        "--checkpoints",
-        type=int,
-        nargs="+",
-        default=[None],
-        help="Checkpoints to evaluate.",
-    )
-    parser.add_argument(
-        "--eval_type",
-        choices=["heuristic", "il", "ladder"],
-        help=(
-            "Type of evaluation to perform. 'heuristic' will run against 6 "
-            "heuristic baselines, 'il' will run against a BCRNN baseline, "
-            "'ladder' will queue the agent for battles on your self-hosted Showdown ladder."
-        ),
-    )
-    parser.add_argument(
-        "--team_set",
-        default="competitive",
-        choices=["competitive", "paper_variety", "paper_replays", "modern_replays"],
-        help="Team Set.",
-    )
-    parser.add_argument(
-        "--save_trajectories_to",
-        default=None,
-        help="Save replays (in the parsed replay format) to a directory.",
-    )
-    parser.add_argument(
-        "--wait_for_input",
-        action="store_true",
-        help="Wait for user input before starting.",
-    )
-    parser.add_argument(
-        "--battle_backend",
-        type=str,
-        default="poke-env",
-        choices=["poke-env", "metamon"],
-        help=(
-            "Method for interpreting Showdown's requests and simulator messages. "
-            "poke-env is the default. metamon is an experimental option that aims to "
-            "remove sim2sim gap by reusing the code that generates our huggingface "
-            "replay dataset."
-        ),
-    )
-    parser.add_argument(
-        "--heuristic_async_mp_context",
-        type=str,
-        default="spawn",
-        help="Async environment setup method. Does not apply to `--eval_type ladder`. Try 'forkserver' or 'fork' if you run into issues!",
-    )
-    args = parser.parse_args()
-
-    agent_maker = eval(args.agent)()
-
-    for gen in args.gens:
-        for format in args.formats:
-            battle_format = f"gen{gen}{format.lower()}"
-            player_team_set = get_metamon_teams(battle_format, args.team_set)
-            for checkpoint in args.checkpoints:
-                agent = agent_maker.initialize_agent(
-                    checkpoint=checkpoint, log=args.log_to_wandb
-                )
-                # create envs
-                env_kwargs = dict(
-                    battle_format=battle_format,
-                    player_team_set=player_team_set,
-                    observation_space=agent_maker.observation_space,
-                    action_space=agent_maker.action_space,
-                    reward_function=agent_maker.reward_function,
-                    save_trajectories_to=args.save_trajectories_to,
-                    battle_backend=args.battle_backend,
-                )
-                if args.eval_type == "heuristic":
-                    args.env_mode = args.heuristic_async_mp_context
-                    make_envs = [
-                        partial(make_baseline_env, **env_kwargs, opponent_type=o)
-                        for o in HEURISTIC_COMPOSITE_BASELINES
-                    ]
-                    make_envs *= 5
-                elif args.eval_type == "il":
-                    args.env_mode = args.heuristic_async_mp_context
-                    make_envs = [
-                        partial(make_baseline_env, **env_kwargs, opponent_type=o)
-                        for o in IL
-                    ]
-                    make_envs *= 1
-                elif args.eval_type == "ladder":
-                    agent.env_mode = "sync"
-                    make_envs = [
-                        partial(
-                            make_ladder_env,
-                            **env_kwargs,
-                            num_battles=args.n_challenges,
-                            username=args.username,
-                            avatar=args.avatar,
-                        )
-                    ]
-                    # disables AMAGO tqdm because we'll be rendering the poke-env battle bar
-                    agent.verbose = False
-                else:
-                    raise ValueError(f"Invalid eval_type: {args.eval_type}")
-
-                agent.parallel_actors = len(make_envs)
-
-                # evaluate
-                results = agent.evaluate_test(
-                    make_envs,
-                    # sets upper bound on total timesteps
-                    timesteps=args.n_challenges * 250,
-                    # terminates after n_challenges
-                    episodes=args.n_challenges,
-                )
-                print(json.dumps(results, indent=4, sort_keys=True))

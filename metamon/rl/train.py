@@ -1,17 +1,16 @@
 import os
 from functools import partial
+from typing import List, Optional
 
 import wandb
 
 import amago
-from amago import cli_utils
 
 from metamon.env import get_metamon_teams
 from metamon.interface import (
     TokenizedObservationSpace,
-    ALL_OBSERVATION_SPACES,
-    ALL_REWARD_FUNCTIONS,
-    ALL_ACTION_SPACES,
+    ActionSpace,
+    RewardFunction,
 )
 from metamon.tokenizer import get_tokenizer
 from metamon.data import ParsedReplayDataset
@@ -26,6 +25,13 @@ from metamon import baselines
 
 WANDB_PROJECT = os.environ.get("METAMON_WANDB_PROJECT")
 WANDB_ENTITY = os.environ.get("METAMON_WANDB_ENTITY")
+EVAL_OPPONENTS = [
+    baselines.heuristic.basic.PokeEnvHeuristic,
+    baselines.heuristic.basic.Gen1BossAI,
+    baselines.heuristic.basic.Grunt,
+    baselines.heuristic.basic.GymLeader,
+    baselines.heuristic.kaizo.EmeraldKaizo,
+]
 
 
 def add_cli(parser):
@@ -72,11 +78,6 @@ def add_cli(parser):
         type=int,
         default=1,
         help="Number of gradient accumulations per update.",
-    )
-    parser.add_argument(
-        "--il",
-        action="store_true",
-        help="Overrides amago settings to use imitation learning.",
     )
     parser.add_argument(
         "--model_gin_config",
@@ -137,51 +138,14 @@ def add_cli(parser):
     return parser
 
 
-live_opponents = [
-    baselines.heuristic.basic.PokeEnvHeuristic,
-    baselines.heuristic.basic.Gen1BossAI,
-    baselines.heuristic.basic.Grunt,
-    baselines.heuristic.basic.GymLeader,
-    baselines.heuristic.kaizo.EmeraldKaizo,
-]
-
-
-def configure(args):
-    """
-    Setup gin configuration with overrides for command line args or anything else
-    """
-    config = {
-        "MetamonTstepEncoder.tokenizer": get_tokenizer(args.tokenizer),
-        "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,  # change this to VanillaAttention if you are unable to install flash attention
-    }
-    if args.il:
-        # NOTE: would break for a custom agent, but just spares us some wasted params that aren't trained
-        config.update(
-            {
-                "amago.agent.Agent.use_multigamma": False,
-                "amago.agent.MultiTaskAgent.use_multigamma": False,
-                "amago.agent.Agent.fake_filter": True,
-                "amago.agent.MultiTaskAgent.fake_filter": True,
-            }
-        )
-    cli_utils.use_config(config, [args.model_gin_config, args.train_gin_config])
-
-
-if __name__ == "__main__":
-    from argparse import ArgumentParser
-
-    parser = ArgumentParser()
-    add_cli(parser)
-    args = parser.parse_args()
-    configure(args)
-
-    # metamon dataset
-    obs_space = TokenizedObservationSpace(
-        ALL_OBSERVATION_SPACES[args.obs_space](), get_tokenizer(args.tokenizer)
-    )
-    reward_function = ALL_REWARD_FUNCTIONS[args.reward_function]()
-    action_space = ALL_ACTION_SPACES[args.action_space]()
-
+def create_offline_dataset(
+    obs_space: TokenizedObservationSpace,
+    action_space: ActionSpace,
+    reward_function: RewardFunction,
+    parsed_replay_dir: str,
+    custom_replay_dir: Optional[str] = None,
+    custom_replay_sample_weight: float = 0.25,
+):
     dset_kwargs = {
         "observation_space": obs_space,
         "action_space": action_space,
@@ -190,32 +154,53 @@ if __name__ == "__main__":
         "max_seq_len": None,
         "verbose": True,  # False to hide dset setup progress bar
     }
-    # TODO: there is 2x more gen9ou data than every other format combined,
-    # so it's possible this now needs multiple ParsedReplayDatasets
-    # and the amago MixtureOfDatasets to manually rebalance sampling across formats.
     parsed_replays_amago = MetamonAMAGODataset(
         dset_name="Metamon Parsed Replays",
         parsed_replay_dset=ParsedReplayDataset(
-            dset_root=args.parsed_replay_dir, **dset_kwargs
+            dset_root=parsed_replay_dir, **dset_kwargs
         ),
     )
-    if args.custom_replay_dir is not None:
-        # mix in another replay dataset
+    if custom_replay_dir is not None:
         custom_dset_amago = MetamonAMAGODataset(
             dset_name="Custom Parsed Replays",
             parsed_replay_dset=ParsedReplayDataset(
-                dset_root=args.custom_replay_dir, **dset_kwargs
+                dset_root=custom_replay_dir, **dset_kwargs
             ),
         )
         amago_dataset = amago.loading.MixtureOfDatasets(
             datasets=[parsed_replays_amago, custom_dset_amago],
             sampling_weights=[
-                1 - args.custom_replay_sample_weight,
-                args.custom_replay_sample_weight,
+                1 - custom_replay_sample_weight,
+                custom_replay_sample_weight,
             ],
         )
     else:
         amago_dataset = parsed_replays_amago
+    return amago_dataset
+
+
+def create_offline_rl_trainer(
+    ckpt_dir: str,
+    run_name: str,
+    model_gin_config: str,
+    train_gin_config: str,
+    obs_space: TokenizedObservationSpace,
+    action_space: ActionSpace,
+    reward_function: RewardFunction,
+    amago_dataset: amago.loading.Dataset,
+    eval_generations: List[int] = [1, 2, 3, 4, 9],
+    async_env_mp_context: str = "spawn",
+    dloader_workers: int = 8,
+    epochs: int = 40,
+    grad_accum: int = 1,
+    batch_size_per_gpu: int = 16,
+    log: bool = False,
+    wandb_project: str = WANDB_PROJECT,
+    wandb_entity: str = WANDB_ENTITY,
+):
+    # configuration
+    config = {"MetamonTstepEncoder.tokenizer": obs_space.tokenizer}
+    amago.cli_utils.use_config(config, [model_gin_config, train_gin_config])
 
     # validation environments (evaluated throughout training)
     make_envs = [
@@ -228,13 +213,13 @@ if __name__ == "__main__":
             player_team_set=get_metamon_teams(f"gen{gen}ou", "competitive"),
             opponent_type=opponent,
         )
-        for gen in set(args.eval_generations)
-        for opponent in live_opponents
+        for gen in set(eval_generations)
+        for opponent in EVAL_OPPONENTS
     ]
     experiment = MetamonAMAGOExperiment(
         ## required ##
-        run_name=args.run_name,
-        ckpt_base_dir=args.ckpt_dir,
+        run_name=run_name,
+        ckpt_base_dir=ckpt_dir,
         # max_seq_len = should be set in the gin file
         dataset=amago_dataset,
         # tstep_encoder_type = should be set in the gin file
@@ -245,36 +230,84 @@ if __name__ == "__main__":
         make_train_env=partial(make_placeholder_env, obs_space, action_space),
         make_val_env=make_envs,
         env_mode="async",
-        async_env_mp_context=args.async_env_mp_context,
+        async_env_mp_context=async_env_mp_context,
         parallel_actors=len(make_envs),
         # no exploration
         exploration_wrapper_type=None,
         sample_actions=True,
         force_reset_train_envs_every=None,
         ## logging ##
-        log_to_wandb=args.log,
-        wandb_project=WANDB_PROJECT,
-        wandb_entity=WANDB_ENTITY,
+        log_to_wandb=log,
+        wandb_project=wandb_project,
+        wandb_entity=wandb_entity,
         verbose=True,
         log_interval=300,
         ## replay ##
         padded_sampling="none",
-        dloader_workers=args.dloader_workers,
+        dloader_workers=dloader_workers,
         ## learning schedule ##
-        epochs=args.epochs,
+        epochs=epochs,
         # entirely offline RL
         start_learning_at_epoch=0,
         start_collecting_at_epoch=float("inf"),
         train_timesteps_per_epoch=0,
-        train_batches_per_epoch=25_000 * args.grad_accum,
+        train_batches_per_epoch=25_000 * grad_accum,
         val_interval=1,
         ckpt_interval=2,
         ## optimization ##
-        batch_size=args.batch_size_per_gpu,
-        batches_per_update=args.grad_accum,
+        batch_size=batch_size_per_gpu,
+        batches_per_update=grad_accum,
         mixed_precision="no",
     )
+    return experiment
 
+
+if __name__ == "__main__":
+    from argparse import ArgumentParser
+    from metamon.interface import (
+        ALL_OBSERVATION_SPACES,
+        ALL_REWARD_FUNCTIONS,
+        ALL_ACTION_SPACES,
+    )
+
+    parser = ArgumentParser()
+    add_cli(parser)
+    args = parser.parse_args()
+
+    # metamon dataset
+    obs_space = TokenizedObservationSpace(
+        ALL_OBSERVATION_SPACES[args.obs_space](), get_tokenizer(args.tokenizer)
+    )
+    reward_function = ALL_REWARD_FUNCTIONS[args.reward_function]()
+    action_space = ALL_ACTION_SPACES[args.action_space]()
+
+    amago_dataset = create_offline_dataset(
+        obs_space=obs_space,
+        action_space=action_space,
+        reward_function=reward_function,
+        parsed_replay_dir=args.parsed_replay_dir,
+        custom_replay_dir=args.custom_replay_dir,
+        custom_replay_sample_weight=args.custom_replay_sample_weight,
+    )
+    experiment = create_offline_rl_trainer(
+        ckpt_dir=args.ckpt_dir,
+        run_name=args.run_name,
+        model_gin_config=args.model_gin_config,
+        train_gin_config=args.train_gin_config,
+        obs_space=obs_space,
+        action_space=action_space,
+        reward_function=reward_function,
+        amago_dataset=amago_dataset,
+        eval_generations=args.eval_generations,
+        async_env_mp_context=args.async_env_mp_context,
+        dloader_workers=args.dloader_workers,
+        epochs=args.epochs,
+        grad_accum=args.grad_accum,
+        batch_size_per_gpu=args.batch_size_per_gpu,
+        log=args.log,
+        wandb_project=WANDB_PROJECT,
+        wandb_entity=WANDB_ENTITY,
+    )
     experiment.start()
     if args.ckpt is not None:
         assert (
