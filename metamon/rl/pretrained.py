@@ -76,7 +76,7 @@ def get_pretrained_model(name: str):
         raise ValueError(
             f"Unknown pretrained model '{name}' (available models: {get_pretrained_model_names()})"
         )
-    return ALL_PRETRAINED_MODELS[name]
+    return ALL_PRETRAINED_MODELS[name]()
 
 
 class PretrainedModel:

@@ -186,7 +186,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    pretrained_model = get_pretrained_model(args.agent)()
+    pretrained_model = get_pretrained_model(args.agent)
     for gen in args.gens:
         for format in args.formats:
             battle_format = f"gen{gen}{format.lower()}"
