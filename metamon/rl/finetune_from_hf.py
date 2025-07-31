@@ -7,6 +7,7 @@ from metamon.rl.train import (
     WANDB_ENTITY,
 )
 from metamon.rl.pretrained import get_pretrained_model_names, get_pretrained_model
+from metamon.interface import ALL_REWARD_FUNCTIONS
 
 
 def add_cli(parser):
@@ -41,6 +42,12 @@ def add_cli(parser):
         help="Number of epochs to finetune for. In offline RL mode, an epoch is an arbitrary interval (here: 25k) of training steps on a fixed dataset.",
     )
     parser.add_argument(
+        "--steps_per_epoch",
+        type=int,
+        default=25_000,
+        help="Number of training steps to perform per epoch. Convention is 25k, but you may want to go shorter if finetuning on a small dataset.",
+    )
+    parser.add_argument(
         "--batch_size_per_gpu",
         type=int,
         default=12,
@@ -57,6 +64,13 @@ def add_cli(parser):
         type=str,
         default=None,
         help="Path to a gin config file that edits the training parameters. Note that when finetuning, you are not able to change settings that impact the model architecture (e.g., cannot switch an IL model to an RL update). Defaults to the same config as the base model.",
+    )
+    parser.add_argument(
+        "--reward_function",
+        type=str,
+        default=None,
+        choices=ALL_REWARD_FUNCTIONS,
+        help="Defaults to the same reward function as the base model. See the README for a description of each reward function, or create your own!",
     )
     parser.add_argument(
         "--dloader_workers",
@@ -95,6 +109,12 @@ def add_cli(parser):
         default=[1, 2, 3, 4, 9],
         help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90%%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch!",
     )
+    parser.add_argument(
+        "--formats",
+        nargs="+",
+        default=None,
+        help="Showdown battle formats to include in the dataset. Defaults to all supported formats.",
+    )
     parser.add_argument("--log", action="store_true", help="Log to wandb.")
     return parser
 
@@ -120,7 +140,14 @@ if __name__ == "__main__":
         parsed_replay_dir=args.parsed_replay_dir,
         custom_replay_dir=args.custom_replay_dir,
         custom_replay_sample_weight=args.custom_replay_sample_weight,
+        formats=args.formats,
     )
+    if args.reward_function is not None:
+        # custom reward function
+        reward_function = ALL_REWARD_FUNCTIONS[args.reward_function]()
+    else:
+        # use the base reward function
+        reward_function = pretrained.reward_function
     # create a new policy that matches the pretrained policy's architecture
     experiment = create_offline_rl_trainer(
         ckpt_dir=args.save_dir,
@@ -129,12 +156,13 @@ if __name__ == "__main__":
         train_gin_config=args.train_gin_config or pretrained.train_gin_config_path,
         obs_space=pretrained.observation_space,
         action_space=pretrained.action_space,
-        reward_function=pretrained.reward_function,
+        reward_function=reward_function,
         amago_dataset=amago_dataset,
         eval_gens=args.eval_gens,
         async_env_mp_context=args.async_env_mp_context,
         dloader_workers=args.dloader_workers,
         epochs=args.epochs,
+        steps_per_epoch=args.steps_per_epoch,
         grad_accum=args.grad_accum,
         batch_size_per_gpu=args.batch_size_per_gpu,
         log=args.log,

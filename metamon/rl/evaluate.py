@@ -1,6 +1,7 @@
 import json
-from typing import Optional, Dict, Any
-from functools import partial
+import collections
+import functools
+from typing import Optional, Dict, Any, Callable, List
 
 import metamon
 from metamon.rl.pretrained import (
@@ -15,146 +16,245 @@ from metamon.rl.metamon_to_amago import (
     make_pokeagent_ladder_env,
 )
 
+HEURISTIC_COMPOSITE_BASELINES = [
+    "PokeEnvHeuristic",
+    "Gen1BossAI",
+    "Grunt",
+    "GymLeader",
+    "EmeraldKaizo",
+    "RandomBaseline",
+]
 
-def eval_pretrained(
+
+def pretrained_vs_baselines(
     pretrained_model: PretrainedModel,
-    eval_type: str,
     battle_format: str,
-    player_team_set: metamon.env.TeamSet,
-    n_challenges: int,
+    team_set: metamon.env.TeamSet,
     checkpoint: Optional[int] = None,
+    total_battles: int = 250,
+    parallel_actors_per_baseline: int = 5,
     async_mp_context: str = "spawn",
     battle_backend: str = "poke-env",
-    username: Optional[str] = None,
-    password: Optional[str] = None,
-    avatar: Optional[str] = None,
-    save_trajectories_to: Optional[str] = None,
     log_to_wandb: bool = False,
+    save_trajectories_to: Optional[str] = None,
+    baselines: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """
-    Evaluate a pretrained model by playing battles against opponents.
+    """Evaluate a pretrained model against built-in baseline opponents.
 
-    This function initializes a pretrained model and runs it through a common eval setting
-    to evaluate its performance. It can battle against a set of heuristic baselines or on the
-    local ladder, collecting win rates and other performance metrics.
-
-    Args:
-        pretrained_model: The pretrained model instance to evaluate.
-        eval_type: Type of evaluation to run. Options include:
-            - "heuristic": Battle against built-in heuristic baselines
-            - "il": Battle against a BCRNN baseline
-            - "ladder": Battle on local ladder against any human/AI opponents who are also online
-            - "pokeagent": Submit your agent to the NeurIPS 2025 PokéAgent Challenge ladder!
-                Note that you must provide a registered username and password!
-        battle_format: Pokémon battle format (e.g., "gen9ou", "gen4ou").
-        player_team_set: Set of teams for the model to use during battles.
-        n_challenges: Number of battles to play for evaluation.
-        checkpoint: Specific checkpoint/epoch to load from the model. If None,
-            uses the model's default checkpoint.
-        async_mp_context: Multiprocessing context for async environments
-            ("spawn", "fork", or "forkserver"). Only applies to heuristic eval.
-        battle_backend: "poke-env" or "metamon". Please see the README for more details.
-        username: Username for ladder battles (required for eval_type="ladder" or "pokeagent").
-        password: Password for ladder battles (required for eval_type="pokeagent").
-        avatar: Avatar/character image to use on Pokemon Showdown. Full list in data/avatars.txt
-        save_trajectories_to: Optional path to save battles in the same format as the human replay dataset.
-        log_to_wandb: Whether to log evaluation metrics to Weights & Biases.
-
-    Returns:
-        Dict[str, Any]: Dictionary containing evaluation results including:
-            - Win rates against each opponent
-            - Valid action rates against each opponent
-            - Average return against each opponent
-
-    Example:
-        >>> from metamon.rl.pretrained import get_pretrained_model
-        >>> from metamon.env import get_metamon_teams
-        >>>
-        >>> model = get_pretrained_model("SyntheticRLV2")
-        >>> teams = get_metamon_teams("gen1ou", "competitive")
-        >>> results = eval_pretrained(
-        ...     pretrained_model=model,
-        ...     eval_type="heuristic",
-        ...     battle_format="gen9ou",
-        ...     player_team_set=teams,
-        ...     n_challenges=100
-        ... )
-        >>> print(results)
+    Defaults to the 6 baselines that the paper calls the "Heuristic Composite Score",
+    but you can specify a list of any of the baselines in metamon.baselines.ALL_BASELINES.
     """
     agent = pretrained_model.initialize_agent(checkpoint=checkpoint, log=log_to_wandb)
-    # create envs
-    env_kwargs = dict(
-        battle_format=battle_format,
-        player_team_set=player_team_set,
-        observation_space=pretrained_model.observation_space,
-        action_space=pretrained_model.action_space,
-        reward_function=pretrained_model.reward_function,
-        save_trajectories_to=save_trajectories_to,
-        battle_backend=battle_backend,
-    )
-    if eval_type == "heuristic":
-        agent.async_env_mp_context = async_mp_context
-        make_envs = [
-            partial(make_baseline_env, **env_kwargs, opponent_type=ALL_BASELINES[o])
-            for o in [
-                "PokeEnvHeuristic",
-                "Gen1BossAI",
-                "Grunt",
-                "GymLeader",
-                "EmeraldKaizo",
-                "RandomBaseline",
-            ]
-        ]
-        make_envs *= 5
-    elif eval_type == "il":
-        agent.async_env_mp_context = async_mp_context
-        make_envs = [
-            partial(make_baseline_env, **env_kwargs, opponent_type=ALL_BASELINES[o])
-            for o in ["BaseRNN"]
-        ]
-        make_envs *= 1
-    else:
-        if eval_type == "ladder":
-            make_env = make_local_ladder_env
-        elif eval_type == "pokeagent":
-            make_env = make_pokeagent_ladder_env
-        else:
-            raise ValueError(f"Invalid eval_type: {eval_type}")
-        agent.env_mode = "sync"
-        make_envs = [
-            partial(
-                make_env,
-                **env_kwargs,
-                num_battles=n_challenges,
-                username=username,
-                avatar=avatar,
-                password=password,
-            )
-        ]
-        # disables AMAGO tqdm because we'll be rendering the poke-env battle bar
-        agent.verbose = False
-
+    baselines = baselines or HEURISTIC_COMPOSITE_BASELINES
+    agent.async_env_mp_context = async_mp_context
+    # create envs that match the agent's observation/actions/rewards
+    make_envs = [
+        functools.partial(
+            make_baseline_env,
+            battle_format=battle_format,
+            observation_space=pretrained_model.observation_space,
+            action_space=pretrained_model.action_space,
+            reward_function=pretrained_model.reward_function,
+            save_trajectories_to=save_trajectories_to,
+            battle_backend=battle_backend,
+            team_set=team_set,
+            opponent_type=ALL_BASELINES[opponent],
+        )
+        for opponent in baselines
+    ]
+    # amago will play `parallel_actors_per_baseline` copies of each baseline
+    # in parallel and aggregate the results by baseline name.
+    make_envs *= parallel_actors_per_baseline
     # evaluate
     agent.parallel_actors = len(make_envs)
     results = agent.evaluate_test(
         make_envs,
-        # sets upper bound on total timesteps
-        timesteps=n_challenges * 250,
-        # terminates after n_challenges
-        episodes=n_challenges,
+        timesteps=total_battles * 250,
+        episodes=total_battles,
     )
     return results
 
 
-if __name__ == "__main__":
-    from argparse import ArgumentParser
+def _pretrained_on_ladder(
+    pretrained_model: PretrainedModel,
+    make_ladder: Callable,
+    total_battles: int,
+    checkpoint: Optional[int],
+    log_to_wandb: bool,
+    **ladder_kwargs,
+) -> Dict[str, Any]:
+    """Helper function for ladder-based evaluation."""
+    agent = pretrained_model.initialize_agent(checkpoint=checkpoint, log=log_to_wandb)
+    agent.env_mode = "sync"
+    agent.parallel_actors = 1
+    agent.verbose = False  # turn off tqdm progress bar and print poke-env battle status
 
-    parser = ArgumentParser(
-        description="Evaluate a pretrained Metamon model by playing battles against opponents. "
-        "This script allows you to evaluate a pretrained model's performance against a set of "
-        "heuristic baselines or on your local ladder. It can also save replays in the same format "
-        "as the human replay dataset for further training."
+    make_env = functools.partial(
+        make_ladder,
+        observation_space=pretrained_model.observation_space,
+        action_space=pretrained_model.action_space,
+        reward_function=pretrained_model.reward_function,
+        num_battles=total_battles,
+        **ladder_kwargs,
     )
+
+    results = agent.evaluate_test(
+        [make_env],
+        timesteps=total_battles * 1000,
+        episodes=total_battles,
+    )
+    return results
+
+
+def pretrained_vs_local_ladder(
+    pretrained_model: PretrainedModel,
+    username: str,
+    battle_format: str,
+    team_set: metamon.env.TeamSet,
+    total_battles: int,
+    avatar: Optional[str] = None,
+    checkpoint: Optional[int] = None,
+    battle_backend: str = "poke-env",
+    save_trajectories_to: Optional[str] = None,
+    log_to_wandb: bool = False,
+) -> Dict[str, Any]:
+    """Evaluate a pretrained model on the ladder of your Local Showdown server.
+
+    Make sure you've started your local server in the background with
+    `node pokemon-showdown start --no-security`. Usernames must be unique,
+    but do not need to be registered in advance, and do not require a password.
+
+    Will automatically queue the agent for battles against any other agents (or humans)
+    that are also online. This is the simplest way to evaluate pretrained models head-to-head
+    and generate self-play data. It is also how the paper handled evals against third-party
+    baselines like PokéLLMon.
+    """
+
+    return _pretrained_on_ladder(
+        pretrained_model=pretrained_model,
+        make_ladder=make_local_ladder_env,
+        total_battles=total_battles,
+        checkpoint=checkpoint,
+        log_to_wandb=log_to_wandb,
+        player_username=username,
+        player_avatar=avatar,
+        player_team_set=team_set,
+        battle_backend=battle_backend,
+        battle_format=battle_format,
+        save_trajectories_to=save_trajectories_to,
+    )
+
+
+def pretrained_vs_pokeagent_ladder(
+    pretrained_model: PretrainedModel,
+    username: str,
+    password: str,
+    battle_format: str,
+    team_set: metamon.env.TeamSet,
+    total_battles: int,
+    avatar: Optional[str] = None,
+    checkpoint: Optional[int] = None,
+    battle_backend: str = "poke-env",
+    save_trajectories_to: Optional[str] = None,
+    log_to_wandb: bool = False,
+) -> Dict[str, Any]:
+    """Evaluate a pretrained model on the PokéAgent Challenge ladder.
+
+    Must provide a registered username and password. See instructions in the README!
+
+    Will automatically queue the agent for ranked battles against any other agents (or humans)
+    that are logged into the PokéAgent Challenge ladder.
+
+    Once eval begins, you can watch battles in real time by visiting
+    http://pokeagentshowdown.com.insecure.psim.us and clicking "Watch a Battle".
+    Visit http://pokeagentshowdown.com.insecure.psim.us/ladder to see the live
+    leaderboard.
+    """
+    return _pretrained_on_ladder(
+        pretrained_model=pretrained_model,
+        make_ladder=make_pokeagent_ladder_env,
+        total_battles=total_battles,
+        checkpoint=checkpoint,
+        log_to_wandb=log_to_wandb,
+        player_username=username,
+        player_password=password,
+        player_avatar=avatar,
+        player_team_set=team_set,
+        battle_backend=battle_backend,
+        battle_format=battle_format,
+        save_trajectories_to=save_trajectories_to,
+    )
+
+
+def _get_default_eval(args, base_eval_kwargs):
+    """Get the appropriate evaluation helper and update required args based on eval_type."""
+    if args.eval_type == "heuristic":
+        base_eval_kwargs.update(
+            {
+                "baselines": HEURISTIC_COMPOSITE_BASELINES,
+                "async_mp_context": args.async_mp_context,
+            }
+        )
+        return pretrained_vs_baselines
+    elif args.eval_type == "il":
+        base_eval_kwargs.update(
+            {
+                "baselines": ["BaseRNN"],
+                "async_mp_context": args.async_mp_context,
+                # sets this low to avoid overloading CPU with RNN baseline inference
+                "parallel_actors_per_baseline": 1,
+            }
+        )
+        return pretrained_vs_baselines
+    elif args.eval_type == "ladder":
+        base_eval_kwargs.update(
+            {
+                "username": args.username,
+                "avatar": args.avatar,
+            }
+        )
+        return pretrained_vs_local_ladder
+    elif args.eval_type == "pokeagent":
+        base_eval_kwargs.update(
+            {
+                "username": args.username,
+                "password": args.password,
+                "avatar": args.avatar,
+            }
+        )
+        return pretrained_vs_pokeagent_ladder
+    else:
+        raise ValueError(f"Invalid evaluation type: {args.eval_type}")
+
+
+def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
+    pretrained_model = get_pretrained_model(args.agent)
+    all_results = collections.defaultdict(list)
+    for gen in args.gens:
+        for format_name in args.formats:
+            battle_format = f"gen{gen}{format_name.lower()}"
+            player_team_set = metamon.env.get_metamon_teams(
+                battle_format, args.team_set
+            )
+            for checkpoint in args.checkpoints:
+                eval_kwargs = {
+                    "pretrained_model": pretrained_model,
+                    "battle_format": battle_format,
+                    "team_set": player_team_set,
+                    "total_battles": args.total_battles,
+                    "checkpoint": checkpoint,
+                    "battle_backend": args.battle_backend,
+                    "save_trajectories_to": args.save_trajectories_to,
+                    "log_to_wandb": args.log_to_wandb,
+                }
+                eval_function = _get_default_eval(args, eval_kwargs)
+                results = eval_function(**eval_kwargs)
+                print(json.dumps(results, indent=4, sort_keys=True))
+                all_results[battle_format].append(results)
+    return all_results
+
+
+def add_cli(parser):
     parser.add_argument(
         "--agent",
         required=True,
@@ -162,23 +262,45 @@ if __name__ == "__main__":
         help="Choose a pretrained model to evaluate.",
     )
     parser.add_argument(
+        "--eval_type",
+        required=True,
+        choices=["heuristic", "il", "ladder", "pokeagent"],
+        help=(
+            "Type of evaluation to perform. 'heuristic' will run against 6 "
+            "heuristic baselines, 'il' will run against a BCRNN baseline, "
+            "'ladder' will queue the agent for battles on your self-hosted Showdown ladder, "
+            "'pokeagent' will submit the agent to the NeurIPS 2025 PokéAgent Challenge ladder!"
+        ),
+    )
+    parser.add_argument(
         "--gens",
         type=int,
         nargs="+",
-        default=1,
+        default=[1],
         help="Specify the Pokémon generations to evaluate.",
-    )
-    parser.add_argument(
-        "--log_to_wandb",
-        action="store_true",
-        help="Log results to Weights & Biases.",
     )
     parser.add_argument(
         "--formats",
         nargs="+",
-        default="ou",
+        default=["ou"],
         choices=["ubers", "ou", "uu", "nu"],
-        help="Specify the battle format/tier.",
+        help="Specify the battle tier.",
+    )
+    parser.add_argument(
+        "--total_battles",
+        type=int,
+        default=10,
+        help=(
+            "Number of battles to run before returning eval stats. "
+            "Note this is the total sample size across all parallel actors (if applicable)."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoints",
+        type=int,
+        nargs="+",
+        default=[None],
+        help="Checkpoints to evaluate.",
     )
     parser.add_argument(
         "--username",
@@ -191,51 +313,15 @@ if __name__ == "__main__":
         help="Password for the Showdown server.",
     )
     parser.add_argument(
-        "--n_challenges",
-        type=int,
-        default=10,
-        help=(
-            "Number of battles to run before returning eval stats. "
-            "Note this is the total sample size across all parallel actors."
-        ),
-    )
-    parser.add_argument(
         "--avatar",
         default="red-gen1main",
         help="Avatar to use for the battles.",
     )
     parser.add_argument(
-        "--checkpoints",
-        type=int,
-        nargs="+",
-        default=[None],
-        help="Checkpoints to evaluate.",
-    )
-    parser.add_argument(
-        "--eval_type",
-        choices=["heuristic", "il", "ladder", "pokeagent"],
-        help=(
-            "Type of evaluation to perform. 'heuristic' will run against 6 "
-            "heuristic baselines, 'il' will run against a BCRNN baseline, "
-            "'ladder' will queue the agent for battles on your self-hosted Showdown ladder, "
-            "'pokeagent' will submit the agent to the NeurIPS 2025 PokéAgent Challenge ladder!"
-        ),
-    )
-    parser.add_argument(
         "--team_set",
         default="competitive",
         choices=["competitive", "paper_variety", "paper_replays", "modern_replays"],
-        help="Team Set.",
-    )
-    parser.add_argument(
-        "--save_trajectories_to",
-        default=None,
-        help="Save replays (in the parsed replay format) to a directory.",
-    )
-    parser.add_argument(
-        "--wait_for_input",
-        action="store_true",
-        help="Wait for user input before starting.",
+        help="Team Set. See the README for more details.",
     )
     parser.add_argument(
         "--battle_backend",
@@ -250,34 +336,34 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--heuristic_async_mp_context",
+        "--async_mp_context",
         type=str,
         default="spawn",
-        help="Async environment setup method. Does not apply to `--eval_type ladder`. Try 'forkserver' or 'fork' if you run into issues!",
+        help="Async environment setup method. Does not apply to `--eval_type ladder` or `--eval_type pokeagent`. Try 'forkserver' or 'fork' if you run into issues!",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--save_trajectories_to",
+        default=None,
+        help="Save replays (in the parsed replay format) to a directory.",
+    )
+    parser.add_argument(
+        "--log_to_wandb",
+        action="store_true",
+        help="Log results to Weights & Biases.",
+    )
 
-    pretrained_model = get_pretrained_model(args.agent)
-    for gen in args.gens:
-        for format in args.formats:
-            battle_format = f"gen{gen}{format.lower()}"
-            player_team_set = metamon.env.get_metamon_teams(
-                battle_format, args.team_set
-            )
-            for checkpoint in args.checkpoints:
-                results = eval_pretrained(
-                    pretrained_model=pretrained_model,
-                    eval_type=args.eval_type,
-                    battle_format=battle_format,
-                    player_team_set=player_team_set,
-                    n_challenges=args.n_challenges,
-                    checkpoint=checkpoint,
-                    async_mp_context=args.heuristic_async_mp_context,
-                    battle_backend=args.battle_backend,
-                    username=args.username,
-                    password=args.password,
-                    avatar=args.avatar,
-                    save_trajectories_to=args.save_trajectories_to,
-                    log_to_wandb=args.log_to_wandb,
-                )
-                print(json.dumps(results, indent=4, sort_keys=True))
+    return parser
+
+
+if __name__ == "__main__":
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser(
+        description="Evaluate a pretrained Metamon model by playing battles against opponents. "
+        "This script allows you to evaluate a pretrained model's performance against a set of "
+        "heuristic baselines, local ladder, or the PokéAgent Challenge ladder. It can also save replays in the same format "
+        "as the human replay dataset for further training."
+    )
+    add_cli(parser)
+    args = parser.parse_args()
+    _run_default_evaluation(args)

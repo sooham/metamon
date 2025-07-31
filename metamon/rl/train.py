@@ -6,6 +6,7 @@ import wandb
 
 import amago
 
+import metamon
 from metamon.env import get_metamon_teams
 from metamon.interface import (
     TokenizedObservationSpace,
@@ -40,9 +41,24 @@ def add_cli(parser):
         required=True,
         help="Give the run a name to identify logs and checkpoints.",
     )
-    parser.add_argument("--obs_space", type=str, default="TeamPreviewObservationSpace")
-    parser.add_argument("--reward_function", type=str, default="DefaultShapedReward")
-    parser.add_argument("--action_space", type=str, default="DefaultActionSpace")
+    parser.add_argument(
+        "--obs_space",
+        type=str,
+        default="TeamPreviewObservationSpace",
+        help="See the README for a description of the different observation spaces.",
+    )
+    parser.add_argument(
+        "--reward_function",
+        type=str,
+        default="DefaultShapedReward",
+        help="See the README for a description of the different reward functions.",
+    )
+    parser.add_argument(
+        "--action_space",
+        type=str,
+        default="DefaultActionSpace",
+        help="See the README for a description of the different action spaces.",
+    )
     parser.add_argument(
         "--ckpt_dir",
         type=str,
@@ -132,7 +148,13 @@ def add_cli(parser):
         type=int,
         nargs="+",
         default=[1, 2, 3, 4, 9],
-        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90%%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch!",
+        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90\%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch!",
+    )
+    parser.add_argument(
+        "--formats",
+        nargs="+",
+        default=None,
+        help="Showdown battle formats to include in the dataset. Defaults to all supported formats.",
     )
     parser.add_argument("--log", action="store_true", help="Log to wandb.")
     return parser
@@ -145,14 +167,19 @@ def create_offline_dataset(
     parsed_replay_dir: str,
     custom_replay_dir: Optional[str] = None,
     custom_replay_sample_weight: float = 0.25,
-):
+    verbose: bool = True,
+    formats: Optional[List[str]] = None,
+) -> amago.loading.RLDataset:
+
+    formats = formats or metamon.ALL_SUPPORTED_FORMATS
     dset_kwargs = {
         "observation_space": obs_space,
         "action_space": action_space,
         "reward_function": reward_function,
         # amago will handle sequence lengths on its side
         "max_seq_len": None,
-        "verbose": True,  # False to hide dset setup progress bar
+        "formats": formats,
+        "verbose": verbose,  # False to hide dset setup progress bar
     }
     parsed_replays_amago = MetamonAMAGODataset(
         dset_name="Metamon Parsed Replays",
@@ -193,6 +220,7 @@ def create_offline_rl_trainer(
     dloader_workers: int = 8,
     epochs: int = 40,
     grad_accum: int = 1,
+    steps_per_epoch: int = 25_000,
     batch_size_per_gpu: int = 16,
     log: bool = False,
     wandb_project: str = WANDB_PROJECT,
@@ -200,7 +228,11 @@ def create_offline_rl_trainer(
 ):
     # configuration
     config = {"MetamonTstepEncoder.tokenizer": obs_space.tokenizer}
-    amago.cli_utils.use_config(config, [model_gin_config, train_gin_config])
+    model_config_path = os.path.join(metamon.rl.MODEL_CONFIG_DIR, model_gin_config)
+    training_config_path = os.path.join(
+        metamon.rl.TRAINING_CONFIG_DIR, train_gin_config
+    )
+    amago.cli_utils.use_config(config, [model_config_path, training_config_path])
 
     # validation environments (evaluated throughout training)
     make_envs = [
@@ -210,7 +242,7 @@ def create_offline_rl_trainer(
             observation_space=obs_space,
             action_space=action_space,
             reward_function=reward_function,
-            player_team_set=get_metamon_teams(f"gen{gen}ou", "competitive"),
+            team_set=get_metamon_teams(f"gen{gen}ou", "competitive"),
             opponent_type=opponent,
         )
         for gen in set(eval_gens)
@@ -251,7 +283,7 @@ def create_offline_rl_trainer(
         start_learning_at_epoch=0,
         start_collecting_at_epoch=float("inf"),
         train_timesteps_per_epoch=0,
-        train_batches_per_epoch=25_000 * grad_accum,
+        train_batches_per_epoch=steps_per_epoch * grad_accum,
         val_interval=1,
         ckpt_interval=2,
         ## optimization ##
@@ -292,6 +324,7 @@ if __name__ == "__main__":
         parsed_replay_dir=args.parsed_replay_dir,
         custom_replay_dir=args.custom_replay_dir,
         custom_replay_sample_weight=args.custom_replay_sample_weight,
+        formats=args.formats,
     )
     experiment = create_offline_rl_trainer(
         ckpt_dir=args.ckpt_dir,

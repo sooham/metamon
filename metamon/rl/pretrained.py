@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 import warnings
-from typing import Optional
+from typing import Optional, Type
 
 warnings.filterwarnings("ignore")
 
@@ -14,6 +14,7 @@ import huggingface_hub
 import torch
 import amago
 
+import metamon
 from metamon.rl.metamon_to_amago import (
     make_placeholder_experiment,
 )
@@ -28,13 +29,12 @@ from metamon.interface import (
     MinimalActionSpace,
 )
 from metamon.tokenizer import PokemonTokenizer, get_tokenizer
-from metamon import METAMON_CACHE_DIR
 
 
-if METAMON_CACHE_DIR is None:
+if metamon.METAMON_CACHE_DIR is None:
     raise ValueError("Set METAMON_CACHE_DIR environment variable")
 # downloads checkpoints to the metamon cache dir where we're putting all the other data
-MODEL_DOWNLOAD_DIR = os.path.join(METAMON_CACHE_DIR, "pretrained_models")
+MODEL_DOWNLOAD_DIR = os.path.join(metamon.METAMON_CACHE_DIR, "pretrained_models")
 
 # registry for pretrained models
 ALL_PRETRAINED_MODELS = {}
@@ -124,10 +124,10 @@ class PretrainedModel:
         self.model_gin_config = model_gin_config
         self.train_gin_config = train_gin_config
         self.model_gin_config_path = os.path.join(
-            os.path.dirname(__file__), "configs", "models", self.model_gin_config
+            metamon.rl.MODEL_CONFIG_DIR, self.model_gin_config
         )
         self.train_gin_config_path = os.path.join(
-            os.path.dirname(__file__), "configs", "training", self.train_gin_config
+            metamon.rl.TRAINING_CONFIG_DIR, self.train_gin_config
         )
         self.hf_cache_dir = hf_cache_dir or MODEL_DOWNLOAD_DIR
         self.tokenizer = tokenizer
@@ -225,6 +225,42 @@ class LocalPretrainedModel(PretrainedModel):
             "ckpts",
             "policy_weights",
             f"policy_epoch_{checkpoint}.pt",
+        )
+
+
+class LocalFinetunedModel(LocalPretrainedModel):
+    """
+    Evaluate a model from a finetuning run.
+
+    Same as LocalPretrainedModel but takes care of setting the config files.
+
+    Args:
+        amago_run_path: Path to the AMAGO run directory containing a config.txt,
+            ckpts/, and wandb logs.
+    """
+
+    def __init__(
+        self,
+        base_model: Type[PretrainedModel],
+        amago_run_path: str,
+        default_checkpoint: int,
+        model_name: str,
+        train_gin_config: Optional[str] = None,
+        reward_function: Optional[RewardFunction] = None,
+    ):
+        base_model = base_model()
+        train_gin_config = train_gin_config or base_model.train_gin_config
+        reward_function = reward_function or base_model.reward_function
+        super().__init__(
+            amago_run_path=amago_run_path,
+            model_name=model_name,
+            train_gin_config=train_gin_config,
+            default_checkpoint=default_checkpoint,
+            model_gin_config=base_model.model_gin_config,
+            tokenizer=base_model.tokenizer,
+            observation_space=base_model.observation_space,
+            action_space=base_model.action_space,
+            reward_function=reward_function,
         )
 
 

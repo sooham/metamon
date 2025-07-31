@@ -513,10 +513,7 @@ We might retrain the "`SmallIL`" model like this:
 ```bash
 python train.py --run_name any_name_here --model_gin_config small_agent.gin --ckpt_dir /pick/a/ckpt/dir --train_gin_config base_il.gin --log
 ```
-"`SmallRL`" would be the same command with `--train_gin_config base_offline_rl.gin`. Scan `rl/pretrained.py` to see the model configs used by each pretrained agent. Note that **we do not currently provide accurate `configs/training` for each pretrained model; they are all set to `base_offline_rl.gin` or `base_il.gin`.**
-
-
-Larger training runs take *days* to complete and [can use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). An example of a smaller RNN config is provided in `configs/models/small_rnn.gin`. 
+"`SmallRL`" would be the same command with `--train_gin_config base_offline_rl.gin`. Scan `rl/pretrained.py` to see the configs used by each pretrained agent. Larger training runs take *days* to complete and [can (optionally) use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). An example of a smaller RNN config is provided in `configs/models/small_rnn.gin`. 
 
 <br>
 
@@ -525,7 +522,7 @@ Larger training runs take *days* to complete and [can use mulitple GPUs (link)](
 
 **See `python finetune_from_hf.py --help` to finetune an existing model to a new dataset!** You might want to improve performance on specific teams or update an old model to the latest version of the replay dataset.
 
-Provides the same setup as the main `train` script but takes care of downloading and matching the config details of our public models. Finetuning will inherit the architecture of the base model but allows for changes to the training objective with `--train_gin_config`. **Note that you will definitely want to customize this, as the pretrained models do not come packaged with their original settings. The paper includes reference info, `base_offline_rl.gin` comments give an example, and you can find detailed customization instructions below. In any case, the best settings for quick finetuning runs might be different from the original run!
+Provides the same setup as the main `train` script but takes care of downloading and matching the config details of our public models. Finetuning will inherit the architecture of the base model but allows for changes to the training objective with `--train_gin_config`. Note that the best settings for quick finetuning runs are likely different from the original run!
 
 We might finetune "`SmallRL`" like this:
 
@@ -546,12 +543,12 @@ Customize the agent architecture by creating new `rl/configs/models/` `.gin` fil
 <br>
 
 
-### Evaluate
+### Evaluate a Custom Model
 
 Let's say the training command was: 
 
 ```bash
-python train.py --run_name psyduck_is_ubers --model_gin_config configs/models/gigantic_agent.gin --train_gin_config configs/models/sota_rl.gin --ckpt_dir /my_metamon_ckpts/ --tokenizer DefaultObservationSpace-v1 --obs_space TeamPreviewObservationSpace --action_space DefaultActionSpace
+python train.py --run_name psyduck_is_ubers --model_gin_config gigantic_agent.gin --train_gin_config sota_rl.gin --ckpt_dir /my_metamon_ckpts/ --tokenizer DefaultObservationSpace-v1 --obs_space TeamPreviewObservationSpace --action_space DefaultActionSpace
 ```
 
 We can eval the model with:
@@ -577,7 +574,7 @@ class PsyduckIsUbers(LocalPretrainedModel):
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
         )
 ```
-If we put this directly in `evaluate.py`, or use `evaluate.eval_pretrained()` somewhere else, we can evaluate it like any of the huggingface models (see [here](#pretrained-models)). A standalone submission to the PokéAgent Challenge ladder (for example) would look something like:
+If we put this directly in `evaluate.py` (or import it there) we can evaluate it like any of the huggingface models (see [here](#pretrained-models)). A standalone submission to the PokéAgent Challenge ladder (for example) would look something like:
 
 ```python
 from metamon.rl import eval_pretrained, LocalPretrainedModel
