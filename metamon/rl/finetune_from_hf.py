@@ -93,7 +93,7 @@ def add_cli(parser):
         type=int,
         nargs="+",
         default=[1, 2, 3, 4, 9],
-        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch!",
+        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90%%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch!",
     )
     parser.add_argument("--log", action="store_true", help="Log to wandb.")
     return parser
@@ -102,7 +102,12 @@ def add_cli(parser):
 if __name__ == "__main__":
     from argparse import ArgumentParser
 
-    parser = ArgumentParser()
+    parser = ArgumentParser(
+        description="Finetune a pretrained Metamon model from HuggingFace (jakegrigsby/metamon). "
+        "This script allows you to continue training any of the published pretrained models "
+        "on additional data or with modified training parameters. The model architecture "
+        "and base configuration are inherited from the chosen pretrained model."
+    )
     add_cli(parser)
     args = parser.parse_args()
 
@@ -116,7 +121,7 @@ if __name__ == "__main__":
         custom_replay_dir=args.custom_replay_dir,
         custom_replay_sample_weight=args.custom_replay_sample_weight,
     )
-    # create a new model that handles 1:1 matching of the pretrained model's settings
+    # create a new policy that matches the pretrained policy's architecture
     experiment = create_offline_rl_trainer(
         ckpt_dir=args.save_dir,
         run_name=args.run_name,

@@ -36,7 +36,7 @@ if METAMON_CACHE_DIR is None:
 # downloads checkpoints to the metamon cache dir where we're putting all the other data
 MODEL_DOWNLOAD_DIR = os.path.join(METAMON_CACHE_DIR, "pretrained_models")
 
-# Registry for pretrained models
+# registry for pretrained models
 ALL_PRETRAINED_MODELS = {}
 
 
@@ -84,8 +84,8 @@ class PretrainedModel:
     Create an AMAGO agent and load a pretrained checkpoint from the HuggingFace Hub.
 
     This class handles downloading pretrained model weights from HuggingFace Hub,
-    configuring the model architecture using gin files, and initializing AMAGO
-    experiments for evaluation.
+    configuring the model architecture using gin files, and initializing the
+    evaluation experiment.
 
     Args:
         model_gin_config: Path to gin config file that modifies the model architecture
@@ -124,10 +124,10 @@ class PretrainedModel:
         self.model_gin_config = model_gin_config
         self.train_gin_config = train_gin_config
         self.model_gin_config_path = os.path.join(
-            os.path.dirname(__file__), "configs", self.model_gin_config
+            os.path.dirname(__file__), "configs", "models", self.model_gin_config
         )
         self.train_gin_config_path = os.path.join(
-            os.path.dirname(__file__), "configs", self.train_gin_config
+            os.path.dirname(__file__), "configs", "training", self.train_gin_config
         )
         self.hf_cache_dir = hf_cache_dir or MODEL_DOWNLOAD_DIR
         self.tokenizer = tokenizer
@@ -212,6 +212,7 @@ class LocalPretrainedModel(PretrainedModel):
     Args:
         amago_run_path: Path to the AMAGO run directory containing a config.txt,
             ckpts/, and wandb logs.
+        Additional arguments follow the PretrainedModel
     """
 
     def __init__(self, amago_run_path: str, *args, **kwargs):
@@ -232,8 +233,8 @@ class SmallIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-il",
-            model_gin_config="models/small_agent.gin",
-            train_gin_config="training/base_il.gin",
+            model_gin_config="small_agent.gin",
+            train_gin_config="base_il.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -244,8 +245,8 @@ class SmallILFA(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-il-filled-actions",
-            model_gin_config="models/small_agent.gin",
-            train_gin_config="training/base_il.gin",
+            model_gin_config="small_agent.gin",
+            train_gin_config="base_il.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -256,8 +257,8 @@ class SmallRL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl",
-            model_gin_config="models/small_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="small_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -268,8 +269,8 @@ class SmallRL_ExtremeFilter(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-exp-extreme",
-            model_gin_config="models/small_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="small_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -280,8 +281,8 @@ class SmallRL_BinaryFilter(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-binary",
-            model_gin_config="models/small_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="small_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -292,8 +293,8 @@ class SmallRL_Aug(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-aug",
-            model_gin_config="models/small_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="small_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -304,8 +305,8 @@ class SmallRL_MaxQ(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="small-rl-maxq",
-            model_gin_config="models/small_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="small_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -316,8 +317,8 @@ class MediumIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-il",
-            model_gin_config="models/medium_agent.gin",
-            train_gin_config="training/base_il.gin",
+            model_gin_config="medium_agent.gin",
+            train_gin_config="base_il.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -328,8 +329,8 @@ class MediumRL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl",
-            model_gin_config="models/medium_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="medium_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -340,8 +341,8 @@ class MediumRL_Aug(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl-aug",
-            model_gin_config="models/medium_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="medium_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -352,8 +353,8 @@ class MediumRL_MaxQ(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="medium-rl-maxq",
-            model_gin_config="models/medium_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="medium_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -364,8 +365,8 @@ class LargeRL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="large-rl",
-            model_gin_config="models/large_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="large_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -376,8 +377,8 @@ class LargeIL(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="large-il",
-            model_gin_config="models/large_agent.gin",
-            train_gin_config="training/base_il.gin",
+            model_gin_config="large_agent.gin",
+            train_gin_config="base_il.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -388,8 +389,8 @@ class SyntheticRLV0(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v0",
-            model_gin_config="models/synthetic_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="synthetic_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -400,8 +401,8 @@ class SyntheticRLV1(PretrainedModel):
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1",
-            model_gin_config="models/synthetic_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="synthetic_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=40,
             action_space=MinimalActionSpace(),
         )
@@ -409,12 +410,11 @@ class SyntheticRLV1(PretrainedModel):
 
 @pretrained_model()
 class SyntheticRLV1_SelfPlay(PretrainedModel):
-
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1+sp",
-            model_gin_config="models/synthetic_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="synthetic_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=48,
             action_space=MinimalActionSpace(),
         )
@@ -422,12 +422,11 @@ class SyntheticRLV1_SelfPlay(PretrainedModel):
 
 @pretrained_model()
 class SyntheticRLV1_PlusPlus(PretrainedModel):
-
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v1++",
-            model_gin_config="models/synthetic_agent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="synthetic_agent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=38,
             action_space=MinimalActionSpace(),
         )
@@ -435,12 +434,11 @@ class SyntheticRLV1_PlusPlus(PretrainedModel):
 
 @pretrained_model()
 class SyntheticRLV2(PretrainedModel):
-
     def __init__(self):
         super().__init__(
             model_name="synthetic-rl-v2",
-            model_gin_config="models/synthetic_multitaskagent.gin",
-            train_gin_config="training/base_offline_rl.gin",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="base_offline_rl.gin",
             default_checkpoint=48,
             action_space=MinimalActionSpace(),
         )

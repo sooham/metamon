@@ -132,7 +132,7 @@ def add_cli(parser):
         type=int,
         nargs="+",
         default=[1, 2, 3, 4, 9],
-        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch!",
+        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90%%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch!",
     )
     parser.add_argument("--log", action="store_true", help="Log to wandb.")
     return parser
@@ -270,7 +270,11 @@ if __name__ == "__main__":
         ALL_ACTION_SPACES,
     )
 
-    parser = ArgumentParser()
+    parser = ArgumentParser(
+        description="Train a Metamon RL agent from scratch using offline RL on parsed replay data. "
+        "This script trains new models using imitation learning or reinforcement learning objectives "
+        "on the dataset of human Pokémon battles (& an optional custom dataset of self-play data you've collected)."
+    )
     add_cli(parser)
     args = parser.parse_args()
 

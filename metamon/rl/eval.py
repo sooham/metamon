@@ -26,6 +26,53 @@ def standard_eval(
     save_trajectories_to: Optional[str] = None,
     log_to_wandb: bool = False,
 ) -> Dict[str, Any]:
+    """
+    Evaluate a pretrained model by playing battles against opponents.
+
+    This function initializes a pretrained model and runs it through a common eval setting
+    to evaluate its performance. It can battle against a set of heuristic baselines or on the
+    local ladder, collecting win rates and other performance metrics.
+
+    Args:
+        pretrained_model: The pretrained model instance to evaluate.
+        eval_type: Type of evaluation to run. Options include:
+            - "heuristic": Battle against built-in heuristic baselines
+            - "il": Battle against a BCRNN baseline
+            - "ladder": Battle on local ladder against any human/AI opponents who are also online
+        battle_format: Pokémon battle format (e.g., "gen9ou", "gen4ou").
+        player_team_set: Set of teams for the model to use during battles.
+        n_challenges: Number of battles to play for evaluation.
+        checkpoint: Specific checkpoint/epoch to load from the model. If None,
+            uses the model's default checkpoint.
+        async_mp_context: Multiprocessing context for async environments
+            ("spawn", "fork", or "forkserver"). Only applies to heuristic eval.
+        battle_backend: "poke-env" or "metamon". Please see the README for more details.
+        username: Username for ladder battles (required for eval_type="ladder").
+        avatar: Avatar/character image to use on Pokemon Showdown. Full list in data/avatars.txt
+        save_trajectories_to: Optional path to save battles in the same format as the human replay dataset.
+        log_to_wandb: Whether to log evaluation metrics to Weights & Biases.
+
+    Returns:
+        Dict[str, Any]: Dictionary containing evaluation results including:
+            - Win rates against each opponent
+            - Valid action rates against each opponent
+            - Average return against each opponent
+
+    Example:
+        >>> from metamon.rl.pretrained import get_pretrained_model
+        >>> from metamon.env import get_metamon_teams
+        >>>
+        >>> model = get_pretrained_model("SyntheticRLV2")
+        >>> teams = get_metamon_teams("gen1ou", "competitive")
+        >>> results = standard_eval(
+        ...     pretrained_model=model,
+        ...     eval_type="heuristic",
+        ...     battle_format="gen9ou",
+        ...     player_team_set=teams,
+        ...     n_challenges=100
+        ... )
+        >>> print(results)
+    """
     agent = pretrained_model.initialize_agent(checkpoint=checkpoint, log=log_to_wandb)
     # create envs
     env_kwargs = dict(
@@ -89,7 +136,12 @@ def standard_eval(
 if __name__ == "__main__":
     from argparse import ArgumentParser
 
-    parser = ArgumentParser()
+    parser = ArgumentParser(
+        description="Evaluate a pretrained Metamon model by playing battles against opponents. "
+        "This script allows you to evaluate a pretrained model's performance against a set of "
+        "heuristic baselines or on your local ladder. It can also save replays in the same format "
+        "as the human replay dataset for further training."
+    )
     parser.add_argument(
         "--agent",
         required=True,
