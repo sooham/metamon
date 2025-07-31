@@ -433,6 +433,8 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         )
         print(f"Laddering for {num_battles} battles")
         self.print_battle_bar = print_battle_bar
+        self.player_username = player_username
+        self.player_password = player_password
         self.num_battles = num_battles
         self.handle_ladder_start(n_challenges=num_battles)
 
@@ -458,3 +460,12 @@ class PokeAgentLadder(QueueOnLocalLadder):
     @property
     def server_configuration(self):
         return PokeAgentServerConfiguration
+
+    def handle_ladder_start(self, n_challenges: int):
+        assert (
+            self.player_username is not None and self.player_password is not None
+        ), "Username and password are required for PokéAgent laddering"
+        assert self.player_username.startswith(
+            "PAC"
+        ), "Bot usernames should start with 'PAC'"
+        super().start_laddering(n_challenges)

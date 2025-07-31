@@ -22,10 +22,11 @@ from metamon.il.model import TransformerTurnEmbedding
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.data import ParsedReplayDataset
 from metamon.env import (
+    TeamSet,
     PokeEnvWrapper,
     BattleAgainstBaseline,
-    TeamSet,
     QueueOnLocalLadder,
+    PokeAgentLadder,
 )
 
 
@@ -43,6 +44,12 @@ else:
     from amago.nets.utils import symlog
     from amago.loading import RLData, RLDataset, Batch
     from amago.envs.amago_env import AMAGO_ENV_LOG_PREFIX
+
+
+def _setup_warnings():
+    """Suppress common warnings during environment creation."""
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", category=amago.utils.AmagoWarning)
 
 
 def make_placeholder_env(
@@ -83,7 +90,7 @@ def make_placeholder_env(
     return MetamonAMAGOWrapper(penv)
 
 
-def make_ladder_env(
+def _make_ladder_env(
     battle_format: str,
     player_team_set: TeamSet,
     observation_space: ObservationSpace,
@@ -95,13 +102,10 @@ def make_ladder_env(
     password: Optional[str] = None,
     save_trajectories_to: Optional[str] = None,
     battle_backend: str = "poke-env",
+    ladder: Type[PokeEnvWrapper] = QueueOnLocalLadder,
 ):
-    """
-    Battle on the local Showdown ladder
-    """
-    warnings.filterwarnings("ignore", category=UserWarning)
-    warnings.filterwarnings("ignore", category=amago.utils.AmagoWarning)
-    menv = QueueOnLocalLadder(
+    _setup_warnings()
+    menv = ladder(
         battle_format=battle_format,
         num_battles=num_battles,
         observation_space=observation_space,
@@ -114,8 +118,25 @@ def make_ladder_env(
         save_trajectories_to=save_trajectories_to,
         battle_backend=battle_backend,
     )
-    print("Made Ladder Env")
     return PSLadderAMAGOWrapper(menv)
+
+
+def make_local_ladder_env(*args, **kwargs):
+    """
+    Battle on the local Showdown ladder!
+    """
+    env = _make_ladder_env(*args, ladder=QueueOnLocalLadder, **kwargs)
+    print("Made Local Ladder Env")
+    return env
+
+
+def make_pokeagent_ladder_env(*args, **kwargs):
+    """
+    Battle on the NeurIPS 2025 PokéAgent Challenge ladder!
+    """
+    env = _make_ladder_env(*args, ladder=PokeAgentLadder, **kwargs)
+    print("Made PokeAgent Ladder Env")
+    return env
 
 
 def make_baseline_env(
@@ -127,12 +148,12 @@ def make_baseline_env(
     opponent_type: Type[poke_env.Player],
     save_trajectories_to: Optional[str] = None,
     battle_backend: str = "poke-env",
+    turn_limit: int = 200,
 ):
     """
     Battle against a built-in baseline opponent
     """
-    warnings.filterwarnings("ignore", category=UserWarning)
-    warnings.filterwarnings("ignore", category=amago.utils.AmagoWarning)
+    _setup_warnings()
     menv = BattleAgainstBaseline(
         battle_format=battle_format,
         observation_space=observation_space,
@@ -140,7 +161,7 @@ def make_baseline_env(
         reward_function=reward_function,
         team_set=player_team_set,
         opponent_type=opponent_type,
-        turn_limit=200,
+        turn_limit=turn_limit,
         save_trajectories_to=save_trajectories_to,
         battle_backend=battle_backend,
     )

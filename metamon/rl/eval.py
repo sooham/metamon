@@ -9,7 +9,11 @@ from metamon.rl.pretrained import (
     PretrainedModel,
 )
 from metamon.baselines import ALL_BASELINES
-from metamon.rl.metamon_to_amago import make_baseline_env, make_ladder_env
+from metamon.rl.metamon_to_amago import (
+    make_baseline_env,
+    make_local_ladder_env,
+    make_pokeagent_ladder_env,
+)
 
 
 def standard_eval(
@@ -22,6 +26,7 @@ def standard_eval(
     async_mp_context: str = "spawn",
     battle_backend: str = "poke-env",
     username: Optional[str] = None,
+    password: Optional[str] = None,
     avatar: Optional[str] = None,
     save_trajectories_to: Optional[str] = None,
     log_to_wandb: bool = False,
@@ -39,6 +44,8 @@ def standard_eval(
             - "heuristic": Battle against built-in heuristic baselines
             - "il": Battle against a BCRNN baseline
             - "ladder": Battle on local ladder against any human/AI opponents who are also online
+            - "pokeagent": Submit your agent to the NeurIPS 2025 PokéAgent Challenge ladder!
+                Note that you must provide a registered username and password!
         battle_format: Pokémon battle format (e.g., "gen9ou", "gen4ou").
         player_team_set: Set of teams for the model to use during battles.
         n_challenges: Number of battles to play for evaluation.
@@ -47,7 +54,8 @@ def standard_eval(
         async_mp_context: Multiprocessing context for async environments
             ("spawn", "fork", or "forkserver"). Only applies to heuristic eval.
         battle_backend: "poke-env" or "metamon". Please see the README for more details.
-        username: Username for ladder battles (required for eval_type="ladder").
+        username: Username for ladder battles (required for eval_type="ladder" or "pokeagent").
+        password: Password for ladder battles (required for eval_type="pokeagent").
         avatar: Avatar/character image to use on Pokemon Showdown. Full list in data/avatars.txt
         save_trajectories_to: Optional path to save battles in the same format as the human replay dataset.
         log_to_wandb: Whether to log evaluation metrics to Weights & Biases.
@@ -105,21 +113,26 @@ def standard_eval(
             for o in ["BaseRNN"]
         ]
         make_envs *= 1
-    elif eval_type == "ladder":
+    else:
+        if eval_type == "ladder":
+            make_env = make_local_ladder_env
+        elif eval_type == "pokeagent":
+            make_env = make_pokeagent_ladder_env
+        else:
+            raise ValueError(f"Invalid eval_type: {eval_type}")
         agent.env_mode = "sync"
         make_envs = [
             partial(
-                make_ladder_env,
+                make_env,
                 **env_kwargs,
                 num_battles=n_challenges,
                 username=username,
                 avatar=avatar,
+                password=password,
             )
         ]
         # disables AMAGO tqdm because we'll be rendering the poke-env battle bar
         agent.verbose = False
-    else:
-        raise ValueError(f"Invalid eval_type: {eval_type}")
 
     # evaluate
     agent.parallel_actors = len(make_envs)
@@ -173,6 +186,11 @@ if __name__ == "__main__":
         help="Username for the Showdown server.",
     )
     parser.add_argument(
+        "--password",
+        default=None,
+        help="Password for the Showdown server.",
+    )
+    parser.add_argument(
         "--n_challenges",
         type=int,
         default=10,
@@ -195,11 +213,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--eval_type",
-        choices=["heuristic", "il", "ladder"],
+        choices=["heuristic", "il", "ladder", "pokeagent"],
         help=(
             "Type of evaluation to perform. 'heuristic' will run against 6 "
             "heuristic baselines, 'il' will run against a BCRNN baseline, "
-            "'ladder' will queue the agent for battles on your self-hosted Showdown ladder."
+            "'ladder' will queue the agent for battles on your self-hosted Showdown ladder, "
+            "'pokeagent' will submit the agent to the NeurIPS 2025 PokéAgent Challenge ladder!"
         ),
     )
     parser.add_argument(
@@ -256,6 +275,7 @@ if __name__ == "__main__":
                     async_mp_context=args.heuristic_async_mp_context,
                     battle_backend=args.battle_backend,
                     username=args.username,
+                    password=args.password,
                     avatar=args.avatar,
                     save_trajectories_to=args.save_trajectories_to,
                     log_to_wandb=args.log_to_wandb,
