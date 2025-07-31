@@ -155,7 +155,7 @@ reward_fn = DefaultShapedReward()
 action_space = DefaultActionSpace()
 ```
 
-Then, battle against built-in baselines (anything in `metamon.baselines` or any [`poke_env.Player`](https://github.com/hsahovic/poke-env)):
+Then, battle against built-in baselines (use `metamon.baselines.get_baseline(name)` or any [`poke_env.Player`](https://github.com/hsahovic/poke-env)):
 
 ```python 
 from metamon.env import BattleAgainstBaseline
@@ -381,8 +381,9 @@ ___
 Here is an overview of the opponents mentioned in the paper:
 
 ```python
-from metamon.baselines import ALL_BASELINES
-opponent = ALL_BASELINES[name]
+from metamon.baselines import get_baseline, get_all_baseline_names
+opponent = get_baseline(name)  # Get specific baseline
+available = get_all_baseline_names()  # List all available baselines
 ```
 
  | `name` | Description |

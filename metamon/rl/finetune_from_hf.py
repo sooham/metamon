@@ -99,8 +99,8 @@ def add_cli(parser):
     parser.add_argument(
         "--async_env_mp_context",
         type=str,
-        default="spawn",
-        help="Async environment setup method. Try 'forkserver' or 'fork' if using multiple GPUs or if you run into issues.",
+        default="forkserver",
+        help="Async environment setup method. Options: 'forkserver' (recommended, fast), 'fork' (fastest but unsafe with threads), 'spawn' (slowest but safest). Use 'spawn' only if others hang.",
     )
     parser.add_argument(
         "--eval_gens",
@@ -168,6 +168,7 @@ if __name__ == "__main__":
         log=args.log,
         wandb_project=WANDB_PROJECT,
         wandb_entity=WANDB_ENTITY,
+        manual_gin_overrides=pretrained.gin_overrides,
     )
     experiment.start()
     # load the pretrained checkpoint

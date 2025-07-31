@@ -40,6 +40,3 @@ METAMON_CACHE_DIR = os.environ.get("METAMON_CACHE_DIR", None)
 from . import data
 from . import backend
 from . import env
-from . import il
-from . import rl
-from . import baselines
