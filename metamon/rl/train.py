@@ -60,10 +60,10 @@ def add_cli(parser):
         help="See the README for a description of the different action spaces.",
     )
     parser.add_argument(
-        "--ckpt_dir",
+        "--save_dir",
         type=str,
         required=True,
-        help="Path to save checkpoints. Find checkpoints under {ckpt_dir}/{run_name}/ckpts/",
+        help="Path to save checkpoints. Find checkpoints under {save_dir}/{run_name}/ckpts/",
     )
     parser.add_argument(
         "--ckpt",
@@ -327,7 +327,7 @@ if __name__ == "__main__":
         formats=args.formats,
     )
     experiment = create_offline_rl_trainer(
-        ckpt_dir=args.ckpt_dir,
+        ckpt_dir=args.save_dir,
         run_name=args.run_name,
         model_gin_config=args.model_gin_config,
         train_gin_config=args.train_gin_config,

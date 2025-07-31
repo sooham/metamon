@@ -104,6 +104,7 @@ class PretrainedModel:
             these checkpoint files are large.
         default_checkpoint: Default checkpoint epoch to load. 40 corresponds to
             approximately 1M gradient steps with original paper training settings.
+        gin_overrides: Optional dictionary of one-off gin overrides if there's a small tweak to an existing config file.
     """
 
     HF_REPO_ID = "jakegrigsby/metamon"
@@ -119,6 +120,7 @@ class PretrainedModel:
         reward_function: RewardFunction = DefaultShapedReward(),
         hf_cache_dir: Optional[str] = None,
         default_checkpoint: int = 40,
+        gin_overrides: Optional[dict] = None,
     ):
         self.model_name = model_name
         self.model_gin_config = model_gin_config
@@ -138,6 +140,7 @@ class PretrainedModel:
         self.action_space = action_space
         self.reward_function = reward_function
         self.default_checkpoint = default_checkpoint
+        self.gin_overrides = gin_overrides
         os.makedirs(self.hf_cache_dir, exist_ok=True)
 
     @property
@@ -145,9 +148,9 @@ class PretrainedModel:
         """
         Override to set one-off changes to the gin config files
 
-        By default, adds ability to fallback to vanilla attention if flash attention is not available.
+        By default, adds ability to fallback to vanilla attention if flash attention is not available,
+        sets the tokenizer, and enbables faster initialization.
         """
-
         has_gpu = torch.cuda.is_available()
         try:
             import flash_attn
@@ -160,13 +163,16 @@ class PretrainedModel:
         else:
             attn_type = amago.nets.transformer.VanillaAttention
             red_warning("Warning: Using unofficial VanillaAttention implementation")
-        return {
+        config = {
             "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": attn_type,
             "MetamonTstepEncoder.tokenizer": self.tokenizer,
             # skip cpu-intensive init, because we're going to be replacing the weights
             # with a checkpoint anyway....
             "amago.nets.transformer.SigmaReparam.fast_init": True,
         }
+        if self.gin_overrides is not None:
+            config.update(self.gin_overrides)
+        return config
 
     def get_path_to_checkpoint(self, checkpoint: int) -> str:
         # Download checkpoint from HF Hub
@@ -210,19 +216,22 @@ class LocalPretrainedModel(PretrainedModel):
     Evaluate a model from a custom training run.
 
     Args:
-        amago_run_path: Path to the AMAGO run directory containing a config.txt,
-            ckpts/, and wandb logs.
+        amago_ckpt_dir: Path to the AMAGO checkpoint directory (e.g. --save_dir from the training script)
+        model_name: The name of the training run (e.g. --run_name from the training script)
         Additional arguments follow the PretrainedModel
     """
 
-    def __init__(self, amago_run_path: str, *args, **kwargs):
+    def __init__(self, amago_ckpt_dir: str, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.amago_run_path = amago_run_path
+        self.local_ckpt_dir = os.path.join(amago_ckpt_dir, self.model_name, "ckpts")
+        if not os.path.exists(self.local_ckpt_dir):
+            raise FileNotFoundError(
+                f"Checkpoint directory {self.local_ckpt_dir} was not found. Check the amago_ckpt_dir and model_name arguments."
+            )
 
     def get_path_to_checkpoint(self, checkpoint: int) -> str:
         return os.path.join(
-            self.amago_run_path,
-            "ckpts",
+            self.local_ckpt_dir,
             "policy_weights",
             f"policy_epoch_{checkpoint}.pt",
         )
@@ -233,18 +242,23 @@ class LocalFinetunedModel(LocalPretrainedModel):
     Evaluate a model from a finetuning run.
 
     Same as LocalPretrainedModel but takes care of setting the config files.
+    If you used a custom train_gin_config or reward_function, pass them here.
 
     Args:
-        amago_run_path: Path to the AMAGO run directory containing a config.txt,
-            ckpts/, and wandb logs.
+        base_model: The base model type that was finetuned.
+        amago_ckpt_dir: Path to the AMAGO checkpoint directory (e.g. --save_dir from the training script)
+        model_name: The name of the training run (e.g. --run_name from the training script)
+        default_checkpoint: The checkpoint number to load by default (e.g., the last epoch number)
+        train_gin_config: The gin config file to use for training. Defaults to the same as used by the base model (like the finetuning script does).
+        reward_function: The reward function to use. Defaults to the same as used by the base model (like the finetuning script does).
     """
 
     def __init__(
         self,
         base_model: Type[PretrainedModel],
-        amago_run_path: str,
-        default_checkpoint: int,
+        amago_ckpt_dir: str,
         model_name: str,
+        default_checkpoint: int,
         train_gin_config: Optional[str] = None,
         reward_function: Optional[RewardFunction] = None,
     ):
@@ -252,7 +266,7 @@ class LocalFinetunedModel(LocalPretrainedModel):
         train_gin_config = train_gin_config or base_model.train_gin_config
         reward_function = reward_function or base_model.reward_function
         super().__init__(
-            amago_run_path=amago_run_path,
+            amago_ckpt_dir=amago_ckpt_dir,
             model_name=model_name,
             train_gin_config=train_gin_config,
             default_checkpoint=default_checkpoint,

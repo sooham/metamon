@@ -1,4 +1,8 @@
-from metamon.rl.pretrained import LocalPretrainedModel, PretrainedModel
+from metamon.rl.pretrained import (
+    LocalPretrainedModel,
+    PretrainedModel,
+    LocalFinetunedModel,
+)
 from metamon.rl.evaluate import (
     pretrained_vs_pokeagent_ladder,
     pretrained_vs_local_ladder,
