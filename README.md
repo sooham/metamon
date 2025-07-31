@@ -257,10 +257,10 @@ We have made every checkpoint of 18 models available on huggingface at [`jakegri
 
 <br>
 
-Load and run pretrained models with `metamon.rl.eval_pretrained`. For example:
+Load and run pretrained models with `metamon.rl.evaluate`. For example:
 
 ```bash
-python -m metamon.rl.eval --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 100 --eval_type heuristic
+python -m metamon.rl.evaluate --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 100 --eval_type heuristic
 ```
 
 Will run the default checkpoint of the best model for 100 battles against a set of heuristic baselines highlighted in the paper.
@@ -268,10 +268,10 @@ Will run the default checkpoint of the best model for 100 battles against a set 
 Or to battle against whatever is logged onto the local Showdown server (including other pretrained models that are already waiting):
 
 ```bash
-python -m metamon.rl.eval --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 50 --eval_type ladder --username <pick unique username> --team_set competitive
+python -m metamon.rl.evaluate --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 50 --eval_type ladder --username <pick unique username> --team_set competitive
 ```
 
-Some model sizes have several variants testing different RL objectives. See `metamon/rl/eval_pretrained.py` for a complete list.
+Some model sizes have several variants testing different RL objectives. See `metamon/rl/evaluate.py` for a complete list.
 
 | Model Name (`--agent`)                  | Description                                                                 |
 |-----------------------------|-----------------------------------------------------------------------------|
@@ -502,6 +502,8 @@ export METAMON_WANDB_PROJECT="my_wandb_project_name"
 export METAMON_WANDB_ENTITY="my_wandb_username"
 ```
 
+<br>
+
 ### Train From Scratch
 
 See `python train.py --help` for options. The training script implements offline RL on the human battle dataset *and* an optional extra dataset of self-play battles you may have collected.
@@ -509,19 +511,21 @@ See `python train.py --help` for options. The training script implements offline
 We might retrain the "`SmallIL`" model like this: 
 
 ```bash
-python train.py --run_name any_name_here --model_gin_config configs/models/small_agent.gin --ckpt_dir /pick/a/ckpt/dir --train_gin_config configs/training/base_il.gin --log
+python train.py --run_name any_name_here --model_gin_config small_agent.gin --ckpt_dir /pick/a/ckpt/dir --train_gin_config base_il.gin --log
 ```
-"`SmallRL`" would be the same command with `--train_gin_config configs/training/base_offline_rl.gin`. Scan `rl/pretrained.py` to see the model configs used by each pretrained agent. Note that **we do not currently provide accurate `training/` configs for each pretrained model; they are all set to `base_offline_rl.gin` or `base_il.gin`.**
+"`SmallRL`" would be the same command with `--train_gin_config base_offline_rl.gin`. Scan `rl/pretrained.py` to see the model configs used by each pretrained agent. Note that **we do not currently provide accurate `configs/training` for each pretrained model; they are all set to `base_offline_rl.gin` or `base_il.gin`.**
 
 
-Larger training runs take *days* to complete and [can use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). We think it's likely that faster hparams can reach similar performance, and are working on it! An example of a smaller RNN config is provided in `configs/models/small_rnn.gin`. 
+Larger training runs take *days* to complete and [can use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). An example of a smaller RNN config is provided in `configs/models/small_rnn.gin`. 
+
+<br>
 
 
 ### Finetune from HuggingFace
 
 **See `python finetune_from_hf.py --help` to finetune an existing model to a new dataset!** You might want to improve performance on specific teams or update an old model to the latest version of the replay dataset.
 
-Provides the same setup as the main `train` script but takes care of downloading and matching the config details of our public models. Finetuning will inherit the architecture of the base model but allows for changes to the training objective with `--train_gin_config`. **Note that you will definitely want to customize this, as the pretrained models do not come packaged with their original settings; they are all set to `base_offline_rl.gin` or `base_il.gin`**. The paper includes more information, `base_offline_rl.gin` comments give some tips, and you can find detailed customization instructions below. In any case, the best settings for quick finetuning runs might be different from the original run.
+Provides the same setup as the main `train` script but takes care of downloading and matching the config details of our public models. Finetuning will inherit the architecture of the base model but allows for changes to the training objective with `--train_gin_config`. **Note that you will definitely want to customize this, as the pretrained models do not come packaged with their original settings. The paper includes reference info, `base_offline_rl.gin` comments give an example, and you can find detailed customization instructions below. In any case, the best settings for quick finetuning runs might be different from the original run!
 
 We might finetune "`SmallRL`" like this:
 
@@ -531,16 +535,26 @@ python finetune_from_hf.py --finetune_from_model SmallRL --run_name any_custom_n
 
 You can start from any checkpoint number with `--finetune_from_ckpt`. Most of the paper models would have checkpoints from `range(2, 42, 2)`. See the huggingface for a full list. Defaults to the official eval checkpoint.
 
+<br>
+
 
 ### Customize
 
 Customize the agent architecture by creating new `rl/configs/models/` `.gin` files. Customize the RL hyperparameters by creating new `rl/configs/training/` files. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/configuration.html) to a lot more information about configuring training runs. `amago` is modular, and you can swap just about any piece of the agent with your own ideas. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/customization.html) to more information about custom components.
 
 
+<br>
+
+
 ### Evaluate
 
-Let's say the training command was: `python train.py --run_name psyduck_is_ubers --model_gin_config configs/models/gigantic_agent.gin --train_gin_config configs/models/sota_rl.gin --ckpt_dir /my_metamon_ckpts/`. We can create
-a new eval model with:
+Let's say the training command was: 
+
+```bash
+python train.py --run_name psyduck_is_ubers --model_gin_config configs/models/gigantic_agent.gin --train_gin_config configs/models/sota_rl.gin --ckpt_dir /my_metamon_ckpts/ --tokenizer DefaultObservationSpace-v1 --obs_space TeamPreviewObservationSpace --action_space DefaultActionSpace
+```
+
+We can eval the model with:
 
 ```python
 from metamon.rl.pretrained import pretrained_model, LocalPretrainedModel
@@ -557,9 +571,38 @@ class PsyduckIsUbers(LocalPretrainedModel):
             model_gin_config="gigantic_agent.gin",
             # relative path within rl/configs/training/ to the training settings
             train_gin_config="sota_rl.gin",
+            # match observations & actions
+            observation_space=DefaultObservationSpace(),
+            action_space=DefaultActionSpace(),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
         )
 ```
-And now we can evaluate it just like any of the huggingface models. See `eval.py`!
+If we put this directly in `evaluate.py`, or use `evaluate.eval_pretrained()` somewhere else, we can evaluate it like any of the huggingface models (see [here](#pretrained-models)). A standalone submission to the PokéAgent Challenge ladder (for example) would look something like:
+
+```python
+from metamon.rl import eval_pretrained, LocalPretrainedModel
+from metamon.env import get_metamon_teams
+
+class PsyduckIsUbers(LocalPretrainedModel):
+    ... (see above)
+
+
+if __name__ == "__main__":
+    agent = PsyduckIsUbers()
+    # see "Teams" section to customize teams!
+    teams = get_metamon_teams("gen1ou", "competitive")
+    results = eval_pretrained(
+        pretrained_model=agent,
+        eval_type="pokeagent",
+        battle_format="gen1ou",
+        username="PAC-MyTeamName",
+        password="my_password",
+        player_team_set=teams,
+        n_challenges=100,
+    )
+```
+You'll be able to watch your agent battle and climb the leaderboard live [at this link](http://pokeagentshowdown.com.psim.us).
+
 
 #### Standalone Toy `il` (Deprecated)
 

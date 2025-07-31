@@ -16,7 +16,7 @@ from metamon.rl.metamon_to_amago import (
 )
 
 
-def standard_eval(
+def eval_pretrained(
     pretrained_model: PretrainedModel,
     eval_type: str,
     battle_format: str,
@@ -72,7 +72,7 @@ def standard_eval(
         >>>
         >>> model = get_pretrained_model("SyntheticRLV2")
         >>> teams = get_metamon_teams("gen1ou", "competitive")
-        >>> results = standard_eval(
+        >>> results = eval_pretrained(
         ...     pretrained_model=model,
         ...     eval_type="heuristic",
         ...     battle_format="gen9ou",
@@ -265,7 +265,7 @@ if __name__ == "__main__":
                 battle_format, args.team_set
             )
             for checkpoint in args.checkpoints:
-                results = standard_eval(
+                results = eval_pretrained(
                     pretrained_model=pretrained_model,
                     eval_type=args.eval_type,
                     battle_format=battle_format,
