@@ -4,7 +4,7 @@ from argparse import ArgumentParser
 from metamon.baselines.heuristic.basic import GymLeader, RandomBaseline
 from metamon.baselines.model_based.bcrnn_baselines import BaseRNN
 from metamon.interface import (
-    ALL_OBSERVATION_SPACES,
+    get_observation_space,
     TokenizedObservationSpace,
     DefaultActionSpace,
     DefaultShapedReward,
@@ -35,7 +35,7 @@ if __name__ == "__main__":
         team_set=get_metamon_teams(args.battle_format, args.team_set),
         opponent_type=GymLeader,
         observation_space=TokenizedObservationSpace(
-            ALL_OBSERVATION_SPACES[args.observation_space](),
+            get_observation_space(args.observation_space),
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
         ),
         action_space=DefaultActionSpace(),

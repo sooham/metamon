@@ -37,6 +37,134 @@ from metamon.backend.replay_parser.str_parsing import (
 )
 
 
+ALL_OBSERVATION_SPACES = {}
+ALL_ACTION_SPACES = {}
+ALL_REWARD_FUNCTIONS = {}
+
+
+def register_observation_space(name: Optional[str] = None):
+    """
+    Decorator to register observation space classes.
+
+    Args:
+        name: Optional custom name for the observation space. If not provided, uses the class name.
+
+    Usage:
+        @register_observation_space()
+        class MyObservationSpace(ObservationSpace):
+            pass
+
+        @register_observation_space("CustomName")
+        class AnotherObservationSpace(ObservationSpace):
+            pass
+    """
+
+    def _register(cls):
+        obs_name = name if name is not None else cls.__name__
+        if obs_name in ALL_OBSERVATION_SPACES:
+            raise ValueError(f"Observation space '{obs_name}' is already registered!")
+        ALL_OBSERVATION_SPACES[obs_name] = cls
+        return cls
+
+    return _register
+
+
+def register_action_space(name: Optional[str] = None):
+    """
+    Decorator to register action space classes.
+
+    Args:
+        name: Optional custom name for the action space. If not provided, uses the class name.
+
+    Usage:
+        @register_action_space()
+        class MyActionSpace(ActionSpace):
+            pass
+
+        @register_action_space("CustomName")
+        class AnotherActionSpace(ActionSpace):
+            pass
+    """
+
+    def _register(cls):
+        action_name = name if name is not None else cls.__name__
+        if action_name in ALL_ACTION_SPACES:
+            raise ValueError(f"Action space '{action_name}' is already registered!")
+        ALL_ACTION_SPACES[action_name] = cls
+        return cls
+
+    return _register
+
+
+def register_reward_function(name: Optional[str] = None):
+    """
+    Decorator to register reward function classes.
+
+    Args:
+        name: Optional custom name for the reward function. If not provided, uses the class name.
+
+    Usage:
+        @register_reward_function()
+        class MyRewardFunction(RewardFunction):
+            pass
+
+        @register_reward_function("CustomName")
+        class AnotherRewardFunction(RewardFunction):
+            pass
+    """
+
+    def _register(cls):
+        reward_name = name if name is not None else cls.__name__
+        if reward_name in ALL_REWARD_FUNCTIONS:
+            raise ValueError(f"Reward function '{reward_name}' is already registered!")
+        ALL_REWARD_FUNCTIONS[reward_name] = cls
+        return cls
+
+    return _register
+
+
+def get_observation_space_names():
+    """Get all registered observation space names."""
+    return sorted(ALL_OBSERVATION_SPACES.keys())
+
+
+def get_action_space_names():
+    """Get all registered action space names."""
+    return sorted(ALL_ACTION_SPACES.keys())
+
+
+def get_reward_function_names():
+    """Get all registered reward function names."""
+    return sorted(ALL_REWARD_FUNCTIONS.keys())
+
+
+def get_observation_space(name: str):
+    """Get an instantiated observation space object by name."""
+    if name not in ALL_OBSERVATION_SPACES:
+        raise ValueError(
+            f"Unknown observation space '{name}' (available: {get_observation_space_names()})"
+        )
+    return ALL_OBSERVATION_SPACES[name]()
+
+
+def get_action_space(name: str):
+    """Get an instantiated action space object by name."""
+    if name not in ALL_ACTION_SPACES:
+        raise ValueError(
+            f"Unknown action space '{name}' (available: {get_action_space_names()})"
+        )
+    return ALL_ACTION_SPACES[name]()
+
+
+def get_reward_function(name: str):
+    """Get an instantiated reward function object by name."""
+    if name not in ALL_REWARD_FUNCTIONS:
+        raise ValueError(
+            f"Unknown reward function '{name}' (available: {get_reward_function_names()})"
+        )
+    return ALL_REWARD_FUNCTIONS[name]()
+
+
 def consistent_pokemon_order(pokemon):
     """
     Sorts Pokémon alphabetically according to their active species
@@ -672,6 +800,7 @@ class ActionSpace(ABC):
         raise NotImplementedError
 
 
+@register_action_space()
 class DefaultActionSpace(ActionSpace):
 
     @property
@@ -689,6 +818,7 @@ class DefaultActionSpace(ActionSpace):
         return action.action_idx
 
 
+@register_action_space()
 class MinimalActionSpace(DefaultActionSpace):
 
     @property
@@ -713,12 +843,6 @@ class MinimalActionSpace(DefaultActionSpace):
         return action.action_idx
 
 
-ALL_ACTION_SPACES = {
-    "DefaultActionSpace": DefaultActionSpace,
-    "MinimalActionSpace": MinimalActionSpace,
-}
-
-
 class RewardFunction(ABC):
     def __init__(self, *args, **kwargs):
         pass
@@ -731,6 +855,7 @@ class RewardFunction(ABC):
         raise NotImplementedError
 
 
+@register_reward_function()
 class DefaultShapedReward(RewardFunction):
     """The default reward function used by the paper.
 
@@ -786,6 +911,7 @@ class DefaultShapedReward(RewardFunction):
         return reward
 
 
+@register_reward_function()
 class BinaryReward(RewardFunction):
     """A sparse variant of the default reward function."""
 
@@ -795,12 +921,6 @@ class BinaryReward(RewardFunction):
         elif state.battle_lost:
             return -100.0
         return 0.0
-
-
-ALL_REWARD_FUNCTIONS = {
-    "DefaultShapedReward": DefaultShapedReward,
-    "BinaryReward": BinaryReward,
-}
 
 
 class ObservationSpace(ABC):
@@ -835,6 +955,7 @@ class ObservationSpace(ABC):
         return obs
 
 
+@register_observation_space()
 class DefaultObservationSpace(ObservationSpace):
     """The default observation space used by the paper.
 
@@ -1004,6 +1125,7 @@ class DefaultObservationSpace(ObservationSpace):
         return {"text": text, "numbers": numbers}
 
 
+@register_observation_space()
 class ExpandedObservationSpace(DefaultObservationSpace):
     """Adds PP, the opponent's revealed party, and edge case sleep/freeze flags to DefaultObservationSpace.
 
@@ -1103,6 +1225,7 @@ class ExpandedObservationSpace(DefaultObservationSpace):
         return obs
 
 
+@register_observation_space()
 class TeamPreviewObservationSpace(ExpandedObservationSpace):
 
     @property
@@ -1119,13 +1242,6 @@ class TeamPreviewObservationSpace(ExpandedObservationSpace):
             obs["text"].item() + " " + " ".join(teampreview[:6]), dtype=np.str_
         )
         return obs
-
-
-ALL_OBSERVATION_SPACES = {
-    "DefaultObservationSpace": DefaultObservationSpace,
-    "ExpandedObservationSpace": ExpandedObservationSpace,
-    "TeamPreviewObservationSpace": TeamPreviewObservationSpace,
-}
 
 
 class TokenizedObservationSpace(ObservationSpace):

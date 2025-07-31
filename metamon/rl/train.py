@@ -297,9 +297,9 @@ def create_offline_rl_trainer(
 if __name__ == "__main__":
     from argparse import ArgumentParser
     from metamon.interface import (
-        ALL_OBSERVATION_SPACES,
-        ALL_REWARD_FUNCTIONS,
-        ALL_ACTION_SPACES,
+        get_observation_space,
+        get_reward_function,
+        get_action_space,
     )
 
     parser = ArgumentParser(
@@ -312,10 +312,10 @@ if __name__ == "__main__":
 
     # metamon dataset
     obs_space = TokenizedObservationSpace(
-        ALL_OBSERVATION_SPACES[args.obs_space](), get_tokenizer(args.tokenizer)
+        get_observation_space(args.obs_space), get_tokenizer(args.tokenizer)
     )
-    reward_function = ALL_REWARD_FUNCTIONS[args.reward_function]()
-    action_space = ALL_ACTION_SPACES[args.action_space]()
+    reward_function = get_reward_function(args.reward_function)
+    action_space = get_action_space(args.action_space)
 
     amago_dataset = create_offline_dataset(
         obs_space=obs_space,
