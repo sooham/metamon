@@ -9,12 +9,13 @@ from metamon.rl.pretrained import (
     get_pretrained_model_names,
     PretrainedModel,
 )
-from metamon.baselines import ALL_BASELINES
+from metamon.baselines import get_baseline
 from metamon.rl.metamon_to_amago import (
     make_baseline_env,
     make_local_ladder_env,
     make_pokeagent_ladder_env,
 )
+
 
 HEURISTIC_COMPOSITE_BASELINES = [
     "PokeEnvHeuristic",
@@ -33,7 +34,7 @@ def pretrained_vs_baselines(
     checkpoint: Optional[int] = None,
     total_battles: int = 250,
     parallel_actors_per_baseline: int = 5,
-    async_mp_context: str = "spawn",
+    async_mp_context: str = "forkserver",
     battle_backend: str = "poke-env",
     log_to_wandb: bool = False,
     save_trajectories_to: Optional[str] = None,
@@ -42,7 +43,7 @@ def pretrained_vs_baselines(
     """Evaluate a pretrained model against built-in baseline opponents.
 
     Defaults to the 6 baselines that the paper calls the "Heuristic Composite Score",
-    but you can specify a list of any of the baselines in metamon.baselines.ALL_BASELINES.
+    but you can specify a list of any of the available baselines (see metamon.baselines.get_all_baseline_names()).
     """
     agent = pretrained_model.initialize_agent(checkpoint=checkpoint, log=log_to_wandb)
     baselines = baselines or HEURISTIC_COMPOSITE_BASELINES
@@ -58,7 +59,7 @@ def pretrained_vs_baselines(
             save_trajectories_to=save_trajectories_to,
             battle_backend=battle_backend,
             team_set=team_set,
-            opponent_type=ALL_BASELINES[opponent],
+            opponent_type=get_baseline(opponent),
         )
         for opponent in baselines
     ]
@@ -338,8 +339,8 @@ def add_cli(parser):
     parser.add_argument(
         "--async_mp_context",
         type=str,
-        default="spawn",
-        help="Async environment setup method. Does not apply to `--eval_type ladder` or `--eval_type pokeagent`. Try 'forkserver' or 'fork' if you run into issues!",
+        default="forkserver",
+        help="Async environment setup method. Does not apply to `--eval_type ladder` or `--eval_type pokeagent`. Options: 'forkserver' (recommended, fast), 'fork' (fastest but unsafe with threads), 'spawn' (slowest but safest). Use 'spawn' only if others hang.",
     )
     parser.add_argument(
         "--save_trajectories_to",

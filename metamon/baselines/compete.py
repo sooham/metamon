@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from poke_env import AccountConfiguration
 import asyncio
 
-from metamon.baselines import ALL_BASELINES
+from metamon.baselines import get_baseline
 from metamon.env import get_metamon_teams
 
 
@@ -40,7 +40,7 @@ def head2head(
         iter_ = tqdm.tqdm(iter_)
     all_win_rates, all_lose_rates, all_tie_rates = [], [], []
     for _ in iter_:
-        player = ALL_BASELINES[player_name](
+        player = get_baseline(player_name)(
             battle_format=battle_format,
             team=get_metamon_teams(battle_format, team_split),
             max_concurrent_battles=max_concurrent,
@@ -48,7 +48,7 @@ def head2head(
                 username=f"p{str(uuid.uuid4())[:15]}", password=None
             ),
         )
-        opponent = ALL_BASELINES[opponent_name](
+        opponent = get_baseline(opponent_name)(
             battle_format=battle_format,
             team=get_metamon_teams(battle_format, team_split),
             max_concurrent_battles=max_concurrent,

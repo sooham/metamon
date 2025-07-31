@@ -148,6 +148,8 @@ class PokeEnvWrapper(OpenAIGymEnv):
             in the same format as the parsed replay dataset.
     """
 
+    _INIT_RETRIES = 250
+
     def __init__(
         self,
         battle_format: str,
@@ -227,9 +229,6 @@ class PokeEnvWrapper(OpenAIGymEnv):
             avatar=_check_avatar(player_avatar),
             start_timer_on_battle_start=start_timer_on_battle_start,
             start_challenging=start_challenging,
-            # TODO: need to re-check these settings for online RL
-            ping_interval=None,
-            ping_timeout=None,
         )
 
     @property

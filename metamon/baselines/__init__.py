@@ -30,6 +30,20 @@ def register_baseline(gens: list[int] = GENS, formats: list[str] = FORMATS):
     return _register
 
 
+def get_all_baseline_names():
+    """Get all registered baseline names."""
+    return sorted(ALL_BASELINES.keys())
+
+
+def get_baseline(name: str):
+    """Get a registered baseline class by name."""
+    if name not in ALL_BASELINES:
+        raise ValueError(
+            f"Unknown baseline '{name}' (available: {get_all_baseline_names()})"
+        )
+    return ALL_BASELINES[name]
+
+
 from .base import Baseline
 from . import heuristic
 from . import model_based

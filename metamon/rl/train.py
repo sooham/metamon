@@ -72,12 +72,6 @@ def add_cli(parser):
         help="Resume training from an existing run with this run_name. Provide the epoch checkpoint to load.",
     )
     parser.add_argument(
-        "--finetune_from_path",
-        type=str,
-        default=None,
-        help="Path to a checkpoint (from another run) to initialize weights.",
-    )
-    parser.add_argument(
         "--epochs",
         type=int,
         default=100,
@@ -140,8 +134,8 @@ def add_cli(parser):
     parser.add_argument(
         "--async_env_mp_context",
         type=str,
-        default="spawn",
-        help="Async environment setup method. Try 'forkserver' or 'fork' if using multiple GPUs or if you run into issues.",
+        default="forkserver",
+        help="Async environment setup method. Options: 'forkserver' (recommended, fast), 'fork' (fastest but unsafe with threads), 'spawn' (slowest but safest). Use 'spawn' only if others hang.",
     )
     parser.add_argument(
         "--eval_gens",
@@ -225,9 +219,16 @@ def create_offline_rl_trainer(
     log: bool = False,
     wandb_project: str = WANDB_PROJECT,
     wandb_entity: str = WANDB_ENTITY,
+    manual_gin_overrides: Optional[dict] = None,
 ):
+    """
+    Convenience function that creates an AMAGO experiment with default arguments
+    set for offline RL in metamon.
+    """
     # configuration
     config = {"MetamonTstepEncoder.tokenizer": obs_space.tokenizer}
+    if manual_gin_overrides is not None:
+        config.update(manual_gin_overrides)
     model_config_path = os.path.join(metamon.rl.MODEL_CONFIG_DIR, model_gin_config)
     training_config_path = os.path.join(
         metamon.rl.TRAINING_CONFIG_DIR, train_gin_config
@@ -310,13 +311,14 @@ if __name__ == "__main__":
     add_cli(parser)
     args = parser.parse_args()
 
-    # metamon dataset
+    # agent input/output/rewards
     obs_space = TokenizedObservationSpace(
         get_observation_space(args.obs_space), get_tokenizer(args.tokenizer)
     )
     reward_function = get_reward_function(args.reward_function)
     action_space = get_action_space(args.action_space)
 
+    # metamon dataset
     amago_dataset = create_offline_dataset(
         obs_space=obs_space,
         action_space=action_space,
@@ -326,6 +328,8 @@ if __name__ == "__main__":
         custom_replay_sample_weight=args.custom_replay_sample_weight,
         formats=args.formats,
     )
+
+    # quick-setup for an offline RL experiment
     experiment = create_offline_rl_trainer(
         ckpt_dir=args.save_dir,
         run_name=args.run_name,
@@ -347,14 +351,7 @@ if __name__ == "__main__":
     )
     experiment.start()
     if args.ckpt is not None:
-        assert (
-            args.finetune_from_path is None
-        ), "Provide --ckpt or --finetune_from_path, not both"
+        # resume training from a checkpoint
         experiment.load_checkpoint(args.ckpt)
-    elif args.finetune_from_path is not None:
-        experiment.load_checkpoint_from_path(
-            args.finetune_from_path,
-            is_accelerate_state=not ".pt" in args.finetune_from_path,
-        )
     experiment.learn()
     wandb.finish()

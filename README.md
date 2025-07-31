@@ -155,11 +155,11 @@ reward_fn = DefaultShapedReward()
 action_space = DefaultActionSpace()
 ```
 
-Then, battle against built-in baselines (anything in `metamon.baselines` or any [`poke_env.Player`](https://github.com/hsahovic/poke-env)):
+Then, battle against built-in baselines (or any [`poke_env.Player`](https://github.com/hsahovic/poke-env)):
 
 ```python 
 from metamon.env import BattleAgainstBaseline
-from metamon.baselines.heuristic.basic import Gen1BossAI
+from metamon.baselines import get_baseline
 
 env = BattleAgainstBaseline(
     battle_format="gen1ou",
@@ -167,7 +167,7 @@ env = BattleAgainstBaseline(
     action_space=action_space,
     reward_function=reward_fn,
     team_set=team_set,
-    opponent_type=Gen1BossAI,
+    opponent_type=get_baseline("Gen1BossAI"),
 )
 
 # standard `gymnasium` environment
@@ -260,7 +260,7 @@ We have made every checkpoint of 18 models available on huggingface at [`jakegri
 Load and run pretrained models with `metamon.rl.evaluate`. For example:
 
 ```bash
-python -m metamon.rl.evaluate --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 100 --eval_type heuristic
+python -m metamon.rl.evaluate --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 100 --eval_type heuristic
 ```
 
 Will run the default checkpoint of the best model for 100 battles against a set of heuristic baselines highlighted in the paper.
@@ -268,7 +268,7 @@ Will run the default checkpoint of the best model for 100 battles against a set 
 Or to battle against whatever is logged onto the local Showdown server (including other pretrained models that are already waiting):
 
 ```bash
-python -m metamon.rl.evaluate --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 50 --eval_type ladder --username <pick unique username> --team_set competitive
+python -m metamon.rl.evaluate --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 50 --eval_type ladder --username <pick unique username> --team_set competitive
 ```
 
 Some model sizes have several variants testing different RL objectives. See `metamon/rl/evaluate.py` for a complete list.
@@ -381,8 +381,9 @@ ___
 Here is an overview of the opponents mentioned in the paper:
 
 ```python
-from metamon.baselines import ALL_BASELINES
-opponent = ALL_BASELINES[name]
+from metamon.baselines import get_baseline, get_all_baseline_names
+opponent = get_baseline(name)  # Get specific baseline
+available = get_all_baseline_names()  # List all available baselines
 ```
 
  | `name` | Description |
