@@ -511,26 +511,26 @@ See `python train.py --help` for options. The training script implements offline
 We might retrain the "`SmallIL`" model like this: 
 
 ```bash
-python train.py --run_name any_name_here --model_gin_config small_agent.gin --ckpt_dir /pick/a/ckpt/dir --train_gin_config base_il.gin --log
+python -m metamon.rl.train --run_name AnyNameHere --model_gin_config small_agent.gin --train_gin_config base_il.gin --save_dir ~/my_checkpoint_path/ --log
 ```
-"`SmallRL`" would be the same command with `--train_gin_config base_offline_rl.gin`. Scan `rl/pretrained.py` to see the configs used by each pretrained agent. Larger training runs take *days* to complete and [can (optionally) use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). An example of a smaller RNN config is provided in `configs/models/small_rnn.gin`. 
+"`SmallRL`" would be the same command with `--train_gin_config base_offline_rl.gin`. Scan `rl/pretrained.py` to see the configs used by each pretrained agent. Larger training runs take *days* to complete and [can (optionally) use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). An example of a smaller RNN config is provided in `small_rnn.gin`. 
 
 <br>
 
 
 ### Finetune from HuggingFace
 
-**See `python finetune_from_hf.py --help` to finetune an existing model to a new dataset!** You might want to improve performance on specific teams or update an old model to the latest version of the replay dataset.
+**See `python finetune_from_hf.py --help` to finetune an existing model to a new dataset, training objective, or reward function!** 
 
-Provides the same setup as the main `train` script but takes care of downloading and matching the config details of our public models. Finetuning will inherit the architecture of the base model but allows for changes to the training objective with `--train_gin_config`. Note that the best settings for quick finetuning runs are likely different from the original run!
+Provides the same setup as the main `train` script but takes care of downloading and matching the config details of our public models. Finetuning will inherit the architecture of the base model but allows for changes to the `--train_gin_config` and `--reward_function`. Note that the best settings for quick finetuning runs are likely different from the original run!
 
-We might finetune "`SmallRL`" like this:
+We might finetune "`SmallRL`" to the new gen 9 replay dataset and custom battles like this:
 
 ```bash
-python finetune_from_hf.py --finetune_from_model SmallRL --run_name any_custom_name --save_dir /pick/a/ckpt/dir --custom_replay_dir /my/custom/parsed_replay_dataset --custom_replay_sample_weight .25 --epochs 10 --log
+python -m metamon.rl.finetune_from_hf --finetune_from_model SmallRL --run_name MyCustomSmallRL --save_dir ~/metamon_finetunes/ --custom_replay_dir /my/custom/parsed_replay_dataset --custom_replay_sample_weight .25 --epochs 10 --steps_per_epoch 10000 --log --formats gen9ou --eval_gens 9 
 ```
 
-You can start from any checkpoint number with `--finetune_from_ckpt`. Most of the paper models would have checkpoints from `range(2, 42, 2)`. See the huggingface for a full list. Defaults to the official eval checkpoint.
+You can start from any checkpoint number with `--finetune_from_ckpt`. See the huggingface for a full list. Defaults to the official eval checkpoint.
 
 <br>
 
@@ -545,60 +545,9 @@ Customize the agent architecture by creating new `rl/configs/models/` `.gin` fil
 
 ### Evaluate a Custom Model
 
-Let's say the training command was: 
+`metamon.rl.evaluate` provides quick-setup evals (`pretrained_vs_baselines`, `pretrained_vs_local_ladder`, and `pretrained_vs_pokeagent_ladder`). Full explanations are provided in the source file.
 
-```bash
-python train.py --run_name psyduck_is_ubers --model_gin_config gigantic_agent.gin --train_gin_config sota_rl.gin --ckpt_dir /my_metamon_ckpts/ --tokenizer DefaultObservationSpace-v1 --obs_space TeamPreviewObservationSpace --action_space DefaultActionSpace
-```
-
-We can eval the model with:
-
-```python
-from metamon.rl.pretrained import pretrained_model, LocalPretrainedModel
-
-@pretrained_model()
-class PsyduckIsUbers(LocalPretrainedModel):
-    def __init__(self):
-        super().__init__(
-            # absolute path to where amago saves the run's outputs
-            amago_run_path="/my_metamon_ckpts/psyduck_is_ubers/",
-            # matches --run_name during training
-            model_name="psyduck_is_ubers",
-            # relative path within rl/configs/models/ to the model hparams
-            model_gin_config="gigantic_agent.gin",
-            # relative path within rl/configs/training/ to the training settings
-            train_gin_config="sota_rl.gin",
-            # match observations & actions
-            observation_space=DefaultObservationSpace(),
-            action_space=DefaultActionSpace(),
-            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
-        )
-```
-If we put this directly in `evaluate.py` (or import it there) we can evaluate it like any of the huggingface models (see [here](#pretrained-models)). A standalone submission to the PokéAgent Challenge ladder (for example) would look something like:
-
-```python
-from metamon.rl import eval_pretrained, LocalPretrainedModel
-from metamon.env import get_metamon_teams
-
-class PsyduckIsUbers(LocalPretrainedModel):
-    ... (see above)
-
-
-if __name__ == "__main__":
-    agent = PsyduckIsUbers()
-    # see "Teams" section to customize teams!
-    teams = get_metamon_teams("gen1ou", "competitive")
-    results = eval_pretrained(
-        pretrained_model=agent,
-        eval_type="pokeagent",
-        battle_format="gen1ou",
-        username="PAC-MyTeamName",
-        password="my_password",
-        player_team_set=teams,
-        n_challenges=100,
-    )
-```
-You'll be able to watch your agent battle and climb the leaderboard live [at this link](http://pokeagentshowdown.com.psim.us).
+To eval a custom agent trained from scratch (`rl.train`) we'd create a `LocalPretrainedModel`. `LocalFinetunedModel` provides some quick setup for models finetuned with `rl.finetune_from_hf`. [`examples/evaluate_custom_models.py`](examples/evaluate_custom_models.py) shows an example for each, and deploys them on the PokéAgent Ladder!
 
 
 #### Standalone Toy `il` (Deprecated)

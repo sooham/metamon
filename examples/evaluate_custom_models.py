@@ -50,6 +50,7 @@ MyFinetunedModel = LocalFinetunedModel(
 )
 
 teams = metamon.env.get_metamon_teams("gen1ou", "competitive")
+# or create a custom set of teams (metamon.env.TeamSet)
 results = pretrained_vs_pokeagent_ladder(
     pretrained_model=MyFinetunedModel,
     username="PAC-MyTeamName",
