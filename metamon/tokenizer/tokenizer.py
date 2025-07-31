@@ -112,7 +112,7 @@ if __name__ == "__main__":
     import tqdm
 
     from metamon.interface import (
-        ALL_OBSERVATION_SPACES,
+        get_observation_space,
         DefaultShapedReward,
         DefaultActionSpace,
     )
@@ -157,7 +157,7 @@ if __name__ == "__main__":
 
     dset = ParsedReplayDataset(
         dset_root=args.parsed_replay_root,
-        observation_space=ALL_OBSERVATION_SPACES[args.obs_space](),
+        observation_space=get_observation_space(args.obs_space),
         action_space=DefaultActionSpace(),
         reward_function=DefaultShapedReward(),
         verbose=True,

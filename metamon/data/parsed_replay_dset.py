@@ -297,7 +297,7 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
     from metamon.interface import (
         DefaultShapedReward,
-        ALL_OBSERVATION_SPACES,
+        get_observation_space,
         TokenizedObservationSpace,
         DefaultActionSpace,
     )
@@ -312,7 +312,7 @@ if __name__ == "__main__":
     dset = ParsedReplayDataset(
         dset_root=args.dset_root,
         observation_space=TokenizedObservationSpace(
-            ALL_OBSERVATION_SPACES[args.obs_space](),
+            get_observation_space(args.obs_space),
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
         ),
         action_space=DefaultActionSpace(),

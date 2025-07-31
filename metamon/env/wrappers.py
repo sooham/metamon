@@ -466,6 +466,6 @@ class PokeAgentLadder(QueueOnLocalLadder):
             self.player_username is not None and self.player_password is not None
         ), "Username and password are required for PokéAgent laddering"
         assert self.player_username.startswith(
-           "PAC"
+            "PAC"
         ), "Bot usernames should start with 'PAC'"
         super().start_laddering(n_challenges)

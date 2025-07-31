@@ -7,7 +7,7 @@ from metamon.rl.train import (
     WANDB_ENTITY,
 )
 from metamon.rl.pretrained import get_pretrained_model_names, get_pretrained_model
-from metamon.interface import ALL_REWARD_FUNCTIONS
+from metamon.interface import get_reward_function_names, get_reward_function
 
 
 def add_cli(parser):
@@ -69,7 +69,7 @@ def add_cli(parser):
         "--reward_function",
         type=str,
         default=None,
-        choices=ALL_REWARD_FUNCTIONS,
+        choices=get_reward_function_names(),
         help="Defaults to the same reward function as the base model. See the README for a description of each reward function, or create your own!",
     )
     parser.add_argument(
@@ -144,7 +144,7 @@ if __name__ == "__main__":
     )
     if args.reward_function is not None:
         # custom reward function
-        reward_function = ALL_REWARD_FUNCTIONS[args.reward_function]()
+        reward_function = get_reward_function(args.reward_function)
     else:
         # use the base reward function
         reward_function = pretrained.reward_function

@@ -436,6 +436,7 @@ ___
 The `ObservationSpace` packs those features into a policy input.
 - `DefaultObservationSpace` is the text/numerical observation space used in our paper. 
 - `ExpandedObservationSpace` is a slight improvement based on lessons learned from the paper. It also adds tera types for Gen 9. 
+- `TeamPreviewObeservationSpace` further extends `ExpandedObservationSpace` with a preview of the opponent's team (for Gen 9).
 
  We could create a custom version with more/less features by inheriting from `metamon.interface.ObservationSpace`.
 
