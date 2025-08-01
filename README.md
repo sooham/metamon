@@ -292,16 +292,17 @@ Some model sizes have several variants testing different RL objectives. See `met
 | **`SyntheticRLV1_SelfPlay`**   | SyntheticRLV1 fine-tuned on 2M extra battles against itself                 |
 | **`SyntheticRLV1_PlusPlus`**          | SyntheticRLV1 finetuned on 2M extra battles against diverse opponents      |
 | **`SyntheticRLV2`**           | Final 200M actor-critic model with value classification trained on 1M human + 4M diverse self-play battles. |
+| **`SmallRLGen9Beta`**         | Prototype 15M actor-critic model trained *after* the dataset was expanded to include Gen9OU |
+
 
 Here is a reference of human evals for key models according to our paper:
-
 
 <div align="center">
     <img src="media/human_ratings.png" alt="Figure 1" width="800">
 </div>
 
 > [!TIP]
-> All of these policies predate our expansion to Gen 9. They *can* play Gen 9 OU, but won't play it well. Gen 9 training in progress.
+> Most these policies predate our expansion to Gen 9. They *can* play Gen 9 OU, but won't play it well. Gen 9 training runs are ongoing.
 
 <br>
 

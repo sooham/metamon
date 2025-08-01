@@ -22,11 +22,12 @@ from metamon.interface import (
     ObservationSpace,
     RewardFunction,
     DefaultObservationSpace,
-    DefaultShapedReward,
+    TeamPreviewObservationSpace,
     TokenizedObservationSpace,
     ActionSpace,
     DefaultActionSpace,
     MinimalActionSpace,
+    DefaultShapedReward,
 )
 from metamon.tokenizer import PokemonTokenizer, get_tokenizer
 
@@ -495,4 +496,26 @@ class SyntheticRLV2(PretrainedModel):
             train_gin_config="binary_rl.gin",
             default_checkpoint=48,
             action_space=MinimalActionSpace(),
+        )
+
+
+@pretrained_model()
+class SmallRLGen9Beta(PretrainedModel):
+    def __init__(self):
+        super().__init__(
+            model_name="small-rl-gen9beta",
+            model_gin_config="small_multitaskagent.gin",
+            train_gin_config="exp_rl.gin",
+            # this model was finetuned from a previous gen9 attempt and has
+            # trained for more than 24 total epochs...
+            default_checkpoint=24,
+            action_space=DefaultActionSpace(),
+            observation_space=TeamPreviewObservationSpace(),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            # temporarily forced to flash attention until we can verify numerical stability
+            # of a switch to a standard pytorch sliding window inference alternative
+            gin_overrides={
+                "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
+                "amago.nets.transformer.FlashAttention.window_size": (32, 0),
+            },
         )
