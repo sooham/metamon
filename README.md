@@ -277,7 +277,7 @@ Deploy pretrained agents on the PokéAgent Challenge ladder:
 python -m metamon.rl.evaluate --eval_type pokeagent --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 10 --username <your username> --password <your password> --team_set competitive
 ```
 
-Some model sizes have several variants testing different RL objectives. See `metamon/rl/evaluate.py` for a complete list.
+Some model sizes have several variants testing different RL objectives. See `metamon/rl/pretrained.py` for a complete list.
 
 | Model Name (`--agent`)                  | Description                                                                 |
 |-----------------------------|-----------------------------------------------------------------------------|
