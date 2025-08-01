@@ -182,12 +182,12 @@ from metamon.env import QueueOnLocalLadder
 
 env = QueueOnLocalLadder(
     battle_format="gen1ou",
-    username="my_scary_username",
+    player_username="my_scary_username",
     num_battles=10,
     observation_space=obs_space,
     action_space=action_space,
     reward_function=reward_fn,
-    team_set=team_set,
+    player_team_set=team_set,
 )
 ```
 
@@ -248,7 +248,7 @@ ____
 
 ## Pretrained Models
 
-We have made every checkpoint of 18 models available on huggingface at [`jakegrigsby/metamon`](https://huggingface.co/jakegrigsby/metamon/tree/main). Pretrained models can run without research GPUs, but you will need to install [`amago`](https://github.com/UT-Austin-RPL/amago), which is an RL codebase by the same authors. Follow instructions [here](https://ut-austin-rpl.github.io/amago/installation.html).
+We have made every checkpoint of 19 models available on huggingface at [`jakegrigsby/metamon`](https://huggingface.co/jakegrigsby/metamon/tree/main). Pretrained models can run without research GPUs, but you will need to install [`amago`](https://github.com/UT-Austin-RPL/amago), which is an RL codebase by the same authors. Follow instructions [here](https://ut-austin-rpl.github.io/amago/installation.html).
 
 
 <div align="center">
@@ -335,9 +335,9 @@ Parsed replays will download automatically when requested by the `ParsedReplayDa
 
 #### Server/Replay Sim2Sim Gap
 
-In Showdown RL, we have to embrace a **mismatch between the trajectories we *observe in our own battles* and those we *gather from other player's replays***. In short, replays are meant for re*watching* battles, not re*playing* them; they are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. The server sends info to the players that it does not save to its replay, and we need to try and simulate that missing info. Metamon goes to great lengths to handle this, and is always improving ([more info here](metamon/backend/replay_parser/README.md)), but there is no way to be perfect. 
+In Showdown RL, we have to embrace a **mismatch between the trajectories we *observe in our own battles* and those we *gather from other player's replays***. In short, replays are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. The server sends info to the players that it does not save to its replay, and we need to try and simulate that missing info. Metamon goes to great lengths to handle this, and is always improving ([more info here](metamon/backend/replay_parser/README.md)), but there is no way to be perfect. 
 
-**Therefore, replay data is perhaps best viewed as pretraining data for an offline-to-online finetuning problem.** Self-collected data from the online env fixes inaccuracies and can help concentrate on teams we'll be using on the ladder. This does not necessarily require multi-round policy improvement through self-play in the usual sense (e.g., chess or Go); the best models in our paper were trained from scratch on frozen datasets that combined replay data with battles played by a few previous versions. The whole project is now set up to do this (see [Quick Start](#quick-start)).
+**Therefore, replay data is perhaps best viewed as pretraining data for an offline-to-online finetuning problem.** Self-collected data from the online env fixes inaccuracies and can help concentrate on teams we'll be using on the ladder. The whole project is now set up to do this (see [Quick Start](#quick-start)).
 
 
 
@@ -423,10 +423,8 @@ ___
 <br>
 
 ## Observation Spaces, Action Spaces, & Reward Functions
- 
- Pokémon Showdown is a great RL problem, but a bad benchmark environment, because it is too complicated and updated too often to get any version control. Metamon tries to split the RL away from Pokémon, which lets the Pokémon "backend" receive large updates --- [and even be replaced with other implementations](#battle-backends) --- without breaking existing policies. We hope **this also lets unrelated projects use our dataset.**
 
- All we need to do is pick an `ObservationSpace`, `ActionSpace`, and `RewardFunction`:
+Metamon tries to separate the RL from Pokémon. All we need to do is pick an `ObservationSpace`, `ActionSpace`, and `RewardFunction`:
 
  1. The environment outputs a `UniversalState`
  2. Our `ObservationSpace` maps the `UniversalState` to the input of our agent.
@@ -435,19 +433,18 @@ ___
  5. The environment takes the current (`UniversalState`, `UniversalAction`) and outputs the next `UniversalState`. Our `RewardFunction` gives the agent a scalar reward.
  7. Repeat until victory.
 
-
-
-#### Observations
+### Observations
 
 `UniversalState` defines all the features we have access to at each timestep.
 
-The `ObservationSpace` packs those features into a policy input.
-- `DefaultObservationSpace` is the text/numerical observation space used in our paper. 
-- `ExpandedObservationSpace` is a slight improvement based on lessons learned from the paper. It also adds tera types for Gen 9. 
-- `TeamPreviewObeservationSpace` further extends `ExpandedObservationSpace` with a preview of the opponent's team (for Gen 9).
+The `ObservationSpace` packs those features into a policy input.  
+We could create a custom version with more/less features by inheriting from `metamon.interface.ObservationSpace`.
 
- We could create a custom version with more/less features by inheriting from `metamon.interface.ObservationSpace`.
-
+| Observation Space                            | Description                                                                 |
+|--------------------------------------|-----------------------------------------------------------------------------|
+| `DefaultObservationSpace`           | The text/numerical observation space used in our paper.                 |
+| `ExpandedObservationSpace`          | A slight improvement based on lessons learned from the paper. It also adds tera types for Gen 9. |
+| `TeamPreviewObeservationSpace`      | Further extends `ExpandedObservationSpace` with a preview of the opponent's team (for Gen 9). |
 
 ##### Tokenization
 
@@ -468,13 +465,13 @@ tokenized_space = TokenizedObservationSpace(
 The vocabs are in `metamon/tokenizer`; they are generated by tracking unique
 words across the entire replay dataset, with an unknown token for rare cases we may have missed.
 
- | Name | Description |
+ | Tokenizer Name | Description |
 |------|-------------|
 | `allreplays-v3` | Legacy version for pre-release models. |
 |`DefaultObservationSpace-v0`| Updated post-release vocabulary as of `metamon-parsed-replays` dataset `v2`. |
 |`DefaultObservationSpace-v1`| Updated vocabulary as of `metamon-parsed-replays` dataset `v3-beta` (adds ~1k words for Gen 9). |
 
-#### Actions
+### Actions
 
 Metamon uses a fixed `UniversalAction` space of 13 discrete choices:
 - `{0, 1, 2, 3}` use the active Pokémon's moves in alphabetical order.
@@ -483,14 +480,23 @@ Metamon uses a fixed `UniversalAction` space of 13 discrete choices:
 
 That might not be how we want to set up our agent. The `ActionSpace` converts between whatever the output of the policy might be and the `UniversalAction`.
 
- - `DefaultActionSpace` is the standard discrete space of 13 and supports Gen 9. 
- - `MinimalActionSpace` is the original space of 9 choices (4 moves + 5 switches) --- which is all we need for Gen 1-4. 
- - Any new action spaces would be added to `metamon.interface.ALL_ACTION_SPACES`. A text action space (for LLM-Agents) is on the short-term roadmap.
+| Action Space              | Description                                                                                      |
+|------------------------|--------------------------------------------------------------------------------------------------|
+| `DefaultActionSpace`   | Standard discrete space of 13 and supports Gen 9.                                          |
+| `MinimalActionSpace`   | The original space of 9 choices (4 moves + 5 switches) --- which is all we need for Gen 1-4. |
+
+Any new action spaces would be added to `metamon.interface.ALL_ACTION_SPACES`. A text action space (for LLM-Agents) is on the short-term roadmap. 
 
 
-#### Rewards
+### Rewards
 
-Reward functions assign a scalar reward based on consecutive states (R(s, s')). `DefaultShapedReward` is the shaped reward used by the paper. `BinaryReward` removes the smaller shaping terms and simply provides +/- 100 for win/loss. Any new reward functions would be added to `metamon.interface.ALL_REWARD_FUNCTIONS`, and we can implement a new one by inheriting from `metamon.interface.RewardFunction`.
+Reward functions assign a scalar reward based on consecutive states (R(s, s')). - 
+| Reward Function                 | Description                                                                                  |
+|--------------------------|----------------------------------------------------------------------------------------------|
+| `DefaultShapedReward`    | Shaped reward used by the paper. +/- 100 for win/loss, light shaping for damage dealt, health recovered, status received/inflicted.                                                      |
+| `BinaryReward`           | Removes the smaller shaping terms and simply provides +/- 100 for win/loss.                 |
+
+Any new reward functions would be added to `metamon.interface.ALL_REWARD_FUNCTIONS`, and we can implement a new one by inheriting from `metamon.interface.RewardFunction`.
 
 ---
 
