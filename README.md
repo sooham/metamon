@@ -260,7 +260,7 @@ We have made every checkpoint of 18 models available on huggingface at [`jakegri
 Load and run pretrained models with `metamon.rl.evaluate`. For example:
 
 ```bash
-python -m metamon.rl.evaluate --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 100 --eval_type heuristic
+python -m metamon.rl.evaluate --eval_type heuristic --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 100
 ```
 
 Will run the default checkpoint of the best model for 100 battles against a set of heuristic baselines highlighted in the paper.
@@ -268,7 +268,13 @@ Will run the default checkpoint of the best model for 100 battles against a set 
 Or to battle against whatever is logged onto the local Showdown server (including other pretrained models that are already waiting):
 
 ```bash
-python -m metamon.rl.evaluate --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 50 --eval_type ladder --username <pick unique username> --team_set competitive
+python -m metamon.rl.evaluate --eval_type ladder --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 50 --username <pick unique username> --team_set competitive
+```
+
+Deploy pretrained agents on the PokéAgent Challenge ladder:
+
+```bash
+python -m metamon.rl.evaluate --eval_type pokeagent --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 10 --username <your username> --password <your password> --team_set competitive
 ```
 
 Some model sizes have several variants testing different RL objectives. See `metamon/rl/evaluate.py` for a complete list.
