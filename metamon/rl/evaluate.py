@@ -70,7 +70,7 @@ def pretrained_vs_baselines(
     agent.parallel_actors = len(make_envs)
     results = agent.evaluate_test(
         make_envs,
-        timesteps=total_battles * 250,
+        timesteps=total_battles * 250 // len(make_envs),
         episodes=total_battles,
     )
     return results

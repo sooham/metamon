@@ -260,7 +260,7 @@ We have made every checkpoint of 18 models available on huggingface at [`jakegri
 Load and run pretrained models with `metamon.rl.evaluate`. For example:
 
 ```bash
-python -m metamon.rl.evaluate --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 100 --eval_type heuristic
+python -m metamon.rl.evaluate --eval_type heuristic --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 100
 ```
 
 Will run the default checkpoint of the best model for 100 battles against a set of heuristic baselines highlighted in the paper.
@@ -268,7 +268,13 @@ Will run the default checkpoint of the best model for 100 battles against a set 
 Or to battle against whatever is logged onto the local Showdown server (including other pretrained models that are already waiting):
 
 ```bash
-python -m metamon.rl.evaluate --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 50 --eval_type ladder --username <pick unique username> --team_set competitive
+python -m metamon.rl.evaluate --eval_type ladder --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 50 --username <pick unique username> --team_set competitive
+```
+
+Deploy pretrained agents on the PokéAgent Challenge ladder:
+
+```bash
+python -m metamon.rl.evaluate --eval_type pokeagent --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 10 --username <your username> --password <your password> --team_set competitive
 ```
 
 Some model sizes have several variants testing different RL objectives. See `metamon/rl/evaluate.py` for a complete list.
@@ -286,16 +292,17 @@ Some model sizes have several variants testing different RL objectives. See `met
 | **`SyntheticRLV1_SelfPlay`**   | SyntheticRLV1 fine-tuned on 2M extra battles against itself                 |
 | **`SyntheticRLV1_PlusPlus`**          | SyntheticRLV1 finetuned on 2M extra battles against diverse opponents      |
 | **`SyntheticRLV2`**           | Final 200M actor-critic model with value classification trained on 1M human + 4M diverse self-play battles. |
+| **`SmallRLGen9Beta`**         | Prototype 15M actor-critic model trained *after* the dataset was expanded to include Gen9OU |
+
 
 Here is a reference of human evals for key models according to our paper:
-
 
 <div align="center">
     <img src="media/human_ratings.png" alt="Figure 1" width="800">
 </div>
 
 > [!TIP]
-> All of these policies predate our expansion to Gen 9. They *can* play Gen 9 OU, but won't play it well. Gen 9 training in progress.
+> Most these policies predate our expansion to Gen 9. They *can* play Gen 9 OU, but won't play it well. Gen 9 training runs are ongoing.
 
 <br>
 
@@ -513,9 +520,9 @@ See `python train.py --help` for options. The training script implements offline
 We might retrain the "`SmallIL`" model like this: 
 
 ```bash
-python -m metamon.rl.train --run_name AnyNameHere --model_gin_config small_agent.gin --train_gin_config base_il.gin --save_dir ~/my_checkpoint_path/ --log
+python -m metamon.rl.train --run_name AnyNameHere --model_gin_config small_agent.gin --train_gin_config il.gin --save_dir ~/my_checkpoint_path/ --log
 ```
-"`SmallRL`" would be the same command with `--train_gin_config base_offline_rl.gin`. Scan `rl/pretrained.py` to see the configs used by each pretrained agent. Larger training runs take *days* to complete and [can (optionally) use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). An example of a smaller RNN config is provided in `small_rnn.gin`. 
+"`SmallRL`" would be the same command with `--train_gin_config exp_rl.gin`. Scan `rl/pretrained.py` to see the configs used by each pretrained agent. Larger training runs take *days* to complete and [can (optionally) use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). An example of a smaller RNN config is provided in `small_rnn.gin`. 
 
 <br>
 

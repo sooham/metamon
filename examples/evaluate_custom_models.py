@@ -13,7 +13,7 @@ python -m metamon.rl.train \\
     --run_name gen9v3 \\
     --model_gin_config medium_multitaskagent.gin \\
     --save_dir ~/metamon_ckpts/ \\
-    --train_gin_config base_offline.gin \\
+    --train_gin_config binary_rl.gin \\
     --obs_space TeamPreviewObservationSpace \\
     --tokenizer DefaultObservationSpace-v1 \\
     --log
@@ -22,7 +22,7 @@ MyCustomModel = LocalPretrainedModel(
     amago_ckpt_dir="~/metamon_ckpts/",
     model_name="gen9v3",
     model_gin_config="medium_multitaskagent.gin",
-    train_gin_config="base_offline_rl.gin",
+    train_gin_config="binary_rl.gin",
     default_checkpoint=40,
     action_space=metamon.interface.DefaultActionSpace(),
     observation_space=metamon.interface.TeamPreviewObservationSpace(),
