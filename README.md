@@ -519,9 +519,9 @@ See `python train.py --help` for options. The training script implements offline
 We might retrain the "`SmallIL`" model like this: 
 
 ```bash
-python -m metamon.rl.train --run_name AnyNameHere --model_gin_config small_agent.gin --train_gin_config base_il.gin --save_dir ~/my_checkpoint_path/ --log
+python -m metamon.rl.train --run_name AnyNameHere --model_gin_config small_agent.gin --train_gin_config il.gin --save_dir ~/my_checkpoint_path/ --log
 ```
-"`SmallRL`" would be the same command with `--train_gin_config base_offline_rl.gin`. Scan `rl/pretrained.py` to see the configs used by each pretrained agent. Larger training runs take *days* to complete and [can (optionally) use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). An example of a smaller RNN config is provided in `small_rnn.gin`. 
+"`SmallRL`" would be the same command with `--train_gin_config exp_rl.gin`. Scan `rl/pretrained.py` to see the configs used by each pretrained agent. Larger training runs take *days* to complete and [can (optionally) use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). An example of a smaller RNN config is provided in `small_rnn.gin`. 
 
 <br>
 
