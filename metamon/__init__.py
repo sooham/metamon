@@ -1,7 +1,7 @@
 import os
 from importlib.metadata import version
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 
 poke_env_version = version("poke-env")
 
@@ -40,6 +40,3 @@ METAMON_CACHE_DIR = os.environ.get("METAMON_CACHE_DIR", None)
 from . import data
 from . import backend
 from . import env
-from . import il
-from . import rl
-from . import baselines

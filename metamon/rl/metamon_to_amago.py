@@ -9,7 +9,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import einops
-import poke_env
 
 
 from metamon.interface import (
@@ -22,10 +21,11 @@ from metamon.il.model import TransformerTurnEmbedding
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.data import ParsedReplayDataset
 from metamon.env import (
+    TeamSet,
     PokeEnvWrapper,
     BattleAgainstBaseline,
-    TeamSet,
     QueueOnLocalLadder,
+    PokeAgentLadder,
 )
 
 
@@ -45,14 +45,19 @@ else:
     from amago.envs.amago_env import AMAGO_ENV_LOG_PREFIX
 
 
+def _block_warnings():
+    """Suppress common gymnasium warnings during environment creation."""
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", category=amago.utils.AmagoWarning)
+
+
 def make_placeholder_env(
     observation_space: ObservationSpace, action_space: ActionSpace
 ) -> AMAGOEnv:
     """
     Create an environment that does nothing. Can be used to initialize a policy
     """
-    warnings.filterwarnings("ignore", category=UserWarning)
-    warnings.filterwarnings("ignore", category=amago.utils.AmagoWarning)
+    _block_warnings()
 
     class _PlaceholderShowdown(gym.Env):
         def __init__(self):
@@ -83,67 +88,32 @@ def make_placeholder_env(
     return MetamonAMAGOWrapper(penv)
 
 
-def make_ladder_env(
-    battle_format: str,
-    player_team_set: TeamSet,
-    observation_space: ObservationSpace,
-    action_space: ActionSpace,
-    reward_function: RewardFunction,
-    num_battles: int,
-    username: str,
-    avatar: str,
-    password: Optional[str] = None,
-    save_trajectories_to: Optional[str] = None,
-    battle_backend: str = "poke-env",
-):
+def make_local_ladder_env(*args, **kwargs):
     """
-    Battle on the local Showdown ladder
+    Battle on the local Showdown ladder!
     """
-    warnings.filterwarnings("ignore", category=UserWarning)
-    warnings.filterwarnings("ignore", category=amago.utils.AmagoWarning)
-    menv = QueueOnLocalLadder(
-        battle_format=battle_format,
-        num_battles=num_battles,
-        observation_space=observation_space,
-        action_space=action_space,
-        reward_function=reward_function,
-        player_team_set=player_team_set,
-        player_username=username,
-        player_avatar=avatar,
-        player_password=password,
-        save_trajectories_to=save_trajectories_to,
-        battle_backend=battle_backend,
-    )
-    print("Made Ladder Env")
+    _block_warnings()
+    menv = QueueOnLocalLadder(*args, **kwargs)
+    print("Made Local Ladder Env")
     return PSLadderAMAGOWrapper(menv)
 
 
-def make_baseline_env(
-    battle_format: str,
-    player_team_set: TeamSet,
-    observation_space: ObservationSpace,
-    action_space: ActionSpace,
-    reward_function: RewardFunction,
-    opponent_type: Type[poke_env.Player],
-    save_trajectories_to: Optional[str] = None,
-    battle_backend: str = "poke-env",
-):
+def make_pokeagent_ladder_env(*args, **kwargs):
+    """
+    Battle on the NeurIPS 2025 PokéAgent Challenge ladder!
+    """
+    _block_warnings()
+    menv = PokeAgentLadder(*args, **kwargs)
+    print("Made PokeAgent Ladder Env")
+    return PSLadderAMAGOWrapper(menv)
+
+
+def make_baseline_env(*args, **kwargs):
     """
     Battle against a built-in baseline opponent
     """
-    warnings.filterwarnings("ignore", category=UserWarning)
-    warnings.filterwarnings("ignore", category=amago.utils.AmagoWarning)
-    menv = BattleAgainstBaseline(
-        battle_format=battle_format,
-        observation_space=observation_space,
-        action_space=action_space,
-        reward_function=reward_function,
-        team_set=player_team_set,
-        opponent_type=opponent_type,
-        turn_limit=200,
-        save_trajectories_to=save_trajectories_to,
-        battle_backend=battle_backend,
-    )
+    _block_warnings()
+    menv = BattleAgainstBaseline(*args, **kwargs)
     print("Made Baseline Env")
     return MetamonAMAGOWrapper(menv)
 
@@ -177,7 +147,7 @@ def make_placeholder_experiment(
         dataset=dummy_dset,
         make_train_env=dummy_env,
         make_val_env=dummy_env,
-        env_mode="async",
+        env_mode="sync",
         async_env_mp_context="spawn",
         parallel_actors=1,
         exploration_wrapper_type=None,
@@ -207,7 +177,7 @@ class MetamonAMAGOWrapper(amago.envs.AMAGOEnv):
     """AMAGOEnv wrapper for poke-env gymnasium environments.
 
     - Extends the observation space with an illegal action mask, which will
-    be passed along to the actor network.
+        be passed along to the actor network.
     - Adds success rate and valid action rate logging.
     """
 

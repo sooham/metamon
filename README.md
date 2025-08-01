@@ -79,7 +79,7 @@ We also support the UnderUsed (UU), NeverUsed (NU), and Ubers tiers for Generati
 
 10. [**Battle Backends**](#battle-backends)
 
-11. [**Acknowledgement**](#acknowledgement)
+11. [**Acknowledgement**](#acknowledgements)
 
 12. [**Citation**](#citation)
 
@@ -155,11 +155,11 @@ reward_fn = DefaultShapedReward()
 action_space = DefaultActionSpace()
 ```
 
-Then, battle against built-in baselines (anything in `metamon.baselines` or any [`poke_env.Player`](https://github.com/hsahovic/poke-env)):
+Then, battle against built-in baselines (or any [`poke_env.Player`](https://github.com/hsahovic/poke-env)):
 
 ```python 
 from metamon.env import BattleAgainstBaseline
-from metamon.baselines.heuristic.basic import Gen1BossAI
+from metamon.baselines import get_baseline
 
 env = BattleAgainstBaseline(
     battle_format="gen1ou",
@@ -167,7 +167,7 @@ env = BattleAgainstBaseline(
     action_space=action_space,
     reward_function=reward_fn,
     team_set=team_set,
-    opponent_type=Gen1BossAI,
+    opponent_type=get_baseline("Gen1BossAI"),
 )
 
 # standard `gymnasium` environment
@@ -257,10 +257,10 @@ We have made every checkpoint of 18 models available on huggingface at [`jakegri
 
 <br>
 
-Load and run pretrained models with `metamon.rl.eval_pretrained`. For example:
+Load and run pretrained models with `metamon.rl.evaluate`. For example:
 
 ```bash
-python -m metamon.rl.eval_pretrained --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 100 --eval_type heuristic
+python -m metamon.rl.evaluate --eval_type heuristic --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 100
 ```
 
 Will run the default checkpoint of the best model for 100 battles against a set of heuristic baselines highlighted in the paper.
@@ -268,10 +268,16 @@ Will run the default checkpoint of the best model for 100 battles against a set 
 Or to battle against whatever is logged onto the local Showdown server (including other pretrained models that are already waiting):
 
 ```bash
-python -m metamon.rl.eval_pretrained --agent SyntheticRLV2 --gens 1 --formats ou --n_challenges 50 --eval_type ladder --username <pick unique username> --team_set competitive
+python -m metamon.rl.evaluate --eval_type ladder --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 50 --username <pick unique username> --team_set competitive
 ```
 
-Some model sizes have several variants testing different RL objectives. See `metamon/rl/eval_pretrained.py` for a complete list.
+Deploy pretrained agents on the PokéAgent Challenge ladder:
+
+```bash
+python -m metamon.rl.evaluate --eval_type pokeagent --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 10 --username <your username> --password <your password> --team_set competitive
+```
+
+Some model sizes have several variants testing different RL objectives. See `metamon/rl/evaluate.py` for a complete list.
 
 | Model Name (`--agent`)                  | Description                                                                 |
 |-----------------------------|-----------------------------------------------------------------------------|
@@ -286,16 +292,17 @@ Some model sizes have several variants testing different RL objectives. See `met
 | **`SyntheticRLV1_SelfPlay`**   | SyntheticRLV1 fine-tuned on 2M extra battles against itself                 |
 | **`SyntheticRLV1_PlusPlus`**          | SyntheticRLV1 finetuned on 2M extra battles against diverse opponents      |
 | **`SyntheticRLV2`**           | Final 200M actor-critic model with value classification trained on 1M human + 4M diverse self-play battles. |
+| **`SmallRLGen9Beta`**         | Prototype 15M actor-critic model trained *after* the dataset was expanded to include Gen9OU |
+
 
 Here is a reference of human evals for key models according to our paper:
-
 
 <div align="center">
     <img src="media/human_ratings.png" alt="Figure 1" width="800">
 </div>
 
 > [!TIP]
-> All of these policies predate our expansion to Gen 9. They *can* play Gen 9 OU, but won't play it well. Gen 9 training in progress.
+> Most these policies predate our expansion to Gen 9. They *can* play Gen 9 OU, but won't play it well. Gen 9 training runs are ongoing.
 
 <br>
 
@@ -328,7 +335,7 @@ Parsed replays will download automatically when requested by the `ParsedReplayDa
 
 #### Server/Replay Sim2Sim Gap
 
-In Showdown RL, we have to embrace a **mismatch between the trajectories we *observe in our own battles* and those we *gather from other player's replays***. In short, replays are meant for re*watching* battles, not re*playing* them; they are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. The server sends info to the players that it does not save to its replay, and we need to try and simulate that missing info. Metamon goes to great lengths to handle this, and is always improving ([more info here](metamon/data/replay_dataset/replay_parser/README.md)), but there is no way to be perfect. 
+In Showdown RL, we have to embrace a **mismatch between the trajectories we *observe in our own battles* and those we *gather from other player's replays***. In short, replays are meant for re*watching* battles, not re*playing* them; they are saved from the point-of-view of a *spectator* rather than the point-of-view of a *player*. The server sends info to the players that it does not save to its replay, and we need to try and simulate that missing info. Metamon goes to great lengths to handle this, and is always improving ([more info here](metamon/backend/replay_parser/README.md)), but there is no way to be perfect. 
 
 **Therefore, replay data is perhaps best viewed as pretraining data for an offline-to-online finetuning problem.** Self-collected data from the online env fixes inaccuracies and can help concentrate on teams we'll be using on the ladder. This does not necessarily require multi-round policy improvement through self-play in the usual sense (e.g., chess or Go); the best models in our paper were trained from scratch on frozen datasets that combined replay data with battles played by a few previous versions. The whole project is now set up to do this (see [Quick Start](#quick-start)).
 
@@ -381,8 +388,9 @@ ___
 Here is an overview of the opponents mentioned in the paper:
 
 ```python
-from metamon.baselines import ALL_BASELINES
-opponent = ALL_BASELINES[name]
+from metamon.baselines import get_baseline, get_all_baseline_names
+opponent = get_baseline(name)  # Get specific baseline
+available = get_all_baseline_names()  # List all available baselines
 ```
 
  | `name` | Description |
@@ -436,6 +444,7 @@ ___
 The `ObservationSpace` packs those features into a policy input.
 - `DefaultObservationSpace` is the text/numerical observation space used in our paper. 
 - `ExpandedObservationSpace` is a slight improvement based on lessons learned from the paper. It also adds tera types for Gen 9. 
+- `TeamPreviewObeservationSpace` further extends `ExpandedObservationSpace` with a preview of the opponent's team (for Gen 9).
 
  We could create a custom version with more/less features by inheriting from `metamon.interface.ObservationSpace`.
 
@@ -490,7 +499,10 @@ Reward functions assign a scalar reward based on consecutive states (R(s, s')). 
 
  ## Training and Evaluation
 
+<img src="media/metamon_and_amago.png" alt="Metamon & Amago Diagram" width="200" style="float: right; margin-left: 20px; margin-bottom: 10px;">
+
 We trained all of our main RL **& IL** models with [`amago`](https://ut-austin-rpl.github.io/amago/index.html). Everything you need to train your own model on metamon data and evaluate against Pokémon baselines is provided in **`metamon/rl/`**.
+
 
 #### Configure `wandb` logging (optional):
 ```shell
@@ -499,43 +511,52 @@ export METAMON_WANDB_PROJECT="my_wandb_project_name"
 export METAMON_WANDB_ENTITY="my_wandb_username"
 ```
 
-#### Basic Training Run
+<br>
 
-See `python train.py --help` for options. The training script currently implements *offline RL on the human battle dataset*. We are working on reintroducing self-play datasets and extending to online RL on the local ladder. 
+### Train From Scratch
+
+See `python train.py --help` for options. The training script implements offline RL on the human battle dataset *and* an optional extra dataset of self-play battles you may have collected.
 
 We might retrain the "`SmallIL`" model like this: 
+
+```bash
+python -m metamon.rl.train --run_name AnyNameHere --model_gin_config small_agent.gin --train_gin_config il.gin --save_dir ~/my_checkpoint_path/ --log
 ```
-python train.py --run_name any_name_here --model_gin_config configs/models/small_agent.gin --ckpt_dir /pick/a/ckpt/dir --train_gin_config configs/training/base_offline.gin --il --log
+"`SmallRL`" would be the same command with `--train_gin_config exp_rl.gin`. Scan `rl/pretrained.py` to see the configs used by each pretrained agent. Larger training runs take *days* to complete and [can (optionally) use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). An example of a smaller RNN config is provided in `small_rnn.gin`. 
+
+<br>
+
+
+### Finetune from HuggingFace
+
+**See `python finetune_from_hf.py --help` to finetune an existing model to a new dataset, training objective, or reward function!** 
+
+Provides the same setup as the main `train` script but takes care of downloading and matching the config details of our public models. Finetuning will inherit the architecture of the base model but allows for changes to the `--train_gin_config` and `--reward_function`. Note that the best settings for quick finetuning runs are likely different from the original run!
+
+We might finetune "`SmallRL`" to the new gen 9 replay dataset and custom battles like this:
+
+```bash
+python -m metamon.rl.finetune_from_hf --finetune_from_model SmallRL --run_name MyCustomSmallRL --save_dir ~/metamon_finetunes/ --custom_replay_dir /my/custom/parsed_replay_dataset --custom_replay_sample_weight .25 --epochs 10 --steps_per_epoch 10000 --log --formats gen9ou --eval_gens 9 
 ```
-"`SmallRL`" would be the same command without `--il`.
 
-Larger training runs take *days* to complete and [can use mulitple GPUs (link)](https://ut-austin-rpl.github.io/amago/tutorial/async.html#multi-gpu-training). We think it's likely that faster hparams can reach similar performance, and are working on it!
+You can start from any checkpoint number with `--finetune_from_ckpt`. See the huggingface for a full list. Defaults to the official eval checkpoint.
+
+<br>
 
 
-#### Evaluate
-The easiest way to eval a new model is to go in and add a `LocalPretrainedModel` to `rl/eval_pretrained.py`. 
-
-Let's say the training command was: `python train.py --run_name psyduck_is_ubers --model_gin_config gigantic_agent.gin --ckpt_dir /my_metamon_ckpts/`. We'd add:
-
-```python
-# metamon/rl/eval_pretrained.py
-class PsyduckIsUbers(LocalPretrainedModel):
-    def __init__(self):
-        super().__init__(
-            # absolute path to where amago saves the run's outputs
-            amago_run_path="/my_metamon_ckpts/psyduck_is_ubers/",
-            model_name="psyduck_is_ubers",
-            # relative path within rl/configs/ to the model hparams
-            gin_config="models/gigantic_agent.gin",
-            # if the training command had --il in it...
-            is_il_model=False,
-        )
-```
-And now we can evaluate it just like any of the huggingface models.
-
-#### Customize
+### Customize
 
 Customize the agent architecture by creating new `rl/configs/models/` `.gin` files. Customize the RL hyperparameters by creating new `rl/configs/training/` files. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/configuration.html) to a lot more information about configuring training runs. `amago` is modular, and you can swap just about any piece of the agent with your own ideas. [Here is a link](https://ut-austin-rpl.github.io/amago/tutorial/customization.html) to more information about custom components.
+
+
+<br>
+
+
+### Evaluate a Custom Model
+
+`metamon.rl.evaluate` provides quick-setup evals (`pretrained_vs_baselines`, `pretrained_vs_local_ladder`, and `pretrained_vs_pokeagent_ladder`). Full explanations are provided in the source file.
+
+To eval a custom agent trained from scratch (`rl.train`) we'd create a `LocalPretrainedModel`. `LocalFinetunedModel` provides some quick setup for models finetuned with `rl.finetune_from_hf`. [`examples/evaluate_custom_models.py`](examples/evaluate_custom_models.py) shows an example for each, and deploys them on the PokéAgent Ladder!
 
 
 #### Standalone Toy `il` (Deprecated)
