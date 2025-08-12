@@ -7,6 +7,7 @@ import wandb
 import amago
 
 import metamon
+import metamon.rl
 from metamon.env import get_metamon_teams
 from metamon.interface import (
     TokenizedObservationSpace,
@@ -165,7 +166,7 @@ def create_offline_dataset(
     formats: Optional[List[str]] = None,
 ) -> amago.loading.RLDataset:
 
-    formats = formats or metamon.ALL_SUPPORTED_FORMATS
+    formats = formats or metamon.SUPPORTED_BATTLE_FORMATS
     dset_kwargs = {
         "observation_space": obs_space,
         "action_space": action_space,
