@@ -550,7 +550,7 @@ class Abra(PretrainedModel):
         super().__init__(
             model_name="abra",
             model_gin_config="medium_multitaskagent.gin",
-            train_gin_config="bianry_rl.gin",
+            train_gin_config="binary_rl.gin",
             default_checkpoint=40,
             action_space=DefaultActionSpace(),
             observation_space=TeamPreviewObservationSpace(),

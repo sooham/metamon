@@ -38,6 +38,7 @@ def pretrained_vs_baselines(
     battle_backend: str = "poke-env",
     log_to_wandb: bool = False,
     save_trajectories_to: Optional[str] = None,
+    save_team_results_to: Optional[str] = None,
     baselines: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Evaluate a pretrained model against built-in baseline opponents.
@@ -57,6 +58,7 @@ def pretrained_vs_baselines(
             action_space=pretrained_model.action_space,
             reward_function=pretrained_model.reward_function,
             save_trajectories_to=save_trajectories_to,
+            save_team_results_to=save_team_results_to,
             battle_backend=battle_backend,
             team_set=team_set,
             opponent_type=get_baseline(opponent),
