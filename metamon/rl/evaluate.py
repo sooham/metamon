@@ -117,6 +117,7 @@ def pretrained_vs_local_ladder(
     checkpoint: Optional[int] = None,
     battle_backend: str = "poke-env",
     save_trajectories_to: Optional[str] = None,
+    save_team_results_to: Optional[str] = None,
     log_to_wandb: bool = False,
 ) -> Dict[str, Any]:
     """Evaluate a pretrained model on the ladder of your Local Showdown server.
@@ -143,6 +144,7 @@ def pretrained_vs_local_ladder(
         battle_backend=battle_backend,
         battle_format=battle_format,
         save_trajectories_to=save_trajectories_to,
+        save_team_results_to=save_team_results_to,
     )
 
 
@@ -157,6 +159,7 @@ def pretrained_vs_pokeagent_ladder(
     checkpoint: Optional[int] = None,
     battle_backend: str = "poke-env",
     save_trajectories_to: Optional[str] = None,
+    save_team_results_to: Optional[str] = None,
     log_to_wandb: bool = False,
 ) -> Dict[str, Any]:
     """Evaluate a pretrained model on the PokéAgent Challenge ladder.
@@ -184,6 +187,7 @@ def pretrained_vs_pokeagent_ladder(
         battle_backend=battle_backend,
         battle_format=battle_format,
         save_trajectories_to=save_trajectories_to,
+        save_team_results_to=save_team_results_to,
     )
 
 
@@ -246,6 +250,7 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
                     "checkpoint": checkpoint,
                     "battle_backend": args.battle_backend,
                     "save_trajectories_to": args.save_trajectories_to,
+                    "save_team_results_to": args.save_team_results_to,
                     "log_to_wandb": args.log_to_wandb,
                 }
                 eval_function = _get_default_eval(args, eval_kwargs)
@@ -321,7 +326,13 @@ def add_cli(parser):
     parser.add_argument(
         "--team_set",
         default="competitive",
-        choices=["competitive", "paper_variety", "paper_replays", "modern_replays"],
+        choices=[
+            "competitive",
+            "paper_variety",
+            "paper_replays",
+            "modern_replays",
+            "pokeagent_modern_replays",
+        ],
         help="Team Set. See the README for more details.",
     )
     parser.add_argument(
@@ -346,6 +357,11 @@ def add_cli(parser):
         "--save_trajectories_to",
         default=None,
         help="Save replays (in the parsed replay format) to a directory.",
+    )
+    parser.add_argument(
+        "--save_team_results_to",
+        default=None,
+        help="Save records of team selection, opponent, and outcome.",
     )
     parser.add_argument(
         "--log_to_wandb",

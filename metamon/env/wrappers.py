@@ -3,7 +3,7 @@ import os
 import copy
 import json
 from datetime import datetime
-from typing import Optional, Type, Any
+from typing import Optional, Type, Any, List
 
 import numpy as np
 import lz4.frame
@@ -50,8 +50,9 @@ class TeamSet(Teambuilder):
         self.team_file_dir = team_file_dir
         self.battle_format = battle_format
         self.team_files = self._find_team_files()
+        self._most_recent_team_file = None
 
-    def _find_team_files(self):
+    def _find_team_files(self) -> List[str]:
         team_files = []
         for root, _, files in os.walk(self.team_file_dir):
             for file in files:
@@ -59,8 +60,13 @@ class TeamSet(Teambuilder):
                     team_files.append(os.path.join(root, file))
         return team_files
 
-    def yield_team(self):
+    @property
+    def most_recent_team_file(self) -> Optional[str]:
+        return self._most_recent_team_file
+
+    def yield_team(self) -> str:
         file = random.choice(self.team_files)
+        self._most_recent_team_file = file
         with open(file, "r") as f:
             team_data = f.read()
         return self.join_team(self.parse_showdown_team(team_data))
@@ -146,6 +152,11 @@ class PokeEnvWrapper(OpenAIGymEnv):
             enforces a limit of 1000 regardless of this setting.
         save_trajectories_to: The directory to save the trajectories to. Data is saved
             in the same format as the parsed replay dataset.
+        save_team_results_to: Directory to write some basic stats about team choice and battle outcome
+            for use in tuning team selection. Data is saved in a CSV file with columns:
+            Player Username, Team File, Opponent Username, Result, Turn Count, Battle ID.
+        battle_backend: The Showdown state parsing backend. Options are 'poke-env' or
+            'metamon'.
     """
 
     _INIT_RETRIES = 250
@@ -168,6 +179,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
         start_timer_on_battle_start: bool = False,
         turn_limit: int = 1000,
         save_trajectories_to: Optional[str] = None,
+        save_team_results_to: Optional[str] = None,
         battle_backend: str = "poke-env",
     ):
         opponent_team_set = opponent_team_set or copy.deepcopy(player_team_set)
@@ -191,6 +203,20 @@ class PokeEnvWrapper(OpenAIGymEnv):
         else:
             self.save_trajectories_to = None
 
+        if save_team_results_to is not None:
+            os.makedirs(save_team_results_to, exist_ok=True)
+            self.save_team_results_to = os.path.join(
+                save_team_results_to,
+                f"battle_log_{self.player_username}_{battle_format}.csv",
+            )
+            if not os.path.exists(self.save_team_results_to):
+                with open(self.save_team_results_to, "a") as f:
+                    f.write(
+                        "Player Username, Team File, Opponent Username, Result, Turn Count, Battle ID\n"
+                    )
+        else:
+            self.save_team_results_to = None
+
         if opponent_type is not None:
             self.metamon_opponent_name = opponent_type.__name__
             self._current_opponent = opponent_type(
@@ -203,11 +229,12 @@ class PokeEnvWrapper(OpenAIGymEnv):
             )
         else:
             self._current_opponent = None
-            self.metamon_opponent_name = "Ladder"
+            self.metamon_opponent_name = None
 
         self.reward_function = copy.deepcopy(reward_function)
         self.metamon_obs_space = copy.deepcopy(observation_space)
         self.metamon_action_space = copy.deepcopy(action_space)
+        self.metamon_team_set = player_team_set
         self.turn_limit = turn_limit
         self.metamon_battle_format = battle_format
 
@@ -318,25 +345,39 @@ class PokeEnvWrapper(OpenAIGymEnv):
             info["won"] = self.agent.n_won_battles > self.battle_reference
             self.battle_reference = self.agent.n_won_battles
 
-            if self.save_trajectories_to is not None:
+            if (
+                self.save_trajectories_to is not None
+                or self.save_team_results_to is not None
+            ):
                 # build a long filename that matches the format of the parsed replay dataset
                 result = "WIN" if info["won"] == 1 else "LOSS"
                 battle_id = "".join(str(random.randint(0, 9)) for _ in range(10))
                 timestamp = datetime.now().strftime("%m-%d-%Y-%H:%M:%S")
-                filename = f"metamon-{self.metamon_battle_format}-{battle_id}_Unrated_{self.player_username}_vs_{self.metamon_opponent_name}_{timestamp}_{result}.json.lz4"
-                # matches the format of the parsed replay dataset
-                output_json = {
-                    "states": [s.to_dict() for s in self.trajectory["states"]],
-                    # NOTE: the replay parser leaves a blank (-1) final action; matched here
-                    "actions": self.trajectory["actions"] + [-1],
-                }
-                # conservative file writing to avoid partial writes on shutdown or interruption
-                # when launching multiple environments in parallel
-                path = os.path.join(self.save_trajectories_to, filename)
-                temp_path = path + ".tmp"
-                with lz4.frame.open(temp_path, "wb") as f:
-                    f.write(json.dumps(output_json).encode("utf-8"))
-                os.rename(temp_path, path)
+                opponent_name = (
+                    self.metamon_opponent_name or self.current_battle.opponent_username
+                )
+
+                if self.save_trajectories_to is not None:
+                    filename = f"metamon-{self.metamon_battle_format}-{battle_id}_Unrated_{self.player_username}_vs_{opponent_name}_{timestamp}_{result}.json.lz4"
+                    # matches the format of the parsed replay dataset
+                    output_json = {
+                        "states": [s.to_dict() for s in self.trajectory["states"]],
+                        # NOTE: the replay parser leaves a blank (-1) final action; matched here
+                        "actions": self.trajectory["actions"] + [-1],
+                    }
+                    # conservative file writing to avoid partial writes on shutdown or interruption
+                    # when launching multiple environments in parallel
+                    path = os.path.join(self.save_trajectories_to, filename)
+                    temp_path = path + ".tmp"
+                    with lz4.frame.open(temp_path, "wb") as f:
+                        f.write(json.dumps(output_json).encode("utf-8"))
+                    os.rename(temp_path, path)
+
+                if self.save_team_results_to is not None:
+                    with open(self.save_team_results_to, "a") as f:
+                        f.write(
+                            f"{self.player_username},{self.metamon_team_set.most_recent_team_file},{opponent_name},{result},{self.turn_counter},{battle_id}\n"
+                        )
 
         return next_obs, reward, terminated, truncated, info
 
@@ -368,6 +409,7 @@ class BattleAgainstBaseline(PokeEnvWrapper):
         opponent_type: Type[Player],
         turn_limit: int = 200,
         save_trajectories_to: Optional[str] = None,
+        save_team_results_to: Optional[str] = None,
         battle_backend: str = "poke-env",
     ):
         super().__init__(
@@ -380,6 +422,7 @@ class BattleAgainstBaseline(PokeEnvWrapper):
             opponent_type=opponent_type,
             turn_limit=turn_limit,
             save_trajectories_to=save_trajectories_to,
+            save_team_results_to=save_team_results_to,
             battle_backend=battle_backend,
         )
 
@@ -410,6 +453,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
         player_avatar: Optional[str] = None,
         start_timer_on_battle_start: bool = True,
         save_trajectories_to: Optional[str] = None,
+        save_team_results_to: Optional[str] = None,
         player_password: Optional[str] = None,
         battle_backend: str = "poke-env",
         print_battle_bar: bool = True,
@@ -428,6 +472,7 @@ class QueueOnLocalLadder(PokeEnvWrapper):
             start_challenging=False,
             turn_limit=float("inf"),
             save_trajectories_to=save_trajectories_to,
+            save_team_results_to=save_team_results_to,
             battle_backend=battle_backend,
         )
         print(f"Laddering for {num_battles} battles")
@@ -455,6 +500,12 @@ PokeAgentServerConfiguration = ServerConfiguration(
 
 
 class PokeAgentLadder(QueueOnLocalLadder):
+    """
+    Battle against the PokéAgent Challenge Ladder (http://pokeagentshowdown.com.insecure.psim.us)
+
+    Note that you must register a real Showdown account by going to the website above and clicking
+    the Gear icon in the top right corner. `player_username` and `player_password` are required.
+    """
 
     @property
     def server_configuration(self):

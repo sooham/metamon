@@ -277,7 +277,8 @@ Deploy pretrained agents on the PokéAgent Challenge ladder:
 python -m metamon.rl.evaluate --eval_type pokeagent --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 10 --username <your username> --password <your password> --team_set competitive
 ```
 
-Some model sizes have several variants testing different RL objectives. See `metamon/rl/evaluate.py` for a complete list.
+Some model sizes have several variants testing different RL objectives. See `metamon/rl/pretrained.py` for a complete list; Agents trained *after* the paper have some
+discussion in their docstring there.
 
 | Model Name (`--agent`)                  | Description                                                                 |
 |-----------------------------|-----------------------------------------------------------------------------|
@@ -293,6 +294,7 @@ Some model sizes have several variants testing different RL objectives. See `met
 | **`SyntheticRLV1_PlusPlus`**          | SyntheticRLV1 finetuned on 2M extra battles against diverse opponents      |
 | **`SyntheticRLV2`**           | Final 200M actor-critic model with value classification trained on 1M human + 4M diverse self-play battles. |
 | **`SmallRLGen9Beta`**         | Prototype 15M actor-critic model trained *after* the dataset was expanded to include Gen9OU |
+| **`Abra`** | 57M actor-critic trained on `parsed-replays v3` (Gen9!) and a small set of synthetic battles. First of a new series of Gen9OU-compatible policies trained in a similar style to the paper's "Synthetic" agents.| 
 
 
 Here is a reference of human evals for key models according to our paper:
