@@ -23,6 +23,7 @@ from metamon.interface import (
     RewardFunction,
     DefaultObservationSpace,
     TeamPreviewObservationSpace,
+    ExpandedObservationSpace,
     TokenizedObservationSpace,
     ActionSpace,
     DefaultActionSpace,
@@ -501,6 +502,16 @@ class SyntheticRLV2(PretrainedModel):
 
 @pretrained_model()
 class SmallRLGen9Beta(PretrainedModel):
+    """
+    Prototype for Gen9 agents. Trained entirely on human replays (parsed-replays v3). Was finetuned
+    from a previous Gen9 attempt in order to switch from "ExpandedObservationSpace" to "TeamPreviewObservationSpace".
+    TeamPreviewObservationSpace adds the opponent's species names if revealed before the start of the battle, which
+    is only relevant to Gen 9.
+
+    Few formal evals done, but it appears roughly equivalent to the original replays-only policies from the paper
+    (e.g., LargeRL), except that it also plays Gen9 at about that same level.
+    """
+
     def __init__(self):
         super().__init__(
             model_name="small-rl-gen9beta",
@@ -514,6 +525,36 @@ class SmallRLGen9Beta(PretrainedModel):
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
             # temporarily forced to flash attention until we can verify numerical stability
             # of a switch to a standard pytorch sliding window inference alternative
+            gin_overrides={
+                "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
+                "amago.nets.transformer.FlashAttention.window_size": (32, 0),
+            },
+        )
+
+
+@pretrained_model()
+class Abra(PretrainedModel):
+    """
+    First of a new series of training runs replicating the "Synthetic" agents from the paper *with Gen 9*.
+
+    Trained on parsed-replays v3 with ~100k self-play battles per OU generation. Gen 9 battles collected amongst checkpoints
+    of SmallRLGen9Beta and a previous Gen 9 test. Gen 1-4 used battles from the stronger Synthetic agents. Most of these were
+    played on the PokéAgent Challenge ladder, at a time when the organizer baselines made up 99%+ of active battles.
+
+    Performance in Gen1-4 is comparable to early Synthetic policies like SyntheticRLV1, but nowhere close to SyntheticRLV2.
+
+    50% GXE in Gen9OU playing with sample teams on the human ladder.
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="abra",
+            model_gin_config="medium_multitaskagent.gin",
+            train_gin_config="binary_rl.gin",
+            default_checkpoint=40,
+            action_space=DefaultActionSpace(),
+            observation_space=TeamPreviewObservationSpace(),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
             gin_overrides={
                 "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
                 "amago.nets.transformer.FlashAttention.window_size": (32, 0),
