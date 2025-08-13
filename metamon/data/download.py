@@ -15,10 +15,10 @@ if METAMON_CACHE_DIR is not None:
 else:
     VERSION_REFERENCE_PATH = None
 
-LATEST_RAW_REPLAY_REVISION = "v3"
-LATEST_PARSED_REPLAY_REVISION = "v3"
+LATEST_RAW_REPLAY_REVISION = "v4"
+LATEST_PARSED_REPLAY_REVISION = "v4"
 LATEST_TEAMS_REVISION = "v3"
-LATEST_USAGE_STATS_REVISION = "v1"
+LATEST_USAGE_STATS_REVISION = "v2"
 
 
 def _update_version_reference(key: str, name: str, version: str):
@@ -336,10 +336,10 @@ Examples:
         help="""
 Specific version to download. Defaults to latest version.
 Available versions:
-    raw-replays: v1, v2, v3
-    parsed-replays: v0 (deprecated) v1, v2, v3-beta
+    raw-replays: v1, v2, v3, v4
+    parsed-replays: v0 (deprecated) v1, v2, v3-beta, v3, v4
     teams: v0, v1, v2, v3
-    usage-stats: v0, v1
+    usage-stats: v0, v1, v2
     
     The huggingface READMEs have changelogs.
 """,

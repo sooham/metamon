@@ -258,11 +258,11 @@ class SimProtocol:
         assert len(self.curr_turn.pokemon_1) == 6
         assert len(self.curr_turn.pokemon_2) == 6
         if player == "p1":
-            while len(self.curr_turn.pokemon_1) > size:
-                self.curr_turn.pokemon_1.remove(None)
+            team = self.curr_turn.pokemon_1
         elif player == "p2":
-            while len(self.curr_turn.pokemon_2) > size:
-                self.curr_turn.pokemon_2.remove(None)
+            team = self.curr_turn.pokemon_2
+        while len(team) > size and None in team:
+            team.remove(None)
         if size != 6:
             raise UnusualTeamSize(size)
 

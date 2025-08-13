@@ -27,7 +27,7 @@ TIER_MAP = {
 }
 
 EARLIEST_USAGE_STATS_DATE = datetime.date(2014, 1, 1)
-LATEST_USAGE_STATS_DATE = datetime.date(2025, 5, 1)
+LATEST_USAGE_STATS_DATE = datetime.date(2025, 7, 1)
 
 
 def parse_pokemon_moveset(file_path):
