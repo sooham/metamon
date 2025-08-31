@@ -140,9 +140,9 @@ def add_cli(parser):
     parser.add_argument(
         "--eval_gens",
         type=int,
-        nargs="+",
+        nargs="*",
         default=[1, 2, 3, 4, 9],
-        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90\%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch!",
+        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90\%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch! Use `--eval_gens` (no arguments) to disable evaluation.",
     )
     parser.add_argument(
         "--formats",
@@ -209,8 +209,9 @@ def create_offline_rl_trainer(
     action_space: ActionSpace,
     reward_function: RewardFunction,
     amago_dataset: amago.loading.Dataset,
-    eval_gens: List[int] = [1, 2, 3, 4, 9],
+    eval_gens: List[int],
     async_env_mp_context: str = "spawn",
+    val_timesteps_per_epoch: int = 300,
     dloader_workers: int = 8,
     epochs: int = 40,
     grad_accum: int = 1,
@@ -226,7 +227,10 @@ def create_offline_rl_trainer(
     set for offline RL in metamon.
     """
     # configuration
-    config = {"MetamonTstepEncoder.tokenizer": obs_space.tokenizer}
+    config = {
+        "MetamonTstepEncoder.tokenizer": obs_space.tokenizer,
+        "MetamonPerceiverTstepEncoder.tokenizer": obs_space.tokenizer,
+    }
     if manual_gin_overrides is not None:
         config.update(manual_gin_overrides)
     model_config_path = os.path.join(metamon.rl.MODEL_CONFIG_DIR, model_gin_config)
@@ -236,19 +240,25 @@ def create_offline_rl_trainer(
     amago.cli_utils.use_config(config, [model_config_path, training_config_path])
 
     # validation environments (evaluated throughout training)
-    make_envs = [
-        partial(
-            make_baseline_env,
-            battle_format=f"gen{gen}ou",
-            observation_space=obs_space,
-            action_space=action_space,
-            reward_function=reward_function,
-            team_set=get_metamon_teams(f"gen{gen}ou", "competitive"),
-            opponent_type=opponent,
-        )
-        for gen in set(eval_gens)
-        for opponent in EVAL_OPPONENTS
-    ]
+    if eval_gens:
+        make_envs = [
+            partial(
+                make_baseline_env,
+                battle_format=f"gen{gen}ou",
+                observation_space=obs_space,
+                action_space=action_space,
+                reward_function=reward_function,
+                team_set=get_metamon_teams(f"gen{gen}ou", "competitive"),
+                opponent_type=opponent,
+            )
+            for gen in set(eval_gens)
+            for opponent in EVAL_OPPONENTS
+        ]
+    else:
+        # turn off eval envs during training (do evals separately).
+        make_envs = [partial(make_placeholder_env, obs_space, action_space)]
+        val_timesteps_per_epoch = 0
+
     experiment = MetamonAMAGOExperiment(
         ## required ##
         run_name=run_name,
@@ -258,7 +268,7 @@ def create_offline_rl_trainer(
         # tstep_encoder_type = should be set in the gin file
         # traj_encoder_type = should be set in the gin file
         # agent_type = should be set in the gin file
-        val_timesteps_per_epoch=300,  # per actor
+        val_timesteps_per_epoch=val_timesteps_per_epoch,  # per actor
         ## environment ##
         make_train_env=partial(make_placeholder_env, obs_space, action_space),
         make_val_env=make_envs,
