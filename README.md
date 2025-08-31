@@ -277,8 +277,10 @@ Deploy pretrained agents on the PokéAgent Challenge ladder:
 python -m metamon.rl.evaluate --eval_type pokeagent --agent SyntheticRLV2 --gens 1 --formats ou --total_battles 10 --username <your username> --password <your password> --team_set competitive
 ```
 
-Some model sizes have several variants testing different RL objectives. See `metamon/rl/pretrained.py` for a complete list; Agents trained *after* the paper have some
-discussion in their docstring there.
+Some model sizes have several variants testing different RL objectives. See `metamon/rl/pretrained.py` for a complete list.
+
+### Paper Policies
+*Paper policies play Gens 1-4 and are discussed in detail in the RLC 2025 paper.*
 
 | Model Name (`--agent`)                  | Description                                                                 |
 |-----------------------------|-----------------------------------------------------------------------------|
@@ -293,8 +295,16 @@ discussion in their docstring there.
 | **`SyntheticRLV1_SelfPlay`**   | SyntheticRLV1 fine-tuned on 2M extra battles against itself                 |
 | **`SyntheticRLV1_PlusPlus`**          | SyntheticRLV1 finetuned on 2M extra battles against diverse opponents      |
 | **`SyntheticRLV2`**           | Final 200M actor-critic model with value classification trained on 1M human + 4M diverse self-play battles. |
+
+### PokéAgent Challenge Policies
+*Policies trained during the PokéAgent Challenge play Gens 1-4 **and 9**, but have a clear bias towards Gen 1 OU and Gen 9 OU. Their docstrings in `metamon/rl/pretrained.py` have some extra discussion and eval metrics.*
+
+| Model Name (`--agent`)                  | Description                                                                 |
+|-----------------------------|-----------------------------------------------------------------------------|
 | **`SmallRLGen9Beta`**         | Prototype 15M actor-critic model trained *after* the dataset was expanded to include Gen9OU |
-| **`Abra`** | 57M actor-critic trained on `parsed-replays v3` (Gen9!) and a small set of synthetic battles. First of a new series of Gen9OU-compatible policies trained in a similar style to the paper's "Synthetic" agents.| 
+| **`Abra`** | 57M actor-critic trained on `parsed-replays v3` and a small set of synthetic battles. First of a new series of Gen9OU-compatible policies trained in a similar style to the paper's "Synthetic" agents.| 
+| **`Kadabra & Alakazam`** | Are further extensions of `Abra` on large datasets of self-play battles. They appear on the PokéAgent Challenge practice ladder, but checkpoint releases are on hold to avoid interfering with the competition. | 
+| **`Minikazam`** | 4.7M RNN trained on `parsed-replays v4` and a large dataset of self-play battles. Tries to compensate for low paramter count by training on `Alakazam`'s dataset. Creates a decent starting point for finetuning on any GPU. |
 
 
 Here is a reference of human evals for key models according to our paper:
