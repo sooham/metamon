@@ -105,9 +105,9 @@ def add_cli(parser):
     parser.add_argument(
         "--eval_gens",
         type=int,
-        nargs="+",
+        nargs="*",
         default=[1, 2, 3, 4, 9],
-        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90%%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch!",
+        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90\%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch! Use `--eval_gens` (no arguments) to disable evaluation.",
     )
     parser.add_argument(
         "--formats",
