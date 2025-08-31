@@ -305,7 +305,7 @@ Some model sizes have several variants testing different RL objectives. See `met
 | **`SmallRLGen9Beta`**         | Prototype 15M actor-critic model trained *after* the dataset was expanded to include Gen9OU |
 | **`Abra`** | 57M actor-critic trained on `parsed-replays v3` and a small set of synthetic battles. First of a new series of Gen9OU-compatible policies trained in a similar style to the paper's "Synthetic" agents.| 
 | **`Kadabra & Alakazam`** | Are further extensions of `Abra` on large datasets of self-play battles. They appear on the PokéAgent Challenge practice ladder, but checkpoint releases are on hold to avoid interfering with the competition. | 
-| **`Minikazam`** | 4.7M RNN trained on `parsed-replays v4` and a large dataset of self-play battles. Tries to compensate for low paramter count by training on `Alakazam`'s dataset. Creates a decent starting point for finetuning on any GPU. |
+| **`Minikazam`** | 4.7M RNN trained on `parsed-replays v4` and a large dataset of self-play battles. Tries to compensate for low parameter count by training on `Alakazam`'s dataset. Creates a decent starting point for finetuning on any GPU. [Evals here](https://docs.google.com/spreadsheets/d/1GU7-Jh0MkIKWhiS1WNQiPfv49WIajanUF4MjKeghMAc/edit?usp=sharing). |
 
 
 Here is a reference of human evals for key models according to our paper:
@@ -458,6 +458,7 @@ We could create a custom version with more/less features by inheriting from `met
 | `DefaultObservationSpace`           | The text/numerical observation space used in our paper.                 |
 | `ExpandedObservationSpace`          | A slight improvement based on lessons learned from the paper. It also adds tera types for Gen 9. |
 | `TeamPreviewObeservationSpace`      | Further extends `ExpandedObservationSpace` with a preview of the opponent's team (for Gen 9). |
+| `OpponentMoveObservationSpace`      | Modifies `TeamPreviewObservationSpace` to include the opponent Pokémon's revealed moves. Continues our trend of deemphasizing long-term memory. |
 
 ##### Tokenization
 
@@ -508,6 +509,7 @@ Reward functions assign a scalar reward based on consecutive states (R(s, s')). 
 |--------------------------|----------------------------------------------------------------------------------------------|
 | `DefaultShapedReward`    | Shaped reward used by the paper. +/- 100 for win/loss, light shaping for damage dealt, health recovered, status received/inflicted.                                                      |
 | `BinaryReward`           | Removes the smaller shaping terms and simply provides +/- 100 for win/loss.                 |
+| `AggresiveShapedReward`   | Edits `DefaultShapedReward`'s sparse reward to +200 for winning +0 for losing. |
 
 Any new reward functions would be added to `metamon.interface.ALL_REWARD_FUNCTIONS`, and we can implement a new one by inheriting from `metamon.interface.RewardFunction`.
 
