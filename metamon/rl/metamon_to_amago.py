@@ -17,7 +17,7 @@ from metamon.interface import (
     ActionSpace,
     UniversalAction,
 )
-from metamon.il.model import TransformerTurnEmbedding
+from metamon.il.model import TransformerTurnEmbedding, PerceiverTurnEmbedding
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.data import ParsedReplayDataset
 from metamon.env import (
@@ -301,6 +301,62 @@ class MetamonMaskedActor(amago.nets.actor_critic.Actor):
         return dist_params
 
 
+@gin.configurable
+class MetamonMaskedResidualActor(amago.nets.actor_critic.ResidualActor):
+    """ResidualActor with optional masking of illegal actions in logits.
+
+    Mirrors `MetamonMaskedActor` but for AMAGO's ResidualActor head.
+    """
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        discrete: bool,
+        gammas: torch.Tensor,
+        feature_dim: int = 256,
+        residual_ff_dim: int = 512,
+        residual_blocks: int = 2,
+        activation: str = "leaky_relu",
+        normalization: str = "layer",
+        dropout_p: float = 0.0,
+        continuous_dist_type=None,
+        mask_illegal_actions: bool = True,
+    ):
+        super().__init__(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            discrete=discrete,
+            gammas=gammas,
+            feature_dim=feature_dim,
+            residual_ff_dim=residual_ff_dim,
+            residual_blocks=residual_blocks,
+            activation=activation,
+            normalization=normalization,
+            dropout_p=dropout_p,
+            continuous_dist_type=continuous_dist_type,
+        )
+        self.mask_illegal_actions = mask_illegal_actions
+
+    def actor_network_forward(
+        self,
+        state: torch.Tensor,
+        log_dict: Optional[dict[str, Any]] = None,
+        straight_from_obs: Optional[dict[str, torch.Tensor]] = None,
+    ) -> torch.Tensor:
+        dist_params = super().actor_network_forward(
+            state, log_dict=log_dict, straight_from_obs=straight_from_obs
+        )
+        if self.mask_illegal_actions and straight_from_obs is not None:
+            Batch, Len, Gammas, N = dist_params.shape
+            mask = straight_from_obs["illegal_actions"]
+            no_options = mask.all(dim=-1, keepdim=True)
+            mask = torch.logical_and(mask, ~no_options)
+            mask = einops.repeat(mask, f"b l n -> b l {Gammas} n")
+            dist_params.masked_fill_(mask, -float("inf"))
+        return dist_params
+
+
 class PSLadderAMAGOWrapper(MetamonAMAGOWrapper):
     def __init__(self, env):
         assert isinstance(env, QueueOnLocalLadder)
@@ -390,6 +446,64 @@ class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
             n_heads=n_heads,
             n_layers=n_layers,
             dropout=dropout,
+        )
+
+    @property
+    def emb_dim(self):
+        return self.turn_embedding.output_dim
+
+    @torch.compile
+    def inner_forward(self, obs, rl2s, log_dict=None):
+        if self.training and self.token_mask_aug:
+            obs["text_tokens"] = unknown_token_mask(obs["text_tokens"])
+        extras = F.leaky_relu(self.extra_emb(symlog(rl2s)))
+        numerical = torch.cat((obs["numbers"], extras), dim=-1)
+        turn_emb = self.turn_embedding(
+            token_inputs=obs["text_tokens"], numerical_inputs=numerical
+        )
+        return turn_emb
+
+
+@gin.configurable
+class MetamonPerceiverTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
+    """
+    Efficient attention scheme for processing turn token inputs.
+
+    Uses latent cross-/self-attention with learnable positional embeddings.
+    """
+
+    def __init__(
+        self,
+        obs_space,
+        rl2_space,
+        tokenizer: PokemonTokenizer,
+        extra_emb_dim: int = 18,
+        d_model: int = 100,
+        n_layers: int = 3,
+        n_heads: int = 5,
+        latent_tokens: int = 8,
+        numerical_tokens: int = 6,
+        token_mask_aug: bool = False,
+        dropout: float = 0.05,
+        max_tokens_per_turn: int = 128,
+    ):
+        super().__init__(obs_space=obs_space, rl2_space=rl2_space)
+        self.token_mask_aug = token_mask_aug
+        self.extra_emb = nn.Linear(rl2_space.shape[-1], extra_emb_dim)
+        base_numerical_features = obs_space["numbers"].shape[0]
+        base_text_features = obs_space["text_tokens"].shape[0]
+        self.turn_embedding = PerceiverTurnEmbedding(
+            tokenizer=tokenizer,
+            token_embedding_dim=d_model,
+            text_features=base_text_features,
+            numerical_features=base_numerical_features + extra_emb_dim,
+            numerical_tokens=numerical_tokens,
+            latent_tokens=latent_tokens,
+            d_model=d_model,
+            n_heads=n_heads,
+            n_layers=n_layers,
+            dropout=dropout,
+            max_tokens_per_turn=max_tokens_per_turn,
         )
 
     @property

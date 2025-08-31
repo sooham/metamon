@@ -101,10 +101,10 @@ if __name__ == "__main__":
                     print(e)
                     continue
 
-                # if not validate_showdown_team(team_str, format):
-                #    continue
-                if not env_verify_team(team_str, format):
+                if not validate_showdown_team(team_str, format):
                     continue
+                # if not env_verify_team(team_str, format):
+                #    continue
 
                 os.makedirs(os.path.join(args.output_path, format), exist_ok=True)
                 with open(os.path.join(args.output_path, format, file), "w") as f:

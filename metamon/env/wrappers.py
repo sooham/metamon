@@ -436,6 +436,8 @@ class QueueOnLocalLadder(PokeEnvWrapper):
 
     Create the environment, start laddering with the opponent, and the battle(s) will begin
     when both players are connected.
+
+
     """
 
     # increases time to launch opponent envs before ladder loop times out ("Agent is not challenging")
@@ -505,6 +507,11 @@ class PokeAgentLadder(QueueOnLocalLadder):
 
     Note that you must register a real Showdown account by going to the website above and clicking
     the Gear icon in the top right corner. `player_username` and `player_password` are required.
+
+    Note:
+        Be careful about auto-resets and how you handle terminating the eval loop after `num_battles`.
+        Unlike a regular RL eval, creating an episode that you won't finish is a big problem because
+        it will lead to a loss and a drop in rating. Test with `QueueOnLocalLadder` first!
     """
 
     @property

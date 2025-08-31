@@ -21,14 +21,11 @@ from metamon.rl.metamon_to_amago import (
 from metamon.interface import (
     ObservationSpace,
     RewardFunction,
-    DefaultObservationSpace,
-    TeamPreviewObservationSpace,
-    ExpandedObservationSpace,
+    get_observation_space,
+    get_reward_function,
+    get_action_space,
     TokenizedObservationSpace,
     ActionSpace,
-    DefaultActionSpace,
-    MinimalActionSpace,
-    DefaultShapedReward,
 )
 from metamon.tokenizer import PokemonTokenizer, get_tokenizer
 
@@ -117,9 +114,11 @@ class PretrainedModel:
         train_gin_config: str,
         model_name: str,
         tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
-        observation_space: ObservationSpace = DefaultObservationSpace(),
-        action_space: ActionSpace = DefaultActionSpace(),
-        reward_function: RewardFunction = DefaultShapedReward(),
+        observation_space: ObservationSpace = get_observation_space(
+            "DefaultObservationSpace"
+        ),
+        action_space: ActionSpace = get_action_space("DefaultActionSpace"),
+        reward_function: RewardFunction = get_reward_function("DefaultShapedReward"),
         hf_cache_dir: Optional[str] = None,
         default_checkpoint: int = 40,
         gin_overrides: Optional[dict] = None,
@@ -280,6 +279,11 @@ class LocalFinetunedModel(LocalPretrainedModel):
         )
 
 
+#####################
+## Paper Policies ###
+#####################
+
+
 @pretrained_model()
 class SmallIL(PretrainedModel):
     def __init__(self):
@@ -288,7 +292,7 @@ class SmallIL(PretrainedModel):
             model_gin_config="small_agent.gin",
             train_gin_config="il.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -300,7 +304,7 @@ class SmallILFA(PretrainedModel):
             model_gin_config="small_agent.gin",
             train_gin_config="il.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -312,7 +316,7 @@ class SmallRL(PretrainedModel):
             model_gin_config="small_agent.gin",
             train_gin_config="exp_rl.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -324,7 +328,7 @@ class SmallRL_ExtremeFilter(PretrainedModel):
             model_gin_config="small_agent.gin",
             train_gin_config="exp_rl.gin",
             default_checkpoint=38,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
             gin_overrides={
                 "amago.agent.exp_filter.beta": 5.0,
                 "amago.agent.exp_filter.clip_weights_high": 100.0,
@@ -340,7 +344,7 @@ class SmallRL_BinaryFilter(PretrainedModel):
             model_gin_config="small_agent.gin",
             train_gin_config="binary_rl.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -352,7 +356,7 @@ class SmallRL_Aug(PretrainedModel):
             model_gin_config="small_agent.gin",
             train_gin_config="binary_rl.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -364,7 +368,7 @@ class SmallRL_MaxQ(PretrainedModel):
             model_gin_config="small_agent.gin",
             train_gin_config="binary_maxq_rl.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -376,7 +380,7 @@ class MediumIL(PretrainedModel):
             model_gin_config="medium_agent.gin",
             train_gin_config="il.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -388,7 +392,7 @@ class MediumRL(PretrainedModel):
             model_gin_config="medium_agent.gin",
             train_gin_config="exp_rl.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -400,7 +404,7 @@ class MediumRL_Aug(PretrainedModel):
             model_gin_config="medium_agent.gin",
             train_gin_config="exp_rl.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -412,7 +416,7 @@ class MediumRL_MaxQ(PretrainedModel):
             model_gin_config="medium_agent.gin",
             train_gin_config="binary_maxq_rl.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -424,7 +428,7 @@ class LargeRL(PretrainedModel):
             model_gin_config="large_agent.gin",
             train_gin_config="exp_rl.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -436,7 +440,7 @@ class LargeIL(PretrainedModel):
             model_gin_config="large_agent.gin",
             train_gin_config="il.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -448,7 +452,7 @@ class SyntheticRLV0(PretrainedModel):
             model_gin_config="synthetic_agent.gin",
             train_gin_config="binary_rl.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -460,7 +464,7 @@ class SyntheticRLV1(PretrainedModel):
             model_gin_config="synthetic_agent.gin",
             train_gin_config="binary_rl.gin",
             default_checkpoint=40,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -472,7 +476,7 @@ class SyntheticRLV1_SelfPlay(PretrainedModel):
             model_gin_config="synthetic_agent.gin",
             train_gin_config="binary_rl.gin",
             default_checkpoint=48,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -484,7 +488,7 @@ class SyntheticRLV1_PlusPlus(PretrainedModel):
             model_gin_config="synthetic_agent.gin",
             train_gin_config="binary_maxq_rl.gin",
             default_checkpoint=38,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
 
 
@@ -496,8 +500,13 @@ class SyntheticRLV2(PretrainedModel):
             model_gin_config="synthetic_multitaskagent.gin",
             train_gin_config="binary_rl.gin",
             default_checkpoint=48,
-            action_space=MinimalActionSpace(),
+            action_space=get_action_space("MinimalActionSpace"),
         )
+
+
+###################################
+## PokéAgent Challenge Policies ###
+###################################
 
 
 @pretrained_model()
@@ -520,8 +529,8 @@ class SmallRLGen9Beta(PretrainedModel):
             # this model was finetuned from a previous gen9 attempt and has
             # trained for more than 24 total epochs...
             default_checkpoint=24,
-            action_space=DefaultActionSpace(),
-            observation_space=TeamPreviewObservationSpace(),
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("TeamPreviewObservationSpace"),
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
             # temporarily forced to flash attention until we can verify numerical stability
             # of a switch to a standard pytorch sliding window inference alternative
@@ -543,7 +552,7 @@ class Abra(PretrainedModel):
 
     Performance in Gen1-4 is comparable to early Synthetic policies like SyntheticRLV1, but nowhere close to SyntheticRLV2.
 
-    50% GXE in Gen9OU playing with sample teams on the human ladder.
+    50% GXE in Gen9OU playing with sample teams ("competitive" TeamSet) on the human ladder.
     """
 
     def __init__(self):
@@ -552,11 +561,38 @@ class Abra(PretrainedModel):
             model_gin_config="medium_multitaskagent.gin",
             train_gin_config="binary_rl.gin",
             default_checkpoint=40,
-            action_space=DefaultActionSpace(),
-            observation_space=TeamPreviewObservationSpace(),
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("TeamPreviewObservationSpace"),
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
             gin_overrides={
                 "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
                 "amago.nets.transformer.FlashAttention.window_size": (32, 0),
             },
         )
+
+
+@pretrained_model()
+class Minikazam(PretrainedModel):
+    """
+    An attempt to create an affordable starting point for finetuning.
+
+    Small RNN trained on parsed-replays v4 and ~5M self-play battles.
+
+    Detailed evals compiled here: https://docs.google.com/spreadsheets/d/1GU7-Jh0MkIKWhiS1WNQiPfv49WIajanUF4MjKeghMAc/edit?usp=sharing
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="minikazam",
+            model_gin_config="minikazam.gin",
+            train_gin_config="binary_rl.gin",
+            default_checkpoint=40,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+        )
+
+    @property
+    def base_config(self):
+        return {"MetamonPerceiverTstepEncoder.tokenizer": self.tokenizer}
