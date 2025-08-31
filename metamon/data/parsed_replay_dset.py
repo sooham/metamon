@@ -133,19 +133,20 @@ class ParsedReplayDataset(Dataset):
         # parsed replays saved by our own gym env will have hour/minute/sec
         # while Showdown replays will not.
         date_str = filename.split("_")[-2]
-        formats = ["%m-%d-%Y-%H:%M:%S", "%m-%d-%Y"]
-        for fmt in formats:
+
+        # Try the more common format first (without time) for faster parsing
+        try:
+            return datetime.strptime(date_str, "%m-%d-%Y")
+        except ValueError:
             try:
-                return datetime.strptime(date_str, fmt)
+                return datetime.strptime(date_str, "%m-%d-%Y-%H:%M:%S")
             except ValueError:
-                continue
-        raise ValueError(f"Could not parse date string: {date_str}")
+                raise ValueError(f"Could not parse date string: {date_str}")
 
     def refresh_files(self):
         self.filenames = []
 
         def _rating_to_int(rating: str) -> int:
-            # cast "Unrated" to 1000 (the minimum rating)
             try:
                 return int(rating)
             except ValueError:
@@ -155,6 +156,10 @@ class ParsedReplayDataset(Dataset):
             it if not self.verbose else tqdm.tqdm(it, desc=desc, colour="red")
         )
 
+        has_rating_filter = self.min_rating is not None or self.max_rating is not None
+        has_date_filter = self.min_date is not None or self.max_date is not None
+        has_result_filter = self.wins_losses_both in ("wins", "losses")
+
         for format in self.formats:
             path = os.path.join(self.dset_root, format)
             if not os.path.exists(path):
@@ -163,38 +168,51 @@ class ParsedReplayDataset(Dataset):
                         f"Requested data for format `{format}`, but did not find {path}"
                     )
                 continue
-            for filename in bar(os.listdir(path), desc=f"Finding {format} battles"):
-                if not (filename.endswith(".json") or filename.endswith(".json.lz4")):
-                    print(f"Skipping {filename} because it does not match the criteria")
+
+            # Get all files at once and filter by extension first
+            all_files = os.listdir(path)
+            json_files = [f for f in all_files if f.endswith((".json", ".json.lz4"))]
+
+            for filename in bar(json_files, desc=f"Finding {format} battles"):
+                name_without_ext = (
+                    filename[:-9] if filename.endswith(".json.lz4") else filename[:-5]
+                )
+
+                parts = name_without_ext.split("_")
+                if len(parts) != 7:
                     continue
-                try:
-                    (
-                        battle_id,
-                        rating,
-                        p1_name,
-                        _,
-                        p2_name,
-                        mm_dd_yyyy,
-                        result,
-                    ) = filename[:-5].split("_")
-                except ValueError:
-                    continue
-                rating = _rating_to_int(rating)
-                # abstracted to let RL replay buffers delete the oldest battles
-                date = self.parse_battle_date(filename)
-                battle_id = (
+
+                battle_id, rating_str, p1_name, _, p2_name, mm_dd_yyyy, result = parts
+
+                if has_result_filter:
+                    if self.wins_losses_both == "wins" and result != "WIN":
+                        continue
+                    if self.wins_losses_both == "losses" and result != "LOSS":
+                        continue
+
+                battle_id_clean = (
                     battle_id.replace("[", "").replace("]", "").replace(" ", "").lower()
                 )
-                if (
-                    format not in battle_id
-                    or (self.min_rating is not None and rating < self.min_rating)
-                    or (self.max_rating is not None and rating > self.max_rating)
-                    or (self.min_date is not None and date < self.min_date)
-                    or (self.max_date is not None and date > self.max_date)
-                    or (self.wins_losses_both == "wins" and result != "WIN")
-                    or (self.wins_losses_both == "losses" and result != "LOSS")
-                ):
+                if format not in battle_id_clean:
                     continue
+
+                if has_rating_filter:
+                    rating = _rating_to_int(rating_str)
+                    if (self.min_rating is not None and rating < self.min_rating) or (
+                        self.max_rating is not None and rating > self.max_rating
+                    ):
+                        continue
+
+                if has_date_filter:
+                    try:
+                        date = self.parse_battle_date(filename)
+                        if (self.min_date is not None and date < self.min_date) or (
+                            self.max_date is not None and date > self.max_date
+                        ):
+                            continue
+                    except ValueError:
+                        continue
+
                 self.filenames.append(os.path.join(path, filename))
 
         if self.shuffle:
