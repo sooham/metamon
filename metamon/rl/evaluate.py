@@ -240,8 +240,13 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
     for gen in args.gens:
         for format_name in args.formats:
             battle_format = f"gen{gen}{format_name.lower()}"
+            team_set_type = (
+                metamon.env.PokeAgentTeamSet
+                if args.eval_type == "pokeagent"
+                else metamon.env.TeamSet
+            )
             player_team_set = metamon.env.get_metamon_teams(
-                battle_format, args.team_set
+                battle_format, args.team_set, set_type=team_set_type
             )
             for checkpoint in args.checkpoints:
                 eval_kwargs = {
@@ -328,14 +333,8 @@ def add_cli(parser):
     parser.add_argument(
         "--team_set",
         default="competitive",
-        choices=[
-            "competitive",
-            "paper_variety",
-            "paper_replays",
-            "modern_replays",
-            "pokeagent_modern_replays",
-        ],
-        help="Team Set. See the README for more details.",
+        help="Team Set. Built-in options are: "
+        + ", ".join(metamon.env.METAMON_TEAM_SETS),
     )
     parser.add_argument(
         "--battle_backend",
