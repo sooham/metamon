@@ -237,11 +237,28 @@ def _get_default_eval(args, base_eval_kwargs):
 def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
     pretrained_model = get_pretrained_model(args.agent)
     all_results = collections.defaultdict(list)
+    backend = args.battle_backend or pretrained_model.battle_backend
+
+    # Print a pretty header with agent, preferred backend, and active backend
+    pre_header = "=" * 60
+    print(pre_header)
+    print("   Metamon RL Agent Evaluation".center(60))
+    print(pre_header)
+    print(f" Pretrained Agent : {pretrained_model.model_name}")
+    print(f" Preferred Backend: {pretrained_model.battle_backend}")
+    print(f" Active Backend   : {backend}")
+    print(pre_header)
+
     for gen in args.gens:
         for format_name in args.formats:
             battle_format = f"gen{gen}{format_name.lower()}"
+            team_set_type = (
+                metamon.env.PokeAgentTeamSet
+                if args.eval_type == "pokeagent"
+                else metamon.env.TeamSet
+            )
             player_team_set = metamon.env.get_metamon_teams(
-                battle_format, args.team_set
+                battle_format, args.team_set, set_type=team_set_type
             )
             for checkpoint in args.checkpoints:
                 eval_kwargs = {
@@ -250,7 +267,7 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
                     "team_set": player_team_set,
                     "total_battles": args.total_battles,
                     "checkpoint": checkpoint,
-                    "battle_backend": args.battle_backend,
+                    "battle_backend": backend,
                     "save_trajectories_to": args.save_trajectories_to,
                     "save_team_results_to": args.save_team_results_to,
                     "log_to_wandb": args.log_to_wandb,
@@ -328,25 +345,21 @@ def add_cli(parser):
     parser.add_argument(
         "--team_set",
         default="competitive",
-        choices=[
-            "competitive",
-            "paper_variety",
-            "paper_replays",
-            "modern_replays",
-            "pokeagent_modern_replays",
-        ],
-        help="Team Set. See the README for more details.",
+        help="Team Set. Built-in options are: "
+        + ", ".join(metamon.env.METAMON_TEAM_SETS),
     )
     parser.add_argument(
         "--battle_backend",
         type=str,
-        default="poke-env",
-        choices=["poke-env", "metamon"],
+        default=None,
+        choices=["poke-env", "metamon", "pokeagent"],
         help=(
             "Method for interpreting Showdown's requests and simulator messages. "
-            "poke-env is the default. metamon is an experimental option that aims to "
-            "remove sim2sim gap by reusing the code that generates our huggingface "
-            "replay dataset."
+            "Handles backwards-compatibility for models trained on old versions of metamon. "
+            "`None` will default to the version requested by the pretrained model you are evaluating."
+            "'metamon' is the lateset version"
+            "'pokeagent' maintains policies trained and used as the organizer baselines during the PokéAgent Challenge"
+            "'poke-env' is deprecated; maintains the original paper's models. "
         ),
     )
     parser.add_argument(

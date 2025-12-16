@@ -301,9 +301,11 @@ class PokeEnvWrapper(OpenAIGymEnv):
                 )
         elif battle_backend == "metamon":
             player_class = MetamonPlayer
+        elif battle_backend == "pokeagent":
+            player_class = PokeAgentPlayer
         else:
             raise ValueError(
-                f"Invalid battle backend: {battle_backend}. Options are 'poke-env' or 'metamon'."
+                f"Invalid battle backend: {battle_backend}. Options are 'poke-env', 'metamon', or 'pokeagent'."
             )
 
         super().__init__(
@@ -578,6 +580,10 @@ class PokeAgentLadder(QueueOnLocalLadder):
         Unlike a regular RL eval, creating an episode that you won't finish is a big problem because
         it will lead to a loss and a drop in rating. Test with `QueueOnLocalLadder` first!
     """
+    # increases time to launch opponent envs before ladder loop times out ("Agent is not challenging").
+    # may need to be especially long for PokéAgent because it takes some time for your Elo search radius
+    # to expand to active players... depending on who is online and what your Elo is.
+    _INIT_RETRIES = 3000
 
     # increases time to launch opponent envs before ladder loop times out ("Agent is not challenging").
     # may need to be especially long for PokéAgent because it takes some time for your Elo search radius
@@ -592,7 +598,4 @@ class PokeAgentLadder(QueueOnLocalLadder):
         assert (
             self.player_username is not None and self.player_password is not None
         ), "Username and password are required for PokéAgent laddering"
-        assert self.player_username.startswith(
-            "PAC"
-        ), "Bot usernames should start with 'PAC'"
         super().start_laddering(n_challenges)
