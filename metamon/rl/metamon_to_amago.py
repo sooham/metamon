@@ -385,7 +385,7 @@ class PSLadderAMAGOWrapper(MetamonAMAGOWrapper):
         return f"psladder_{self.env.env.username}"
 
 
-def unknown_token_mask(tokens, skip_prob: float = 0.2, batch_max_prob: float = 0.33):
+def unknown_token_mask(tokens, skip_prob: float = 0.5, batch_max_prob: float = 0.2):
     """Randomly set entries in the text component of the observation space to UNKNOWN_TOKEN.
 
     Args:
@@ -560,6 +560,9 @@ class MetamonAMAGODataset(RLDataset):
 
     def sample_random_trajectory(self) -> RLData:
         data = self.parsed_replay_dset.random_sample()
+        return self._process_data(data)
+
+    def _process_data(self, data):
         obs, action_infos, rewards, dones = data
         # amago expects discrete actions to be one-hot encoded
         num_actions = self.parsed_replay_dset.action_space.gym_space.n
@@ -610,6 +613,9 @@ class MetamonAMAGOExperiment(amago.Experiment):
     """
     Adds actions masking to the main AMAGO experiment, and leaves room for further tweaks.
     """
+
+    def start(self):
+        super().start()
 
     def init_envs(self):
         out = super().init_envs()
