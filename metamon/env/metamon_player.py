@@ -6,7 +6,7 @@ from poke_env.player import Player
 from poke_env.environment import AbstractBattle
 from poke_env.exceptions import ShowdownException
 
-from metamon.env.metamon_battle import MetamonBackendBattle
+from metamon.env.metamon_battle import MetamonBackendBattle, PokeAgentBackendBattle
 from metamon.backend.showdown_dex import Dex
 from metamon.backend.replay_parser.str_parsing import pokemon_name, move_name
 from metamon.interface import UniversalPokemon
@@ -27,6 +27,15 @@ class MetamonPlayer(Player):
         super().__init__(*args, **kwargs)
         self.team_preview_model = team_preview_model
 
+    def create_metamon_battle(self, battle_tag: str) -> MetamonBackendBattle:
+        return MetamonBackendBattle(
+            battle_tag=battle_tag,
+            username=self.username,
+            logger=self.logger,
+            save_replays=self._save_replays,
+            gen=Dex.from_format(self.format).gen,
+        )
+
     async def _create_battle(self, split_message: List[str]) -> AbstractBattle:
         """
         Override the default battle creation logic to use our own MetamonBackendBattle.
@@ -39,17 +48,10 @@ class MetamonPlayer(Player):
             if battle_tag in self._battles:
                 return self._battles[battle_tag]
             else:
-                gen = Dex.from_format(self._format).gen
                 if self.format_is_doubles:
                     raise NotImplementedError("Metamon does not support doubles")
                 else:
-                    battle = MetamonBackendBattle(
-                        battle_tag=battle_tag,
-                        username=self.username,
-                        logger=self.logger,
-                        gen=gen,
-                        save_replays=self._save_replays,
-                    )
+                    battle = self.create_metamon_battle(battle_tag)
                 await self._battle_count_queue.put(None)
                 if battle_tag in self._battles:
                     await self._battle_count_queue.get()
@@ -273,3 +275,15 @@ class MetamonPlayer(Player):
     def choose_random_move(battle: MetamonBackendBattle):
         # default version demands built-in Battle/DoubleBattle types
         return Player.choose_random_singles_move(battle)
+
+
+class PokeAgentPlayer(MetamonPlayer):
+
+    def create_metamon_battle(self, battle_tag: str) -> PokeAgentBackendBattle:
+        return PokeAgentBackendBattle(
+            battle_tag=battle_tag,
+            username=self.username,
+            logger=self.logger,
+            save_replays=self._save_replays,
+            gen=Dex.from_format(self.format).gen,
+        )
