@@ -17,6 +17,7 @@ import amago
 import metamon
 from metamon.rl.metamon_to_amago import (
     make_placeholder_experiment,
+    MetamonDiscrete,
 )
 from metamon.interface import (
     ObservationSpace,
@@ -110,6 +111,7 @@ class PretrainedModel:
                 'poke-env' is deprecated; maintains the original paper's models.
                 'metamon' is the lateset version
                 'pokeagent' maintains policies trained (and used as the organizer baselines) during the PokéAgent Challenge
+        action_temperature: Temperature for temperature-based sampling. Higher temperature means more exploration. Default is 1.0 (no scaling).
     """
 
     HF_REPO_ID = "jakegrigsby/metamon"
@@ -193,11 +195,14 @@ class PretrainedModel:
         return checkpoint_path
 
     def initialize_agent(
-        self, checkpoint: Optional[int] = None, log: bool = False
+        self,
+        checkpoint: Optional[int] = None,
+        log: bool = False,
+        action_temperature: float = 1.0,
     ) -> amago.Experiment:
         # use the base config and the gin file to configure the model
         amago.cli_utils.use_config(
-            self.base_config,
+            self.base_config | {"MetamonDiscrete.temperature": action_temperature},
             [self.model_gin_config_path, self.train_gin_config_path],
             finalize=False,
         )
@@ -608,6 +613,225 @@ class Abra(PretrainedModel):
 
 
 @pretrained_model()
+class Kadabra(PretrainedModel):
+    """
+    A second attempt at self-play on gens1-4 & 9 that was featured in the PokéAgent Challenge.
+
+    This policy held the top organizer gen9ou rank for most of the "practice ladder" period in Summer 2025.
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="kadabra",
+            model_gin_config="medium_multitaskagent.gin",
+            train_gin_config="binary_rl.gin",
+            default_checkpoint=46,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("TeamPreviewObservationSpace"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="pokeagent",
+            gin_overrides={
+                "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
+                "amago.nets.transformer.FlashAttention.window_size": (32, 0),
+            },
+        )
+
+
+@pretrained_model()
+class Kadabra2(PretrainedModel):
+    """
+    A third attempt at self-play on gens1-4 & 9 that was featured in the PokéAgent Challenge.
+
+    Confusingly, this policy played under the username "PAC-MM-Alakazam" for most of the challange, and held
+    the top organizer gen9ou rank at the end of the Summer 2025 practice ladder. Checkpoints have been renamed
+    for public release such that the best policy with this architecture gets to be "Alakazam" :)
+
+    This marks the first time where performance of policies *trained on Gen9OU* roughly match the paper policies in Gens1-4.
+    All policies below can play Gen9OU without sacrificing significant performance in Gens1-4.
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="kadabra2",
+            model_gin_config="alakazam2.gin",
+            train_gin_config="alakazam2.gin",
+            default_checkpoint=44,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="pokeagent",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class Kadabra3(PretrainedModel):
+    """
+    A fourth attempt at self-play on gens1-4 & 9 that was featured in the PokéAgent Challenge.
+
+    This policy played under the username "PAC-MM-Wildcard" or "PAC-MM-Mystery" during the qualification period.
+    If it had been pubilcly available, it would have qualified as the #2 seed in Gen1OU and #3 seed in Gen9OU.
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="kadabra3",
+            model_gin_config="alakazam2.gin",
+            train_gin_config="alakazam3.gin",
+            default_checkpoint=20,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="pokeagent",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class Kadabra4(PretrainedModel):
+    """
+    A fifth attempt at self-play on gens1-4 & 9 that was featured in the PokéAgent Challenge.
+
+    The final PokéAgent Challenge era dataset was 11.6M self-play battles + parsed-replays-v4.
+
+    This policy played under the username "PAC-MM-Mystery" or "PAC-MM-Wildcard" during the qualification period.
+    If it had been pubilcally available, it would have qualified as the #1 seed in Gen1OU and #2 seed in Gen9OU
+    (behind FoulPlay).
+
+    Most of the performance gains from Kadabra2 --> Kadabra4 are seen in diverse team evaluations (i.e., "modern_replays_v2" TeamSet).
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="kadabra4",
+            model_gin_config="alakazam4.gin",
+            train_gin_config="alakazam3.gin",
+            default_checkpoint=50,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="pokeagent",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class Alakazam(PretrainedModel):
+    """
+    This policy patches a bug (https://github.com/UT-Austin-RPL/metamon/pull/54) that impacted all PokéAgnet Challenge training runs.
+
+    We finetuned Kadabra4 on a new version of the self-play dataset that was patched to include tera types.
+    The "Kadabra*" policies now intentionally *preserve* the bug for backwards compatibility, so this policy gains a slight
+    edge when evaluated today (after the bug was patched).
+
+    This policy never appeared on the PokéAgent Challenge ladder but is called "Alakazam" because it is the last model
+    of this size (~50M params) to be trained on the PokéAgent Challenge dataset.
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="alakazam",
+            model_gin_config="alakazam4.gin",
+            train_gin_config="alakazam3.gin",
+            default_checkpoint=8,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class Superkazam(PretrainedModel):
+    """
+    Revisits the PokéAgent Challenge dataset at a model size closer to the paper's SyntheticRLV2 configuration (~140M params).
+
+    Evals against the most important (modern) baselines are available here: https://docs.google.com/spreadsheets/d/1lU8tQ0tnnupY28kIyK6FVtvPmxLSVT9_slLShOhRsqg/edit?usp=sharing
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="superkazam",
+            model_gin_config="superkazam.gin",
+            train_gin_config="alakazam3.gin",
+            default_checkpoint=50,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class Kakuna(PretrainedModel):
+    """
+    The current best Metamon policy.
+
+
+    Superkazam, finetuned on:
+
+    - PokéAgent Challenge self-play dataset (11.6M battles)
+    - (Human) parsed-replays-v4 (4M battles)
+    - Additional self-play battles collected at increased temperature for exploration and value learning (7.8M battles).
+
+    After > 700 total games played over a span of a month, we estimate GXEs vs. humans (with "competitive" TeamSet) of:
+
+    gen1ou: ~82%
+    gen2ou: ~70%
+    gen3ou: ~63%
+    gen4ou: ~64%
+    gen9ou: ~71%
+
+    Evals against the most important (modern) metamon baselines are available here: https://docs.google.com/spreadsheets/d/1lU8tQ0tnnupY28kIyK6FVtvPmxLSVT9_slLShOhRsqg/edit?usp=sharing
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="kakuna",
+            model_gin_config="superkazam.gin",
+            train_gin_config="kakuna.gin",
+            default_checkpoint=34,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
 class Minikazam(PretrainedModel):
     """
     An attempt to create an affordable starting point for finetuning.
@@ -628,47 +852,9 @@ class Minikazam(PretrainedModel):
             reward_function=get_reward_function("AggressiveShapedReward"),
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
             battle_backend="pokeagent",
-        )
-
-    @property
-    def base_config(self):
-        return {
-            "MetamonPerceiverTstepEncoder.tokenizer": self.tokenizer,
-            "amago.nets.transformer.SigmaReparam.fast_init": True,
-        }
-
-
-##############################################
-## 100% Correct PokéAgent Challenge Aliases ##
-##############################################
-
-# These policies use the unpatched observation space. They will play (slightly) better
-# than the main version when the backend is correctly specified as "pokeagent", because
-# they can see the tera types that appear when the agent or opponent uses tera in battle.
-
-
-@pretrained_model("PAC-SmallRLGen9Beta")
-class PACSmallRLGen9Beta(SmallRLGen9Beta):
-    def __init__(self):
-        super().__init__()
-        self.observation_space.base_obs_space = get_observation_space(
-            "TeamPreviewObservationSpace"
-        )
-
-
-@pretrained_model("PAC-Abra")
-class PACAbra(Abra):
-    def __init__(self):
-        super().__init__()
-        self.observation_space.base_obs_space = get_observation_space(
-            "TeamPreviewObservationSpace"
-        )
-
-
-@pretrained_model("PAC-Minikazam")
-class PACMinikazam(Minikazam):
-    def __init__(self):
-        super().__init__()
-        self.observation_space.base_obs_space = get_observation_space(
-            "OpponentMoveObservationSpace"
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
         )
