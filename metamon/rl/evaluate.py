@@ -34,6 +34,7 @@ def pretrained_vs_baselines(
     checkpoint: Optional[int] = None,
     total_battles: int = 250,
     parallel_actors_per_baseline: int = 5,
+    action_temperature: float = 1.0,
     async_mp_context: str = "forkserver",
     battle_backend: str = "poke-env",
     log_to_wandb: bool = False,
@@ -46,7 +47,9 @@ def pretrained_vs_baselines(
     Defaults to the 6 baselines that the paper calls the "Heuristic Composite Score",
     but you can specify a list of any of the available baselines (see metamon.baselines.get_all_baseline_names()).
     """
-    agent = pretrained_model.initialize_agent(checkpoint=checkpoint, log=log_to_wandb)
+    agent = pretrained_model.initialize_agent(
+        checkpoint=checkpoint, log=log_to_wandb, action_temperature=action_temperature
+    )
     baselines = baselines or HEURISTIC_COMPOSITE_BASELINES
     agent.async_env_mp_context = async_mp_context
     # create envs that match the agent's observation/actions/rewards
@@ -84,10 +87,13 @@ def _pretrained_on_ladder(
     total_battles: int,
     checkpoint: Optional[int],
     log_to_wandb: bool,
+    action_temperature: float = 1.0,
     **ladder_kwargs,
 ) -> Dict[str, Any]:
     """Helper function for ladder-based evaluation."""
-    agent = pretrained_model.initialize_agent(checkpoint=checkpoint, log=log_to_wandb)
+    agent = pretrained_model.initialize_agent(
+        checkpoint=checkpoint, log=log_to_wandb, action_temperature=action_temperature
+    )
     agent.env_mode = "sync"
     agent.parallel_actors = 1
     agent.verbose = False  # turn off tqdm progress bar and print poke-env battle status
@@ -118,6 +124,7 @@ def pretrained_vs_local_ladder(
     avatar: Optional[str] = None,
     checkpoint: Optional[int] = None,
     battle_backend: str = "poke-env",
+    action_temperature: float = 1.0,
     save_trajectories_to: Optional[str] = None,
     save_team_results_to: Optional[str] = None,
     log_to_wandb: bool = False,
@@ -140,6 +147,7 @@ def pretrained_vs_local_ladder(
         total_battles=total_battles,
         checkpoint=checkpoint,
         log_to_wandb=log_to_wandb,
+        action_temperature=action_temperature,
         player_username=username,
         player_avatar=avatar,
         player_team_set=team_set,
@@ -160,6 +168,7 @@ def pretrained_vs_pokeagent_ladder(
     avatar: Optional[str] = None,
     checkpoint: Optional[int] = None,
     battle_backend: str = "poke-env",
+    action_temperature: float = 1.0,
     save_trajectories_to: Optional[str] = None,
     save_team_results_to: Optional[str] = None,
     log_to_wandb: bool = False,
@@ -187,6 +196,7 @@ def pretrained_vs_pokeagent_ladder(
         player_avatar=avatar,
         player_team_set=team_set,
         battle_backend=battle_backend,
+        action_temperature=action_temperature,
         battle_format=battle_format,
         save_trajectories_to=save_trajectories_to,
         save_team_results_to=save_team_results_to,
@@ -269,6 +279,7 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
                     "checkpoint": checkpoint,
                     "battle_backend": backend,
                     "save_trajectories_to": args.save_trajectories_to,
+                    "action_temperature": args.temperature,
                     "save_team_results_to": args.save_team_results_to,
                     "log_to_wandb": args.log_to_wandb,
                 }
@@ -383,7 +394,12 @@ def add_cli(parser):
         action="store_true",
         help="Log results to Weights & Biases.",
     )
-
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Temperature for temperature-based sampling. Higher temperature means more exploration.",
+    )
     return parser
 
 
