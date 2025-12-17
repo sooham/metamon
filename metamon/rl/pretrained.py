@@ -17,6 +17,7 @@ import amago
 import metamon
 from metamon.rl.metamon_to_amago import (
     make_placeholder_experiment,
+    MetamonDiscrete,
 )
 from metamon.interface import (
     ObservationSpace,
@@ -110,6 +111,7 @@ class PretrainedModel:
                 'poke-env' is deprecated; maintains the original paper's models.
                 'metamon' is the lateset version
                 'pokeagent' maintains policies trained (and used as the organizer baselines) during the PokéAgent Challenge
+        action_temperature: Temperature for temperature-based sampling. Higher temperature means more exploration. Default is 1.0 (no scaling).
     """
 
     HF_REPO_ID = "jakegrigsby/metamon"
@@ -193,11 +195,14 @@ class PretrainedModel:
         return checkpoint_path
 
     def initialize_agent(
-        self, checkpoint: Optional[int] = None, log: bool = False
+        self,
+        checkpoint: Optional[int] = None,
+        log: bool = False,
+        action_temperature: float = 1.0,
     ) -> amago.Experiment:
         # use the base config and the gin file to configure the model
         amago.cli_utils.use_config(
-            self.base_config,
+            self.base_config | {"MetamonDiscrete.temperature": action_temperature},
             [self.model_gin_config_path, self.train_gin_config_path],
             finalize=False,
         )
@@ -628,47 +633,236 @@ class Minikazam(PretrainedModel):
             reward_function=get_reward_function("AggressiveShapedReward"),
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
             battle_backend="pokeagent",
-        )
-
-    @property
-    def base_config(self):
-        return {
-            "MetamonPerceiverTstepEncoder.tokenizer": self.tokenizer,
-            "amago.nets.transformer.SigmaReparam.fast_init": True,
-        }
-
-
-##############################################
-## 100% Correct PokéAgent Challenge Aliases ##
-##############################################
-
-# These policies use the unpatched observation space. They will play (slightly) better
-# than the main version when the backend is correctly specified as "pokeagent", because
-# they can see the tera types that appear when the agent or opponent uses tera in battle.
-
-
-@pretrained_model("PAC-SmallRLGen9Beta")
-class PACSmallRLGen9Beta(SmallRLGen9Beta):
-    def __init__(self):
-        super().__init__()
-        self.observation_space.base_obs_space = get_observation_space(
-            "TeamPreviewObservationSpace"
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
         )
 
 
-@pretrained_model("PAC-Abra")
-class PACAbra(Abra):
+@pretrained_model()
+class Kadabra(LocalPretrainedModel):
     def __init__(self):
-        super().__init__()
-        self.observation_space.base_obs_space = get_observation_space(
-            "TeamPreviewObservationSpace"
+        super().__init__(
+            model_name="kadabra",
+            amago_ckpt_dir="/mnt/nfs_client/jake/metamon_scratchpad/gen9_training_runs/",
+            model_gin_config="medium_multitaskagent.gin",
+            train_gin_config="binary_rl.gin",
+            default_checkpoint=46,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("TeamPreviewObservationSpace"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="pokeagent",
+            gin_overrides={
+                "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
+                "amago.nets.transformer.FlashAttention.window_size": (32, 0),
+            },
         )
 
 
-@pretrained_model("PAC-Minikazam")
-class PACMinikazam(Minikazam):
+@pretrained_model()
+class Kadabra2(PretrainedModel):
     def __init__(self):
-        super().__init__()
-        self.observation_space.base_obs_space = get_observation_space(
-            "OpponentMoveObservationSpace"
+        super().__init__(
+            model_name="kadabra2",
+            model_gin_config="alakazam.gin",
+            train_gin_config="alakazam.gin",
+            default_checkpoint=50,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="pokeagent",
+        )
+
+
+@pretrained_model()
+class Alakazam2(LocalPretrainedModel):
+    def __init__(self):
+        super().__init__(
+            model_name="alakazam2",
+            amago_ckpt_dir="/mnt/nfs_client/jake/metamon_scratchpad/gen9_training_runs/",
+            model_gin_config="alakazam2.gin",
+            train_gin_config="alakazam2.gin",
+            default_checkpoint=44,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="pokeagent",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class Alakazam3(LocalPretrainedModel):
+    def __init__(self):
+        super().__init__(
+            model_name="alakazam3",
+            amago_ckpt_dir="/mnt/nfs_client/jake/metamon_scratchpad/gen9_training_runs/",
+            model_gin_config="alakazam2.gin",
+            train_gin_config="alakazam3.gin",
+            default_checkpoint=20,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="pokeagent",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class Alakazam4(LocalPretrainedModel):
+    def __init__(self):
+        super().__init__(
+            model_name="alakazam4",
+            amago_ckpt_dir="/mnt/nfs_client/jake/metamon_scratchpad/gen9_training_runs/",
+            model_gin_config="alakazam4.gin",
+            train_gin_config="alakazam3.gin",
+            default_checkpoint=50,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="pokeagent",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class AlakazamPatched(LocalPretrainedModel):
+    def __init__(self):
+        super().__init__(
+            model_name="alakazam_patched",
+            amago_ckpt_dir="/mnt/nfs_client/jake/metamon_scratchpad/gen9_training_runs/",
+            model_gin_config="alakazam4.gin",
+            train_gin_config="alakazam3.gin",
+            default_checkpoint=8,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class PAAgent(LocalPretrainedModel):
+    def __init__(self):
+        super().__init__(
+            model_name="gen1ou_model",
+            amago_ckpt_dir="/mnt/nfs_client/jake/metamon_scratchpad/pa_agent_models/",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="binary_rl.gin",
+            default_checkpoint=20,
+            action_space=get_action_space("MinimalActionSpace"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            reward_function=get_reward_function("DefaultShapedReward"),
+            tokenizer=get_tokenizer("allreplays-v3"),
+            battle_backend="poke-env",
+        )
+
+
+@pretrained_model()
+class Superkazam(LocalPretrainedModel):
+    def __init__(self):
+        super().__init__(
+            model_name="superkazam",
+            amago_ckpt_dir="/mnt/nfs_client/jake/metamon_scratchpad/gen9_training_runs/",
+            model_gin_config="superkazam.gin",
+            train_gin_config="alakazam3.gin",
+            default_checkpoint=50,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class Kakuna(LocalPretrainedModel):
+    def __init__(self):
+        super().__init__(
+            model_name="kakuna",
+            amago_ckpt_dir="/mnt/nfs_client/jake/metamon_scratchpad/gen9_training_runs/",
+            model_gin_config="superkazam.gin",
+            train_gin_config="kakuna.gin",
+            default_checkpoint=10,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class Kakuna2(LocalPretrainedModel):
+    def __init__(self):
+        super().__init__(
+            model_name="kakuna2",
+            amago_ckpt_dir="/mnt/nfs_client/jake/metamon_scratchpad/gen9_training_runs/",
+            model_gin_config="superkazam.gin",
+            train_gin_config="kakuna.gin",
+            default_checkpoint=34,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class SmallRLGen9Alpha(LocalPretrainedModel):
+    def __init__(self):
+        super().__init__(
+            amago_ckpt_dir="/mnt/nfs_client/jake/metamon_scratchpad/gen9_training_runs",
+            model_name="gen9alpha",
+            model_gin_config="small_multitaskagent.gin",
+            train_gin_config="exp_rl.gin",
+            default_checkpoint=40,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("ExpandedObservationSpace"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="metamon",
+            gin_overrides={
+                "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": amago.nets.transformer.FlashAttention,
+                "amago.nets.transformer.FlashAttention.window_size": (32, 0),
+            },
         )
