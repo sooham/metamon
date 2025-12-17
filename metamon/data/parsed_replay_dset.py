@@ -132,16 +132,9 @@ class ParsedReplayDataset(Dataset):
         self.verbose = verbose
         self.max_seq_len = max_seq_len
         self.shuffle = shuffle
-        self.manifest_path = os.path.join(self.dset_root, "manifest.csv")
-        if os.path.exists(self.manifest_path) and use_cached_filenames:
-            with open(self.manifest_path, "r") as f:
-                reader = csv.reader(f)
-                next(reader)
-                self.filenames = [row[0] for row in reader]
-            if verbose:
-                print(f"Loaded {len(self.filenames)} battles from {self.manifest_path}")
-            if shuffle:
-                random.shuffle(self.filenames)
+        self.index_path = os.path.join(self.dset_root, "index.csv")
+        if os.path.exists(self.index_path) and use_cached_filenames:
+            self.load_and_filter_manifest()
         else:
             self.refresh_files()
 
@@ -159,8 +152,62 @@ class ParsedReplayDataset(Dataset):
             except ValueError:
                 raise ValueError(f"Could not parse date string: {date_str}")
 
-    def refresh_files(self):
-        self.filenames = []
+    def index_disk(self):
+        """
+        Scan dset_root/{format}/ for each format and write all replay files to index.csv.
+        No filtering is applied - this just discovers all available files.
+        """
+        if self.verbose:
+            print(f"Indexing {self.dset_root} for replay files...")
+
+        all_replay_files = []
+
+        formats_to_check = metamon.SUPPORTED_BATTLE_FORMATS
+        if self.verbose:
+            format_iter = tqdm.tqdm(
+                formats_to_check, desc="Scanning format directories"
+            )
+        else:
+            format_iter = formats_to_check
+        for format_name in format_iter:
+            format_dir = os.path.join(self.dset_root, format_name)
+            if not os.path.isdir(format_dir):
+                continue
+            try:
+                files = os.listdir(format_dir)
+            except (OSError, PermissionError) as e:
+                if self.verbose:
+                    print(f"  Warning: Could not read {format_dir}: {e}")
+                continue
+            for filename in files:
+                if filename.endswith((".json", ".json.lz4")):
+                    rel_path = os.path.join(format_name, filename)
+                    all_replay_files.append(rel_path)
+            if self.verbose and not isinstance(format_iter, list):
+                format_iter.set_postfix_str(f"{len(all_replay_files)} files")
+        if self.verbose:
+            print(f"Found {len(all_replay_files)} total replay files")
+
+        with open(self.index_path, "w") as f:
+            if self.verbose:
+                print(f"Writing {self.index_path}")
+            writer = csv.writer(f)
+            writer.writerow(["filename"])
+            for rel_path in all_replay_files:
+                writer.writerow([rel_path])
+
+    def load_and_filter_manifest(self):
+        """
+        Load index.csv and apply all filtering criteria:
+        - formats (parent directory name)
+        - rating range
+        - date range
+        - win/loss filter
+        """
+        if not os.path.exists(self.index_path):
+            raise FileNotFoundError(
+                f"Index not found: {self.index_path}. Run index_disk() first."
+            )
 
         def _rating_to_int(rating: str) -> int:
             try:
@@ -175,76 +222,92 @@ class ParsedReplayDataset(Dataset):
         has_rating_filter = self.min_rating is not None or self.max_rating is not None
         has_date_filter = self.min_date is not None or self.max_date is not None
         has_result_filter = self.wins_losses_both in ("wins", "losses")
+        has_format_filter = len(self.formats) < len(metamon.SUPPORTED_BATTLE_FORMATS)
 
-        for format in self.formats:
-            path = os.path.join(self.dset_root, format)
-            if not os.path.exists(path):
-                if self.verbose:
-                    print(
-                        f"Requested data for format `{format}`, but did not find {path}"
-                    )
+        with open(self.index_path, "r") as f:
+            reader = csv.reader(f)
+            next(reader)  # skip header
+            all_rel_paths = [row[0] for row in reader]
+
+        if self.verbose:
+            print(f"Loaded {len(all_rel_paths)} files from index, applying filters...")
+
+        self.filenames = []
+
+        for rel_path in bar(all_rel_paths, desc="Filtering battles"):
+            abs_path = os.path.join(self.dset_root, rel_path)
+            parent_dir = os.path.basename(os.path.dirname(abs_path))
+            filename = os.path.basename(abs_path)
+
+            if parent_dir not in self.formats:
                 continue
 
-            # Get all files at once and filter by extension first
-            all_files = os.listdir(path)
-            json_files = [f for f in all_files if f.endswith((".json", ".json.lz4"))]
+            name_without_ext = (
+                filename[:-9] if filename.endswith(".json.lz4") else filename[:-5]
+            )
 
-            for filename in bar(json_files, desc=f"Finding {format} battles"):
-                name_without_ext = (
-                    filename[:-9] if filename.endswith(".json.lz4") else filename[:-5]
-                )
-
-                parts = name_without_ext.split("_")
-                if len(parts) != 7:
-                    continue
-
+            parts = name_without_ext.split("_")
+            if len(parts) == 7:
                 battle_id, rating_str, p1_name, _, p2_name, mm_dd_yyyy, result = parts
+            elif len(parts) == 8:
+                # errror in allowing usernames from the self_play module to include "_"... oops
+                (
+                    battle_id,
+                    rating_str,
+                    p1_name_pt1,
+                    p1_name_pt2,
+                    _,
+                    p2_name,
+                    mm_dd_yyyy,
+                    result,
+                ) = parts
+                p1_name = p1_name_pt1 + p1_name_pt2
+            else:
+                continue
 
-                if has_result_filter:
-                    if self.wins_losses_both == "wins" and result != "WIN":
-                        continue
-                    if self.wins_losses_both == "losses" and result != "LOSS":
-                        continue
-
-                battle_id_clean = (
-                    battle_id.replace("[", "").replace("]", "").replace(" ", "").lower()
-                )
-                if format not in battle_id_clean:
+            if has_result_filter:
+                if self.wins_losses_both == "wins" and result != "WIN":
+                    continue
+                if self.wins_losses_both == "losses" and result != "LOSS":
                     continue
 
-                if has_rating_filter:
-                    rating = _rating_to_int(rating_str)
-                    if (self.min_rating is not None and rating < self.min_rating) or (
-                        self.max_rating is not None and rating > self.max_rating
+            battle_id_clean = (
+                battle_id.replace("[", "").replace("]", "").replace(" ", "").lower()
+            )
+            if parent_dir not in battle_id_clean:
+                continue
+
+            if has_rating_filter:
+                rating = _rating_to_int(rating_str)
+                if (self.min_rating is not None and rating < self.min_rating) or (
+                    self.max_rating is not None and rating > self.max_rating
+                ):
+                    continue
+
+            if has_date_filter:
+                try:
+                    date = self.parse_battle_date(filename)
+                    if (self.min_date is not None and date < self.min_date) or (
+                        self.max_date is not None and date > self.max_date
                     ):
                         continue
+                except ValueError:
+                    continue
 
-                if has_date_filter:
-                    try:
-                        date = self.parse_battle_date(filename)
-                        if (self.min_date is not None and date < self.min_date) or (
-                            self.max_date is not None and date > self.max_date
-                        ):
-                            continue
-                    except ValueError:
-                        continue
-                self.filenames.append(os.path.join(path, filename))
+            self.filenames.append(abs_path)
+
+        if self.verbose:
+            print(f"After filtering: {len(self.filenames)} battles match criteria")
 
         if self.shuffle:
             random.shuffle(self.filenames)
 
-        with open(self.manifest_path, "w") as f:
-            if self.verbose:
-                print(
-                    f"Writing {self.manifest_path} with {len(self.filenames)} battles"
-                )
-            writer = csv.writer(f)
-            writer.writerow(["filename"])  # Write header row
-            for filename in self.filenames:
-                writer.writerow([filename])
-
-        if self.verbose:
-            print(f"Dataset contains {len(self.filenames)} battles")
+    def refresh_files(self):
+        """
+        Full refresh: index disk and then load with filters applied.
+        """
+        self.index_disk()
+        self.load_and_filter_manifest()
 
     def __len__(self):
         return len(self.filenames)
@@ -363,6 +426,7 @@ if __name__ == "__main__":
         formats=args.formats,
         verbose=True,
         shuffle=True,
+        use_cached_filenames=True,
     )
     for i in tqdm.tqdm(range(len(dset))):
         obs, actions, rewards, dones = dset[i]
