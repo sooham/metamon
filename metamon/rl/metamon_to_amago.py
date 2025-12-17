@@ -440,7 +440,7 @@ class PSLadderAMAGOWrapper(MetamonAMAGOWrapper):
         return f"psladder_{self.env.env.username}"
 
 
-def unknown_token_mask(tokens, skip_prob: float = 0.2, batch_max_prob: float = 0.33):
+def unknown_token_mask(tokens, skip_prob: float = 0.5, batch_max_prob: float = 0.2):
     """Randomly set entries in the text component of the observation space to UNKNOWN_TOKEN.
 
     Args:
@@ -668,6 +668,9 @@ class MetamonAMAGOExperiment(amago.Experiment):
     """
     Adds actions masking to the main AMAGO experiment, and leaves room for further tweaks.
     """
+
+    def start(self):
+        super().start()
 
     def init_envs(self):
         out = super().init_envs()
