@@ -582,6 +582,35 @@ class SmallRLGen9Beta(PretrainedModel):
 
 
 @pretrained_model()
+class Minikazam(PretrainedModel):
+    """
+    An attempt to create an affordable starting point for finetuning.
+
+    Small RNN trained on parsed-replays v4 and ~5M self-play battles.
+
+    Detailed evals compiled here: https://docs.google.com/spreadsheets/d/1GU7-Jh0MkIKWhiS1WNQiPfv49WIajanUF4MjKeghMAc/edit?usp=sharing
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="minikazam",
+            model_gin_config="minikazam.gin",
+            train_gin_config="binary_rl.gin",
+            default_checkpoint=40,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="pokeagent",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
 class Abra(PretrainedModel):
     """
     First of a new series of training runs replicating the "Synthetic" agents from the paper *with Gen 9*.
@@ -646,8 +675,8 @@ class Kadabra2(PretrainedModel):
     the top organizer gen9ou rank at the end of the Summer 2025 practice ladder. Checkpoints have been renamed
     for public release such that the best policy with this architecture gets to be "Alakazam" :)
 
-    This marks the first time where performance of policies *trained on Gen9OU* roughly match the paper policies in Gens1-4.
-    All policies below can play Gen9OU without sacrificing significant performance in Gens1-4.
+    This marks the first time where performance of policies *trained on Gen9OU* roughly match the paper policies in Gens1-4;
+    all policies below can play Gen9OU without sacrificing significant performance in Gens1-4.
     """
 
     def __init__(self):
@@ -767,6 +796,9 @@ class Superkazam(PretrainedModel):
     """
     Revisits the PokéAgent Challenge dataset at a model size closer to the paper's SyntheticRLV2 configuration (~140M params).
 
+    - PokéAgent Challenge self-play dataset (11.6M battles)
+    - (Human) parsed-replays-v4 (4M battles)
+
     Evals against the most important (modern) baselines are available here: https://docs.google.com/spreadsheets/d/1lU8tQ0tnnupY28kIyK6FVtvPmxLSVT9_slLShOhRsqg/edit?usp=sharing
     """
 
@@ -794,12 +826,7 @@ class Kakuna(PretrainedModel):
     """
     The current best Metamon policy.
 
-
-    Superkazam, finetuned on:
-
-    - PokéAgent Challenge self-play dataset (11.6M battles)
-    - (Human) parsed-replays-v4 (4M battles)
-    - Additional self-play battles collected at increased temperature for exploration and value learning (7.8M battles).
+    Superkazam, finetuned on a dataset of self-play battles collected at increased temperature for exploration and value learning (+7.8M battles).
 
     After > 700 total games played over a span of a month, we estimate GXEs vs. humans (with "competitive" TeamSet) of:
 
@@ -823,35 +850,6 @@ class Kakuna(PretrainedModel):
             reward_function=get_reward_function("AggressiveShapedReward"),
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
             battle_backend="metamon",
-            gin_overrides={
-                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
-                    "DefaultObservationSpace-v1"
-                ),
-            },
-        )
-
-
-@pretrained_model()
-class Minikazam(PretrainedModel):
-    """
-    An attempt to create an affordable starting point for finetuning.
-
-    Small RNN trained on parsed-replays v4 and ~5M self-play battles.
-
-    Detailed evals compiled here: https://docs.google.com/spreadsheets/d/1GU7-Jh0MkIKWhiS1WNQiPfv49WIajanUF4MjKeghMAc/edit?usp=sharing
-    """
-
-    def __init__(self):
-        super().__init__(
-            model_name="minikazam",
-            model_gin_config="minikazam.gin",
-            train_gin_config="binary_rl.gin",
-            default_checkpoint=40,
-            action_space=get_action_space("DefaultActionSpace"),
-            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
-            reward_function=get_reward_function("AggressiveShapedReward"),
-            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
-            battle_backend="pokeagent",
             gin_overrides={
                 "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
                     "DefaultObservationSpace-v1"
