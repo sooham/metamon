@@ -20,7 +20,11 @@ from metamon.interface import (
     ActionSpace,
     UniversalAction,
 )
-from metamon.data.download import download_parsed_replays
+from metamon.data.download import (
+    download_parsed_replays,
+    download_self_play_data,
+    SELF_PLAY_SUBSETS,
+)
 
 
 class ParsedReplayDataset(Dataset):
@@ -115,7 +119,7 @@ class ParsedReplayDataset(Dataset):
 
         if dset_root is None:
             for format in formats:
-                path_to_format_data = download_parsed_replays(format)
+                path_to_format_data = self._download_format(format)
             dset_root = os.path.dirname(path_to_format_data)
 
         assert dset_root is not None and os.path.exists(dset_root)
@@ -137,6 +141,10 @@ class ParsedReplayDataset(Dataset):
             self.load_and_filter_manifest()
         else:
             self.refresh_files()
+
+    def _download_format(self, format: str) -> str:
+        """Download data for a single format. Override in subclasses for different data sources."""
+        return download_parsed_replays(format)
 
     def parse_battle_date(self, filename: str) -> datetime:
         # parsed replays saved by our own gym env will have hour/minute/sec
@@ -397,6 +405,100 @@ class ParsedReplayDataset(Dataset):
         np.ndarray,
     ]:
         return self.load_filename(self.filenames[i])
+
+
+class SelfPlayDataset(ParsedReplayDataset):
+    """A dataset of self-play battles from the metamon-parsed-pile HuggingFace dataset.
+
+    This dataset contains battles collected during the PokéAgent Challenge and subsequent
+    research. The data format is identical to ParsedReplayDataset, but is downloaded from
+    a different source (jakegrigsby/metamon-parsed-pile) and uses .tar.lz4 compression.
+
+    Available subsets:
+        - "pac-base": 11M trajectories from PokéAgent Challenge training
+        - "pac-exploratory": 7M trajectories from post-challenge exploration
+
+    Example:
+        ```python
+        dset = SelfPlayDataset(
+            subset="pac-base",
+            observation_space=TokenizedObservationSpace(
+                DefaultObservationSpace(),
+                tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            ),
+            action_space=DefaultActionSpace(),
+            reward_function=DefaultShapedReward(),
+            formats=["gen1ou", "gen9ou"],
+            verbose=True,
+        )
+
+        obs, action_infos, rewards, dones = dset[0]
+        ```
+
+    Args:
+        subset: The self-play subset to load. Options: "pac-base", "pac-exploratory"
+        observation_space: The observation space to use. Must be an instance of `interface.ObservationSpace`.
+        action_space: The action space to use. Must be an instance of `interface.ActionSpace`.
+        reward_function: The reward function to use. Must be an instance of `interface.RewardFunction`.
+        dset_root: The root directory of the self-play data. If not specified, the data will be
+            downloaded and extracted from the HuggingFace dataset.
+        formats: A list of formats to load (e.g. ["gen1ou", "gen9ou"]). Defaults to all supported formats.
+        wins_losses_both: Whether to only load the perspective of players who won their battle, lost their
+            battle, or both. {"wins", "losses", "both"}
+        min_rating: The minimum rating of battles to load (in ELO).
+        max_rating: The maximum rating of battles to load (in ELO).
+        min_date: The minimum date of battles to load (as a datetime).
+        max_date: The maximum date of battles to load (as a datetime).
+        max_seq_len: The maximum sequence length to load. Trajectories are randomly sliced to this length.
+        verbose: Whether to print progress bars while loading large datasets.
+        shuffle: Whether to shuffle the filenames. Defaults to False.
+        use_cached_filenames: Whether to use the cached filenames from a manifest.csv file.
+    """
+
+    def __init__(
+        self,
+        subset: str,
+        observation_space: ObservationSpace,
+        action_space: ActionSpace,
+        reward_function: RewardFunction,
+        dset_root: Optional[str] = None,
+        formats: Optional[List[str]] = None,
+        wins_losses_both: str = "both",
+        min_rating: Optional[int] = None,
+        max_rating: Optional[int] = None,
+        min_date: Optional[datetime] = None,
+        max_date: Optional[datetime] = None,
+        max_seq_len: Optional[int] = None,
+        verbose: bool = False,
+        shuffle: bool = False,
+        use_cached_filenames: bool = False,
+    ):
+        if subset not in SELF_PLAY_SUBSETS:
+            raise ValueError(
+                f"Invalid subset: {subset}. Must be one of {SELF_PLAY_SUBSETS}"
+            )
+        self.subset = subset
+
+        super().__init__(
+            observation_space=observation_space,
+            action_space=action_space,
+            reward_function=reward_function,
+            dset_root=dset_root,
+            formats=formats,
+            wins_losses_both=wins_losses_both,
+            min_rating=min_rating,
+            max_rating=max_rating,
+            min_date=min_date,
+            max_date=max_date,
+            max_seq_len=max_seq_len,
+            verbose=verbose,
+            shuffle=shuffle,
+            use_cached_filenames=use_cached_filenames,
+        )
+
+    def _download_format(self, format: str) -> str:
+        """Download self-play data for a single format."""
+        return download_self_play_data(self.subset, format)
 
 
 if __name__ == "__main__":

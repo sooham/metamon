@@ -30,7 +30,7 @@
 3) Starting points for training (or finetuning) your own imitation learning (IL) and RL policies.
 5) A standardized suite of teams and heuristic opponents for evaluation.
 
-Metamon is the codebase behind ["Human-Level Competitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) (RLC, 2025). Please check out our [project website](https://metamon.tech) for an overview of our original results. After the release of our conference paper, metamon served as a starter kit (and winning baseline) for the [NeurIPS 2025 PokéAgent Challenge](https://pokeagent.github.io), which motivated significant improvements to our results and datasets.
+Metamon is the codebase behind ["Human-Level Competitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) (RLC, 2025). Please check out our [project website](https://metamon.tech) for an overview of our original results. After the release of our conference paper, metamon served as a starter kit (and winning baseline) for the [NeurIPS 2025 PokéAgent Challenge](https://pokeagent.github.io), which motivated significant improvements to our results and datasets. While always intended as an RL research tool, `metamon` has led to extremely competitive Pokémon AI. As of December 2025, we [provide](#pretrained-models) **the best known machine learning Showdown bot in all five supported generations by a considerable margin**, and the best or second-best bot of any kind (behind [foul-play](https://github.com/pmariglia/foul-play)) depending on the ruleset considered.
 
 
 <br>
@@ -283,21 +283,21 @@ There are now **29 official metamon models**. Most of them were stepping stones 
   <td align="center"><img src="media/icons/abra.png" width="72"><br><b>Abra</b></td>
   <td align="center">57M</td>
   <td align="center">Jul 2025</td>
-  <td>The best <i>gen9ou</i> agent that was open-sourced during the PokéAgent Challenge, and therefore the basis of many of the best third-party metamon extensions.</td>
+  <td>The best <i>gen9ou</i> agent that was open-sourced during the <img src="https://img.shields.io/badge/PokéAgent%20Challenge-DAA520?style=flat" alt="PokéAgent Challenge">, and therefore the basis of many of the best third-party metamon extensions.</td>
   <td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">50%</td>
 </tr>
 <tr>
   <td align="center"><img src="media/icons/kadabra.png" width="48"><br><b>Kadabra3</b></td>
   <td align="center">57M</td>
   <td align="center">Sep 2025</td>
-  <td>The best policy trained in time to participate in the PokéAgent Challenge (as an organizer baseline). #1 in the Gen1OU qualifier and #2 in Gen9OU behind <a href="https://github.com/pmariglia/foul-play">foul-play</a>.</td>
+  <td>The best policy trained in time to participate in the <img src="https://img.shields.io/badge/PokéAgent%20Challenge-DAA520?style=flat" alt="PokéAgent Challenge"> (as an organizer baseline). #1 in the Gen1OU qualifier and #2 in Gen9OU behind <a href="https://github.com/pmariglia/foul-play">foul-play</a>.</td>
   <td align="center">80%</td><td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">64%</td>
 </tr>
 <tr>
   <td align="center"><img src="media/icons/alakazam.png" width="56"><br><b>Alakazam</b></td>
   <td align="center">57M</td>
   <td align="center">Sep 2025</td>
-  <td>The final version of the PokéAgent Challenge effort. Patched a bug that made tera types invisible to the policy, which makes it the best candidate for future work at this model size.</td>
+  <td>The final version of the <img src="https://img.shields.io/badge/PokéAgent%20Challenge-DAA520?style=flat" alt="PokéAgent Challenge"> effort. Patched a bug that made tera types invisible to the policy, which makes it the best candidate for future work at this model size.</td>
   <td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">–</td>
 </tr>
 <tr>
@@ -341,7 +341,7 @@ Models can be loosely divided into two eras of active development:
   <tr><td></td><td><strong><code>SyntheticRLV1</code></strong></td><td>200M actor-critic model trained on 1M human + 2M diverse self-play battles</td></tr>
   <tr><td></td><td><strong><code>SyntheticRLV1_SelfPlay</code></strong></td><td>SyntheticRLV1 fine-tuned on 2M extra battles against itself</td></tr>
   <tr><td></td><td><strong><code>SyntheticRLV1_PlusPlus</code></strong></td><td>SyntheticRLV1 finetuned on 2M extra battles against diverse opponents</td></tr>
-  <tr><td align="center"><img src="media/icons/ditto.png" width="64" /></td><td><strong><code>SyntheticRLV2</code></strong></td><td>Final 200M actor-critic model with value classification trained on 1M human + 4M diverse self-play battles.</td></tr>
+  <tr><td align="center"><img src="media/icons/ditto.png" width="80" /></td><td><strong><code>SyntheticRLV2</code></strong></td><td>Final 200M actor-critic model with value classification trained on 1M human + 4M diverse self-play battles.</td></tr>
 </table>
 
 Here is a reference of human evals for key models according to our paper:
@@ -366,12 +366,12 @@ Here is a reference of human evals for key models according to our paper:
     <th>Description</th>
   </tr>
   <tr><td></td><td><strong><code>SmallRLGen9Beta</code></strong></td><td>Prototype 15M actor-critic model trained <em>after</em> the dataset was expanded to include Gen9OU</td></tr>
-  <tr><td align="center"><img src="media/icons/abra.png" width="64" /></td><td><strong><code>Abra</code></strong></td><td>57M actor-critic trained on <code>parsed-replays v3</code> and a small set of synthetic battles. First of a new series of Gen9OU-compatible policies trained in a similar style to the paper's "Synthetic" agents.</td></tr>
-  <tr><td align="center"><img src="media/icons/kadabra.png" width="64" /></td><td><strong><code>Kadabra, Kadabra2, Kadabra3, Kadabra4</code></strong></td><td>Are further extensions of Abra to larger datasets of self-play battles (> 11M) trained and deployed as organizer baselines throughout the PokéAgent Challenge practice ladder.</td></tr>
-  <tr><td align="center"><img src="media/icons/alakazam.png" width="64" /></td><td><strong><code>Alakazam</code></strong></td><td>Considered the final edition of the main PokéAgent Challenge effort. Patches a bug that impacted tera type visibility. Actually slightly worse than Kadabra3/4 with competitive teams, but is more robust to diverse team choices thanks to a larger dataset.</td></tr>
-  <tr><td align="center"><img src="media/icons/minikazam.png" width="64" /></td><td><strong><code>Minikazam</code></strong></td><td>4.7M RNN trained on <code>parsed-replays v4</code> and a large dataset of self-play battles. Tries to compensate for low parameter count by training on <code>Alakazam</code>'s dataset. Creates a decent starting point for finetuning on any GPU. <a href="https://docs.google.com/spreadsheets/d/1GU7-Jh0MkIKWhiS1WNQiPfv49WIajanUF4MjKeghMAc/edit?usp=sharing">Evals here</a>.</td></tr>
+  <tr><td align="center"><img src="media/icons/abra.png" width="96" /></td><td><strong><code>Abra</code></strong></td><td>57M actor-critic trained on <code>parsed-replays v3</code> and a small set of synthetic battles. First of a new series of Gen9OU-compatible policies trained in a similar style to the paper's "Synthetic" agents.</td></tr>
+  <tr><td align="center"><img src="media/icons/kadabra.png" width="48" /></td><td><strong><code>Kadabra, Kadabra2, Kadabra3, Kadabra4</code></strong></td><td>Are further extensions of Abra to larger datasets of self-play battles (> 11M) trained and deployed as organizer baselines throughout the PokéAgent Challenge practice ladder.</td></tr>
+  <tr><td align="center"><img src="media/icons/alakazam.png" width="80" /></td><td><strong><code>Alakazam</code></strong></td><td>Considered the final edition of the main PokéAgent Challenge effort. Patches a bug that impacted tera type visibility. Actually slightly worse than Kadabra3/4 with competitive teams, but is more robust to diverse team choices thanks to a larger dataset.</td></tr>
+  <tr><td align="center"><img src="media/icons/minikazam.png" width="80" /></td><td><strong><code>Minikazam</code></strong></td><td>4.7M RNN trained on <code>parsed-replays v4</code> and a large dataset of self-play battles. Tries to compensate for low parameter count by training on <code>Alakazam</code>'s dataset. Creates a decent starting point for finetuning on any GPU. <a href="https://docs.google.com/spreadsheets/d/1GU7-Jh0MkIKWhiS1WNQiPfv49WIajanUF4MjKeghMAc/edit?usp=sharing">Evals here</a>.</td></tr>
   <tr><td></td><td><strong><code>Superkazam</code></strong></td><td>An attempt to revisit Alakazam's (11M self-play + 4M human replay) dataset at a model size closer to the original paper (142M). <a href="https://docs.google.com/spreadsheets/d/1lU8tQ0tnnupY28kIyK6FVtvPmxLSVT9_slLShOhRsqg/edit?usp=sharing">Evals here</a>.</td></tr>
-  <tr><td align="center"><img src="media/icons/kakuna.png" width="64" /></td><td><strong><code>Kakuna</code></strong></td><td><strong>The best public metamon agent.</strong> Superkazam finetuned on 7M additional self-play battles collected at higher sampling temperature for improved exploration and value estimation. Reduced sampling weight of human replays to prioritize high-Elo self-play data. Compensates for our inattention to Gens2-4 during the PokéAgent Challenge. <a href="https://docs.google.com/spreadsheets/d/1lU8tQ0tnnupY28kIyK6FVtvPmxLSVT9_slLShOhRsqg/edit?usp=sharing">Evals here</a>.</td></tr>
+  <tr><td align="center"><img src="media/icons/kakuna.png" width="80" /></td><td><strong><code>Kakuna</code></strong></td><td><strong>The best public metamon agent.</strong> Superkazam finetuned on 7M additional self-play battles collected at higher sampling temperature for improved exploration and value estimation. Reduced sampling weight of human replays to prioritize high-Elo self-play data. Compensates for our inattention to Gens2-4 during the PokéAgent Challenge. <a href="https://docs.google.com/spreadsheets/d/1lU8tQ0tnnupY28kIyK6FVtvPmxLSVT9_slLShOhRsqg/edit?usp=sharing">Evals here</a>.</td></tr>
 </table>
 
 </details>
@@ -381,7 +381,7 @@ Here is a reference of human evals for key models according to our paper:
 ### Internal Leaderboards
 
 
-The human ratings above are clearly the best way to anchor performance to an external metric, but we primarily rely on self comparisons across generations and [team sets](#team-sets) to guide new research. We typically use head-to-head comparisons between key baselines: see [this Kakuna eval](https://docs.google.com/spreadsheets/d/1lU8tQ0tnnupY28kIyK6FVtvPmxLSVT9_slLShOhRsqg/edit?usp=sharing) as an example. But we can get a general sense of the ***relative* strength** of metamon over time by turning policies loose on a locally hosted Showdown server and sampling from the same TeamSet.
+The human ratings above are clearly the best way to anchor performance to an external metric, but we primarily rely on self comparisons across generations and [team sets](#team-sets) to guide new research. We typically use head-to-head comparisons between key baselines: see [this Kakuna eval](https://docs.google.com/spreadsheets/d/1lU8tQ0tnnupY28kIyK6FVtvPmxLSVT9_slLShOhRsqg/edit?usp=sharing) as an example. But we can get a general sense of the ***relative* strength** of metamon over time by turning policies loose on a locally hosted Showdown ladder and sampling from the same `TeamSet`.
 
 *![Gold](https://img.shields.io/badge/Gold-DAA520?style=flat) = PokéAgent Challenge policy, ![Pink](https://img.shields.io/badge/Pink-E91E63?style=flat) = Paper policy.*
 
@@ -390,45 +390,43 @@ The human ratings above are clearly the best way to anchor performance to an ext
 > *These GXE values are a measure of performance *relative* to the listed models and **have no connection to ratings on the public ladder**.*
 
 <table>
-<tr><th colspan="7" align="center"><strong>Early Gen OU (Competitive TeamSet)</strong></th></tr>
+<tr><th colspan="7" align="center"><strong>Early Gen OU  GXE (Competitive TeamSet)</strong></th></tr>
 <tr><th></th><th>Model</th><th>Gen1OU</th><th>Gen2OU</th><th>Gen3OU</th><th>Gen4OU</th><th>Avg Rank</th></tr>
-<tr><td align="center"><img src="media/icons/kakuna.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Kakuna-DAA520?style=flat" alt="Kakuna"></td><td align="center"><strong>75%</strong></td><td align="center"><strong>66%</strong></td><td align="center"><strong>63%</strong></td><td align="center"><strong>60%</strong></td><td align="center">1.0</td></tr>
+<tr><td align="center"><img src="media/icons/kakuna.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Kakuna-DAA520?style=flat" alt="Kakuna"></td><td align="center"><strong>75%</strong></td><td align="center"><strong>66%</strong></td><td align="center"><strong>63%</strong></td><td align="center"><strong>60%</strong></td><td align="center">1.0</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Superkazam-DAA520?style=flat" alt="Superkazam"></td><td align="center">67%</td><td align="center">63%</td><td align="center">59%</td><td align="center">58%</td><td align="center">2.5</td></tr>
-<tr><td align="center"><img src="media/icons/kadabra.png" width="32"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra3-DAA520?style=flat" alt="Kadabra3"></td><td align="center">68%</td><td align="center">61%</td><td align="center">57%</td><td align="center">57%</td><td align="center">3.5</td></tr>
+<tr><td align="center"><img src="media/icons/kadabra.png" width="48"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra3-DAA520?style=flat" alt="Kadabra3"></td><td align="center">68%</td><td align="center">61%</td><td align="center">57%</td><td align="center">57%</td><td align="center">3.5</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra2-DAA520?style=flat" alt="Kadabra2"></td><td align="center">67%</td><td align="center">60%</td><td align="center">58%</td><td align="center">57%</td><td align="center">4.0</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra4-DAA520?style=flat" alt="Kadabra4"></td><td align="center">66%</td><td align="center">60%</td><td align="center">59%</td><td align="center">58%</td><td align="center">4.2</td></tr>
-<tr><td align="center"><img src="media/icons/alakazam.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Alakazam-DAA520?style=flat" alt="Alakazam"></td><td align="center">66%</td><td align="center">59%</td><td align="center">56%</td><td align="center">57%</td><td align="center">5.8</td></tr>
-<tr><td align="center"><img src="media/icons/ditto.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV2-E91E63?style=flat" alt="SynRLV2"></td><td align="center">50%</td><td align="center">59%</td><td align="center">56%</td><td align="center">55%</td><td align="center">7.2</td></tr>
+<tr><td align="center"><img src="media/icons/alakazam.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Alakazam-DAA520?style=flat" alt="Alakazam"></td><td align="center">66%</td><td align="center">59%</td><td align="center">56%</td><td align="center">57%</td><td align="center">5.8</td></tr>
+<tr><td align="center"><img src="media/icons/ditto.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV2-E91E63?style=flat" alt="SynRLV2"></td><td align="center">50%</td><td align="center">59%</td><td align="center">56%</td><td align="center">55%</td><td align="center">7.2</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra-DAA520?style=flat" alt="Kadabra"></td><td align="center">56%</td><td align="center">50%</td><td align="center">47%</td><td align="center">47%</td><td align="center">8.0</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1-E91E63?style=flat" alt="SynRLV1"></td><td align="center">43%</td><td align="center">39%</td><td align="center">42%</td><td align="center">46%</td><td align="center">10.0</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1%2B%2B-E91E63?style=flat" alt="SynRLV1++"></td><td align="center">43%</td><td align="center">47%</td><td align="center">42%</td><td align="center">45%</td><td align="center">10.2</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV0-E91E63?style=flat" alt="SynRLV0"></td><td align="center">41%</td><td align="center">38%</td><td align="center">48%</td><td align="center">40%</td><td align="center">10.8</td></tr>
-<tr><td align="center"><img src="media/icons/abra.png" width="48"></td><td align="center"><img src="https://img.shields.io/badge/Abra-DAA520?style=flat" alt="Abra"></td><td align="center">39%</td><td align="center">44%</td><td align="center">44%</td><td align="center">45%</td><td align="center">11.0</td></tr>
+<tr><td align="center"><img src="media/icons/abra.png" width="96"></td><td align="center"><img src="https://img.shields.io/badge/Abra-DAA520?style=flat" alt="Abra"></td><td align="center">39%</td><td align="center">44%</td><td align="center">44%</td><td align="center">45%</td><td align="center">11.0</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/LargeRL-E91E63?style=flat" alt="LargeRL"></td><td align="center">25%</td><td align="center">35%</td><td align="center">40%</td><td align="center">39%</td><td align="center">13.5</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SmallILFA-E91E63?style=flat" alt="SmallILFA"></td><td align="center">24%</td><td align="center">36%</td><td align="center">39%</td><td align="center">35%</td><td align="center">14.0</td></tr>
-<tr><td align="center"><img src="media/icons/minikazam.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Minikazam-DAA520?style=flat" alt="Minikazam"></td><td align="center">39%</td><td align="center">34%</td><td align="center">34%</td><td align="center">34%</td><td align="center">14.2</td></tr>
+<tr><td align="center"><img src="media/icons/minikazam.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Minikazam-DAA520?style=flat" alt="Minikazam"></td><td align="center">39%</td><td align="center">34%</td><td align="center">34%</td><td align="center">34%</td><td align="center">14.2</td></tr>
 </table>
-
-#### Gen9OU
 
 > [!TIP]
 > ![Paper Policies](https://img.shields.io/badge/Paper%20Policies-E91E63?style=flat) are (predictably) weak in Gen9OU because they were never trained to play the format and use observation spaces that assume Team Preview is not available. 
 
 <table>
-<tr><th colspan="3" align="center"><strong>Gen9OU (Competitive TeamSet)</strong></th></tr>
+<tr><th colspan="3" align="center"><strong>Gen9OU GXE (Competitive TeamSet)</strong></th></tr>
 <tr><th></th><th>Model</th><th>Gen9OU</th></tr>
-<tr><td align="center"><img src="media/icons/kakuna.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Kakuna-DAA520?style=flat" alt="Kakuna"></td><td align="center"><strong>77%</strong></td></tr>
+<tr><td align="center"><img src="media/icons/kakuna.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Kakuna-DAA520?style=flat" alt="Kakuna"></td><td align="center"><strong>77%</strong></td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Superkazam-DAA520?style=flat" alt="Superkazam"></td><td align="center">75%</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra4-DAA520?style=flat" alt="Kadabra4"></td><td align="center">75%</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra2-DAA520?style=flat" alt="Kadabra2"></td><td align="center">73%</td></tr>
-<tr><td align="center"><img src="media/icons/kadabra.png" width="32"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra3-DAA520?style=flat" alt="Kadabra3"></td><td align="center">73%</td></tr>
-<tr><td align="center"><img src="media/icons/alakazam.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Alakazam-DAA520?style=flat" alt="Alakazam"></td><td align="center">73%</td></tr>
-<tr><td align="center"><img src="media/icons/abra.png" width="48"></td><td align="center"><img src="https://img.shields.io/badge/Abra-DAA520?style=flat" alt="Abra"></td><td align="center">61%</td></tr>
+<tr><td align="center"><img src="media/icons/kadabra.png" width="48"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra3-DAA520?style=flat" alt="Kadabra3"></td><td align="center">73%</td></tr>
+<tr><td align="center"><img src="media/icons/alakazam.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Alakazam-DAA520?style=flat" alt="Alakazam"></td><td align="center">73%</td></tr>
+<tr><td align="center"><img src="media/icons/abra.png" width="96"></td><td align="center"><img src="https://img.shields.io/badge/Abra-DAA520?style=flat" alt="Abra"></td><td align="center">61%</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra-DAA520?style=flat" alt="Kadabra"></td><td align="center">58%</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SmallRLGen9Beta-DAA520?style=flat" alt="SmallRLGen9Beta"></td><td align="center">56%</td></tr>
-<tr><td align="center"><img src="media/icons/minikazam.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Minikazam-DAA520?style=flat" alt="Minikazam"></td><td align="center">50%</td></tr>
+<tr><td align="center"><img src="media/icons/minikazam.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Minikazam-DAA520?style=flat" alt="Minikazam"></td><td align="center">50%</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV0-E91E63?style=flat" alt="SynRLV0"></td><td align="center">32%</td></tr>
-<tr><td align="center"><img src="media/icons/ditto.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV2-E91E63?style=flat" alt="SynRLV2"></td><td align="center">32%</td></tr>
+<tr><td align="center"><img src="media/icons/ditto.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV2-E91E63?style=flat" alt="SynRLV2"></td><td align="center">32%</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1%2B%2B-E91E63?style=flat" alt="SynRLV1++"></td><td align="center">32%</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1-E91E63?style=flat" alt="SynRLV1"></td><td align="center">31%</td></tr>
 <tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/LargeRL-E91E63?style=flat" alt="LargeRL"></td><td align="center">29%</td></tr>
@@ -503,6 +501,8 @@ Public self-play datasets are stored on huggingface at [`jakegrigsby/metamon-par
 |------|------|-------------|
 |**`pac-base`** | 11M Trajectories | Partially comprised of battles played by organizer baselines on the PokéAgent Challenge practice ladder, but the vast majority are battles collected locally for the purposes of training the ![Abra](https://img.shields.io/badge/Abra-DAA520?style=flat), ![Kadabra](https://img.shields.io/badge/Kadabra-DAA520?style=flat), and ![Alakazam](https://img.shields.io/badge/Alakazam-DAA520?style=flat) line of policies. The version uploaded here trained ![Alakazam](https://img.shields.io/badge/Alakazam-DAA520?style=flat), and previous models were trained on subsets of this dataset. |
 |**`pac-exploratory`** | 7M Trajectories | Self-play revisited after the NeurIPS challenge with higher sampling temperature (to improve value estimates of sub-optimal actions). Notably also includes battles of official metamon policies against `PA-Agent` (the winning team of the gen1ou tournament), who trained a great policy by (~overfitting) ![SynRLV2](https://img.shields.io/badge/SynRLV2-E91E63?style=flat) to the "competitive" gen1ou team set. This has inspired a fresh approach of distilling specialized policies back into the main line models. ![Kakuna](https://img.shields.io/badge/Kakuna-DAA520?style=flat) was trained on `metamon-parsed-replays`, `pac-base`, and `pac-exploratory`.|
+
+Self-play data will download automatically when requested by the `SelfPlayDataset`, but you can download both subsets in advance with `python -m metamon.data.download self-play --formats gen1ou gen9ou`.
 
 These datasets are currently only available in the parsed replay format, which makes them liable to be deprecated should that format change or a major bug in the [battle backend](#battle-backends) be found. When/if this happens, the [replay parser](metamon/backend/replay_parser/README.md) would be expanded to parse ground-truth battle logs and the datasets would be re-released as a noisier aggregate of all the logs from every metamon development server during the same time period.
 
