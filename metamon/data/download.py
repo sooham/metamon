@@ -10,6 +10,8 @@ from huggingface_hub import hf_hub_download
 import metamon
 from metamon import SUPPORTED_BATTLE_FORMATS, METAMON_CACHE_DIR
 
+SELF_PLAY_SUBSETS = ["pac-base", "pac-exploratory"]
+
 if METAMON_CACHE_DIR is not None:
     VERSION_REFERENCE_PATH = os.path.join(METAMON_CACHE_DIR, "version_reference.json")
 else:
@@ -193,6 +195,67 @@ def download_raw_replays(version: str = LATEST_RAW_REPLAY_REVISION) -> str:
     return os.path.join(METAMON_CACHE_DIR, "raw-replays")
 
 
+def download_self_play_data(
+    subset: str,
+    battle_format: str,
+    version: str = "main",
+    force_download: bool = False,
+) -> str:
+    """Download self-play data from the metamon-parsed-pile dataset.
+
+    Args:
+        subset: The subset to download. Options: "pac-base", "pac-exploratory"
+        battle_format: Showdown battle format (e.g. "gen1ou")
+        version: Version/revision of the dataset to download. Defaults to "main".
+        force_download: If True, download the dataset even if a previous version
+            already exists in the cache.
+
+    Returns:
+        The path to the extracted dataset on disk.
+    """
+    if METAMON_CACHE_DIR is None:
+        raise ValueError("METAMON_CACHE_DIR environment variable is not set")
+    if subset not in SELF_PLAY_SUBSETS:
+        raise ValueError(
+            f"Invalid subset: {subset}. Must be one of {SELF_PLAY_SUBSETS}"
+        )
+
+    self_play_dir = os.path.join(METAMON_CACHE_DIR, "self-play", subset)
+    tar_path = os.path.join(self_play_dir, f"{battle_format}.tar.lz4")
+    out_path = os.path.join(self_play_dir, battle_format)
+
+    if os.path.exists(out_path):
+        if not force_download:
+            return out_path
+        print(f"Clearing existing dataset at {out_path}...")
+        shutil.rmtree(out_path)
+
+    hf_hub_download(
+        cache_dir=self_play_dir,
+        repo_id="jakegrigsby/metamon-parsed-pile",
+        filename=f"{subset}/{battle_format}.tar.lz4",
+        local_dir=os.path.join(METAMON_CACHE_DIR, "self-play"),
+        revision=version,
+        repo_type="dataset",
+    )
+
+    # Extract .tar.lz4 file
+    print(f"Extracting {tar_path}...")
+    import lz4.frame
+
+    tar_uncompressed = tar_path[:-4]  # Remove .lz4
+    with lz4.frame.open(tar_path, "rb") as lz4_file:
+        with open(tar_uncompressed, "wb") as tar_file:
+            tar_file.write(lz4_file.read())
+    with tarfile.open(tar_uncompressed) as tar:
+        tar.extractall(path=self_play_dir)
+    os.remove(tar_uncompressed)
+
+    os.remove(tar_path)
+    _update_version_reference("self-play", f"{subset}/{battle_format}", version)
+    return out_path
+
+
 def download_usage_stats(
     gen: int,
     version: str = LATEST_USAGE_STATS_REVISION,
@@ -286,6 +349,9 @@ Examples:
     # Download (anonymized) Showdown replay logs (all formats)
     python -m metamon.data.download raw-replays
 
+    # Download self-play datasets (pac-base and pac-exploratory)
+    python -m metamon.data.download self-play --formats gen1ou gen9ou
+
 Note: Requires METAMON_CACHE_DIR environment variable to be set.
 
 The cache directory is currently: {colored(METAMON_CACHE_DIR or 'NOT SET', 'red')}
@@ -300,6 +366,7 @@ For current dataset versions, see `get_active_dataset_versions()` or run:
         choices=[
             "raw-replays",
             "parsed-replays",
+            "self-play",
             "revealed-teams",
             "replay-stats",
             "teams",
@@ -312,6 +379,7 @@ For current dataset versions, see `get_active_dataset_versions()` or run:
 Dataset to download:
     raw-replays: Unprocessed Showdown replays (stripped of usernames/chat)
     parsed-replays: RL-compatible version of replays with reconstructed player actions
+    self-play: Self-play battle data (pac-base and pac-exploratory subsets)
     revealed-teams: Teams that were revealed during battles
     replay-stats: Statistics generated from revealed teams. Used to predict team sets.
     teams: Various team sets (competitive, paper_variety, paper_replays)
@@ -355,6 +423,16 @@ Available versions:
             raise ValueError("Must specify at least one battle format (e.g., gen1ou)")
         for format in args.formats:
             download_parsed_replays(format, version=version, force_download=True)
+    elif args.dataset == "self-play":
+        version = args.version or "main"
+        if args.formats is None:
+            raise ValueError("Must specify at least one battle format (e.g., gen1ou)")
+        for subset in SELF_PLAY_SUBSETS:
+            print(f"\nDownloading {subset}...")
+            for format in args.formats:
+                download_self_play_data(
+                    subset, format, version=version, force_download=True
+                )
     elif args.dataset == "revealed-teams":
         version = args.version or LATEST_PARSED_REPLAY_REVISION
         download_revealed_teams(version=version, force_download=True)
