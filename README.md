@@ -263,17 +263,51 @@ python -m metamon.rl.evaluate --eval_type ladder --agent Kakuna --gens 1 --forma
 
 There are now **29 official metamon models**. Most of them were stepping stones to later (better) versions, and are now mainly useful as baselines or extra opponents in self-play data collection. Some notable exceptions worth knowing about are:
 
-<div style="overflow-x: auto;">
 <table>
-<tr><th style="min-width:120px">Model</th><th style="white-space:nowrap">Size</th><th style="white-space:nowrap">Date</th><th style="min-width:400px">Description</th><th colspan="5">Human Ladder Ratings (GXE)</th></tr>
-<tr><th></th><th></th><th></th><th></th><th style="white-space:nowrap">Gen1OU</th><th style="white-space:nowrap">Gen2OU</th><th style="white-space:nowrap">Gen3OU</th><th style="white-space:nowrap">Gen4OU</th><th style="white-space:nowrap">Gen9OU</th></tr>
-<tr><td align="center"><img src="media/icons/ditto.png" width="48"><br><strong>SyntheticRLV2</strong></td><td style="white-space:nowrap">200M</td><td style="white-space:nowrap">Sep 2024</td><td>Original paper's best policy. Remains the basis of several successful third-party efforts to specialize in Gen1. <b>Most previous models have complete human ratings (see <span style="color:#E91E63">Paper Policies</span> below)</b>, but we have become a lot more cautious about laddering.</td><td align="center">77%</td><td align="center">68%</td><td align="center">64%</td><td align="center">66%</td><td align="center">N/A</td></tr>
-<tr><td align="center"><img src="media/icons/abra.png" width="56"><br><strong>Abra</strong></td><td style="white-space:nowrap">57M</td><td style="white-space:nowrap">Jul 2025</td><td>The best <em>gen9ou</em> agent that was open-sourced during the PokéAgent Challenge, and therefore the basis of many of the best third-party metamon extensions.</td><td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">50%</td></tr>
-<tr><td align="center"><img src="media/icons/kadabra.png" width="40"><br><strong>Kadabra3</strong></td><td style="white-space:nowrap">57M</td><td style="white-space:nowrap">Sep 2025</td><td>The best policy trained in time to participate in the PokéAgent Challenge (as an organizer baseline). #1 in the Gen1OU qualifier and #2 in Gen9OU behind <a href="https://github.com/pmariglia/foul-play">foul-play</a>.</td><td align="center">80%</td><td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">64%</td></tr>
-<tr><td align="center"><img src="media/icons/alakazam.png" width="48"><br><strong>Alakazam</strong></td><td style="white-space:nowrap">57M</td><td style="white-space:nowrap">Sep 2025</td><td>The final version of the PokéAgent Challenge effort. Patched a bug that made tera types invisible to the policy, which makes it the best candidate for future work at this model size.</td><td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">–</td></tr>
-<tr><td align="center"><img src="media/icons/kakuna.png" width="48"><br><strong>Kakuna</strong></td><td style="white-space:nowrap">142M</td><td style="white-space:nowrap">Dec 2025</td><td><b>The best public metamon model</b> – leading by nearly every metric. Trained on diverse teams to serve as a strong foundation for further research in any gen. Appears on all 5 OU leaderboards and is consistently 1500+ Elo in Gen1OU.</td><td align="center">82%</td><td align="center">70%</td><td align="center">63%</td><td align="center">64%</td><td align="center">71%</td></tr>
+<tr>
+  <th>Model</th><th>Size</th><th>Date</th><th>Description</th>
+  <th colspan="5">Human Ladder Ratings (GXE)</th>
+</tr>
+<tr>
+  <th></th><th></th><th></th><th></th>
+  <th>G1</th><th>G2</th><th>G3</th><th>G4</th><th>G9</th>
+</tr>
+<tr>
+  <td align="center"><img src="media/icons/ditto.png" width="56"><br><b>SyntheticRLV2</b></td>
+  <td align="center">200M</td>
+  <td align="center">Sep 2024</td>
+  <td>Original paper's best policy. Remains the basis of several successful third-party efforts to specialize in Gen1. <b>Most previous models have complete human ratings (see <img src="https://img.shields.io/badge/Paper%20Policies-E91E63?style=flat" alt="Paper Policies"> below)</b>, but we have become a lot more cautious about laddering.</td>
+  <td align="center">77%</td><td align="center">68%</td><td align="center">64%</td><td align="center">66%</td><td align="center">–</td>
+</tr>
+<tr>
+  <td align="center"><img src="media/icons/abra.png" width="72"><br><b>Abra</b></td>
+  <td align="center">57M</td>
+  <td align="center">Jul 2025</td>
+  <td>The best <i>gen9ou</i> agent that was open-sourced during the PokéAgent Challenge, and therefore the basis of many of the best third-party metamon extensions.</td>
+  <td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">50%</td>
+</tr>
+<tr>
+  <td align="center"><img src="media/icons/kadabra.png" width="48"><br><b>Kadabra3</b></td>
+  <td align="center">57M</td>
+  <td align="center">Sep 2025</td>
+  <td>The best policy trained in time to participate in the PokéAgent Challenge (as an organizer baseline). #1 in the Gen1OU qualifier and #2 in Gen9OU behind <a href="https://github.com/pmariglia/foul-play">foul-play</a>.</td>
+  <td align="center">80%</td><td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">64%</td>
+</tr>
+<tr>
+  <td align="center"><img src="media/icons/alakazam.png" width="56"><br><b>Alakazam</b></td>
+  <td align="center">57M</td>
+  <td align="center">Sep 2025</td>
+  <td>The final version of the PokéAgent Challenge effort. Patched a bug that made tera types invisible to the policy, which makes it the best candidate for future work at this model size.</td>
+  <td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">–</td><td align="center">–</td>
+</tr>
+<tr>
+  <td align="center"><img src="media/icons/kakuna.png" width="56"><br><b>Kakuna</b></td>
+  <td align="center">142M</td>
+  <td align="center">Dec 2025</td>
+  <td><b>The best public metamon model</b> – leading by nearly every metric. Trained on diverse teams to serve as a strong foundation for further research in any gen. Appears on all 5 OU leaderboards and is consistently 1500+ Elo in Gen1OU.</td>
+  <td align="center">82%</td><td align="center">70%</td><td align="center">63%</td><td align="center">64%</td><td align="center">71%</td>
+</tr>
 </table>
-</div>
 
 
 
@@ -287,7 +321,7 @@ Models can be loosely divided into two eras of active development:
 <br>
 
 <details>
-<summary><h3 style="color:#E91E63">Paper Policies</h3></summary>
+<summary><h3><img src="https://img.shields.io/badge/Paper%20Policies-E91E63?style=flat" alt="Paper Policies"></h3></summary>
 
 *Paper policies play Gens 1-4 and are discussed in detail in the RLC 2025 paper. Some model sizes have several variants testing different RL objectives. See `metamon/rl/pretrained.py` for a complete list.*
 
@@ -321,7 +355,7 @@ Here is a reference of human evals for key models according to our paper:
 <br>
 
 <details>
-<summary><h3 style="color:#DAA520">PokéAgent Challenge Policies</h3></summary>
+<summary><h3><img src="https://img.shields.io/badge/PokéAgent%20Challenge%20Policies-DAA520?style=flat" alt="PokéAgent Challenge Policies"></h3></summary>
 
 *Policies trained during the PokéAgent Challenge play Gens 1-4 **and 9**, but have a clear bias towards Gen 1 OU and Gen 9 OU. Their docstrings in `metamon/rl/pretrained.py` have some extra discussion and eval metrics.*
 
@@ -349,7 +383,7 @@ Here is a reference of human evals for key models according to our paper:
 
 The human ratings above are clearly the best way to anchor performance to an external metric, but we primarily rely on self comparisons across generations and [team sets](#team-sets) to guide new research. We typically use head-to-head comparisons between key baselines: see [this Kakuna eval](https://docs.google.com/spreadsheets/d/1lU8tQ0tnnupY28kIyK6FVtvPmxLSVT9_slLShOhRsqg/edit?usp=sharing) as an example. But we can get a general sense of the ***relative* strength** of metamon over time by turning policies loose on a locally hosted Showdown server and sampling from the same TeamSet.
 
-*<span style="color:#DAA520">**Gold**</span> = PokéAgent Challenge policy, <span style="color:#E91E63">**Pink**</span> = Paper policy.*
+*![Gold](https://img.shields.io/badge/Gold-DAA520?style=flat) = PokéAgent Challenge policy, ![Pink](https://img.shields.io/badge/Pink-E91E63?style=flat) = Paper policy.*
 
 
 > [!TIP]
@@ -358,47 +392,47 @@ The human ratings above are clearly the best way to anchor performance to an ext
 <table>
 <tr><th colspan="7" align="center"><strong>Early Gen OU (Competitive TeamSet)</strong></th></tr>
 <tr><th></th><th>Model</th><th>Gen1OU</th><th>Gen2OU</th><th>Gen3OU</th><th>Gen4OU</th><th>Avg Rank</th></tr>
-<tr><td align="center"><img src="media/icons/kakuna.png" width="40"></td><td align="center"><strong style="color:#DAA520">Kakuna</strong></td><td align="center"><strong>75%</strong></td><td align="center"><strong>66%</strong></td><td align="center"><strong>63%</strong></td><td align="center"><strong>60%</strong></td><td align="center">1.0</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#DAA520">Superkazam</strong></td><td align="center">67%</td><td align="center">63%</td><td align="center">59%</td><td align="center">58%</td><td align="center">2.5</td></tr>
-<tr><td align="center"><img src="media/icons/kadabra.png" width="32"></td><td align="center"><strong style="color:#DAA520">Kadabra3</strong></td><td align="center">68%</td><td align="center">61%</td><td align="center">57%</td><td align="center">57%</td><td align="center">3.5</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#DAA520">Kadabra2</strong></td><td align="center">67%</td><td align="center">60%</td><td align="center">58%</td><td align="center">57%</td><td align="center">4.0</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#DAA520">Kadabra4</strong></td><td align="center">66%</td><td align="center">60%</td><td align="center">59%</td><td align="center">58%</td><td align="center">4.2</td></tr>
-<tr><td align="center"><img src="media/icons/alakazam.png" width="40"></td><td align="center"><strong style="color:#DAA520">Alakazam</strong></td><td align="center">66%</td><td align="center">59%</td><td align="center">56%</td><td align="center">57%</td><td align="center">5.8</td></tr>
-<tr><td align="center"><img src="media/icons/ditto.png" width="40"></td><td align="center"><strong style="color:#E91E63">SynRLV2</strong></td><td align="center">50%</td><td align="center">59%</td><td align="center">56%</td><td align="center">55%</td><td align="center">7.2</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#DAA520">Kadabra</strong></td><td align="center">56%</td><td align="center">50%</td><td align="center">47%</td><td align="center">47%</td><td align="center">8.0</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#E91E63">SynRLV1</strong></td><td align="center">43%</td><td align="center">39%</td><td align="center">42%</td><td align="center">46%</td><td align="center">10.0</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#E91E63">SynRLV1++</strong></td><td align="center">43%</td><td align="center">47%</td><td align="center">42%</td><td align="center">45%</td><td align="center">10.2</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#E91E63">SynRLV0</strong></td><td align="center">41%</td><td align="center">38%</td><td align="center">48%</td><td align="center">40%</td><td align="center">10.8</td></tr>
-<tr><td align="center"><img src="media/icons/abra.png" width="48"></td><td align="center"><strong style="color:#DAA520">Abra</strong></td><td align="center">39%</td><td align="center">44%</td><td align="center">44%</td><td align="center">45%</td><td align="center">11.0</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#E91E63">LargeRL</strong></td><td align="center">25%</td><td align="center">35%</td><td align="center">40%</td><td align="center">39%</td><td align="center">13.5</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#E91E63">SmallILFA</strong></td><td align="center">24%</td><td align="center">36%</td><td align="center">39%</td><td align="center">35%</td><td align="center">14.0</td></tr>
-<tr><td align="center"><img src="media/icons/minikazam.png" width="40"></td><td align="center"><strong style="color:#DAA520">Minikazam</strong></td><td align="center">39%</td><td align="center">34%</td><td align="center">34%</td><td align="center">34%</td><td align="center">14.2</td></tr>
+<tr><td align="center"><img src="media/icons/kakuna.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Kakuna-DAA520?style=flat" alt="Kakuna"></td><td align="center"><strong>75%</strong></td><td align="center"><strong>66%</strong></td><td align="center"><strong>63%</strong></td><td align="center"><strong>60%</strong></td><td align="center">1.0</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Superkazam-DAA520?style=flat" alt="Superkazam"></td><td align="center">67%</td><td align="center">63%</td><td align="center">59%</td><td align="center">58%</td><td align="center">2.5</td></tr>
+<tr><td align="center"><img src="media/icons/kadabra.png" width="32"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra3-DAA520?style=flat" alt="Kadabra3"></td><td align="center">68%</td><td align="center">61%</td><td align="center">57%</td><td align="center">57%</td><td align="center">3.5</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra2-DAA520?style=flat" alt="Kadabra2"></td><td align="center">67%</td><td align="center">60%</td><td align="center">58%</td><td align="center">57%</td><td align="center">4.0</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra4-DAA520?style=flat" alt="Kadabra4"></td><td align="center">66%</td><td align="center">60%</td><td align="center">59%</td><td align="center">58%</td><td align="center">4.2</td></tr>
+<tr><td align="center"><img src="media/icons/alakazam.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Alakazam-DAA520?style=flat" alt="Alakazam"></td><td align="center">66%</td><td align="center">59%</td><td align="center">56%</td><td align="center">57%</td><td align="center">5.8</td></tr>
+<tr><td align="center"><img src="media/icons/ditto.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV2-E91E63?style=flat" alt="SynRLV2"></td><td align="center">50%</td><td align="center">59%</td><td align="center">56%</td><td align="center">55%</td><td align="center">7.2</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra-DAA520?style=flat" alt="Kadabra"></td><td align="center">56%</td><td align="center">50%</td><td align="center">47%</td><td align="center">47%</td><td align="center">8.0</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1-E91E63?style=flat" alt="SynRLV1"></td><td align="center">43%</td><td align="center">39%</td><td align="center">42%</td><td align="center">46%</td><td align="center">10.0</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1%2B%2B-E91E63?style=flat" alt="SynRLV1++"></td><td align="center">43%</td><td align="center">47%</td><td align="center">42%</td><td align="center">45%</td><td align="center">10.2</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV0-E91E63?style=flat" alt="SynRLV0"></td><td align="center">41%</td><td align="center">38%</td><td align="center">48%</td><td align="center">40%</td><td align="center">10.8</td></tr>
+<tr><td align="center"><img src="media/icons/abra.png" width="48"></td><td align="center"><img src="https://img.shields.io/badge/Abra-DAA520?style=flat" alt="Abra"></td><td align="center">39%</td><td align="center">44%</td><td align="center">44%</td><td align="center">45%</td><td align="center">11.0</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/LargeRL-E91E63?style=flat" alt="LargeRL"></td><td align="center">25%</td><td align="center">35%</td><td align="center">40%</td><td align="center">39%</td><td align="center">13.5</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SmallILFA-E91E63?style=flat" alt="SmallILFA"></td><td align="center">24%</td><td align="center">36%</td><td align="center">39%</td><td align="center">35%</td><td align="center">14.0</td></tr>
+<tr><td align="center"><img src="media/icons/minikazam.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Minikazam-DAA520?style=flat" alt="Minikazam"></td><td align="center">39%</td><td align="center">34%</td><td align="center">34%</td><td align="center">34%</td><td align="center">14.2</td></tr>
 </table>
 
 #### Gen9OU
 
 > [!TIP]
-> <span style="color:#E91E63">Paper Policies</span> are (predictably) weak in Gen9OU because they were never trained to play the format and use observation spaces that assume Team Preview is not available. 
+> ![Paper Policies](https://img.shields.io/badge/Paper%20Policies-E91E63?style=flat) are (predictably) weak in Gen9OU because they were never trained to play the format and use observation spaces that assume Team Preview is not available. 
 
 <table>
 <tr><th colspan="3" align="center"><strong>Gen9OU (Competitive TeamSet)</strong></th></tr>
 <tr><th></th><th>Model</th><th>Gen9OU</th></tr>
-<tr><td align="center"><img src="media/icons/kakuna.png" width="40"></td><td align="center"><strong style="color:#DAA520">Kakuna</strong></td><td align="center"><strong>77%</strong></td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#DAA520">Superkazam</strong></td><td align="center">75%</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#DAA520">Kadabra4</strong></td><td align="center">75%</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#DAA520">Kadabra2</strong></td><td align="center">73%</td></tr>
-<tr><td align="center"><img src="media/icons/kadabra.png" width="32"></td><td align="center"><strong style="color:#DAA520">Kadabra3</strong></td><td align="center">73%</td></tr>
-<tr><td align="center"><img src="media/icons/alakazam.png" width="40"></td><td align="center"><strong style="color:#DAA520">Alakazam</strong></td><td align="center">73%</td></tr>
-<tr><td align="center"><img src="media/icons/abra.png" width="48"></td><td align="center"><strong style="color:#DAA520">Abra</strong></td><td align="center">61%</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#DAA520">Kadabra</strong></td><td align="center">58%</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#DAA520">SmallRLGen9Beta</strong></td><td align="center">56%</td></tr>
-<tr><td align="center"><img src="media/icons/minikazam.png" width="40"></td><td align="center"><strong style="color:#DAA520">Minikazam</strong></td><td align="center">50%</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#E91E63">SynRLV0</strong></td><td align="center">32%</td></tr>
-<tr><td align="center"><img src="media/icons/ditto.png" width="40"></td><td align="center"><strong style="color:#E91E63">SynRLV2</strong></td><td align="center">32%</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#E91E63">SynRLV1++</strong></td><td align="center">32%</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#E91E63">SynRLV1</strong></td><td align="center">31%</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#E91E63">LargeRL</strong></td><td align="center">29%</td></tr>
-<tr><td align="center"></td><td align="center"><strong style="color:#E91E63">SmallILFA</strong></td><td align="center">23%</td></tr>
+<tr><td align="center"><img src="media/icons/kakuna.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Kakuna-DAA520?style=flat" alt="Kakuna"></td><td align="center"><strong>77%</strong></td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Superkazam-DAA520?style=flat" alt="Superkazam"></td><td align="center">75%</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra4-DAA520?style=flat" alt="Kadabra4"></td><td align="center">75%</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra2-DAA520?style=flat" alt="Kadabra2"></td><td align="center">73%</td></tr>
+<tr><td align="center"><img src="media/icons/kadabra.png" width="32"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra3-DAA520?style=flat" alt="Kadabra3"></td><td align="center">73%</td></tr>
+<tr><td align="center"><img src="media/icons/alakazam.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Alakazam-DAA520?style=flat" alt="Alakazam"></td><td align="center">73%</td></tr>
+<tr><td align="center"><img src="media/icons/abra.png" width="48"></td><td align="center"><img src="https://img.shields.io/badge/Abra-DAA520?style=flat" alt="Abra"></td><td align="center">61%</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra-DAA520?style=flat" alt="Kadabra"></td><td align="center">58%</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SmallRLGen9Beta-DAA520?style=flat" alt="SmallRLGen9Beta"></td><td align="center">56%</td></tr>
+<tr><td align="center"><img src="media/icons/minikazam.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/Minikazam-DAA520?style=flat" alt="Minikazam"></td><td align="center">50%</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV0-E91E63?style=flat" alt="SynRLV0"></td><td align="center">32%</td></tr>
+<tr><td align="center"><img src="media/icons/ditto.png" width="40"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV2-E91E63?style=flat" alt="SynRLV2"></td><td align="center">32%</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1%2B%2B-E91E63?style=flat" alt="SynRLV1++"></td><td align="center">32%</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1-E91E63?style=flat" alt="SynRLV1"></td><td align="center">31%</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/LargeRL-E91E63?style=flat" alt="LargeRL"></td><td align="center">29%</td></tr>
+<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SmallILFA-E91E63?style=flat" alt="SmallILFA"></td><td align="center">23%</td></tr>
 </table>
 
 <br>
@@ -468,8 +502,8 @@ Public self-play datasets are stored on huggingface at [`jakegrigsby/metamon-par
 
 | Name |  Size | Description |
 |------|------|-------------|
-|**`pac-base`** | 11M Trajectories | Partially comprised of battles played by organizer baselines on the PokéAgent Challenge practice ladder, but the vast majority are battles collected locally for the purposes of training the <span style="color:#DAA520">Abra</span>, <span style="color:#DAA520">Kadabra</span>, and <span style="color:#DAA520">Alakazam</span> line of policies. The version uploaded here trained <span style="color:#DAA520">Alakazam</span>, and previous models were trained on subsets of this dataset. |
-|**`pac-exploratory`** | 7M Trajectories | Self-play revisited after the NeurIPS challenge with higher sampling temperature (to improve value estimates of sub-optimal actions). Notably also includes battles of official metamon policies against `PA-Agent` (the winning team of the gen1ou tournament), who trained a great policy by (~overfitting) <span style="color:#E91E63">SynRLV2</span> to the "competitive" gen1ou team set. This has inspired a fresh approach of distilling specialized policies back into the main line models. <span style="color:#DAA520">Kakuna</span> was trained on `metamon-parsed-replays`, `pac-base`, and `pac-exploratory`.|
+|**`pac-base`** | 11M Trajectories | Partially comprised of battles played by organizer baselines on the PokéAgent Challenge practice ladder, but the vast majority are battles collected locally for the purposes of training the ![Abra](https://img.shields.io/badge/Abra-DAA520?style=flat), ![Kadabra](https://img.shields.io/badge/Kadabra-DAA520?style=flat), and ![Alakazam](https://img.shields.io/badge/Alakazam-DAA520?style=flat) line of policies. The version uploaded here trained ![Alakazam](https://img.shields.io/badge/Alakazam-DAA520?style=flat), and previous models were trained on subsets of this dataset. |
+|**`pac-exploratory`** | 7M Trajectories | Self-play revisited after the NeurIPS challenge with higher sampling temperature (to improve value estimates of sub-optimal actions). Notably also includes battles of official metamon policies against `PA-Agent` (the winning team of the gen1ou tournament), who trained a great policy by (~overfitting) ![SynRLV2](https://img.shields.io/badge/SynRLV2-E91E63?style=flat) to the "competitive" gen1ou team set. This has inspired a fresh approach of distilling specialized policies back into the main line models. ![Kakuna](https://img.shields.io/badge/Kakuna-DAA520?style=flat) was trained on `metamon-parsed-replays`, `pac-base`, and `pac-exploratory`.|
 
 These datasets are currently only available in the parsed replay format, which makes them liable to be deprecated should that format change or a major bug in the [battle backend](#battle-backends) be found. When/if this happens, the [replay parser](metamon/backend/replay_parser/README.md) would be expanded to parse ground-truth battle logs and the datasets would be re-released as a noisier aggregate of all the logs from every metamon development server during the same time period.
 
