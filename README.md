@@ -30,7 +30,7 @@
 3) Starting points for training (or finetuning) your own imitation learning (IL) and RL policies.
 5) A standardized suite of teams and heuristic opponents for evaluation.
 
-Metamon is the codebase behind ["Human-Level Competitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) (RLC, 2025). Please check out our [project website](https://metamon.tech) for an overview of our original results. After the release of our conference paper, metamon served as a starter kit (and winning baseline) for the [NeurIPS 2025 PokéAgent Challenge](https://pokeagent.github.io), which motivated significant improvements to our results and datasets. While always intended as an RL research tool, `metamon` has led to extremely competitive Pokémon AI. As of December 2025, we [provide](#pretrained-models) **the best known machine learning Showdown bot in all five supported generations by a considerable margin**, and the best or second-best bot of any kind (behind [foul-play](https://github.com/pmariglia/foul-play)) depending on the ruleset considered.
+Metamon is the codebase behind ["Human-Level Competitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) (RLC, 2025). Please check out our [project website](https://metamon.tech) for an overview of our original results. After the release of our conference paper, metamon served as a starter kit (and winning baseline) for the [NeurIPS 2025 PokéAgent Challenge](https://pokeagent.github.io), which motivated significant improvements to our results and datasets. While always intended as an RL research tool, `metamon` has developed competitive Pokémon AI. As of December 2025, we [provide](#pretrained-models) **the best known machine learning Showdown bot in all five supported generations by a considerable margin**, and the best or second-best bot of any kind (behind [foul-play](https://github.com/pmariglia/foul-play)) depending on the ruleset considered.
 
 
 <br>
@@ -265,12 +265,12 @@ There are now **29 official metamon models**. Most of them were stepping stones 
 
 <table>
 <tr>
-  <th>Model</th><th>Size</th><th>Date</th><th>Description</th>
-  <th colspan="5">Human Ladder Ratings (GXE)</th>
+  <th align="center">Model</th><th align="center">Size</th><th align="center">Date</th><th align="center">Description</th>
+  <th colspan="5" align="center">Human Ladder Ratings (GXE)</th>
 </tr>
 <tr>
-  <th></th><th></th><th></th><th></th>
-  <th>G1</th><th>G2</th><th>G3</th><th>G4</th><th>G9</th>
+  <th align="center"></th><th align="center"></th><th align="center"></th><th align="center"></th>
+  <th align="center">G1</th><th align="center">G2</th><th align="center">G3</th><th align="center">G4</th><th align="center">G9</th>
 </tr>
 <tr>
   <td align="center"><img src="media/icons/ditto.png" width="56"><br><b>SyntheticRLV2</b></td>
@@ -327,9 +327,9 @@ Models can be loosely divided into two eras of active development:
 
 <table>
   <tr>
-    <th width="70"></th>
-    <th>Model Name (<code>--agent</code>)</th>
-    <th>Description</th>
+    <th width="70" align="center"></th>
+    <th align="center">Model Name (<code>--agent</code>)</th>
+    <th align="center">Description</th>
   </tr>
   <tr><td></td><td><strong><code>SmallIL</code></strong> (2 variants)</td><td>15M imitation learning model trained on 1M human battles</td></tr>
   <tr><td></td><td><strong><code>SmallRL</code></strong> (5 variants)</td><td>15M actor-critic model trained on 1M human battles</td></tr>
@@ -361,9 +361,9 @@ Here is a reference of human evals for key models according to our paper:
 
 <table>
   <tr>
-    <th width="70"></th>
-    <th>Model Name (<code>--agent</code>)</th>
-    <th>Description</th>
+    <th width="70" align="center"></th>
+    <th align="center">Model Name (<code>--agent</code>)</th>
+    <th align="center">Description</th>
   </tr>
   <tr><td></td><td><strong><code>SmallRLGen9Beta</code></strong></td><td>Prototype 15M actor-critic model trained <em>after</em> the dataset was expanded to include Gen9OU</td></tr>
   <tr><td align="center"><img src="media/icons/abra.png" width="96" /></td><td><strong><code>Abra</code></strong></td><td>57M actor-critic trained on <code>parsed-replays v3</code> and a small set of synthetic battles. First of a new series of Gen9OU-compatible policies trained in a similar style to the paper's "Synthetic" agents.</td></tr>
@@ -390,47 +390,361 @@ The human ratings above are clearly the best way to anchor performance to an ext
 > *These GXE values are a measure of performance *relative* to the listed models and **have no connection to ratings on the public ladder**.*
 
 <table>
-<tr><th colspan="7" align="center"><strong>Early Gen OU  GXE (Competitive TeamSet)</strong></th></tr>
-<tr><th></th><th>Model</th><th>Gen1OU</th><th>Gen2OU</th><th>Gen3OU</th><th>Gen4OU</th><th>Avg Rank</th></tr>
-<tr><td align="center"><img src="media/icons/kakuna.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Kakuna-DAA520?style=flat" alt="Kakuna"></td><td align="center"><strong>75%</strong></td><td align="center"><strong>66%</strong></td><td align="center"><strong>63%</strong></td><td align="center"><strong>60%</strong></td><td align="center">1.0</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Superkazam-DAA520?style=flat" alt="Superkazam"></td><td align="center">67%</td><td align="center">63%</td><td align="center">59%</td><td align="center">58%</td><td align="center">2.5</td></tr>
-<tr><td align="center"><img src="media/icons/kadabra.png" width="48"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra3-DAA520?style=flat" alt="Kadabra3"></td><td align="center">68%</td><td align="center">61%</td><td align="center">57%</td><td align="center">57%</td><td align="center">3.5</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra2-DAA520?style=flat" alt="Kadabra2"></td><td align="center">67%</td><td align="center">60%</td><td align="center">58%</td><td align="center">57%</td><td align="center">4.0</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra4-DAA520?style=flat" alt="Kadabra4"></td><td align="center">66%</td><td align="center">60%</td><td align="center">59%</td><td align="center">58%</td><td align="center">4.2</td></tr>
-<tr><td align="center"><img src="media/icons/alakazam.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Alakazam-DAA520?style=flat" alt="Alakazam"></td><td align="center">66%</td><td align="center">59%</td><td align="center">56%</td><td align="center">57%</td><td align="center">5.8</td></tr>
-<tr><td align="center"><img src="media/icons/ditto.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV2-E91E63?style=flat" alt="SynRLV2"></td><td align="center">50%</td><td align="center">59%</td><td align="center">56%</td><td align="center">55%</td><td align="center">7.2</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra-DAA520?style=flat" alt="Kadabra"></td><td align="center">56%</td><td align="center">50%</td><td align="center">47%</td><td align="center">47%</td><td align="center">8.0</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1-E91E63?style=flat" alt="SynRLV1"></td><td align="center">43%</td><td align="center">39%</td><td align="center">42%</td><td align="center">46%</td><td align="center">10.0</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1%2B%2B-E91E63?style=flat" alt="SynRLV1++"></td><td align="center">43%</td><td align="center">47%</td><td align="center">42%</td><td align="center">45%</td><td align="center">10.2</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV0-E91E63?style=flat" alt="SynRLV0"></td><td align="center">41%</td><td align="center">38%</td><td align="center">48%</td><td align="center">40%</td><td align="center">10.8</td></tr>
-<tr><td align="center"><img src="media/icons/abra.png" width="96"></td><td align="center"><img src="https://img.shields.io/badge/Abra-DAA520?style=flat" alt="Abra"></td><td align="center">39%</td><td align="center">44%</td><td align="center">44%</td><td align="center">45%</td><td align="center">11.0</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/LargeRL-E91E63?style=flat" alt="LargeRL"></td><td align="center">25%</td><td align="center">35%</td><td align="center">40%</td><td align="center">39%</td><td align="center">13.5</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SmallILFA-E91E63?style=flat" alt="SmallILFA"></td><td align="center">24%</td><td align="center">36%</td><td align="center">39%</td><td align="center">35%</td><td align="center">14.0</td></tr>
-<tr><td align="center"><img src="media/icons/minikazam.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Minikazam-DAA520?style=flat" alt="Minikazam"></td><td align="center">39%</td><td align="center">34%</td><td align="center">34%</td><td align="center">34%</td><td align="center">14.2</td></tr>
+<tr><th colspan="11" align="center"><strong>Early Gen OU Local GXE</strong></th></tr>
+<tr>
+  <th align="center"></th>
+  <th align="center">Model</th>
+  <th colspan="4" align="center">Competitive TeamSet</th>
+  <th colspan="4" align="center">Modern Replays TeamSet</th>
+  <th align="center">Avg Rank</th>
+</tr>
+<tr>
+  <th align="center"></th>
+  <th align="center"></th>
+  <th align="center">G1</th>
+  <th align="center">G2</th>
+  <th align="center">G3</th>
+  <th align="center">G4</th>
+  <th align="center">G1</th>
+  <th align="center">G2</th>
+  <th align="center">G3</th>
+  <th align="center">G4</th>
+  <th align="center"></th>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/kakuna.png" width="56"></td>
+<td align="center"><img src="https://img.shields.io/badge/Kakuna-DAA520?style=flat" alt="Kakuna"></td>
+<td align="center"><strong>75%</strong></td>
+<td align="center"><strong>66%</strong></td>
+<td align="center"><strong>63%</strong></td>
+<td align="center"><strong>60%</strong></td>
+<td align="center"><strong>68%</strong></td>
+<td align="center"><strong>71%</strong></td>
+<td align="center"><strong>67%</strong></td>
+<td align="center"><strong>69%</strong></td>
+<td align="center">1.0</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/Superkazam-DAA520?style=flat" alt="Superkazam"></td>
+<td align="center">67%</td>
+<td align="center">63%</td>
+<td align="center">59%</td>
+<td align="center"><u>58%</u></td>
+<td align="center">64%</td>
+<td align="center">61%</td>
+<td align="center">62%</td>
+<td align="center">61%</td>
+<td align="center">3.0</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/Kadabra4-DAA520?style=flat" alt="Kadabra4"></td>
+<td align="center">66%</td>
+<td align="center">60%</td>
+<td align="center">58%</td>
+<td align="center"><u>58%</u></td>
+<td align="center"><u>68%</u></td>
+<td align="center">60%</td>
+<td align="center"><u>66%</u></td>
+<td align="center">63%</td>
+<td align="center">3.5</td>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/kadabra.png" width="48"></td>
+<td align="center"><img src="https://img.shields.io/badge/Kadabra3-DAA520?style=flat" alt="Kadabra3"></td>
+<td align="center">68%</td>
+<td align="center">61%</td>
+<td align="center">57%</td>
+<td align="center">57%</td>
+<td align="center"><u>67%</u></td>
+<td align="center">60%</td>
+<td align="center">60%</td>
+<td align="center">60%</td>
+<td align="center">4.0</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/Kadabra2-DAA520?style=flat" alt="Kadabra2"></td>
+<td align="center">67%</td>
+<td align="center">60%</td>
+<td align="center">58%</td>
+<td align="center">57%</td>
+<td align="center">64%</td>
+<td align="center">62%</td>
+<td align="center">59%</td>
+<td align="center">60%</td>
+<td align="center">4.4</td>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/alakazam.png" width="56"></td>
+<td align="center"><img src="https://img.shields.io/badge/Alakazam-DAA520?style=flat" alt="Alakazam"></td>
+<td align="center">66%</td>
+<td align="center">59%</td>
+<td align="center">56%</td>
+<td align="center">57%</td>
+<td align="center">64%</td>
+<td align="center">58%</td>
+<td align="center">61%</td>
+<td align="center">58%</td>
+<td align="center">5.5</td>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/ditto.png" width="56"></td>
+<td align="center"><img src="https://img.shields.io/badge/SynRLV2-E91E63?style=flat" alt="SynRLV2"></td>
+<td align="center">50%</td>
+<td align="center">59%</td>
+<td align="center">55%</td>
+<td align="center">55%</td>
+<td align="center">54%</td>
+<td align="center">61%</td>
+<td align="center">55%</td>
+<td align="center">56%</td>
+<td align="center">6.9</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/Kadabra-DAA520?style=flat" alt="Kadabra"></td>
+<td align="center">56%</td>
+<td align="center">50%</td>
+<td align="center">47%</td>
+<td align="center">47%</td>
+<td align="center">55%</td>
+<td align="center">53%</td>
+<td align="center">50%</td>
+<td align="center">54%</td>
+<td align="center">7.9</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/SynRLV1%2B%2B-E91E63?style=flat" alt="SynRLV1++"></td>
+<td align="center">43%</td>
+<td align="center">47%</td>
+<td align="center">41%</td>
+<td align="center">45%</td>
+<td align="center">47%</td>
+<td align="center">49%</td>
+<td align="center">48%</td>
+<td align="center">48%</td>
+<td align="center">10.0</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/SynRLV1-E91E63?style=flat" alt="SynRLV1"></td>
+<td align="center">43%</td>
+<td align="center">39%</td>
+<td align="center">42%</td>
+<td align="center">46%</td>
+<td align="center">46%</td>
+<td align="center">45%</td>
+<td align="center">44%</td>
+<td align="center">49%</td>
+<td align="center">10.2</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/SynRLV0-E91E63?style=flat" alt="SynRLV0"></td>
+<td align="center">41%</td>
+<td align="center">38%</td>
+<td align="center">48%</td>
+<td align="center">40%</td>
+<td align="center">45%</td>
+<td align="center">41%</td>
+<td align="center">49%</td>
+<td align="center">45%</td>
+<td align="center">11.1</td>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/abra.png" width="96"></td>
+<td align="center"><img src="https://img.shields.io/badge/Abra-DAA520?style=flat" alt="Abra"></td>
+<td align="center">39%</td>
+<td align="center">44%</td>
+<td align="center">44%</td>
+<td align="center">45%</td>
+<td align="center">40%</td>
+<td align="center">45%</td>
+<td align="center">48%</td>
+<td align="center">48%</td>
+<td align="center">11.2</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/SmallRLGen9Beta-DAA520?style=flat" alt="SmallRLGen9Beta"></td>
+<td align="center">–</td>
+<td align="center">–</td>
+<td align="center">–</td>
+<td align="center">–</td>
+<td align="center">44%</td>
+<td align="center">42%</td>
+<td align="center">45%</td>
+<td align="center">48%</td>
+<td align="center">12.0</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/LargeRL-E91E63?style=flat" alt="LargeRL"></td>
+<td align="center">25%</td>
+<td align="center">35%</td>
+<td align="center">39%</td>
+<td align="center">39%</td>
+<td align="center">30%</td>
+<td align="center">39%</td>
+<td align="center">41%</td>
+<td align="center">44%</td>
+<td align="center">13.9</td>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/minikazam.png" width="56"></td>
+<td align="center"><img src="https://img.shields.io/badge/Minikazam-DAA520?style=flat" alt="Minikazam"></td>
+<td align="center">39%</td>
+<td align="center">34%</td>
+<td align="center">34%</td>
+<td align="center">34%</td>
+<td align="center">41%</td>
+<td align="center">36%</td>
+<td align="center">36%</td>
+<td align="center">39%</td>
+<td align="center">14.6</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/SmallILFA-E91E63?style=flat" alt="SmallILFA"></td>
+<td align="center">24%</td>
+<td align="center">36%</td>
+<td align="center">39%</td>
+<td align="center">35%</td>
+<td align="center">28%</td>
+<td align="center">35%</td>
+<td align="center">38%</td>
+<td align="center">41%</td>
+<td align="center">14.8</td>
+</tr>
 </table>
 
 > [!TIP]
 > ![Paper Policies](https://img.shields.io/badge/Paper%20Policies-E91E63?style=flat) are (predictably) weak in Gen9OU because they were never trained to play the format and use observation spaces that assume Team Preview is not available. 
 
 <table>
-<tr><th colspan="3" align="center"><strong>Gen9OU GXE (Competitive TeamSet)</strong></th></tr>
-<tr><th></th><th>Model</th><th>Gen9OU</th></tr>
-<tr><td align="center"><img src="media/icons/kakuna.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Kakuna-DAA520?style=flat" alt="Kakuna"></td><td align="center"><strong>77%</strong></td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Superkazam-DAA520?style=flat" alt="Superkazam"></td><td align="center">75%</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra4-DAA520?style=flat" alt="Kadabra4"></td><td align="center">75%</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra2-DAA520?style=flat" alt="Kadabra2"></td><td align="center">73%</td></tr>
-<tr><td align="center"><img src="media/icons/kadabra.png" width="48"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra3-DAA520?style=flat" alt="Kadabra3"></td><td align="center">73%</td></tr>
-<tr><td align="center"><img src="media/icons/alakazam.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Alakazam-DAA520?style=flat" alt="Alakazam"></td><td align="center">73%</td></tr>
-<tr><td align="center"><img src="media/icons/abra.png" width="96"></td><td align="center"><img src="https://img.shields.io/badge/Abra-DAA520?style=flat" alt="Abra"></td><td align="center">61%</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/Kadabra-DAA520?style=flat" alt="Kadabra"></td><td align="center">58%</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SmallRLGen9Beta-DAA520?style=flat" alt="SmallRLGen9Beta"></td><td align="center">56%</td></tr>
-<tr><td align="center"><img src="media/icons/minikazam.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/Minikazam-DAA520?style=flat" alt="Minikazam"></td><td align="center">50%</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV0-E91E63?style=flat" alt="SynRLV0"></td><td align="center">32%</td></tr>
-<tr><td align="center"><img src="media/icons/ditto.png" width="56"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV2-E91E63?style=flat" alt="SynRLV2"></td><td align="center">32%</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1%2B%2B-E91E63?style=flat" alt="SynRLV1++"></td><td align="center">32%</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SynRLV1-E91E63?style=flat" alt="SynRLV1"></td><td align="center">31%</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/LargeRL-E91E63?style=flat" alt="LargeRL"></td><td align="center">29%</td></tr>
-<tr><td align="center"></td><td align="center"><img src="https://img.shields.io/badge/SmallILFA-E91E63?style=flat" alt="SmallILFA"></td><td align="center">23%</td></tr>
+<tr><th colspan="5" align="center"><strong>Gen9OU Local GXE</strong></th></tr>
+<tr>
+  <th align="center"></th>
+  <th align="center">Model</th>
+  <th align="center">Competitive TeamSet</th>
+  <th align="center">Modern Replays TeamSet</th>
+  <th align="center">Avg Rank</th>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/kakuna.png" width="56"></td>
+<td align="center"><img src="https://img.shields.io/badge/Kakuna-DAA520?style=flat" alt="Kakuna"></td>
+<td align="center"><strong>76%</strong></td>
+<td align="center"><strong>74%</strong></td>
+<td align="center">1.0</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/Superkazam-DAA520?style=flat" alt="Superkazam"></td>
+<td align="center"><u>75%</u></td>
+<td align="center"><u>73%</u></td>
+<td align="center">2.5</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/Kadabra4-DAA520?style=flat" alt="Kadabra4"></td>
+<td align="center"><u>75%</u></td>
+<td align="center"><u>73%</u></td>
+<td align="center">2.5</td>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/kadabra.png" width="48"></td>
+<td align="center"><img src="https://img.shields.io/badge/Kadabra3-DAA520?style=flat" alt="Kadabra3"></td>
+<td align="center">73%</td>
+<td align="center">71%</td>
+<td align="center">4.5</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/Kadabra2-DAA520?style=flat" alt="Kadabra2"></td>
+<td align="center">73%</td>
+<td align="center">69%</td>
+<td align="center">5.0</td>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/alakazam.png" width="56"></td>
+<td align="center"><img src="https://img.shields.io/badge/Alakazam-DAA520?style=flat" alt="Alakazam"></td>
+<td align="center">73%</td>
+<td align="center">71%</td>
+<td align="center">5.5</td>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/abra.png" width="96"></td>
+<td align="center"><img src="https://img.shields.io/badge/Abra-DAA520?style=flat" alt="Abra"></td>
+<td align="center">61%</td>
+<td align="center">57%</td>
+<td align="center">7.0</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/SmallRLGen9Beta-DAA520?style=flat" alt="SmallRLGen9Beta"></td>
+<td align="center">56%</td>
+<td align="center">57%</td>
+<td align="center">8.5</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/Kadabra-DAA520?style=flat" alt="Kadabra"></td>
+<td align="center">58%</td>
+<td align="center">55%</td>
+<td align="center">8.5</td>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/minikazam.png" width="56"></td>
+<td align="center"><img src="https://img.shields.io/badge/Minikazam-DAA520?style=flat" alt="Minikazam"></td>
+<td align="center">50%</td>
+<td align="center">50%</td>
+<td align="center">10.0</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/SynRLV0-E91E63?style=flat" alt="SynRLV0"></td>
+<td align="center">32%</td>
+<td align="center">36%</td>
+<td align="center">11.5</td>
+</tr>
+<tr>
+<td align="center"><img src="media/icons/ditto.png" width="56"></td>
+<td align="center"><img src="https://img.shields.io/badge/SynRLV2-E91E63?style=flat" alt="SynRLV2"></td>
+<td align="center">32%</td>
+<td align="center">38%</td>
+<td align="center">11.5</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/SynRLV1%2B%2B-E91E63?style=flat" alt="SynRLV1++"></td>
+<td align="center">32%</td>
+<td align="center">33%</td>
+<td align="center">13.5</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/LargeRL-E91E63?style=flat" alt="LargeRL"></td>
+<td align="center">29%</td>
+<td align="center">34%</td>
+<td align="center">14.0</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/SynRLV1-E91E63?style=flat" alt="SynRLV1"></td>
+<td align="center">31%</td>
+<td align="center">32%</td>
+<td align="center">14.5</td>
+</tr>
+<tr>
+<td align="center"></td>
+<td align="center"><img src="https://img.shields.io/badge/SmallILFA-E91E63?style=flat" alt="SmallILFA"></td>
+<td align="center">23%</td>
+<td align="center">27%</td>
+<td align="center">16.0</td>
+</tr>
 </table>
 
 <br>
