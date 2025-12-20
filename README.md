@@ -321,7 +321,7 @@ Models can be loosely divided into two eras of active development:
 <br>
 
 <details>
-<summary><h3><img src="https://img.shields.io/badge/Paper%20Policies-E91E63?style=flat" alt="Paper Policies"></h3></summary>
+<summary><h3>Paper Policies</h3></summary>
 
 *Paper policies play Gens 1-4 and are discussed in detail in the RLC 2025 paper. Some model sizes have several variants testing different RL objectives. See `metamon/rl/pretrained.py` for a complete list.*
 
@@ -355,7 +355,7 @@ Here is a reference of human evals for key models according to our paper:
 <br>
 
 <details>
-<summary><h3><img src="https://img.shields.io/badge/PokéAgent%20Challenge%20Policies-DAA520?style=flat" alt="PokéAgent Challenge Policies"></h3></summary>
+<summary><h3>PokéAgent Challenge Policies</h3></summary>
 
 *Policies trained during the PokéAgent Challenge play Gens 1-4 **and 9**, but have a clear bias towards Gen 1 OU and Gen 9 OU. Their docstrings in `metamon/rl/pretrained.py` have some extra discussion and eval metrics.*
 
@@ -441,12 +441,11 @@ The human ratings above are clearly the best way to anchor performance to an ext
 <details>
 <summary>⚠️ <strong>On Laddering Against Humans on Showdown</strong></summary>
 
-> [!WARNING]
-> At the risk of being overdramatic... it's our opinion that Showdown is ill prepared to handle open-source bots that play this fast at these ratings; nobody wants to play against an RL agent that can take their Elo – and they especially don't want to play it over and over again on small early gen ladders. We are RL researchers, not Pokémon players, and aren't thrilled that we have become major contributors to a problem that impacts a community we aren't really a part of.
-> 
-> We deploy metamon on the ladder as a benchmarking tool. Our human evals are done slowly under one username at a time and spread across five formats and every timezone. Metamon is approaching high-level play in some formats (especially gen1ou), and we are more careful about this than ever. If you are doing substantive RL research, it would be pretty hypocritical for us to say you can't do this too. But we've developed and evaluated Pokémon RL baselines so that you don't have to; as a general rule, we train over such diverse teams and opponents that it is reasonable to conclude that improvements in offline head-to-head evaluations against a metamon policy would lead to improvements over its published ratings (unless you have *hyper*overfit to specific teams or opponents). If you want our input on this please feel free to reach out. Metamon co-organized the NeurIPS 2025 PokéAgent Challenge, which will soon be returning as a permanent Pokémon AI evaluation that we hope will decrease the demand for anonymous Showdown laddering. We also think RL agents can be useful to players as practice tools and plan to expand in that direction.
->
-> In any case, **there is no good reason to run out-of-the-box pretrained metamon baselines on the ladder yourselves**, and we strongly discourage this. When we ladder it's arguably research... when you do it *again*... it's just annoying. **Metamon does not come with any quick-start commands to deploy policies on Showdown, and most recent releases use configurations that require research-grade GPUs** for accurate inference. The changes necessary to get around this are trivial... but we won't not help you, so please don't ask.
+At the risk of being overdramatic... it's our opinion that Showdown is ill prepared to handle open-source bots that play this fast at these ratings; nobody wants to play against an RL agent that can take their Elo – and they especially don't want to play it over and over again on small early gen ladders. We are RL researchers, not Pokémon players, and aren't thrilled that we have become major contributors to a problem that impacts a community we aren't really a part of.
+
+We deploy metamon on the ladder as a benchmarking tool. Our human evals are done slowly under one username at a time and spread across five formats and every timezone. Metamon is approaching high-level play in some formats (especially gen1ou), and we are more careful about this than ever. If you are doing substantive RL research, it would be pretty hypocritical for us to say you can't do this too. But we've developed and evaluated Pokémon RL baselines so that you don't have to; as a general rule, we train over such diverse teams and opponents that it is reasonable to conclude that improvements in offline head-to-head evaluations against a metamon policy would lead to improvements over its published ratings (unless you have *hyper*overfit to specific teams or opponents). If you want our input on this please feel free to reach out. Metamon co-organized the NeurIPS 2025 PokéAgent Challenge, which will soon be returning as a permanent Pokémon AI evaluation that we hope will decrease the demand for anonymous Showdown laddering. We also think RL agents can be useful to players as practice tools and plan to expand in that direction.
+
+In any case, **there is no good reason to run out-of-the-box pretrained metamon baselines on the ladder yourselves**, and we strongly discourage this. When we ladder it's arguably research... when you do it *again*... it's just annoying. **Metamon does not come with any quick-start commands to deploy policies on Showdown, and most recent releases use configurations that require research-grade GPUs** for accurate inference. The changes necessary to get around this are trivial... but we won't not help you, so please don't ask.
 
 </details>  
 
