@@ -232,7 +232,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
         turn_limit: int = 1000,
         save_trajectories_to: Optional[str] = None,
         save_team_results_to: Optional[str] = None,
-        battle_backend: str = "poke-env",
+        battle_backend: str = "metamon",
         team_preview_model=None,
     ):
         opponent_team_set = opponent_team_set or copy.deepcopy(player_team_set)

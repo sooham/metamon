@@ -130,7 +130,7 @@ class PretrainedModel:
         hf_cache_dir: Optional[str] = None,
         default_checkpoint: int = 40,
         gin_overrides: Optional[dict] = None,
-        battle_backend: str = "poke-env",
+        battle_backend: str = "metamon",
     ):
         self.model_name = model_name
         self.model_gin_config = model_gin_config
