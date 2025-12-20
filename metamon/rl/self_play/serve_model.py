@@ -25,7 +25,7 @@ def make_ladder_env(
     num_battles: int,
     username: str,
     save_trajectories_to: Optional[str] = None,
-    battle_backend: str = "poke-env",
+    battle_backend: str = "metamon",
 ):
     """
     Battle on the local Showdown ladder
