@@ -10,6 +10,7 @@ from metamon.rl.pretrained import (
     PretrainedModel,
 )
 from metamon.baselines import get_baseline
+from metamon.backend.team_preview.preview import TeamPreviewModel
 from metamon.rl.metamon_to_amago import (
     make_baseline_env,
     make_local_ladder_env,
@@ -41,6 +42,7 @@ def pretrained_vs_baselines(
     save_trajectories_to: Optional[str] = None,
     save_team_results_to: Optional[str] = None,
     baselines: Optional[List[str]] = None,
+    team_preview_model: Optional[TeamPreviewModel] = None,
 ) -> Dict[str, Any]:
     """Evaluate a pretrained model against built-in baseline opponents.
 
@@ -65,6 +67,7 @@ def pretrained_vs_baselines(
             battle_backend=battle_backend,
             team_set=team_set,
             opponent_type=get_baseline(opponent),
+            team_preview_model=team_preview_model,
         )
         for opponent in baselines
     ]
@@ -88,6 +91,7 @@ def _pretrained_on_ladder(
     checkpoint: Optional[int],
     log_to_wandb: bool,
     action_temperature: float = 1.0,
+    team_preview_model: Optional[TeamPreviewModel] = None,
     **ladder_kwargs,
 ) -> Dict[str, Any]:
     """Helper function for ladder-based evaluation."""
@@ -104,6 +108,7 @@ def _pretrained_on_ladder(
         action_space=pretrained_model.action_space,
         reward_function=pretrained_model.reward_function,
         num_battles=total_battles,
+        team_preview_model=team_preview_model,
         **ladder_kwargs,
     )
 
@@ -128,6 +133,7 @@ def pretrained_vs_local_ladder(
     save_trajectories_to: Optional[str] = None,
     save_team_results_to: Optional[str] = None,
     log_to_wandb: bool = False,
+    team_preview_model: Optional[TeamPreviewModel] = None,
 ) -> Dict[str, Any]:
     """Evaluate a pretrained model on the ladder of your Local Showdown server.
 
@@ -148,6 +154,7 @@ def pretrained_vs_local_ladder(
         checkpoint=checkpoint,
         log_to_wandb=log_to_wandb,
         action_temperature=action_temperature,
+        team_preview_model=team_preview_model,
         player_username=username,
         player_avatar=avatar,
         player_team_set=team_set,
@@ -172,6 +179,7 @@ def pretrained_vs_pokeagent_ladder(
     save_trajectories_to: Optional[str] = None,
     save_team_results_to: Optional[str] = None,
     log_to_wandb: bool = False,
+    team_preview_model: Optional[TeamPreviewModel] = None,
 ) -> Dict[str, Any]:
     """Evaluate a pretrained model on the PokéAgent Challenge ladder.
 
@@ -191,12 +199,13 @@ def pretrained_vs_pokeagent_ladder(
         total_battles=total_battles,
         checkpoint=checkpoint,
         log_to_wandb=log_to_wandb,
+        action_temperature=action_temperature,
+        team_preview_model=team_preview_model,
         player_username=username,
         player_password=password,
         player_avatar=avatar,
         player_team_set=team_set,
         battle_backend=battle_backend,
-        action_temperature=action_temperature,
         battle_format=battle_format,
         save_trajectories_to=save_trajectories_to,
         save_team_results_to=save_team_results_to,
@@ -249,15 +258,30 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
     all_results = collections.defaultdict(list)
     backend = args.battle_backend or pretrained_model.battle_backend
 
-    # Print a pretty header with agent, preferred backend, and active backend
-    pre_header = "=" * 60
-    print(pre_header)
-    print("   Metamon RL Agent Evaluation".center(60))
-    print(pre_header)
-    print(f" Pretrained Agent : {pretrained_model.model_name}")
-    print(f" Preferred Backend: {pretrained_model.battle_backend}")
-    print(f" Active Backend   : {backend}")
-    print(pre_header)
+    # Load team preview model if checkpoint provided
+    team_preview_model = None
+    if args.team_preview_checkpoint is not None:
+        team_preview_model = TeamPreviewModel.load_from_checkpoint(
+            checkpoint_path=args.team_preview_checkpoint,
+            device="cuda" if backend == "metamon" else "cpu",
+            use_argmax=args.team_preview_use_argmax,
+        )
+        print(f"Team preview model loaded from: {args.team_preview_checkpoint}")
+
+        if backend != "metamon":
+            print(
+                "WARNING: team_preview_model only works with --battle_backend metamon. It will be ignored."
+            )
+            team_preview_model = None
+
+    # Print banner and evaluation info
+    metamon.print_banner()
+    print(f"  Agent: {pretrained_model.model_name}  |  Backend: {backend}", end="")
+    if team_preview_model is not None:
+        print(f"  |  Team Preview: ✓")
+    else:
+        print()
+    print()
 
     for gen in args.gens:
         for format_name in args.formats:
@@ -282,6 +306,7 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
                     "action_temperature": args.temperature,
                     "save_team_results_to": args.save_team_results_to,
                     "log_to_wandb": args.log_to_wandb,
+                    "team_preview_model": team_preview_model,
                 }
                 eval_function = _get_default_eval(args, eval_kwargs)
                 results = eval_function(**eval_kwargs)
@@ -399,6 +424,24 @@ def add_cli(parser):
         type=float,
         default=1.0,
         help="Temperature for temperature-based sampling. Higher temperature means more exploration.",
+    )
+    parser.add_argument(
+        "--team_preview_checkpoint",
+        type=str,
+        default=None,
+        help=(
+            "Path to a team preview model checkpoint (e.g., './checkpoints/best_model.pt'). "
+            "If provided, the model will predict which pokemon to lead with during team preview. "
+            "Only works with --battle_backend metamon."
+        ),
+    )
+    parser.add_argument(
+        "--team_preview_use_argmax",
+        action="store_true",
+        help=(
+            "If set, use argmax for team preview lead selection instead of sampling from the distribution. "
+            "Only applies when --team_preview_checkpoint is provided."
+        ),
     )
     return parser
 
