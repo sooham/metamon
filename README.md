@@ -30,7 +30,8 @@
 3) Starting points for training (or finetuning) your own imitation learning (IL) and RL policies.
 5) A standardized suite of teams and heuristic opponents for evaluation.
 
-Metamon is the codebase behind ["Human-Level Competitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) (RLC, 2025). Please check out our [project website](https://metamon.tech) for an overview of our original results. After the release of our conference paper, metamon served as a starter kit for the [NeurIPS 2025 PokéAgent Challenge](https://pokeagent.github.io), which motivated significant improvements to our results and datasets.
+Metamon is the codebase behind ["Human-Level Competitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) (RLC, 2025). Please check out our [project website](https://metamon.tech) for an overview of our original results. After the release of our conference paper, metamon served as a starter kit and winning baseline for the [NeurIPS 2025 PokéAgent Challenge](https://pokeagent.github.io), which motivated significant improvements to our results and datasets.
+
 
 <br>
 
@@ -745,7 +746,6 @@ The human ratings above are clearly the best way to anchor performance to an ext
 <td align="center">16.0</td>
 </tr>
 </table>
-
 
 <br>
 
