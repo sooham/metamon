@@ -30,8 +30,7 @@
 3) Starting points for training (or finetuning) your own imitation learning (IL) and RL policies.
 5) A standardized suite of teams and heuristic opponents for evaluation.
 
-Metamon is the codebase behind ["Human-Level Competitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) (RLC, 2025). Please check out our [project website](https://metamon.tech) for an overview of our original results. After the release of our conference paper, metamon served as a starter kit (and winning baseline) for the [NeurIPS 2025 PokéAgent Challenge](https://pokeagent.github.io), which motivated significant improvements to our results and datasets. While always intended as an RL research tool, `metamon` has developed competitive Pokémon AI. As of December 2025, we [provide](#pretrained-models) **the best known machine learning Showdown bot in all five supported generations by a considerable margin**, and the best or second-best bot of any kind (behind [foul-play](https://github.com/pmariglia/foul-play)) depending on the ruleset considered.
-
+Metamon is the codebase behind ["Human-Level Competitive Pokémon via Scalable Offline RL and Transformers"](https://arxiv.org/abs/2504.04395) (RLC, 2025). Please check out our [project website](https://metamon.tech) for an overview of our original results. After the release of our conference paper, metamon served as a starter kit for the [NeurIPS 2025 PokéAgent Challenge](https://pokeagent.github.io), which motivated significant improvements to our results and datasets.
 
 <br>
 
@@ -430,7 +429,7 @@ The human ratings above are clearly the best way to anchor performance to an ext
 <td align="center">67%</td>
 <td align="center">63%</td>
 <td align="center">59%</td>
-<td align="center"><u>58%</u></td>
+<td align="center"><ins>58%</ins></td>
 <td align="center">64%</td>
 <td align="center">61%</td>
 <td align="center">62%</td>
@@ -443,10 +442,10 @@ The human ratings above are clearly the best way to anchor performance to an ext
 <td align="center">66%</td>
 <td align="center">60%</td>
 <td align="center">58%</td>
-<td align="center"><u>58%</u></td>
-<td align="center"><u>68%</u></td>
+<td align="center"><ins>58%</ins></td>
+<td align="center"><ins>68%</ins></td>
 <td align="center">60%</td>
-<td align="center"><u>66%</u></td>
+<td align="center"><ins>66%</ins></td>
 <td align="center">63%</td>
 <td align="center">3.5</td>
 </tr>
@@ -457,7 +456,7 @@ The human ratings above are clearly the best way to anchor performance to an ext
 <td align="center">61%</td>
 <td align="center">57%</td>
 <td align="center">57%</td>
-<td align="center"><u>67%</u></td>
+<td align="center"><ins>67%</ins></td>
 <td align="center">60%</td>
 <td align="center">60%</td>
 <td align="center">60%</td>
@@ -643,15 +642,15 @@ The human ratings above are clearly the best way to anchor performance to an ext
 <tr>
 <td align="center"></td>
 <td align="center"><img src="https://img.shields.io/badge/Superkazam-DAA520?style=flat" alt="Superkazam"></td>
-<td align="center"><u>75%</u></td>
-<td align="center"><u>73%</u></td>
+<td align="center"><ins>75%</ins></td>
+<td align="center"><ins>73%</ins></td>
 <td align="center">2.5</td>
 </tr>
 <tr>
 <td align="center"></td>
 <td align="center"><img src="https://img.shields.io/badge/Kadabra4-DAA520?style=flat" alt="Kadabra4"></td>
-<td align="center"><u>75%</u></td>
-<td align="center"><u>73%</u></td>
+<td align="center"><ins>75%</ins></td>
+<td align="center"><ins>73%</ins></td>
 <td align="center">2.5</td>
 </tr>
 <tr>
@@ -747,20 +746,6 @@ The human ratings above are clearly the best way to anchor performance to an ext
 </tr>
 </table>
 
-<br>
-
-
-<details>
-<summary>⚠️ <strong>On Laddering Against Humans on Showdown</strong></summary>
-
-At the risk of being overdramatic... it's our opinion that Showdown is not prepared to handle open-source bots that play this fast at these ratings. Nobody wants to play against an RL agent that can take their Elo – and they especially don't want to play it over and over again on small early gen ladders. We are RL researchers, not Pokémon players, and aren't thrilled that we have become major contributors to a problem that impacts a community we aren't really a part of.
-
-We deploy metamon on the ladder as a benchmarking tool. Our human evals are done slowly under one username at a time and spread across five formats and every timezone. Metamon is approaching high-level play in some formats (especially gen1ou), and we are more careful about this than ever. If you are doing substantive RL research, it would be pretty hypocritical for us to say you can't do this too. But we've developed and evaluated Pokémon RL baselines so that you don't have to; as a general rule, we train over such diverse teams and opponents that it is reasonable to conclude that improvements in offline head-to-head evaluations against a metamon policy would lead to improvements over its published ratings (unless you have *hyper*overfit to specific teams or opponents). If you want our input on this please feel free to reach out. Metamon co-organized the NeurIPS 2025 PokéAgent Challenge, which will soon be returning as a permanent Pokémon AI evaluation that we hope will decrease the demand for anonymous Showdown laddering. We also think RL agents can be useful to players as practice tools and plan to expand in that direction.
-
-In any case, **there is no good reason to run out-of-the-box pretrained metamon baselines on the ladder yourselves**, and we strongly discourage this. When we ladder it's arguably research... when you use our work and ladder *again*... it's just annoying. **Metamon does not come with any quick-start commands to deploy policies on Showdown, and most recent releases use configurations that require research-grade GPUs** for accurate inference. The changes necessary to get around this are trivial... but we won't help you, so please don't ask.
-
-</details>  
-
 
 <br>
 
@@ -792,7 +777,23 @@ Datasets are stored on huggingface in two formats:
 |**[`metamon-raw-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-raw-replays)** | 2M Battles | Our curated set of Pokémon Showdown replay `.json` files... to save the Showdown API some download requests and to maintain an official reference of our training data. Will be regularly updated as new battles are played and collected. |
 |**[`metamon-parsed-replays`](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-replays)** | 4M Trajectories | The RL-compatible version of the dataset as reconstructed by the [replay parser](metamon/backend/replay_parser/README.md). This dataset has been significantly expanded and improved since the original paper.|
 
-Parsed replays will download automatically when requested by the `ParsedReplayDataset`, but these datasets are large. Use `python -m metamon.data.download parsed-replays` to download them in advance.
+Parsed replays will download automatically when requested by the `ParsedReplayDataset`, but these datasets are large. Download in advance with:
+
+```bash
+python -m metamon.data.download parsed-replays
+```
+
+```python
+from metamon.data import ParsedReplayDataset
+
+replay_dset = ParsedReplayDataset(
+    observation_space=obs_space,
+    action_space=action_space,
+    reward_function=reward_func,
+    formats=["gen1ou", "gen9ou"],
+)
+obs_seq, action_seq, reward_seq, done_seq = replay_dset[0]
+```
 
 
 #### Server/Replay Sim2Sim Gap
@@ -806,9 +807,9 @@ In Showdown RL, we have to embrace a **mismatch between the trajectories we *obs
 
 ### Self-Play Datasets
 
-Public self-play datasets are stored on huggingface at [`jakegrigsby/metamon-parsed-pile`](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-pile). Trajectories were generated by the `rl/self_play` launcher with various team sets and model pools. There are currently two subsets:
+Almost all improvement in `metamon`'s performance is driven by large and diverse datasets of agent vs. agent battles. Public self-play datasets are stored on huggingface at [`jakegrigsby/metamon-parsed-pile`](https://huggingface.co/datasets/jakegrigsby/metamon-parsed-pile). Trajectories were generated by the `rl/self_play` launcher with various team sets and model pools.
 
-
+ There are currently two subsets:
 
 
 | Name |  Size | Description |
@@ -816,7 +817,26 @@ Public self-play datasets are stored on huggingface at [`jakegrigsby/metamon-par
 |**`pac-base`** | 11M Trajectories | Partially comprised of battles played by organizer baselines on the PokéAgent Challenge practice ladder, but the vast majority are battles collected locally for the purposes of training the ![Abra](https://img.shields.io/badge/Abra-DAA520?style=flat), ![Kadabra](https://img.shields.io/badge/Kadabra-DAA520?style=flat), and ![Alakazam](https://img.shields.io/badge/Alakazam-DAA520?style=flat) line of policies. The version uploaded here trained ![Alakazam](https://img.shields.io/badge/Alakazam-DAA520?style=flat), and previous models were trained on subsets of this dataset. |
 |**`pac-exploratory`** | 7M Trajectories | Self-play revisited after the NeurIPS challenge with higher sampling temperature (to improve value estimates of sub-optimal actions). Notably also includes battles of official metamon policies against `PA-Agent` (the winning team of the gen1ou tournament), who trained a great policy by (~overfitting) ![SynRLV2](https://img.shields.io/badge/SynRLV2-E91E63?style=flat) to the "competitive" gen1ou team set. This has inspired a fresh approach of distilling specialized policies back into the main line models. ![Kakuna](https://img.shields.io/badge/Kakuna-DAA520?style=flat) was trained on `metamon-parsed-replays`, `pac-base`, and `pac-exploratory`.|
 
-Self-play data will download automatically when requested by the `SelfPlayDataset`, but you can download both subsets in advance with `python -m metamon.data.download self-play --formats gen1ou gen9ou`.
+Self-play data will download automatically when requested by the `SelfPlayDataset`, but these datasets are large. Download in advance with:
+
+```bash
+python -m metamon.data.download self-play
+```
+
+This downloads both subsets for all available formats (gen1ou, gen2ou, gen3ou, gen4ou, gen9ou). You can also specify formats explicitly: `--formats gen1ou gen9ou`. The download includes pre-built SQLite indexes for fast loading.
+
+```python
+from metamon.data import SelfPlayDataset
+
+self_play_dset = SelfPlayDataset(
+    observation_space=obs_space,
+    action_space=action_space,
+    reward_function=reward_func,
+    subset="pac-base",  # or "pac-exploratory"
+    formats=["gen1ou", "gen9ou"],
+)
+obs_seq, action_seq, reward_seq, done_seq = self_play_dset[0]
+```
 
 These datasets are currently only available in the parsed replay format, which makes them liable to be deprecated should that format change or a major bug in the [battle backend](#battle-backends) be found. When/if this happens, the [replay parser](metamon/backend/replay_parser/README.md) would be expanded to parse ground-truth battle logs and the datasets would be re-released as a noisier aggregate of all the logs from every metamon development server during the same time period.
 
