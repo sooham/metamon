@@ -274,17 +274,14 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
             )
             team_preview_model = None
 
-    # Print a pretty header with agent, preferred backend, and active backend
-    pre_header = "=" * 60
-    print(pre_header)
-    print("   Metamon RL Agent Evaluation".center(60))
-    print(pre_header)
-    print(f" Pretrained Agent : {pretrained_model.model_name}")
-    print(f" Preferred Backend: {pretrained_model.battle_backend}")
-    print(f" Active Backend   : {backend}")
+    # Print banner and evaluation info
+    metamon.print_banner()
+    print(f"  Agent: {pretrained_model.model_name}  |  Backend: {backend}", end="")
     if team_preview_model is not None:
-        print(f" Team Preview     : {args.team_preview_checkpoint}")
-    print(pre_header)
+        print(f"  |  Team Preview: ✓")
+    else:
+        print()
+    print()
 
     for gen in args.gens:
         for format_name in args.formats:

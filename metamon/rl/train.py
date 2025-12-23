@@ -439,6 +439,12 @@ if __name__ == "__main__":
     add_cli(parser)
     args = parser.parse_args()
 
+    metamon.print_banner()
+    print(
+        f"  Run: {args.run_name}  |  Model: {args.model_gin_config}  |  Training: {args.train_gin_config}"
+    )
+    print()
+
     # agent input/output/rewards
     obs_space = TokenizedObservationSpace(
         get_observation_space(args.obs_space), get_tokenizer(args.tokenizer)

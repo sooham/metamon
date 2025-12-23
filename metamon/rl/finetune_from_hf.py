@@ -1,5 +1,6 @@
 import wandb
 
+import metamon
 from metamon.rl.train import (
     create_offline_dataset,
     create_offline_rl_trainer,
@@ -155,6 +156,10 @@ if __name__ == "__main__":
     )
     add_cli(parser)
     args = parser.parse_args()
+
+    metamon.print_banner()
+    print(f"  Finetuning: {args.finetune_from_model}  →  {args.run_name}")
+    print()
 
     pretrained = get_pretrained_model(args.finetune_from_model)
     # create the dataset we'll be finetuning on
