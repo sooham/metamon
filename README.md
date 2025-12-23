@@ -1055,7 +1055,7 @@ Provides the same setup as the main `train` script but takes care of downloading
 We might finetune "`SmallRL`" to the new gen 9 replay dataset and custom battles like this:
 
 ```bash
-python -m metamon.rl.finetune_from_hf --finetune_from_model SmallRL --run_name MyCustomSmallRL --save_dir ~/metamon_finetunes/ --custom_replay_dir /my/custom/parsed_replay_dataset --custom_replay_sample_weight .25 --epochs 10 --steps_per_epoch 10000 --log --formats gen9ou --eval_gens 9 
+python -m metamon.rl.finetune_from_hf --finetune_from_model SmallRL --run_name MyCustomSmallRL --save_dir ~/metamon_finetunes/ --custom_replay_dir /my/custom/parsed_replay_dataset --custom_replay_weight .25 --epochs 10 --steps_per_epoch 10000 --log --formats gen9ou --eval_gens 9 
 ```
 
 You can start from any checkpoint number with `--finetune_from_ckpt`. See the huggingface for a full list. Defaults to the official eval checkpoint.
