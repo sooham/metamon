@@ -128,6 +128,7 @@ class MetamonDataset(Dataset):
         self._tar_files: Dict[str, SQLiteIndexedTarFileSystem] = {}
         self._tar_paths: Dict[str, str] = {}
         self._format_is_tar: Dict[str, bool] = {}
+        self._owner_pid: int = os.getpid()  # Track PID for fork-safety
 
         self._detect_formats()
         self.refresh_files()
@@ -170,17 +171,18 @@ class MetamonDataset(Dataset):
     #########################################
 
     def _get_tar(self, format_name: str) -> SQLiteIndexedTarFileSystem:
-        """Get or lazily open a tar filesystem. Fork-safe for DataLoader workers.
+        current_pid = os.getpid()
+        is_worker = current_pid != self._owner_pid
+        if is_worker:
+            self._tar_files.clear()
+            self._owner_pid = current_pid
 
-        Uses ratarmountcore which creates an SQLite index for O(1) random access.
-        The index is persisted to disk so subsequent opens are fast.
-        """
         if format_name not in self._tar_files:
-            if self.verbose:
-                print(f"Opening {format_name}.tar (building index if first time)...")
+            if self.verbose and not is_worker:
+                print(f"Opening {format_name}.tar...")
             self._tar_files[format_name] = SQLiteIndexedTarFileSystem(
                 self._tar_paths[format_name],
-                printDebug=0 if self.verbose else -1,  # 3=progress, 0=errors only
+                printDebug=-1,
             )
         return self._tar_files[format_name]
 

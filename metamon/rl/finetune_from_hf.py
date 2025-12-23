@@ -85,16 +85,41 @@ def add_cli(parser):
         help="Path to the parsed replay directory. Defaults to the official huggingface version.",
     )
     parser.add_argument(
+        "--replay_weight",
+        type=float,
+        default=1.0,
+        help="Sampling weight for the human parsed replay dataset (metamon-parsed-replays). Will be renormalized with other weights.",
+    )
+    parser.add_argument(
+        "--self_play_subsets",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Official self-play dataset (metamon-parsed-pile) subsets to include (e.g., 'pac-base', 'pac-exploratory'). If not provided, self-play data is not used.",
+    )
+    parser.add_argument(
+        "--self_play_weights",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Sampling weights for each self-play subset. Must match length of --self_play_subsets.",
+    )
+    parser.add_argument(
         "--custom_replay_dir",
         type=str,
         default=None,
-        help="Path to an optional second parsed replay dataset (e.g., self-play data you've collected).",
+        help="Path to an optional custom parsed replay dataset (e.g., additional self-play data you've collected).",
     )
     parser.add_argument(
-        "--custom_replay_sample_weight",
+        "--custom_replay_weight",
         type=float,
         default=0.25,
-        help="[0, 1] portion of each batch to sample from the custom dataset (if provided).",
+        help="Sampling weight for the custom dataset (if provided). Will be renormalized with other weights.",
+    )
+    parser.add_argument(
+        "--use_cached_filenames",
+        action="store_true",
+        help="Use cached filename index for faster startup when reusing an identical training set.",
     )
     parser.add_argument(
         "--async_env_mp_context",
@@ -107,7 +132,7 @@ def add_cli(parser):
         type=int,
         nargs="*",
         default=[1, 2, 3, 4, 9],
-        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90\%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch! Use `--eval_gens` (no arguments) to disable evaluation.",
+        help="Generations (of OU) to play against heuristics between training epochs. Win rates usually saturate at 90%%+ quickly, so this is mostly a sanity-check. Reduce gens to save time on launch! Use `--eval_gens` (no arguments) to disable evaluation.",
     )
     parser.add_argument(
         "--formats",
@@ -138,9 +163,13 @@ if __name__ == "__main__":
         action_space=pretrained.action_space,
         reward_function=pretrained.reward_function,
         parsed_replay_dir=args.parsed_replay_dir,
+        replay_weight=args.replay_weight,
+        self_play_subsets=args.self_play_subsets,
+        self_play_weights=args.self_play_weights,
         custom_replay_dir=args.custom_replay_dir,
-        custom_replay_sample_weight=args.custom_replay_sample_weight,
+        custom_replay_weight=args.custom_replay_weight,
         formats=args.formats,
+        use_cached_filenames=args.use_cached_filenames,
     )
     if args.reward_function is not None:
         # custom reward function
