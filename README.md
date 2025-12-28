@@ -70,11 +70,13 @@ Pokémon Showdown hosts many different rulesets spanning nine generations of the
 
 10. [**Battle Backends**](#battle-backends)
 
-11. [**FAQ**](#faq)
+11. [**Team Preview**](#team-preview) 
 
-12. [**Acknowledgement**](#acknowledgements)
+12. [**FAQ**](#faq)
 
-13. [**Citation**](#citation)
+13. [**Acknowledgement**](#acknowledgements)
+
+14. [**Citation**](#citation)
 
 
 <br>
