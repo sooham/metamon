@@ -838,7 +838,7 @@ Self-play data will download automatically when requested by the `SelfPlayDatase
 python -m metamon.data.download self-play
 ```
 
-This downloads both subsets for all available formats (gen1ou, gen2ou, gen3ou, gen4ou, gen9ou). You can also specify formats explicitly: `--formats gen1ou gen9ou`. The download includes pre-built SQLite indexes for fast loading.
+This downloads both subsets for all available formats (gen1ou, gen2ou, gen3ou, gen4ou, gen9ou). You can also specify formats explicitly: `--formats gen1ou gen9ou`.
 
 ```python
 from metamon.data import SelfPlayDataset
@@ -853,7 +853,7 @@ self_play_dset = SelfPlayDataset(
 obs_seq, action_seq, reward_seq, done_seq = self_play_dset[0]
 ```
 
-These datasets are currently only available in the parsed replay format, which makes them liable to be deprecated should that format change or a major bug in the [battle backend](#battle-backends) be found. When/if this happens, the [replay parser](metamon/backend/replay_parser/README.md) would be expanded to parse ground-truth battle logs and the datasets would be re-released as a noisier aggregate of all the logs from every metamon development server during the same time period.
+Self-play datasets are currently only available in the parsed replay format, which makes them liable to be deprecated should that format change or a major bug in the [battle backend](#battle-backends) be found. When/if this happens, the [replay parser](metamon/backend/replay_parser/README.md) would be expanded to parse ground-truth battle logs and the datasets would be re-released as a noisier aggregate of all the logs from every metamon development server during the same time period.
 
 
 
