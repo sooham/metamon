@@ -1190,6 +1190,22 @@ A `PretrainedAgent`saves the backend it "should" be evaluated with (if you're us
  <br>
 
 
+## Team Preview
+
+In Generation 9, battles begin with a "team preview" phase where both players see each other's full team and choose which Pokémon to lead with. Metamon includes a separate model for this decision.
+
+**Training**: Team preview models are trained via `metamon/backend/team_preview/` using supervised learning on human replay data.
+
+**Evaluation**: Pass a checkpoint to the evaluation script. An example checkpoint for gen9ou is included:
+```bash
+python -m metamon.rl.evaluate --team_preview_checkpoint metamon/backend/team_preview/gen9ou_high_elo_v4/best_model.pt --team_preview_use_argmax ...
+```
+
+The `--team_preview_use_argmax` flag selects the highest-probability lead deterministically; without it, the model samples from its predicted distribution.
+
+ <br>
+
+
  ## FAQ
 
 
