@@ -279,7 +279,7 @@ There are now **29 official metamon models**. Most of them were stepping stones 
 <table>
 <tr>
   <th align="center">Model</th><th align="center">Size</th><th align="center">Date</th><th align="center">Description</th>
-  <th colspan="5" align="center">Human Ladder Ratings (GXE)</th>
+  <th colspan="5" align="center">Ladder Ratings with Sample Teams (GXE)</th>
 </tr>
 <tr>
   <th align="center"></th><th align="center"></th><th align="center"></th><th align="center"></th>
