@@ -220,12 +220,15 @@ selfplay_dset = SelfPlayDataset(
 We can save our own agents' experience in the same format:
 
 ```python
+from metamon.data import MetamonDataset
+
 env = QueueOnLocalLadder(
     .., # rest of args
     save_trajectories_to="my_data_path",
 )
-online_dset = ParsedReplayDataset(
+online_dset = MetamonDataset(
     dset_root="my_data_path",
+    formats=["gen9ou"],  # match your env format
     observation_space=obs_space,
     action_space=action_space,
     reward_function=reward_fn,
@@ -233,6 +236,7 @@ online_dset = ParsedReplayDataset(
 terminated = False
 while not terminated:
     *_, terminated, _, _ = env.step(env.action_space.sample())
+
 # find completed battles before loading examples
 online_dset.refresh_files()
 ```
