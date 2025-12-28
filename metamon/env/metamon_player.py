@@ -239,7 +239,7 @@ class MetamonPlayer(Player):
         opponent_team_names = [pokemon_name(p.species) for p in opponent_list]
 
         # team preview inference
-        predicted_lead_name, probs = self.team_preview_model.predict_lead(
+        predicted_lead_name, probs, sorted_team = self.team_preview_model.predict_lead(
             our_team=our_team_names,
             our_team_moves=our_team_moves,
             our_team_abilities=our_team_abilities,
@@ -264,9 +264,14 @@ class MetamonPlayer(Player):
             if i != lead_position:
                 members.append(i)
         team_order = "/team " + "".join([str(c) for c in members])
+
+        # Log team preview with clear sorted order -> probs -> selection mapping
+        probs_np = probs.cpu().numpy()
+        candidates = ", ".join(
+            f"{name}={prob:.2f}" for name, prob in zip(sorted_team, probs_np)
+        )
         self.logger.warning(
-            f"Team preview prediction: leading with {predicted_lead_name} (position {lead_position}), "
-            f"probs: {probs.cpu().numpy()}"
+            f"Team preview: [{candidates}] -> selected {predicted_lead_name}"
         )
 
         return team_order

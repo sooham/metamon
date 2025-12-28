@@ -358,8 +358,12 @@ class TeamPreviewModel(nn.Module):
         self,
         state: UniversalState,
         device: Optional[str] = None,
-    ) -> Tuple[str, torch.Tensor]:
-        """predict lead from a UniversalState (should be first state with teampreview)"""
+    ) -> Tuple[str, torch.Tensor, List[str]]:
+        """Predict lead from a UniversalState (should be first state with teampreview).
+
+        Returns:
+            Tuple of (predicted_lead_name, probs, sorted_team_names)
+        """
         our_team = [state.player_active_pokemon] + state.available_switches
         if len(our_team) != 6:
             raise ValueError(f"Expected 6 pokemon in our team, got {len(our_team)}")
@@ -388,8 +392,15 @@ class TeamPreviewModel(nn.Module):
         opponent_team: List[str],
         battle_format: Optional[str] = None,
         device: Optional[str] = None,
-    ) -> Tuple[str, torch.Tensor]:
-        """predict which pokemon to lead with"""
+    ) -> Tuple[str, torch.Tensor, List[str]]:
+        """Predict which pokemon to lead with.
+
+        Returns:
+            Tuple of (predicted_lead_name, probs, sorted_team_names)
+            - predicted_lead_name: Name of the pokemon to lead with
+            - probs: Probability distribution over sorted team (probs[i] corresponds to sorted_team[i])
+            - sorted_team_names: Team names in alphabetical order (matches prob indices)
+        """
         if device is None:
             device = next(self.parameters()).device
 
@@ -453,7 +464,7 @@ class TeamPreviewModel(nn.Module):
         else:
             lead_idx = torch.multinomial(probs, num_samples=1).item()
 
-        return our_team_sorted[lead_idx], probs
+        return our_team_sorted[lead_idx], probs, our_team_sorted
 
     @classmethod
     def load_from_checkpoint(
