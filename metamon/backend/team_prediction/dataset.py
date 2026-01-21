@@ -30,7 +30,12 @@ class TeamDataset(Dataset):
         self.load_filenames(max_teams=max_teams)
 
     def load_filenames(self, max_teams: Optional[int] = None):
-        self.filenames = os.listdir(self.team_path)
+        self.filenames = []
+        for root, _, files in os.walk(self.team_path):
+            for f in files:
+                full_path = os.path.join(root, f)
+                rel_path = os.path.relpath(full_path, self.team_path)
+                self.filenames.append(rel_path)
         random.shuffle(self.filenames)
         if max_teams is not None:
             self.filenames = self.filenames[:max_teams]
@@ -93,39 +98,42 @@ class FilteredTeamsFromReplaysDataset(TeamDataset):
             except ValueError:
                 return 1000
 
-        for filename in os.listdir(self.team_path):
-            if not filename.endswith(f".{self.format}_team"):
-                continue
-            try:
-                (
-                    battle_id,
-                    rating,
-                    username,
-                    _,
-                    opponent_username,
-                    mm_dd_yyyy,
-                    result,
-                ) = filename[: -len(f".{self.format}_team")].split("_")
-            except ValueError:
-                continue
+        for root, _, files in os.walk(self.team_path):
+            for filename in files:
+                if not filename.endswith(f".{self.format}_team"):
+                    continue
+                try:
+                    (
+                        battle_id,
+                        rating,
+                        username,
+                        _,
+                        opponent_username,
+                        mm_dd_yyyy,
+                        result,
+                    ) = filename[: -len(f".{self.format}_team")].split("_")
+                except ValueError:
+                    continue
 
-            rating = _rating_to_int(rating)
-            date = datetime.strptime(mm_dd_yyyy, "%m-%d-%Y")
-            if (
-                (self.min_rating is not None and rating < self.min_rating)
-                or (self.max_rating is not None and rating > self.max_rating)
-                or (
-                    self.min_date is not None
-                    and date < datetime.strptime(self.min_date, "%m-%d-%Y")
-                )
-                or (
-                    self.max_date is not None
-                    and date > datetime.strptime(self.max_date, "%m-%d-%Y")
-                )
-            ):
-                continue
+                rating = _rating_to_int(rating)
+                date = datetime.strptime(mm_dd_yyyy, "%m-%d-%Y")
+                if (
+                    (self.min_rating is not None and rating < self.min_rating)
+                    or (self.max_rating is not None and rating > self.max_rating)
+                    or (
+                        self.min_date is not None
+                        and date < datetime.strptime(self.min_date, "%m-%d-%Y")
+                    )
+                    or (
+                        self.max_date is not None
+                        and date > datetime.strptime(self.max_date, "%m-%d-%Y")
+                    )
+                ):
+                    continue
 
-            self.filenames.append(filename)
+                full_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(full_path, self.team_path)
+                self.filenames.append(rel_path)
 
         random.shuffle(self.filenames)
         if max_teams is not None:
@@ -248,7 +256,7 @@ class TeamPredictionDataset(Dataset):
         y_tokens, y_type_ids = self.vocab.pokeset_seq_to_ints(y_seq)
         assert len(x_tokens) == len(x_type_ids)
         assert len(y_tokens) == len(y_type_ids)
-        assert len(x_tokens) == (7 * 6) + 1
+        assert len(x_tokens) == (8 * 6) + 1
         assert (x_type_ids == y_type_ids).all()
         x_tokens = torch.from_numpy(x_tokens).long()
         x_type_ids = torch.from_numpy(x_type_ids).long()
@@ -281,15 +289,31 @@ class CompetitiveTeamPredictionDataset(TeamPredictionDataset):
 
 if __name__ == "__main__":
     # Test dataset loading
-    dataset = CompetitiveTeamPredictionDataset()
+    # dataset = FilteredTeamsFromReplaysDataset(
+    #     os.path.join(METAMON_CACHE_DIR, "parsed-replays", "revealed_teams"),
+    #     format="gen9ou",
+    # )
+
+    dataset = TeamPredictionDataset(
+        data_dir=os.path.join(METAMON_CACHE_DIR, "parsed-replays", "revealed_teams"),
+        split="train",
+        validation_ratio=0.1,
+        mask_pokemon_prob_range=(0.1, 0.1),
+        mask_attrs_prob_range=(0.1, 0.1),
+    )
+
+    for item in dataset:
+        print(item)
+        input()
 
     print(f"Dataset size: {len(dataset)}")
 
-    # Test loading a single item
-    x, type_ids, y = dataset[0]
-    print("\nMasked team (x):")
-    print(x)
-    print("\nType IDs:")
-    print(type_ids)
-    print("\nComplete team (y):")
-    print(y)
+    # # Test loading a single item
+    # x, type_ids, y = dataset[0]
+    # print("\nMasked team (x):")
+    # print(x)
+    # print("\nType IDs:")
+    # print(type_ids)
+    # print("\nComplete team (y):")
+    # print(y)
+    # input()
