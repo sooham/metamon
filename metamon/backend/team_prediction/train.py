@@ -166,6 +166,8 @@ def train(config, use_wandb: bool = True):
         mask_pokemon_prob_range=(config.mask_pokemon_prob, config.mask_pokemon_prob),
         mask_attrs_prob_range=(config.mask_attrs_prob, config.mask_attrs_prob),
         seed=config.seed,
+        use_cached_filenames=True,
+        verbose=True,
     )
     val_dset = TeamPredictionDataset(
         data_dir=config.train_data_dir,
@@ -174,10 +176,14 @@ def train(config, use_wandb: bool = True):
         mask_pokemon_prob_range=(config.mask_pokemon_prob, config.mask_pokemon_prob),
         mask_attrs_prob_range=(config.mask_attrs_prob, config.mask_attrs_prob),
         seed=config.seed,
+        use_cached_filenames=True,
+        verbose=True,
     )
     comp_dset = CompetitiveTeamPredictionDataset(
         mask_pokemon_prob_range=(config.mask_pokemon_prob, config.mask_pokemon_prob),
         mask_attrs_prob_range=(config.mask_attrs_prob, config.mask_attrs_prob),
+        use_cached_filenames=False,
+        verbose=True,
     )
 
     # DataLoaders
@@ -349,7 +355,7 @@ if __name__ == "__main__":
         "train_data_dir": download_revealed_teams(),
         "val_ratio": 0.1,
         "batch_size": 8,
-        "num_workers": 0,
+        "num_workers": 4,
         "mask_pokemon_prob": 0.1,
         "mask_attrs_prob": 0.1,
         "seed": 42,
