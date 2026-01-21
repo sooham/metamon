@@ -1,3 +1,4 @@
+import csv
 import os
 import random
 import pathlib
@@ -149,6 +150,8 @@ class TeamPredictionDataset(Dataset):
         split: Literal["train", "val"] = "train",
         validation_ratio: float = 0.1,
         seed: Optional[int] = None,
+        use_cached_filenames: bool = False,
+        verbose: bool = False,
     ):
         """
         Args:
@@ -158,6 +161,8 @@ class TeamPredictionDataset(Dataset):
             mask_pokemon_prob_range: Range of probabilities to use for masking an entire Pokemon
             mask_attrs_prob_range: Range of probabilities to use for masking an indivudal attribute
             seed: Random seed for reproducibility
+            use_cached_filenames: If True, use cached index files instead of scanning directories
+            verbose: If True, print progress information
         """
         (
             self.mask_pokemon_prob_low,
@@ -169,6 +174,8 @@ class TeamPredictionDataset(Dataset):
         assert 0 <= validation_ratio <= 1, "validation_ratio must be in [0, 1)"
 
         self.vocab = Vocabulary()
+        self.use_cached_filenames = use_cached_filenames
+        self.verbose = verbose
         if seed is not None:
             random.seed(seed)
             torch.manual_seed(seed)
@@ -182,10 +189,36 @@ class TeamPredictionDataset(Dataset):
         # Collect all team files
         team_files_set = set()
         for d in data_dirs:
+            if self.verbose:
+                print(f"Processing directory: {d}")
             d_path = pathlib.Path(d)
-            for f in d_path.rglob("*"):
-                if f.is_file() and f.suffix.endswith("team"):
-                    team_files_set.add(str(f))
+            index_path = d_path / "index.csv"
+
+            if self.use_cached_filenames and index_path.exists():
+                # Load from cached index
+                with open(index_path, "r") as f:
+                    reader = csv.reader(f)
+                    next(reader)  # skip header
+                    for row in reader:
+                        if row:
+                            team_files_set.add(str(d_path / row[0]))
+                if self.verbose:
+                    print(f"Loaded {len(team_files_set)} files from {index_path}")
+            else:
+                # Scan directory for team files
+                rel_paths = []
+                for f in d_path.rglob("*"):
+                    if f.is_file() and f.suffix.endswith("team"):
+                        team_files_set.add(str(f))
+                        rel_paths.append(str(f.relative_to(d_path)))
+                if self.verbose:
+                    print(f"Indexed {len(rel_paths)} files from {d}/")
+                # Write to index.csv cache
+                if rel_paths:
+                    with open(index_path, "w") as f:
+                        f.write("filename\n")
+                        for rel_path in rel_paths:
+                            f.write(f"{rel_path}\n")
         all_team_files = sorted(team_files_set)
 
         # Create deterministic train/val split
