@@ -5,13 +5,16 @@ from datetime import date
 
 import numpy as np
 import torch
+import tqdm
+from poke_env.data import to_id_str
 
+import metamon
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
-from metamon.backend.team_prediction.team import PokemonSet
+from metamon.backend.team_prediction.team import PokemonSet, TeamSet
 from metamon.backend.team_prediction.usage_stats import get_usage_stats
 
 
-def create_vocabularies():
+def create_vocabularies(scan_dataset: bool = False):
     # Initialize tokenizers for each vocabulary type
     team_tokenizer = PokemonTokenizer()
     team_tokenizer.unfreeze()
@@ -75,6 +78,33 @@ def create_vocabularies():
                     tera_type = tera_type.strip()
                     if tera_type != "Nothing":
                         team_tokenizer.add_token_for(f"Tera Type: {tera_type}")
+
+    # Optionally scan team files from the training dataset for any tokens not in usage stats
+    if scan_dataset:
+        data_dir = metamon.data.download.download_revealed_teams()
+        index_path = os.path.join(data_dir, "index.csv")
+
+        if not os.path.exists(index_path):
+            raise FileNotFoundError(
+                f"index.csv not found at {index_path}. "
+                "Run the dataset once with use_cached_filenames=False to generate it."
+            )
+
+        with open(index_path, "r") as f:
+            lines = f.read().splitlines()[1:]  # skip header
+        team_files = [os.path.join(data_dir, line) for line in lines if line]
+
+        print(f"Scanning {len(team_files)} team files for unknown tokens...")
+        for path in tqdm.tqdm(team_files, desc="Scanning team files"):
+            try:
+                format_str = to_id_str(os.path.splitext(path)[1].split("_")[0])
+                team = TeamSet.from_showdown_file(path, format=format_str)
+                seq, _ = team.to_seq(include_stats=False)
+                for token in seq:
+                    team_tokenizer.add_token_for(token)
+            except Exception as e:
+                print(f"Error processing {path}: {e}")
+                continue
 
     # Sort all tokenizers
     team_tokenizer.sort_tokens()
@@ -218,7 +248,23 @@ class Vocabulary:
 
 
 if __name__ == "__main__":
-    import os
+    import argparse
 
-    vocabularies = create_vocabularies()
-    vocabularies.save_tokens_to_disk("vocab.json")
+    parser = argparse.ArgumentParser(
+        description="Generate vocabulary for team prediction"
+    )
+    parser.add_argument(
+        "--scan-dataset",
+        action="store_true",
+        help="Scan the training dataset for additional tokens not in usage stats",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="vocab.json",
+        help="Output path for the vocabulary file",
+    )
+    args = parser.parse_args()
+
+    vocabularies = create_vocabularies(scan_dataset=args.scan_dataset)
+    vocabularies.save_tokens_to_disk(args.output)

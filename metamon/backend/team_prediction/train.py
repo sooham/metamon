@@ -26,6 +26,7 @@ from metamon.backend.team_prediction.dataset import (
 from metamon.backend.team_prediction.model import TeamTransformer
 from metamon.backend.team_prediction.vocabulary import Vocabulary
 from metamon.backend.team_prediction.team import TeamSet
+from metamon.tokenizer import UNKNOWN_TOKEN
 
 
 def compute_loss_and_accuracy(
@@ -36,7 +37,12 @@ def compute_loss_and_accuracy(
     Returns: (loss, accuracy)
     """
     B, L, V = logits.shape
-    loss = F.cross_entropy(logits.view(-1, V), y_tokens.view(-1), reduction="none")
+    loss = F.cross_entropy(
+        logits.view(-1, V),
+        y_tokens.view(-1),
+        reduction="none",
+        ignore_index=UNKNOWN_TOKEN,
+    )
     num_preds = max(pred_mask.sum().item(), 1)
     loss = (loss * pred_mask.view(-1)).sum() / num_preds
     preds = logits.argmax(dim=-1)
@@ -182,7 +188,6 @@ def train(config, use_wandb: bool = True):
     comp_dset = CompetitiveTeamPredictionDataset(
         mask_pokemon_prob_range=(config.mask_pokemon_prob, config.mask_pokemon_prob),
         mask_attrs_prob_range=(config.mask_attrs_prob, config.mask_attrs_prob),
-        use_cached_filenames=False,
         verbose=True,
     )
 

@@ -1,4 +1,3 @@
-import csv
 import os
 import random
 import pathlib
@@ -195,15 +194,11 @@ class TeamPredictionDataset(Dataset):
             index_path = d_path / "index.csv"
 
             if self.use_cached_filenames and index_path.exists():
-                # Load from cached index
                 with open(index_path, "r") as f:
-                    reader = csv.reader(f)
-                    next(reader)  # skip header
-                    for row in reader:
-                        if row:
-                            team_files_set.add(str(d_path / row[0]))
+                    lines = f.read().splitlines()[1:]  # skip header
+                team_files_set.update(str(d_path / line) for line in lines if line)
                 if self.verbose:
-                    print(f"Loaded {len(team_files_set)} files from {index_path}")
+                    print(f"Loaded {len(lines)} files from {index_path}")
             else:
                 # Scan directory for team files
                 rel_paths = []
@@ -302,13 +297,18 @@ class CompetitiveTeamPredictionDataset(TeamPredictionDataset):
         self,
         mask_pokemon_prob_range: Tuple[float, float] = (0.1, 0.1),
         mask_attrs_prob_range: Tuple[float, float] = (0.1, 0.1),
+        verbose: bool = False,
     ):
         team_dirs = []
-        for gen in range(1, 5):
-            for tier in ["ou", "uu", "ubers", "nu"]:
+        for gen in [1, 2, 3, 4, 5, 9]:
+            # TODO: add other tiers?
+            for tier in ["ou"]:
                 team_dirs.append(
                     os.path.join(
-                        METAMON_CACHE_DIR, "teams", f"gen{gen}", tier, "competitive"
+                        METAMON_CACHE_DIR,
+                        "teams",
+                        "competitive",
+                        f"gen{gen}{tier}",
                     )
                 )
         super().__init__(
@@ -317,6 +317,8 @@ class CompetitiveTeamPredictionDataset(TeamPredictionDataset):
             validation_ratio=1.0,
             mask_pokemon_prob_range=mask_pokemon_prob_range,
             mask_attrs_prob_range=mask_attrs_prob_range,
+            use_cached_filenames=False,
+            verbose=verbose,
         )
 
 
