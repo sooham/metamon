@@ -1,4 +1,5 @@
 import os
+import copy
 import re
 import json
 import datetime
@@ -27,7 +28,7 @@ TIER_MAP = {
 }
 
 EARLIEST_USAGE_STATS_DATE = datetime.date(2014, 1, 1)
-LATEST_USAGE_STATS_DATE = datetime.date(2025, 7, 1)
+LATEST_USAGE_STATS_DATE = datetime.date(2025, 12, 1)
 
 
 def parse_pokemon_moveset(file_path):
@@ -363,6 +364,17 @@ def load_between_dates(
 ) -> dict:
     start_date = datetime.date(start_year, start_month, 1)
     end_date = datetime.date(end_year, end_month, 1)
+
+    if start_date > LATEST_USAGE_STATS_DATE:
+        start_date = LATEST_USAGE_STATS_DATE
+    elif start_date < EARLIEST_USAGE_STATS_DATE:
+        start_date = EARLIEST_USAGE_STATS_DATE
+
+    if end_date > LATEST_USAGE_STATS_DATE:
+        end_date = LATEST_USAGE_STATS_DATE
+    elif end_date < EARLIEST_USAGE_STATS_DATE:
+        end_date = EARLIEST_USAGE_STATS_DATE
+
     selected_data = []
     for json_file in os.listdir(dir_path):
         year, month = json_file.replace(".json", "").split("-")
@@ -373,6 +385,7 @@ def load_between_dates(
             data = json.load(file)
         selected_data.append(data)
     if not selected_data:
+        breakpoint()
         warnings.warn(
             colored(
                 f"No Showdown usage stats found in {dir_path} between {start_date} and {end_date}",

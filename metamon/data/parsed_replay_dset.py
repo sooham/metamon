@@ -231,20 +231,27 @@ class MetamonDataset(Dataset):
     #############################
 
     def _index_directory(self, format_name: str) -> List[str]:
-        """DIRECTORY: Scan directory for json files."""
         format_dir = os.path.join(self.dset_root, format_name)
+        if not os.path.isdir(format_dir):
+            if self.verbose:
+                print(f"  Warning: Directory does not exist: {format_dir}")
+            return []
+
+        result = []
         try:
-            files = os.listdir(format_dir)
+            for root, _, files in os.walk(format_dir):
+                for f in files:
+                    if f.endswith((".json", ".json.lz4")):
+                        # Store path relative to dset_root
+                        full_path = os.path.join(root, f)
+                        rel_path = os.path.relpath(full_path, self.dset_root)
+                        result.append(rel_path)
         except (OSError, PermissionError) as e:
             if self.verbose:
                 print(f"  Warning: Could not read {format_dir}: {e}")
             return []
 
-        return [
-            os.path.join(format_name, f)
-            for f in files
-            if f.endswith((".json", ".json.lz4"))
-        ]
+        return result
 
     ########################
     ## Filename Filtering ##

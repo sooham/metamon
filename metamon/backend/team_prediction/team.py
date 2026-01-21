@@ -511,11 +511,11 @@ class PokemonSet:
         """ "
         Creates a simple sequence format that is used by a team prediction model.
         """
-        # TODO: broken by gen 9
         seq = [
             f"Mon: {self.name}",
             f"Ability: {self.ability}",
             f"Item: {self.item}",
+            f"Tera Type: {self.tera_type}",
         ]
         moves = [f"Move: {move}" for move in self.moves]
         seq += moves
@@ -532,15 +532,15 @@ class PokemonSet:
         """
         Creates a PokemonSet from the sequence format, which may have been predicted by a model.
         """
-        # TODO: broken by gen 9
         name = seq[0].split(":")[1].strip()
         ability = seq[1].split(":")[1].strip()
         item = seq[2].split(":")[1].strip()
-        moves = [move.split(":")[1].strip() for move in seq[3:7]]
+        tera_type = seq[3].split(":")[1].strip()
+        moves = [move.split(":")[1].strip() for move in seq[4:8]]
         if include_stats:
-            nature = seq[7].split(":")[1].strip()
-            evs = [ev.split(":")[1].strip() for ev in seq[8:14]]
-            ivs = [iv.split(":")[1].strip() for iv in seq[14:20]]
+            nature = seq[8].split(":")[1].strip()
+            evs = [ev.split(":")[1].strip() for ev in seq[9:15]]
+            ivs = [iv.split(":")[1].strip() for iv in seq[15:21]]
         else:
             nature = cls.default_nature(gen)
             evs = cls.default_evs(gen)
@@ -554,6 +554,7 @@ class PokemonSet:
             moves=moves,
             evs=evs,
             ivs=ivs,
+            tera_type=tera_type,
         )
 
     @classmethod
@@ -575,7 +576,6 @@ class PokemonSet:
         Randomly sets some of the known attributes of this PokemonSet to be missing,
         so that we may learn to predict them.
         """
-        # TODO: broken by gen 9
         data = self.to_dict()
         data["name"] = self.name
         # Mask nature, item, ability
@@ -585,6 +585,8 @@ class PokemonSet:
             data["item"] = self.MISSING_ITEM
         if random.random() < mask_attrs_prob:
             data["ability"] = self.MISSING_ABILITY
+        if random.random() < mask_attrs_prob:
+            data["tera_type"] = self.MISSING_TERA_TYPE
         # Mask moves
         masked_moves = []
         for move in data["moves"]:
@@ -778,7 +780,7 @@ class TeamSet:
     def from_seq(cls, seq: List[str], include_stats: bool = True):
         format = seq[0].split(":")[1].strip()
         gen = metamon.backend.format_to_gen(format)
-        poke_seq_len = 20 if include_stats else 7
+        poke_seq_len = 21 if include_stats else 8
         lead = PokemonSet.from_seq(
             seq[1 : poke_seq_len + 1], gen=gen, include_stats=include_stats
         )
@@ -839,9 +841,11 @@ class TeamSet:
 
 if __name__ == "__main__":
     import os
+    from metamon import METAMON_CACHE_DIR
 
-    TEAM_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "teams")
-    TEAM_DIR = os.path.join(TEAM_DIR, "modern_replays", "gen1ou")
+    TEAM_DIR = os.path.join(
+        METAMON_CACHE_DIR, "parsed-replays", "revealed_teams", "gen9ou"
+    )
     print(TEAM_DIR)
     team_files = []
     for root, dirs, files in os.walk(TEAM_DIR):
@@ -857,7 +861,7 @@ if __name__ == "__main__":
         with open(path, "r") as f:
             txt = f.read()
             print(txt)
-        team = TeamSet.from_showdown_file(path, "gen1ou")
+        team = TeamSet.from_showdown_file(path, "gen9ou")
         print("---------------------------------------------------------")
         x, y = team.to_prediction_pair()
         print(x.to_str())
@@ -867,3 +871,5 @@ if __name__ == "__main__":
         print(y.to_seq(include_stats=False))
         assert len(x.to_seq(include_stats=False)) == len(y.to_seq(include_stats=False))
         y_copy = TeamSet.from_seq(y.to_seq(include_stats=True)[0], include_stats=True)
+        print(y_copy.to_str())
+        input()

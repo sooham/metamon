@@ -11,6 +11,7 @@ import os
 import argparse
 import random
 import re
+from typing import Optional
 
 import tqdm
 import torch
@@ -26,6 +27,7 @@ from metamon.backend.team_prediction.dataset import (
 from metamon.backend.team_prediction.model import TeamTransformer
 from metamon.backend.team_prediction.vocabulary import Vocabulary
 from metamon.backend.team_prediction.team import TeamSet
+from metamon.tokenizer import UNKNOWN_TOKEN
 
 
 def compute_loss_and_accuracy(
@@ -36,7 +38,12 @@ def compute_loss_and_accuracy(
     Returns: (loss, accuracy)
     """
     B, L, V = logits.shape
-    loss = F.cross_entropy(logits.view(-1, V), y_tokens.view(-1), reduction="none")
+    loss = F.cross_entropy(
+        logits.view(-1, V),
+        y_tokens.view(-1),
+        reduction="none",
+        ignore_index=UNKNOWN_TOKEN,
+    )
     num_preds = max(pred_mask.sum().item(), 1)
     loss = (loss * pred_mask.view(-1)).sum() / num_preds
     preds = logits.argmax(dim=-1)
@@ -46,16 +53,21 @@ def compute_loss_and_accuracy(
 
 
 def evaluate(
-    model: nn.Module, dataloader: DataLoader, device: torch.device
+    model: nn.Module,
+    dataloader: DataLoader,
+    device: torch.device,
+    max_steps: Optional[int] = None,
 ) -> tuple[float, float]:
     """
     Evaluate model on a dataloader. Returns (avg_loss, avg_accuracy).
+    If max_steps is provided, only evaluate on that many batches.
     """
     model.eval()
     total_loss = 0.0
     total_acc = 0.0
+    num_steps = 0
     with torch.no_grad():
-        for batch in tqdm.tqdm(dataloader, desc="Evaluating"):
+        for batch in dataloader:
             x_tokens, type_ids, y_tokens, pred_mask = batch
             x_tokens = x_tokens.to(device)
             type_ids = type_ids.to(device)
@@ -65,8 +77,11 @@ def evaluate(
             loss, acc = compute_loss_and_accuracy(logits, y_tokens, pred_mask)
             total_loss += loss.item()
             total_acc += acc
-    avg_loss = total_loss / len(dataloader)
-    avg_acc = total_acc / len(dataloader)
+            num_steps += 1
+            if max_steps is not None and num_steps >= max_steps:
+                break
+    avg_loss = total_loss / max(num_steps, 1)
+    avg_acc = total_acc / max(num_steps, 1)
     return avg_loss, avg_acc
 
 
@@ -166,6 +181,8 @@ def train(config, use_wandb: bool = True):
         mask_pokemon_prob_range=(config.mask_pokemon_prob, config.mask_pokemon_prob),
         mask_attrs_prob_range=(config.mask_attrs_prob, config.mask_attrs_prob),
         seed=config.seed,
+        use_cached_filenames=True,
+        verbose=True,
     )
     val_dset = TeamPredictionDataset(
         data_dir=config.train_data_dir,
@@ -174,10 +191,13 @@ def train(config, use_wandb: bool = True):
         mask_pokemon_prob_range=(config.mask_pokemon_prob, config.mask_pokemon_prob),
         mask_attrs_prob_range=(config.mask_attrs_prob, config.mask_attrs_prob),
         seed=config.seed,
+        use_cached_filenames=True,
+        verbose=True,
     )
     comp_dset = CompetitiveTeamPredictionDataset(
         mask_pokemon_prob_range=(config.mask_pokemon_prob, config.mask_pokemon_prob),
         mask_attrs_prob_range=(config.mask_attrs_prob, config.mask_attrs_prob),
+        verbose=True,
     )
 
     # DataLoaders
@@ -221,89 +241,121 @@ def train(config, use_wandb: bool = True):
     artifact_dir = os.path.join(ckpt_dir, "artifacts")
     os.makedirs(artifact_dir, exist_ok=True)
 
-    # Training loop with early stopping
+    # Training loop with early stopping (step-based)
     best_val_loss = float("inf")
     patience_count = 0
-    for epoch in range(1, config.max_epochs + 1):
+    global_step = 0
+    running_loss = 0.0
+    running_acc = 0.0
+    steps_since_eval = 0
+
+    train_iter = iter(train_loader)
+    pbar = tqdm.tqdm(total=config.max_steps, desc="Training")
+
+    while global_step < config.max_steps:
+        # Get next batch, restart iterator if exhausted
+        try:
+            x_tokens, type_ids, y_tokens, pred_mask = next(train_iter)
+        except StopIteration:
+            train_iter = iter(train_loader)
+            x_tokens, type_ids, y_tokens, pred_mask = next(train_iter)
+
         model.train()
-        running_loss = 0.0
-        running_acc = 0.0
-        for x_tokens, type_ids, y_tokens, pred_mask in tqdm.tqdm(
-            train_loader, desc="Training"
-        ):
-            x_tokens = x_tokens.to(device)
-            type_ids = type_ids.to(device)
-            y_tokens = y_tokens.to(device)
-            pred_mask = pred_mask.to(device)
-            logits = model(x_tokens, type_ids)
-            loss, acc = compute_loss_and_accuracy(logits, y_tokens, pred_mask)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item()
-            running_acc += acc
-        train_loss = running_loss / len(train_loader)
-        train_acc = running_acc / len(train_loader)
+        x_tokens = x_tokens.to(device)
+        type_ids = type_ids.to(device)
+        y_tokens = y_tokens.to(device)
+        pred_mask = pred_mask.to(device)
+        logits = model(x_tokens, type_ids)
+        loss, acc = compute_loss_and_accuracy(logits, y_tokens, pred_mask)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-        val_loss, val_acc = evaluate(model, val_loader, device)
-        comp_loss, comp_acc = evaluate(model, comp_loader, device)
+        running_loss += loss.item()
+        running_acc += acc
+        global_step += 1
+        steps_since_eval += 1
+        pbar.update(1)
 
-        # Log metrics for each dataset split
-        metrics = {
-            "train": {"loss": train_loss, "accuracy": train_acc},
-            "val": {
-                "replay_loss": val_loss,
-                "replay_accuracy": val_acc,
-                "competitive_loss": comp_loss,
-                "competitive_accuracy": comp_acc,
-            },
-        }
-        if use_wandb:
-            # Log all metrics to wandb
-            wandb_metrics = {}
-            for split, split_metrics in metrics.items():
-                for metric_name, value in split_metrics.items():
-                    wandb_metrics[f"{split}/{metric_name}"] = value
-            wandb.log(wandb_metrics, step=epoch)
-        else:
-            # Print metrics to console
-            print(f"\nEpoch {epoch}")
-            print(f"Train       - loss: {train_loss:.4f}, accuracy: {train_acc:.4f}")
-            print(f"Replay Val  - loss: {val_loss:.4f}, accuracy: {val_acc:.4f}")
-            print(f"Competitive - loss: {comp_loss:.4f}, accuracy: {comp_acc:.4f}\n")
+        # Evaluate every eval_every_steps
+        if global_step % config.eval_every_steps == 0:
+            train_loss = running_loss / steps_since_eval
+            train_acc = running_acc / steps_since_eval
+            running_loss = 0.0
+            running_acc = 0.0
+            steps_since_eval = 0
 
-        example_batch = next(iter(val_loader))
-        x_tokens, type_ids, y_tokens, pred_masks = example_batch
-        log_example_predictions(
-            model=model,
-            vocab=vocab,
-            x_tokens=x_tokens,
-            type_ids=type_ids,
-            y_tokens=y_tokens,
-            pred_masks=pred_masks,
-            device=device,
-            num_examples=config.num_examples,
-            use_wandb=use_wandb,
-            epoch=epoch,
-        )
+            val_loss, val_acc = evaluate(
+                model, val_loader, device, max_steps=config.max_eval_steps
+            )
+            comp_loss, comp_acc = evaluate(
+                model, comp_loader, device, max_steps=config.max_eval_steps
+            )
 
-        # Early stopping check
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_count = 0
-            best_model = os.path.join(ckpt_dir, "best_model.pt")
-            torch.save(model.state_dict(), best_model)
-            print(f"New best model saved to {best_model}")
+            # Log metrics for each dataset split
+            metrics = {
+                "train": {"loss": train_loss, "accuracy": train_acc},
+                "val": {
+                    "replay_loss": val_loss,
+                    "replay_accuracy": val_acc,
+                    "competitive_loss": comp_loss,
+                    "competitive_accuracy": comp_acc,
+                },
+            }
             if use_wandb:
-                # Log best checkpoint as Artifact
-                artifact = wandb.Artifact(f"{config.run_name}-best-model", type="model")
-                artifact.add_file(best_model)
-                wandb.log_artifact(artifact)
-        else:
-            patience_count += 1
-            if patience_count >= config.patience:
-                print(f"Early stopping at epoch {epoch}")
-                break
+                # Log all metrics to wandb
+                wandb_metrics = {}
+                for split, split_metrics in metrics.items():
+                    for metric_name, value in split_metrics.items():
+                        wandb_metrics[f"{split}/{metric_name}"] = value
+                wandb.log(wandb_metrics, step=global_step)
+            else:
+                # Print metrics to console
+                print(f"\nStep {global_step}")
+                print(
+                    f"Train       - loss: {train_loss:.4f}, accuracy: {train_acc:.4f}"
+                )
+                print(f"Replay Val  - loss: {val_loss:.4f}, accuracy: {val_acc:.4f}")
+                print(
+                    f"Competitive - loss: {comp_loss:.4f}, accuracy: {comp_acc:.4f}\n"
+                )
+
+            example_batch = next(iter(val_loader))
+            x_tokens, type_ids, y_tokens, pred_masks = example_batch
+            log_example_predictions(
+                model=model,
+                vocab=vocab,
+                x_tokens=x_tokens,
+                type_ids=type_ids,
+                y_tokens=y_tokens,
+                pred_masks=pred_masks,
+                device=device,
+                num_examples=config.num_examples,
+                use_wandb=use_wandb,
+                epoch=global_step,
+            )
+
+            # Early stopping check
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_count = 0
+                best_model = os.path.join(ckpt_dir, "best_model.pt")
+                torch.save(model.state_dict(), best_model)
+                print(f"New best model saved to {best_model}")
+                if use_wandb:
+                    # Log best checkpoint as Artifact
+                    artifact = wandb.Artifact(
+                        f"{config.run_name}-best-model", type="model"
+                    )
+                    artifact.add_file(best_model)
+                    wandb.log_artifact(artifact)
+            else:
+                patience_count += 1
+                if patience_count >= config.patience:
+                    print(f"Early stopping at step {global_step}")
+                    break
+
+    pbar.close()
 
     # Save final model
     final_model = os.path.join(ckpt_dir, "final_model.pt")
@@ -349,7 +401,7 @@ if __name__ == "__main__":
         "train_data_dir": download_revealed_teams(),
         "val_ratio": 0.1,
         "batch_size": 8,
-        "num_workers": 0,
+        "num_workers": 4,
         "mask_pokemon_prob": 0.1,
         "mask_attrs_prob": 0.1,
         "seed": 42,
@@ -360,7 +412,9 @@ if __name__ == "__main__":
         "dim_ff": 1024,
         "dropout": 0.0,
         "learning_rate": 1e-3,
-        "max_epochs": 1000,
+        "max_steps": 100000,
+        "eval_every_steps": 1000,
+        "max_eval_steps": 100,
         "patience": 5,
         "weight_decay": 1e-4,
         "num_examples": 4,
