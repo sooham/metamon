@@ -259,37 +259,47 @@ class TeamPredictionDataset(Dataset):
             y: Complete team (ground truth)
             pred_mask: Mask indicating which values are eligible for loss function
         """
-        path = self.team_files[idx]
-        # Extract format from file extension (e.g. .gen4ou_team -> gen4ou)
-        format = to_id_str(os.path.splitext(path)[1].split("_")[0])
-        assert format.startswith("gen"), f"Invalid format: {format}"
-        team = TeamSet.from_showdown_file(path, format=format)
-        mask_pokemon_prob = random.uniform(
-            self.mask_pokemon_prob_low, self.mask_pokemon_prob_high
-        )
-        mask_attrs_prob = random.uniform(
-            self.mask_attrs_prob_low, self.mask_attrs_prob_high
-        )
-        x, y = team.to_prediction_pair(
-            mask_pokemon_prob=mask_pokemon_prob,
-            mask_attrs_prob=mask_attrs_prob,
-        )
-        x_seq, x_needs_pred = x.to_seq(include_stats=False)
-        y_seq, y_needs_pred = y.to_seq(include_stats=False)
-        # we will only train on values that are missing from x but provided by y
-        pred_mask = torch.logical_and(
-            torch.tensor(x_needs_pred), ~torch.tensor(y_needs_pred)
-        )
-        x_tokens, x_type_ids = self.vocab.pokeset_seq_to_ints(x_seq)
-        y_tokens, y_type_ids = self.vocab.pokeset_seq_to_ints(y_seq)
-        assert len(x_tokens) == len(x_type_ids)
-        assert len(y_tokens) == len(y_type_ids)
-        assert len(x_tokens) == (8 * 6) + 1
-        assert (x_type_ids == y_type_ids).all()
-        x_tokens = torch.from_numpy(x_tokens).long()
-        x_type_ids = torch.from_numpy(x_type_ids).long()
-        y_tokens = torch.from_numpy(y_tokens).long()
-        return x_tokens, x_type_ids, y_tokens, pred_mask
+        max_retries = 50
+        for attempt in range(max_retries):
+            try:
+                current_idx = idx if attempt == 0 else random.randint(0, len(self) - 1)
+                path = self.team_files[current_idx]
+                # Extract format from file extension (e.g. .gen4ou_team -> gen4ou)
+                format = to_id_str(os.path.splitext(path)[1].split("_")[0])
+                assert format.startswith("gen"), f"Invalid format: {format}"
+                team = TeamSet.from_showdown_file(path, format=format)
+                mask_pokemon_prob = random.uniform(
+                    self.mask_pokemon_prob_low, self.mask_pokemon_prob_high
+                )
+                mask_attrs_prob = random.uniform(
+                    self.mask_attrs_prob_low, self.mask_attrs_prob_high
+                )
+                x, y = team.to_prediction_pair(
+                    mask_pokemon_prob=mask_pokemon_prob,
+                    mask_attrs_prob=mask_attrs_prob,
+                )
+                x_seq, x_needs_pred = x.to_seq(include_stats=False)
+                y_seq, y_needs_pred = y.to_seq(include_stats=False)
+                # we will only train on values that are missing from x but provided by y
+                pred_mask = torch.logical_and(
+                    torch.tensor(x_needs_pred), ~torch.tensor(y_needs_pred)
+                )
+                x_tokens, x_type_ids = self.vocab.pokeset_seq_to_ints(x_seq)
+                y_tokens, y_type_ids = self.vocab.pokeset_seq_to_ints(y_seq)
+                assert len(x_tokens) == len(x_type_ids)
+                assert len(y_tokens) == len(y_type_ids)
+                assert len(x_tokens) == (8 * 6) + 1
+                assert (x_type_ids == y_type_ids).all()
+                x_tokens = torch.from_numpy(x_tokens).long()
+                x_type_ids = torch.from_numpy(x_type_ids).long()
+                y_tokens = torch.from_numpy(y_tokens).long()
+                return x_tokens, x_type_ids, y_tokens, pred_mask
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise RuntimeError(
+                        f"Failed after {max_retries} attempts. Last error: {e}"
+                    )
+                continue
 
 
 class CompetitiveTeamPredictionDataset(TeamPredictionDataset):
