@@ -29,16 +29,27 @@ from metamon.env import (
 )
 
 
+_AMAGO_REQUIRED_VERSION = "3.1.2"
+
 try:
     import amago
+    from importlib.metadata import version as _pkg_version
+
+    _amago_version = _pkg_version("amago")
 except ImportError:
     raise ImportError(
-        "Must install `amago` RL package. Visit: https://ut-austin-rpl.github.io/amago/ "
+        "Must install `amago` RL package. Visit: https://ut-austin-rpl.github.io/amago/\n"
+        f"The supported version is {_AMAGO_REQUIRED_VERSION}. Install via:\n"
+        f"  pip install 'amago @ git+https://github.com/UT-Austin-RPL/amago.git@v3.1'"
     )
 else:
-    assert (
-        hasattr(amago, "__version__") and amago.__version__ >= "3.1.1"
-    ), "Update to the latest AMAGO version!"
+    if _amago_version != _AMAGO_REQUIRED_VERSION:
+        raise ImportError(
+            f"amago version {_amago_version!r} is not supported. "
+            f"Required: {_AMAGO_REQUIRED_VERSION!r}.\n"
+            f"Install the correct version via:\n"
+            f"  pip install 'amago @ git+https://github.com/UT-Austin-RPL/amago.git@v3.1'"
+        )
     from amago.envs import AMAGOEnv
     from amago.nets.utils import symlog
     from amago.loading import RLData, RLDataset, Batch
