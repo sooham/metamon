@@ -34,7 +34,8 @@ dependencies = [
   "huggingface_hub",
   "datasets",
   "ratarmountcore",
-  "poke-env @ git+https://github.com/UT-Austin-RPL/poke-env.git"
+  "poke-env @ git+https://github.com/UT-Austin-RPL/poke-env.git",
+  "amago @ git+https://github.com/UT-Austin-RPL/amago.git@v3.1"
 ]
 
 [project.urls]
