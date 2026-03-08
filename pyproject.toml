@@ -42,6 +42,6 @@ dependencies = [
 Homepage = "https://metamon.tech"
 Repository = "https://github.com/UT-Austin-RPL/metamon"
 
-[tool.setuptools]
-packages = ["metamon"]
+[tool.setuptools.packages.find]
+include = ["metamon*"]
 
