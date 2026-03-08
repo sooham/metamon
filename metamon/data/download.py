@@ -8,7 +8,7 @@ from collections import defaultdict
 from huggingface_hub import hf_hub_download
 
 import metamon
-from metamon import SUPPORTED_BATTLE_FORMATS, METAMON_CACHE_DIR
+from metamon.config import SUPPORTED_BATTLE_FORMATS, METAMON_CACHE_DIR
 
 SELF_PLAY_SUBSETS = ["pac-base", "pac-exploratory"]
 SELF_PLAY_FORMATS = [
