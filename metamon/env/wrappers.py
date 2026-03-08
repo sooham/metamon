@@ -563,8 +563,8 @@ class QueueOnLocalLadder(PokeEnvWrapper):
 
 
 PokeAgentServerConfiguration = ServerConfiguration(
-    "wss://pokeagentshowdown.com/showdown/websocket",
-    "https://play.pokemonshowdown.com/action.php?",
+    "wss://battling.pokeagentchallenge.com/showdown/websocket",
+    "https://battling.pokeagentchallenge.com/action.php?",
 )
 
 
