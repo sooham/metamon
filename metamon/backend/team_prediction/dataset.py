@@ -11,7 +11,7 @@ from poke_env.data import to_id_str
 import metamon
 from metamon.backend.team_prediction.team import TeamSet, Roster, PokemonSet
 from metamon.backend.team_prediction.vocabulary import Vocabulary
-from metamon import METAMON_CACHE_DIR
+from metamon.config import METAMON_CACHE_DIR
 
 
 class TeamDataset(Dataset):
