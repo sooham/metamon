@@ -9,6 +9,7 @@ from typing import Optional
 
 from termcolor import colored
 import metamon
+from metamon.config import format_for_agent
 from metamon.backend.team_prediction.usage_stats.format_rules import (
     get_valid_pokemon,
     Tier,
@@ -476,6 +477,7 @@ def get_usage_stats(
     start_date: Optional[datetime.date] = None,
     end_date: Optional[datetime.date] = None,
 ) -> PreloadedSmogonUsageStats:
+    format = format_for_agent(format)
     if start_date is None or start_date < EARLIEST_USAGE_STATS_DATE:
         start_date = EARLIEST_USAGE_STATS_DATE
     else:
