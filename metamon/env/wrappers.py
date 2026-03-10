@@ -20,6 +20,7 @@ from poke_env.teambuilder import Teambuilder
 from poke_env.ps_client.server_configuration import ServerConfiguration
 
 import metamon
+from metamon.config import format_for_agent
 from metamon.interface import (
     UniversalState,
     UniversalAction,
@@ -29,7 +30,7 @@ from metamon.interface import (
 )
 from metamon.data import DATA_PATH
 from metamon.data.download import download_teams
-from metamon.env.metamon_player import MetamonPlayer
+from metamon.env.metamon_player import MetamonPlayer, PokeAgentPlayer
 
 
 METAMON_TEAM_SETS = {
@@ -59,7 +60,7 @@ class TeamSet(Teambuilder):
     def __init__(self, team_file_dir: str, battle_format: str):
         super().__init__()
         self.team_file_dir = team_file_dir
-        self.battle_format = battle_format.lower()
+        self.battle_format = format_for_agent(battle_format)
         self.team_files = self._find_team_files()
         self._most_recent_team_file = None
 
@@ -130,21 +131,23 @@ def get_metamon_teams(
 
     Args:
         battle_format: The battle format of the team files (e.g. "gen1ou", "gen2ubers", etc.).
+            Showdown variants (e.g. "gen1oulongtimer") are normalized automatically.
         set_name: The name of the set of teams to download. See the README for options. If a custom name is provided,
             we will search the `METAMON_CACHE_DIR` for a custom team set with that name.
         set_type: The type of TeamSet to return. Defaults to TeamSet.
     """
+    fmt = format_for_agent(battle_format)
     if set_name in METAMON_TEAM_SETS:
-        path = download_teams(battle_format, set_name=set_name)
+        path = download_teams(fmt, set_name=set_name)
     elif metamon.METAMON_CACHE_DIR is not None:
         path = os.path.join(metamon.METAMON_CACHE_DIR, "teams", set_name)
     else:
         raise ValueError(f"`METAMON_CACHE_DIR` environment variable is not set!")
     if not os.path.exists(path):
         raise ValueError(
-            f"Cannot locate valid team directory for format {battle_format} at path {path}"
+            f"Cannot locate valid team directory for format {fmt} at path {path}"
         )
-    return set_type(path, battle_format)
+    return set_type(path, fmt)
 
 
 def _check_avatar(avatar: str):

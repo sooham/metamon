@@ -22,6 +22,7 @@ from poke_env.environment import (
 from poke_env.player import BattleOrder, Player
 
 import metamon
+from metamon.config import format_for_agent
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
 from metamon.backend.replay_parser.replay_state import (
     Move as ReplayMove,
@@ -510,6 +511,11 @@ class UniversalState:
     # version-specific
     can_tera: bool  # added v3-beta
     opponent_teampreview: List[str]  # added v3
+
+    @property
+    def agent_format(self) -> str:
+        """The format as presented to the agent, with Showdown variants normalized."""
+        return format_for_agent(self.format)
 
     @staticmethod
     def universal_conditions(condition_rep) -> str:
@@ -1155,7 +1161,7 @@ class DefaultObservationSpace(ObservationSpace):
             + self._get_move_string_features(state.opponent_prev_move, active=False)
         )
         full_text_list = (
-            [f"<{state.format}>", force_switch]
+            [f"<{state.agent_format}>", force_switch]
             + player_str
             + move_str
             + switch_str
