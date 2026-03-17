@@ -525,7 +525,7 @@ class ParsedReplayDataset(MetamonDataset):
         shuffle: bool = False,
         use_cached_filenames: bool = False,
     ):
-        formats = formats or metamon.SUPPORTED_BATTLE_FORMATS
+        formats = formats or metamon.config.SUPPORTED_BATTLE_FORMATS
 
         if dset_root is None:
             for format_name in formats:

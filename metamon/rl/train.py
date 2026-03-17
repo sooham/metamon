@@ -214,7 +214,7 @@ def create_offline_dataset(
     Returns:
         AMAGO RLDataset (possibly a MixtureOfDatasets)
     """
-    formats = formats or metamon.SUPPORTED_BATTLE_FORMATS
+    formats = formats or metamon.config.SUPPORTED_BATTLE_FORMATS
 
     # Validate self-play weights
     if self_play_subsets is not None:

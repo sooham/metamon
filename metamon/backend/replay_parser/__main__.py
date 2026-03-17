@@ -14,7 +14,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--format",
         type=str,
-        choices=metamon.SUPPORTED_BATTLE_FORMATS,
+        choices=metamon.config.SUPPORTED_BATTLE_FORMATS,
         required=True,
     )
     parser.add_argument(

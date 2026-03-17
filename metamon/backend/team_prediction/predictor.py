@@ -148,7 +148,7 @@ class NaiveUsagePredictor(TeamPredictor):
         return final_team
 
 
-@lru_cache(maxsize=len(metamon.SUPPORTED_BATTLE_FORMATS))
+@lru_cache(maxsize=len(metamon.config.SUPPORTED_BATTLE_FORMATS))
 def load_replay_stats_by_format(format: str, replay_stats_dir: Optional[str] = None):
     """
     This loads large json files that are created by the `generate_replay_stats` script.
