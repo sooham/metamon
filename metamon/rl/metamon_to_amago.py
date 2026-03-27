@@ -683,6 +683,10 @@ class MetamonAMAGOExperiment(amago.Experiment):
     def start(self):
         super().start()
 
+    def init_logger(self):
+        if self.log_to_wandb:
+            super().init_logger()
+
     def init_envs(self):
         out = super().init_envs()
         amago.utils.call_async_env(self.val_envs, "take_long_break")
