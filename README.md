@@ -23,7 +23,7 @@
 3) Standardized sets of competitive teams for diverse training and evaluation.
 4) 40+ baseline policies ranging from beginner to expert-level human play. 
 
-Metamon began as a conference paper, [“Human-Level Competitive Pokémon via Scalable Offline RL and Transformers”](https://arxiv.org/abs/2504.04395), at RLC 2025. It later served as both a starter kit and the winning baseline for the [NeurIPS 2025 PokéAgent Challenge](https://arxiv.org/abs/2603.15563), and now provides RL baselines for the [PokéAgent Leaderboard](https://battling.pokeagentchallenge.com). Although Metamon is primarily intended to make Pokémon an accessible, data-rich research domain, our agents have consistently been among the strongest Pokémon singles bots of any kind, with **ratings against human players now reaching the 90-99th percentile** depending on the ruleset, and may be useful to competitive players as a practice opponent or analysis tool. 
+Metamon began as a conference paper, [“Human-Level Competitive Pokémon via Scalable Offline RL and Transformers”](https://arxiv.org/abs/2504.04395), at RLC 2025. It later served as both a starter kit and winning baseline for the [NeurIPS 2025 PokéAgent Challenge](https://arxiv.org/abs/2603.15563), and now provides RL baselines for the [PokéAgent Leaderboard](https://battling.pokeagentchallenge.com). Although Metamon is primarily intended to make Pokémon an accessible, data-rich research domain, our agents have consistently been among the strongest Pokémon singles bots of any kind, with **ratings against human players now reaching the 90-99th percentile** depending on the ruleset, and may be useful to competitive players as a practice opponent or analysis tool. 
 
 <br>
 
