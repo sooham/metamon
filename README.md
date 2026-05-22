@@ -1208,7 +1208,7 @@ A `PretrainedAgent` saves the backend it "should" be evaluated with (if you're u
 
 ## Experimental Features
 
-These capabilities are experimental research features that are implemented but are not yet thoroughly tested or commonly used. Contributions welcome!
+Work-in-progress ML features that are not well tested. Contributions welcome!
 
 <details>
 <summary><h3>Team Prediction Models</h3></summary>
