@@ -1,7 +1,7 @@
 import os
 from importlib.metadata import version
 
-__version__ = "1.5.1"
+__version__ = "1.6.0"
 
 # ANSI color codes
 _YELLOW = "\033[38;5;228m"
@@ -45,10 +45,10 @@ def print_banner():
 poke_env_version = version("poke-env")
 
 if not os.environ.get("METAMON_ALLOW_ANY_POKE_ENV"):
-    if poke_env_version != "0.8.3.2":
+    if poke_env_version != "0.8.3.3":
         raise ImportError(
             f"poke-env version {poke_env_version} is not officially supported.\n"
-            f"Please install version '0.8.3.2', found here: https://github.com/UT-Austin-RPL/poke-env).\n"
+            f"Please install version '0.8.3.3', found here: https://github.com/UT-Austin-RPL/poke-env).\n"
             f"This error is here to prevent silent bugs. If you are sure you want to use a\n"
             f"different version of poke-env, set the METAMON_ALLOW_ANY_POKE_ENV environment\n"
             f"variable to True."
