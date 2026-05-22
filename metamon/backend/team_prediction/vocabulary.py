@@ -1,4 +1,5 @@
 import os
+from functools import lru_cache
 from typing import Optional
 from collections import defaultdict
 from datetime import date
@@ -42,7 +43,9 @@ def create_vocabularies(scan_dataset: bool = False):
         for tier in ["ou", "uu", "ubers", "nu"]:
             format = f"gen{gen}{tier}"
             stat = get_usage_stats(
-                format, start_date=date(2015, 1, 1), end_date=date(2025, 1, 1)
+                format,
+                start_date=date(2015, 1, 1),
+                end_date=date(2025, 1, 1),
             )
 
             for pokemon_name, data in stat._inclusive.items():
@@ -94,12 +97,15 @@ def create_vocabularies(scan_dataset: bool = False):
             lines = f.read().splitlines()[1:]  # skip header
         team_files = [os.path.join(data_dir, line) for line in lines if line]
 
+        from metamon.backend.team_prediction.team import Team2Seq
+
+        t2s = Team2Seq(include_stats=False)
         print(f"Scanning {len(team_files)} team files for unknown tokens...")
         for path in tqdm.tqdm(team_files, desc="Scanning team files"):
             try:
                 format_str = to_id_str(os.path.splitext(path)[1].split("_")[0])
                 team = TeamSet.from_showdown_file(path, format=format_str)
-                seq, _ = team.to_seq(include_stats=False)
+                seq, _ = t2s.to_seq(team)
                 for token in seq:
                     team_tokenizer.add_token_for(token)
             except Exception as e:
@@ -201,6 +207,17 @@ class Vocabulary:
                 "Tera Type": 8,
             },
         )
+        # Importance weights for weighted accuracy metric
+        self.attribute_weights = {
+            "Mon": 3.0,
+            "Move": 2.0,
+            "Ability": 1.5,
+            "Item": 1.5,
+            "Tera Type": 1.5,
+            "Nature": 1.0,
+            "EV": 0.5,
+            "IV": 0.5,
+        }
         self.type_id_to_mask = {
             0: self.format_mask,
             1: self.mon_mask,
@@ -212,6 +229,18 @@ class Vocabulary:
             7: self.iv_mask,
             8: self.tera_type_mask,
         }
+
+        # Map format token IDs to generation numbers
+        # e.g., token for "Format: gen1ou" -> 1
+        self.format_token_to_gen = {}
+        for token_id in self.format_mask:
+            token_str = self.tokenizer.all_words[token_id]  # e.g., "Format: gen1ou"
+            # Extract gen number from format string (format is "Format: genXtier")
+            format_part = token_str.split(": ")[1] if ": " in token_str else token_str
+            for gen in range(1, 10):
+                if format_part.lower().startswith(f"gen{gen}"):
+                    self.format_token_to_gen[token_id] = gen
+                    break
 
     def pokeset_seq_to_ints(self, seq: list[str]) -> np.ndarray:
         tokens = self.tokenizer.tokenize(seq)
@@ -245,6 +274,12 @@ class Vocabulary:
         # renormalize probs
         filtered = probs * mask
         return filtered / (filtered.sum(dim=-1, keepdim=True) + 1e-10)
+
+
+@lru_cache(maxsize=1)
+def get_vocab() -> Vocabulary:
+    """Cached Vocabulary singleton (read-only after init)."""
+    return Vocabulary()
 
 
 if __name__ == "__main__":
