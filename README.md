@@ -2,7 +2,7 @@
 <div align="center">
     <img src="media/metamon_text_logo.png" alt="Metamon Text Logo" width="410">
     <br>
-    <img src="media/metamon_logo.png" alt="Metamon Logo" width="540">
+    <img src="media/ditto_larger.png" alt="Metamon Logo" width="200">
 </div>
 
 <div align="center">
