@@ -61,21 +61,26 @@ def fill_missing_team_info(
         for poke in predicted_team.pokemon
         if poke.base_species not in existing_species
     ]
-    while None in poke_list and pokemon_to_add:
-        generated = pokemon_to_add.pop(0)
-        new_pokemon = Pokemon(name=generated.name, lvl=100, gen=gen)
-        poke_list[poke_list.index(None)] = new_pokemon
+    if team_predictor.fills_missing_info:
+        while None in poke_list and pokemon_to_add:
+            generated = pokemon_to_add.pop(0)
+            new_pokemon = Pokemon(name=generated.name, lvl=100, gen=gen)
+            poke_list[poke_list.index(None)] = new_pokemon
 
     if None in poke_list:
-        raise BackwardException(
-            f"Could not fill in all missing pokemon for {poke_list} with {predicted_team}"
-        )
+        if pokemon_to_add and team_predictor.fills_missing_info:
+            raise BackwardException(
+                f"Could not fill in all missing pokemon for {poke_list} with {predicted_team}"
+            )
+        # else: no predictions were made (e.g., NoPredictor), leave Nones as-is
 
-    names = [p.name for p in poke_list]
+    # Only validate non-None entries
+    filled_pokes = [p for p in poke_list if p is not None]
+    names = [p.name for p in filled_pokes]
     if len(names) != len(set(names)):
         raise BackwardException(f"Duplicate pokemon names in {names}")
 
-    for p in poke_list:
+    for p in filled_pokes:
         for match in predicted_team.pokemon:
             if match.base_species == p.had_name:
                 break
@@ -344,6 +349,8 @@ def backward_fill(
             (turn_t.pokemon_2, turn_t1.pokemon_2),
         ):
             for pokemon in team:
+                if pokemon is None:
+                    continue
                 if pokemon.unique_id in prev_ids:
                     prev_pokemon = prev_ids[pokemon.unique_id]
                     prev_pokemon.backfill_info(pokemon)
@@ -354,7 +361,8 @@ def backward_fill(
 
     # chop off the extra filled turn
     replay_filled.turnlist = replay_filled.turnlist[:-1]
-    checks.check_info_filled(replay_filled)
+    if team_predictor.fills_missing_info:
+        checks.check_info_filled(replay_filled)
     from_p1 = POVReplay(
         copy.deepcopy(replay),
         copy.deepcopy(replay_filled),

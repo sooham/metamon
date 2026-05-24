@@ -33,6 +33,15 @@ class TeamPredictor(ABC):
         self.replay_stats_dir = replay_stats_dir
         self.usage_stats_rank = usage_stats_rank
 
+    @property
+    def fills_missing_info(self) -> bool:
+        """Whether this predictor infers unseen items/abilities/moves/teammates.
+
+        If False, the parser will skip the post-backward-fill completeness check
+        and leave unknown fields as-is.
+        """
+        return True
+
     def bin_usage_stats_dates(
         self, date: datetime.date
     ) -> Tuple[datetime.date, datetime.date]:
@@ -539,9 +548,41 @@ class ReplayPredictor(NaiveUsagePredictor):
         return super().fill_team(team, date=date, rating=rating, gameid=gameid)
 
 
+class NoPredictor(TeamPredictor):
+    """
+    Does not predict any missing information. Unknown Pokémon slots stay empty;
+    unseen moves, items, and abilities are left as MISSING rather than guessed.
+
+    Only information that was *directly observed* in the raw replay log is kept.
+    The backward propagation step will still copy information that is revealed
+    later in the battle to earlier turns (e.g., an item revealed on turn 5 will
+    be backfilled to turn 0), but nothing is inferred from usage statistics.
+
+    Use this when you want parsed replays that contain only ground-truth
+    observations, suitable for inspecting what the parser can actually see.
+    """
+
+    @property
+    def fills_missing_info(self) -> bool:
+        return False
+
+    def fill_team(
+        self,
+        team: TeamSet,
+        date: datetime.date,
+        rating: Optional[int | str] = None,
+        gameid: Optional[str] = None,
+    ):
+        # Return the team exactly as-is — no filling of any kind.
+        # PokemonSet.from_ReplayPokemon already converted unknowns to MISSING_*
+        # markers, so this preserves the observed-only state.
+        return team
+
+
 ALL_PREDICTORS = {
     "NaiveUsagePredictor": NaiveUsagePredictor,
     "ReplayPredictor": ReplayPredictor,
+    "NoPredictor": NoPredictor,
 }
 
 if __name__ == "__main__":

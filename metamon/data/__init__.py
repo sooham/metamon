@@ -2,6 +2,8 @@ import os
 
 DATA_PATH = os.path.dirname(__file__)
 
+from . import raw_replay_util  # eager import to avoid recursion in __getattr__
+
 __all__ = [
     "DATA_PATH",
     "MetamonDataset",
@@ -25,7 +27,5 @@ def __getattr__(name: str):
 
         return SelfPlayDataset
     if name == "raw_replay_util":
-        from . import raw_replay_util
-
         return raw_replay_util
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
