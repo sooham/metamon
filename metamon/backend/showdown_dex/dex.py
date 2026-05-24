@@ -73,7 +73,7 @@ class Dex:
         dex.update(other_forms_dex)
 
         for name, value in dex.items():
-            value["baseSpecies"] = value.get("baseSpecies", value["name"])
+            value["baseSpecies"] = value.get("baseSpecies", value.get("name", name))
         return dex
 
     def load_type_chart(self, gen: int) -> Dict[str, Dict[str, float]]:

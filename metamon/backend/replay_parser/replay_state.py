@@ -218,13 +218,39 @@ class Pokemon:
 
     @staticmethod
     def _lookup_pokedex_info(name: str, gen: int):
-        pokedex = Dex.from_gen(gen).pokedex
         lookup_name = pokemon_name(name)
-        try:
-            pokedex_info = pokedex[lookup_name]
-        except KeyError:
+        # Try the current gen first, then fall back to progressively higher gens.
+        # Some replays tagged with a low-gen format (e.g. gen1ou) may contain
+        # Pokemon from later generations (e.g. in custom challenges), so we
+        # need to search higher-gen pokedex files when the current gen lacks
+        # the entry.
+        found_gen = None
+        for fallback_gen in range(gen, 10):
+            pokedex = Dex.from_gen(fallback_gen).pokedex
+            try:
+                info = pokedex[lookup_name]
+                # Skip placeholder entries that only exist to be overridden
+                # by higher-gen data (they lack required fields like name/types).
+                if info.get("inherit"):
+                    continue
+                found_gen = fallback_gen
+                break
+            except KeyError:
+                continue
+        if found_gen is None:
             raise PokedexMissingEntry(name, lookup_name)
-        return pokedex_info
+
+        # If we fell back to a higher gen, adjust gen-specific fields to match
+        # the original gen's mechanics (the data is best-effort for Pokemon that
+        # don't natively exist in the original gen).
+        if found_gen != gen:
+            info = copy.deepcopy(info)
+            # Gen 1-2: no abilities exist; replace with "No Ability" so the
+            # parser does not incorrectly treat the ability as known/active.
+            if gen <= 2 and "abilities" in info:
+                info["abilities"] = {"0": "No Ability"}
+
+        return info
 
     def update_pokedex_info(self, name: str):
         pokedex_info = self._lookup_pokedex_info(name, gen=self.gen)
