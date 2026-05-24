@@ -197,6 +197,10 @@ class Pokemon:
         self.transformed_this_turn: bool = False
         self.transformed_into: Optional[Pokemon] = None
 
+        # cross-turn state: tracks multi-turn moves initiated by foreign-calling
+        # moves (Metronome, Mirror Move, etc.) that must be suppressed across turns
+        self.pending_foreign_move: Optional[str] = None
+
         # within-turn state (reset on next turn)
         self.protected: bool = False
         self.last_target: Optional[Targeting] = None
@@ -252,6 +256,7 @@ class Pokemon:
         # many temporary effects and changes revert on switch out
         self.boosts = Boosts()
         self.transformed_into = None
+        self.pending_foreign_move = None
         self.moves = copy.deepcopy(self.had_moves)
         self.active_ability = self.had_ability
         self.move_change_to_from = {}
@@ -275,6 +280,7 @@ class Pokemon:
         fresh.current_hp = 100
         fresh.max_hp = 100
         fresh.transformed_into = None
+        fresh.pending_foreign_move = None
         fresh.active_ability = fresh.had_ability
         fresh.active_item = fresh.had_item
         fresh.moves = copy.deepcopy(fresh.had_moves)

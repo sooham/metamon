@@ -490,15 +490,17 @@ class SimProtocol:
                 if is_move:
                     from_move = parse_move_from_extra(extra_from_message)
                     probably_repeat_move = from_move.lower() == move_name.lower()
-                    if (
-                        from_move
-                        in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY
-                        | SimProtocol.MOVE_OVERRIDE
-                    ):
+                    if from_move in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                         if override_risk and len(pokemon.had_moves) < 4:
                             raise CalledForeignConsecutive(["move"] + args)
-                        if from_move in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
-                            pokemon.reveal_move(move)
+                        pokemon.reveal_move(move)
+                        return
+                    elif from_move in SimProtocol.MOVE_OVERRIDE:
+                        # foreign-calling move: suppress the called move.
+                        # for multi-turn moves, set a cross-turn flag so the
+                        # follow-up turns are also suppressed.
+                        if override_risk:
+                            pokemon.pending_foreign_move = move_name
                         return
                 elif is_ability:
                     if is_ability in SimProtocol.MOVE_CAUSED_BY_ABILITY:
@@ -528,18 +530,17 @@ class SimProtocol:
                     | SimProtocol.MOVE_IGNORE_ITEMS
                 )
                 if not (probably_repeat_move or probably_item):
-                    if (
-                        ability_or_move
-                        in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY
-                        | SimProtocol.MOVE_OVERRIDE
-                    ):
+                    if ability_or_move in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                         if override_risk and len(pokemon.had_moves) < 4:
                             raise CalledForeignConsecutive(["move"] + args)
-                        if (
-                            ability_or_move
-                            in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY
-                        ):
-                            pokemon.reveal_move(move)
+                        pokemon.reveal_move(move)
+                        return
+                    elif ability_or_move in SimProtocol.MOVE_OVERRIDE:
+                        # foreign-calling move: suppress the called move.
+                        # for multi-turn moves, set a cross-turn flag so the
+                        # follow-up turns are also suppressed.
+                        if override_risk:
+                            pokemon.pending_foreign_move = move_name
                         return
                 probably_ability = (
                     ability_or_move.lower() not in {"lockedmove", "pursuit"}
@@ -551,6 +552,25 @@ class SimProtocol:
                         return
                     else:
                         raise UnimplementedMoveFromMoveAbility(args)
+
+        # check for pending foreign-called multi-turn moves (Metronome -> Solar Beam,
+        # Mirror Move -> Outrage, etc.). the charge/ramp-up turn set this flag; we
+        # suppress the follow-up turns so the called move never leaks into had_moves.
+        if pokemon.pending_foreign_move is not None:
+            if pokemon.pending_foreign_move == move_name:
+                # continuation of a foreign-called multi-turn move
+                if "[still]" not in args and move_name not in SimProtocol.GEN1_PP_ROLLOVERS:
+                    # charge move fire turn (no [still]) or last execution of a
+                    # consecutive move: the foreign-called sequence is complete
+                    pokemon.pending_foreign_move = None
+                # else: consecutive move ([still] present) or Gen1 partial trapping
+                # (GEN1_PP_ROLLOVERS auto-apply): keep the flag for subsequent turns
+                return
+            else:
+                # different move used: the foreign-called sequence was interrupted
+                # (flinched, confused, etc.) or ended naturally — clear stale flag
+                pokemon.pending_foreign_move = None
+                # fall through to process this move normally
 
         # how much PP is used?
         pressured = (
