@@ -418,12 +418,10 @@ class Pokemon:
         _fill_if("current_hp")
         _fill_if("tera_type")
 
-        if self.active_item is None:
-            assert self.had_item is not None
+        if self.active_item is None and self.had_item is not None:
             self.active_item = self.had_item
 
-        if self.active_ability is None:
-            assert self.had_ability is not None
+        if self.active_ability is None and self.had_ability is not None:
             self.active_ability = self.had_ability
 
         for move_name, future_move in future_mon.had_moves.items():
