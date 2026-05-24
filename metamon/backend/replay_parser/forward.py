@@ -1,4 +1,5 @@
 import copy
+import warnings
 from typing import List
 
 from metamon.backend.replay_parser import checks
@@ -265,7 +266,10 @@ class SimProtocol:
         while len(team) > size and None in team:
             team.remove(None)
         if size != 6:
-            raise UnusualTeamSize(size)
+            warnings.warn(
+                f"Playing with {size} pokemon on a team (expected 6). "
+                f"Parser will continue with {size} slots."
+            )
 
     def _parse_turn(self, args: List[str]):
         """
@@ -341,7 +345,10 @@ class SimProtocol:
         poke_list = self.curr_turn.get_pokemon_list_from_str(args[0])
         assert isinstance(poke_list, list)
         if None not in poke_list:
-            raise UnusualTeamSize(len(poke_list) + 1)
+            warnings.warn(
+                f"Tried to add a pokemon to a full team of {len(poke_list)}. "
+                f"This may indicate a parsing error."
+            )
         poke_name, lvl = Pokemon.identify_from_details(args[1], gen=gen)
         insert_at = poke_list.index(None)
         new_pokemon = Pokemon(name=poke_name, lvl=lvl, gen=gen)
