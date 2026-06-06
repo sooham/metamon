@@ -22,6 +22,7 @@ _STRUCTURAL_TOKENS = frozenset({
     "<player>", "<move>", "<switch>", "<opponent>", "<opponent_switch>",
     "<fainted>", "<opponent_fainted>", "<conditions>", "<player_prev>",
     "<opp_prev>", "<ongoing>", "<won>", "<lost>",
+    "<boosts>", "<moveset>", "<opponent_moveset>",
 })
 
 
@@ -64,25 +65,35 @@ def format_pretty(tokens: list[str]) -> str:
         hp = " ".join(take(HP_TOKENS))
         item = take(1)[0]
         ability = take(1)[0]
+        boosts = []
         if is_active:
             types_ = " ".join(take(2))
             effect = take(1)[0]
             status = take(1)[0]
+            # consume <boosts> block
+            if peek(1) == ["<boosts>"]:
+                take(1)
+                boosts = _tokens_until_structural()
             return {
                 "name": name, "hp": hp, "item": item, "ability": ability,
                 "types": types_, "effect": effect, "status": status,
+                "boosts": boosts,
             }
         else:
             if has_status_effect:
                 status = take(1)[0]
                 effect = take(1)[0]
+            # consume <boosts> block (before <moveset> or <opponent_moveset>)
+            if peek(1) == ["<boosts>"]:
+                take(1)
+                boosts = _tokens_until_structural()
             moveset_tag = take(1)[0]  # <moveset> or <opponent_moveset>
             # Read moves until next structural token (opponent movesets
             # are variable-length, player movesets have 4 <blank>-padded moves).
             moves = _tokens_until_structural()
             result = {
                 "name": name, "hp": hp, "item": item, "ability": ability,
-                "tag": moveset_tag, "moves": moves,
+                "tag": moveset_tag, "moves": moves, "boosts": boosts,
             }
             if has_status_effect:
                 result["status"] = status
@@ -92,11 +103,14 @@ def format_pretty(tokens: list[str]) -> str:
     def pokemon_line(p, indent="  │   "):
         """Render a single pokemon dict to a compact line."""
         hp_str = p["hp"].replace(" ", "")
+        boost_str = ""
+        if p.get("boosts") and p["boosts"] != ["none"]:
+            boost_str = f"  [{' '.join(p['boosts'])}]"
         if "types" in p:
             # active pokemon
             return (
                 f"{indent}{p['name']:<14} HP={hp_str:>5}  {p['item']:<12} {p['ability']:<14}"
-                f"  [{p['types']}]  {p['effect']}  {p['status']}"
+                f"  [{p['types']}]  {p['effect']}  {p['status']}{boost_str}"
             )
         else:
             # inactive / bench / fainted
@@ -106,7 +120,7 @@ def format_pretty(tokens: list[str]) -> str:
                 extras = f"  {p['status']}  {p['effect']}"
             return (
                 f"{indent}{p['name']:<14} HP={hp_str:>5}  {p['item']:<12} {p['ability']:<14}"
-                f"{extras}  moves: {moves}"
+                f"{extras}  moves: {moves}{boost_str}"
             )
 
     # ── Player ──
