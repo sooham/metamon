@@ -5,7 +5,7 @@ Uses an append-only JSONL file so partial runs can be resumed.
 """
 
 import csv
-import json
+import orjson
 import os
 from collections import defaultdict
 from dataclasses import dataclass, asdict
@@ -59,10 +59,10 @@ class ResultsTracker:
                 if not line:
                     continue
                 try:
-                    data = json.loads(line)
+                    data = orjson.loads(line)
                     result = MatchupResult(**data)
                     self._completed[result.matchup_id] = result
-                except (json.JSONDecodeError, TypeError) as e:
+                except (orjson.JSONDecodeError, TypeError) as e:
                     print(f"Warning: skipping malformed result line: {e}")
 
     def is_completed(self, matchup_id: str) -> bool:
@@ -76,7 +76,7 @@ class ResultsTracker:
         """Append a result to the JSONL file and in-memory cache."""
         self._completed[result.matchup_id] = result
         with open(self.results_path, "a") as f:
-            f.write(json.dumps(asdict(result)) + "\n")
+            f.write(orjson.dumps(asdict(result)).decode("utf-8") + "\n")
 
     def record_from_results_dir(
         self,

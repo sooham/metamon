@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
+import orjson
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -139,7 +139,7 @@ def build_standardized_showdown_set(
 
 
 def _load_replication_moves(path: Path) -> dict[str, list[str]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = orjson.loads(path.read_bytes())
     out: dict[str, list[str]] = {}
 
     if isinstance(payload, dict):
@@ -172,7 +172,7 @@ def _load_replication_moves(path: Path) -> dict[str, list[str]]:
 
 
 def _load_manual_sets(path: Path, gen: int) -> list[PokemonSet]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = orjson.loads(path.read_bytes())
     if not isinstance(payload, list):
         raise ValueError("Manual sets file must be a JSON list.")
 
@@ -348,11 +348,11 @@ def save_pool_artifact(
         ],
         "metadata": metadata or {},
     }
-    out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    out_path.write_bytes(orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS))
 
 
 def load_pool_artifact(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = orjson.loads(path.read_bytes())
     if "pokemon_sets" not in data or not isinstance(data["pokemon_sets"], list):
         raise ValueError(f"Invalid pool artifact: {path}")
     return data

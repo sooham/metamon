@@ -7,7 +7,7 @@ and then finetune an existing model (e.g. Abra) to enable strong play on the "me
 """
 
 import os
-import json
+import orjson
 import argparse
 from datetime import date
 from typing import List, Callable
@@ -33,7 +33,7 @@ def process_trajectory_file(args_tuple):
 
     try:
         with lz4.frame.open(input_path, "rb") as f:
-            data = json.loads(f.read().decode("utf-8"))
+            data = orjson.loads(f.read())
         states = [UniversalState.from_dict(s) for s in data["states"]]
 
         if states[0].format == "gen9ou":
@@ -82,7 +82,7 @@ def process_trajectory_file(args_tuple):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         temp_path = output_path + ".tmp"
         with lz4.frame.open(temp_path, "wb") as f:
-            f.write(json.dumps(output_json).encode("utf-8"))
+            f.write(orjson.dumps(output_json))
         os.rename(temp_path, output_path)
 
         return (input_path, True, None)

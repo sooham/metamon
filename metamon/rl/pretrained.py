@@ -1,4 +1,4 @@
-import json
+import orjson
 import os
 from pathlib import Path
 import warnings
@@ -48,7 +48,7 @@ ENSEMBLE_PRESETS_PATH = (
 
 
 def _load_ensemble_member_presets():
-    raw_presets = json.loads(ENSEMBLE_PRESETS_PATH.read_text())
+    raw_presets = orjson.loads(ENSEMBLE_PRESETS_PATH.read_bytes())
     return {
         name: [
             EnsembleMemberSpec(

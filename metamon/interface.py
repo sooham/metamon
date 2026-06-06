@@ -1,7 +1,7 @@
 import copy
 import re
 import warnings
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Optional, List, Any, Set
 from abc import ABC, abstractmethod
 
@@ -211,6 +211,10 @@ def consistent_move_order(moves):
     return sorted(moves, key=key)
 
 
+# Module-level cache for UniversalMove.from_Move (static move properties never change)
+_UNIVERSAL_MOVE_CACHE: dict[str, "UniversalMove"] = {}
+
+
 @dataclass
 class UniversalMove:
     """An object that represents a move in the backend-agnostic "Universal" format.
@@ -230,6 +234,18 @@ class UniversalMove:
     priority: int
     current_pp: int
     max_pp: int
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "move_type": self.move_type,
+            "category": self.category,
+            "base_power": self.base_power,
+            "accuracy": self.accuracy,
+            "priority": self.priority,
+            "current_pp": self.current_pp,
+            "max_pp": self.max_pp,
+        }
 
     @classmethod
     def blank_move(cls):
@@ -257,7 +273,22 @@ class UniversalMove:
         if move is None:
             return cls.blank_move()
         assert isinstance(move, Move)
-        return cls(
+        # Cache by move ID — static properties never change for the same move
+        mid = move.id
+        cached = _UNIVERSAL_MOVE_CACHE.get(mid)
+        if cached is not None:
+            um = UniversalMove(
+                name=cached.name,
+                category=cached.category,
+                base_power=cached.base_power,
+                move_type=cached.move_type,
+                priority=cached.priority,
+                accuracy=cached.accuracy,
+                current_pp=move.current_pp,
+                max_pp=move.max_pp,
+            )
+            return um
+        um = cls(
             name=move_name(move.id),
             category=clean_name(move.category.name),
             base_power=move.base_power,
@@ -267,6 +298,8 @@ class UniversalMove:
             current_pp=move.current_pp,
             max_pp=move.max_pp,
         )
+        _UNIVERSAL_MOVE_CACHE[mid] = um
+        return um
 
 
 @dataclass
@@ -388,10 +421,13 @@ class UniversalPokemon:
             most_recent_effect = min(pokemon.effects.keys(), key=pokemon.effects.get)
         else:
             most_recent_effect = None
+        # Guard against None HP (unrevealed opponent Pokémon from team preview)
+        cur_hp = pokemon.current_hp if pokemon.current_hp is not None else 100
+        max_hp = pokemon.max_hp if pokemon.max_hp is not None else 100
         return cls(
             name=pokemon_name(pokemon.name),
             base_species=pokemon_name(pokemon.had_name),
-            hp_pct=float(pokemon.current_hp) / pokemon.max_hp,
+            hp_pct=round(float(cur_hp) / max_hp, 2),
             types=cls.universal_types(pokemon.type),
             tera_type=cls.universal_types([pokemon.tera_type], force_two=False),
             item=cls.universal_items(pokemon.active_item),
@@ -417,7 +453,7 @@ class UniversalPokemon:
         return cls(
             name=pokemon_name(pokemon.species),
             base_species=pokemon_name(pokemon.base_species),
-            hp_pct=float(pokemon.current_hp_fraction),
+            hp_pct=round(float(pokemon.current_hp_fraction), 2),
             types=cls.universal_types(pokemon.types),
             tera_type=cls.universal_types([pokemon.tera_type], force_two=False),
             item=cls.universal_items(pokemon.item),
@@ -428,6 +464,34 @@ class UniversalPokemon:
             moves=moves,
             **(boosts | stats),
         )
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "hp_pct": self.hp_pct,
+            "types": self.types,
+            "item": self.item,
+            "ability": self.ability,
+            "lvl": self.lvl,
+            "status": self.status,
+            "effect": self.effect,
+            "moves": [m.to_dict() for m in self.moves],
+            "atk_boost": self.atk_boost,
+            "spa_boost": self.spa_boost,
+            "def_boost": self.def_boost,
+            "spd_boost": self.spd_boost,
+            "spe_boost": self.spe_boost,
+            "accuracy_boost": self.accuracy_boost,
+            "evasion_boost": self.evasion_boost,
+            "base_atk": self.base_atk,
+            "base_spa": self.base_spa,
+            "base_def": self.base_def,
+            "base_spd": self.base_spd,
+            "base_spe": self.base_spe,
+            "base_hp": self.base_hp,
+            "tera_type": self.tera_type,
+            "base_species": self.base_species,
+        }
 
     @classmethod
     def from_dict(cls, data: dict):
@@ -496,6 +560,9 @@ class UniversalState:
     player_active_pokemon: UniversalPokemon
     opponent_active_pokemon: UniversalPokemon
     available_switches: List[UniversalPokemon]
+    opponent_bench: List[UniversalPokemon]  # opponent's non-active, non-fainted, revealed pokemon
+    fainted_pokemon: List[UniversalPokemon]  # player's fainted pokemon (may be revived in gen9)
+    opponent_fainted: List[UniversalPokemon]  # opponent's fainted, revealed pokemon
     player_prev_move: UniversalMove
     opponent_prev_move: UniversalMove
     opponents_remaining: int
@@ -548,6 +615,32 @@ class UniversalState:
         active = UniversalPokemon.from_ReplayPokemon(state.active_pokemon)
         opponent = UniversalPokemon.from_ReplayPokemon(state.opponent_active_pokemon)
         switches = [UniversalPokemon.from_ReplayPokemon(p) for p in state.available_switches]
+        # opponent bench: non-active, non-fainted, revealed pokemon from opponent_team
+        active_opp_id = state.opponent_active_pokemon.unique_id if state.opponent_active_pokemon else None
+        opponent_bench = [
+            UniversalPokemon.from_ReplayPokemon(p)
+            for p in state.opponent_team
+            if p is not None
+            and p.status != Status.FNT
+            and p.unique_id != active_opp_id
+        ]
+        # player fainted: own fainted pokemon (non-active)
+        active_self_id = state.active_pokemon.unique_id if state.active_pokemon else None
+        fainted_pokemon = [
+            UniversalPokemon.from_ReplayPokemon(p)
+            for p in (state.player_team if state.player_team else [])
+            if p is not None
+            and p.status == Status.FNT
+            and p.unique_id != active_self_id
+        ]
+        # opponent fainted: revealed, fainted opponent pokemon (non-active)
+        opponent_fainted = [
+            UniversalPokemon.from_ReplayPokemon(p)
+            for p in state.opponent_team
+            if p is not None
+            and p.status == Status.FNT
+            and p.unique_id != active_opp_id
+        ]
         opponents_remaining = 6 - sum(p.status == Status.FNT for p in state.opponent_team if p is not None)
         opponent_teampreview = [pokemon_name(p.had_name) for p in state.opponent_teampreview]
         return cls(
@@ -555,6 +648,9 @@ class UniversalState:
             player_active_pokemon=active,
             opponent_active_pokemon=opponent,
             available_switches=switches,
+            opponent_bench=opponent_bench,
+            fainted_pokemon=fainted_pokemon,
+            opponent_fainted=opponent_fainted,
             player_prev_move=UniversalMove.from_ReplayMove(state.player_prev_move),
             opponent_prev_move=UniversalMove.from_ReplayMove(state.opponent_prev_move),
             player_conditions=cls.universal_conditions(state.player_conditions),
@@ -598,6 +694,9 @@ class UniversalState:
             player_active_pokemon=active,
             opponent_active_pokemon=opponent,
             available_switches=switches,
+            opponent_bench=[],  # poke-env backend does not provide opponent bench
+            fainted_pokemon=[],  # poke-env backend does not provide fainted tracking
+            opponent_fainted=[],
             player_prev_move=player_prev_move,
             opponent_prev_move=opponent_prev_move,
             player_conditions=player_conditions,
@@ -614,7 +713,27 @@ class UniversalState:
     # fmt: on
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return {
+            "format": self.format,
+            "player_active_pokemon": self.player_active_pokemon.to_dict(),
+            "opponent_active_pokemon": self.opponent_active_pokemon.to_dict(),
+            "available_switches": [p.to_dict() for p in self.available_switches],
+            "opponent_bench": [p.to_dict() for p in self.opponent_bench],
+            "fainted_pokemon": [p.to_dict() for p in self.fainted_pokemon],
+            "opponent_fainted": [p.to_dict() for p in self.opponent_fainted],
+            "player_prev_move": self.player_prev_move.to_dict(),
+            "opponent_prev_move": self.opponent_prev_move.to_dict(),
+            "opponents_remaining": self.opponents_remaining,
+            "player_conditions": self.player_conditions,
+            "opponent_conditions": self.opponent_conditions,
+            "weather": self.weather,
+            "battle_field": self.battle_field,
+            "forced_switch": self.forced_switch,
+            "battle_won": self.battle_won,
+            "battle_lost": self.battle_lost,
+            "can_tera": self.can_tera,
+            "opponent_teampreview": self.opponent_teampreview,
+        }
 
     @classmethod
     def from_dict(cls, data: dict):
@@ -641,6 +760,28 @@ class UniversalState:
             # backwards compat (if it's missing; it's an old version of the dataset
             # --> gen 1-4 --> no teampreview)
             data["opponent_teampreview"] = []
+
+        if "opponent_bench" not in data:
+            # backwards compat: old parsed replays don't have opponent bench
+            data["opponent_bench"] = []
+        else:
+            data["opponent_bench"] = [
+                UniversalPokemon.from_dict(p) for p in data["opponent_bench"]
+            ]
+
+        if "fainted_pokemon" not in data:
+            data["fainted_pokemon"] = []
+        else:
+            data["fainted_pokemon"] = [
+                UniversalPokemon.from_dict(p) for p in data["fainted_pokemon"]
+            ]
+
+        if "opponent_fainted" not in data:
+            data["opponent_fainted"] = []
+        else:
+            data["opponent_fainted"] = [
+                UniversalPokemon.from_dict(p) for p in data["opponent_fainted"]
+            ]
 
         return cls(**data)
 
@@ -677,12 +818,18 @@ class UniversalAction:
         elif action.name in {"Struggle", "Fight"}:
             action_idx = 0
         elif action.is_switch or action.is_revival:
-            for switch_idx, available_switch in enumerate(
-                consistent_pokemon_order(state.available_switches)
-            ):
-                if available_switch.unique_id == action.target.unique_id:
-                    action_idx = 4 + switch_idx
-                    break
+            # Switch-to-self can happen when Zoroark's Illusion is active
+            # (the disguised Zoroark appears to switch to the Pokemon it's
+            # impersonating).  Treat as a missing action.
+            if action.target == state.active_pokemon:
+                action_idx = -1
+            else:
+                for switch_idx, available_switch in enumerate(
+                    consistent_pokemon_order(state.available_switches)
+                ):
+                    if available_switch.unique_id == action.target.unique_id:
+                        action_idx = 4 + switch_idx
+                        break
         else:
             move_options = list(state.active_pokemon.moves.values())
             for move_idx, move in enumerate(consistent_move_order(move_options)):
@@ -1645,3 +1792,325 @@ class TokenizedObservationSpace(ObservationSpace):
                 base_obs_key.tolist()
             )
         return obs
+
+
+@register_observation_space()
+class WorldModelObservationSpace(ObservationSpace):
+    """Observation space for world model training.
+
+    Extends the default observation space with:
+        - HP (0.0-1.0 float or "unknown"), split into space-separated characters
+          (e.g. ``0 . 7 3``), after every Pokémon name
+        - Opponent bench information with ``<opponent_switch>`` blocks
+        - Player fainted Pokémon with ``<fainted>`` blocks
+        - Opponent fainted Pokémon with ``<opponent_fainted>`` blocks
+        - ``unknownability``, ``unknownitem`` tokens for unrevealed info
+        - ``<opponent_moveset>`` tag for opponent movesets (no ``unknownmove`` fillers)
+        - Terminal token: ``<ongoing>`` / ``<won>`` / ``<lost>``
+
+    **No padding** — ``<switch>``, ``<opponent_switch>``, ``<fainted>``, and
+    ``<opponent_fainted>`` blocks are only emitted when they actually contain
+    Pokémon.  Opponent movesets only emit revealed moves (no ``unknownmove``
+    fillers).  This eliminates redundant identical-token computation during
+    training.
+
+    Text format (~52–336 tokens; all repeated blocks are variable-length):
+        ``<format> <forcedswitch|anychoice>``
+        ``<player> <name> <hp_c0>..<hp_c3> <item> <ability> <type_0> <type_1> <effect> <status>``
+        ``<move> <name> <type> <category>``  ×4
+        ``<switch> <name> <hp_c0>..<hp_c3> <item> <ability> <moveset>``
+        ``  <move_1>..<move_4>``  ×0–5
+        ``<opponent> <name> <hp_c0>..<hp_c3> <item> <ability> <type_0> <type_1> <effect> <status> <opponent_moveset>``
+        ``  <move_1>..<move_N>``  (0–4 revealed moves, no fillers)
+        ``<opponent_switch> <name> <hp_c0>..<hp_c3> <item> <ability> <status> <effect> <opponent_moveset>``
+        ``  <move_1>..<move_N>``  ×0–5 (0–4 revealed moves each, no fillers)
+        ``<fainted> <name> <hp_c0>..<hp_c3> <item> <ability> <moveset>``
+        ``  <move_1>..<move_4>``  ×0–5 (only actual fainted Pokémon)
+        ``<opponent_fainted> <name> <hp_c0>..<hp_c3> <item> <ability> <status> <effect> <opponent_moveset>``
+        ``  <move_1>..<move_N>``  ×0–5 (only actual fainted Pokémon, 0–4 revealed moves)
+        ``<conditions> <weather> <player_cond> <opponent_cond>``
+        ``<player_prev> <move> <opp_prev> <move>``
+        ``<ongoing|won|lost>``
+    """
+
+    NUM_FAINTED_SLOTS = 5
+    NUM_OPPONENT_FAINTED_SLOTS = 5
+
+    @property
+    def gym_space(self):
+        return gym.spaces.Dict(
+            {
+                "numbers": gym.spaces.Box(
+                    low=-10.0,
+                    high=10.0,
+                    shape=(63,),  # 48 orig + 5 opp bench + 5 fainted + 5 opp fainted
+                    dtype=np.float32,
+                ),
+                "text": gym.spaces.Text(
+                    max_length=2500,
+                    min_length=500,
+                    charset=set(string.ascii_lowercase)
+                    | set(str(n) for n in range(0, 10))
+                    | {"<", ">"},
+                ),
+            }
+        )
+
+    @property
+    def tokenizable(self) -> dict[str, int]:
+        # soft max — no padding for <switch> / <opponent_switch> /
+        # <fainted> / <opponent_fainted> blocks; opponent moveset blocks
+        # only emit revealed moves (no unknownmove fillers).
+        # Maximum token count occurs when all 12 Pokémon are fainted / on
+        # field with full revealed movesets.
+        return {
+            "text": 336,
+        }
+
+    @staticmethod
+    def _hp_str(hp_pct: float) -> list[str]:
+        """Format HP as space-separated fixed-point characters: '1 . 0 0' or 'unknown'.
+
+        HP is fixed-point with exactly 2 decimal places. Each character (digit or dot)
+        becomes a separate token so the tokenizer only needs 0-9 and '.' for HP values.
+        """
+        if hp_pct is None:
+            return ["unknown"]
+        # Format as fixed-point with exactly 2 decimals, then split into characters
+        formatted = f"{hp_pct:.2f}"  # e.g. "1.00", "0.73", "0.00"
+        return list(formatted)
+
+    def _get_move_string_features(self, move: UniversalMove, active: bool) -> list[str]:
+        out = [clean_name(move.name)]
+        if active:
+            out += [clean_name(move.move_type), clean_name(move.category)]
+        return out
+
+    def _get_move_pad_string(self, active: bool, use_unknownmove: bool = False) -> list[str]:
+        pad_token = "unknownmove" if use_unknownmove else "<blank>"
+        out = [pad_token]
+        if active:
+            out += ["<blank>", "<blank>"]
+        return out
+
+    def _get_move_numerical_features(
+        self, move: UniversalMove, active: bool
+    ) -> list[float]:
+        if not active:
+            return []
+        return [move.base_power / 200.0, move.accuracy, move.priority / 5.0]
+
+    def _get_move_pad_numerical(self, active: bool) -> list[float]:
+        if not active:
+            return []
+        return [-2.0] * 3
+
+    def _get_pokemon_string_features(
+        self, pokemon: UniversalPokemon, active: bool
+    ) -> list[str]:
+        out = [pokemon.name] + self._hp_str(pokemon.hp_pct) + [pokemon.item, pokemon.ability]
+        if active:
+            out += [pokemon.types, pokemon.effect, pokemon.status]
+        else:
+            out += ["<moveset>"]
+            move_num = -1
+            for move_num, move in enumerate(consistent_move_order(pokemon.moves)):
+                out += self._get_move_string_features(move, active=False)
+            while move_num < 3:
+                out += self._get_move_pad_string(active=False)
+                move_num += 1
+        return out
+
+    def _get_opponent_pokemon_string_features(
+        self, pokemon: UniversalPokemon, active: bool
+    ) -> list[str]:
+        base = self._get_pokemon_string_features(pokemon, active)
+        # Only emit revealed moves — no unknownmove fillers.  The model
+        # can infer 4 move slots from the battle context; padding them
+        # with identical unknownmove tokens wastes compute.
+        moves = []
+        for move in consistent_move_order(pokemon.moves)[:4]:
+            moves.append(clean_name(move.name))
+        return base + ["<opponent_moveset>"] + moves
+
+    def _get_opponent_bench_string_features(
+        self, pokemon: UniversalPokemon
+    ) -> list[str]:
+        """String features for an opponent bench Pokémon.
+
+        Uses <opponent_moveset> tag and only emits revealed moves (no
+        unknownmove fillers).  Includes status and effect so the world
+        model knows about status conditions carried by benched opponents.
+        """
+        out = (
+            [pokemon.name]
+            + self._hp_str(pokemon.hp_pct)
+            + [pokemon.item, pokemon.ability, pokemon.status, pokemon.effect, "<opponent_moveset>"]
+        )
+        for move in consistent_move_order(pokemon.moves):
+            out += self._get_move_string_features(move, active=False)
+        return out
+
+    def _get_opponent_bench_pad_string(self) -> list[str]:
+        """Pad an empty opponent bench slot with <blank> tokens."""
+        return ["<blank>"] * 14  # name(1) + hp(4) + item(1) + ability(1) + status(1) + effect(1) + <opponent_moveset>(1) + 4moves(4)
+
+    def _get_fainted_string_features(self, pokemon: UniversalPokemon) -> list[str]:
+        """String features for a player fainted Pokémon (same format as bench)."""
+        return self._get_pokemon_string_features(pokemon, active=False)
+
+    def _get_fainted_pad_string(self) -> list[str]:
+        """Pad an empty fainted slot."""
+        return ["<blank>"] * 12  # name(1) + hp(4) + item(1) + ability(1) + <moveset>(1) + 4moves(4)
+
+    def _get_opponent_fainted_string_features(self, pokemon: UniversalPokemon) -> list[str]:
+        """String features for an opponent fainted Pokémon (same format as opp bench)."""
+        return self._get_opponent_bench_string_features(pokemon)
+
+    def _get_opponent_fainted_pad_string(self) -> list[str]:
+        """Pad an empty opponent fainted slot."""
+        return ["<blank>"] * 14  # name(1) + hp(4) + item(1) + ability(1) + status(1) + effect(1) + <opponent_moveset>(1) + 4moves(4)
+
+    def _get_pokemon_pad_string(self, active: bool) -> list[str]:
+        blanks = 7 + (4 if active else 5)  # name(1)+hp(4)+item(1)+ability(1) + (types+effect+status or moveset+4moves)
+        return ["<blank>"] * blanks
+
+    def _get_pokemon_numerical_features(
+        self, pokemon: UniversalPokemon, active: bool
+    ) -> list[float]:
+        out = [pokemon.hp_pct]
+        if active:
+            stat = lambda s: getattr(pokemon, f"base_{s}") / 255.0
+            boost = lambda b: getattr(pokemon, f"{b}_boost") / 6.0
+            out.append(pokemon.lvl / 100.0)
+            out += map(stat, ["atk", "spa", "def", "spd", "spe", "hp"])
+            out += map(
+                boost, ["atk", "spa", "def", "spd", "spe", "accuracy", "evasion"]
+            )
+        return out
+
+    def _get_pokemon_pad_numerical(self, active: bool) -> list[float]:
+        blanks = 1 + (14 if active else 0)
+        return [-2.0] * blanks
+
+    def state_to_obs(self, state: UniversalState) -> dict[str, np.ndarray]:
+        player_str = ["<player>"] + self._get_pokemon_string_features(
+            state.player_active_pokemon, active=True
+        )
+        numerical = [
+            state.opponents_remaining / 6.0
+        ] + self._get_pokemon_numerical_features(
+            state.player_active_pokemon, active=True
+        )
+
+        # consistent move order
+        move_str, move_num = [], -1
+        for move_num, move in enumerate(
+            consistent_move_order(state.player_active_pokemon.moves)
+        ):
+            move_str += ["<move>"] + self._get_move_string_features(move, active=True)
+            numerical += self._get_move_numerical_features(move, active=True)
+
+        while move_num < 3:
+            move_str += ["<move>"] + self._get_move_pad_string(active=True)
+            numerical += self._get_move_pad_numerical(active=True)
+            move_num += 1
+
+        # consistent switch order — no text padding (fainted Pokémon are in <fainted> blocks)
+        switch_str = []
+        switch_count = 0
+        for switch in consistent_pokemon_order(state.available_switches):
+            switch_str += ["<switch>"] + self._get_pokemon_string_features(
+                switch, active=False
+            )
+            numerical += self._get_pokemon_numerical_features(switch, active=False)
+            switch_count += 1
+        # numerical padding only (keep numbers shape fixed)
+        while switch_count < 5:
+            numerical += self._get_pokemon_pad_numerical(active=False)
+            switch_count += 1
+
+        force_switch = "<forcedswitch>" if state.forced_switch else "<anychoice>"
+        opponent_str = ["<opponent>"] + self._get_opponent_pokemon_string_features(
+            state.opponent_active_pokemon, active=True
+        )
+        numerical += self._get_pokemon_numerical_features(
+            state.opponent_active_pokemon, active=True
+        )
+
+        # opponent bench — no text padding (fainted opponents are in <opponent_fainted> blocks)
+        opponent_bench_str = []
+        opp_bench_count = 0
+        sorted_opponent_bench = consistent_pokemon_order(state.opponent_bench)
+        for bench_poke in sorted_opponent_bench:
+            opponent_bench_str += ["<opponent_switch>"] + self._get_opponent_bench_string_features(
+                bench_poke
+            )
+            numerical += self._get_pokemon_numerical_features(bench_poke, active=False)
+            opp_bench_count += 1
+        # numerical padding only (keep numbers shape fixed)
+        while opp_bench_count < 5:
+            numerical += self._get_pokemon_pad_numerical(active=False)
+            opp_bench_count += 1
+
+        # player fainted pokemon — only emit actual fainted Pokémon, no <blank> fillers
+        fainted_str = []
+        fainted_count = 0
+        for fainted_poke in consistent_pokemon_order(state.fainted_pokemon):
+            fainted_str += ["<fainted>"] + self._get_fainted_string_features(fainted_poke)
+            numerical += self._get_pokemon_numerical_features(fainted_poke, active=False)
+            fainted_count += 1
+        # numerical padding only (keep numbers shape fixed for gym space)
+        while fainted_count < self.NUM_FAINTED_SLOTS:
+            numerical += self._get_pokemon_pad_numerical(active=False)
+            fainted_count += 1
+
+        # opponent fainted pokemon — only emit actual fainted Pokémon, no <blank> fillers
+        opp_fainted_str = []
+        opp_fainted_count = 0
+        for fainted_poke in consistent_pokemon_order(state.opponent_fainted):
+            opp_fainted_str += ["<opponent_fainted>"] + self._get_opponent_fainted_string_features(fainted_poke)
+            numerical += self._get_pokemon_numerical_features(fainted_poke, active=False)
+            opp_fainted_count += 1
+        # numerical padding only (keep numbers shape fixed for gym space)
+        while opp_fainted_count < self.NUM_OPPONENT_FAINTED_SLOTS:
+            numerical += self._get_pokemon_pad_numerical(active=False)
+            opp_fainted_count += 1
+
+        global_str = ["<conditions>"] + [
+            state.weather,
+            state.player_conditions,
+            state.opponent_conditions,
+        ]
+        prev_move_str = (
+            ["<player_prev>"]
+            + self._get_move_string_features(state.player_prev_move, active=False)
+            + ["<opp_prev>"]
+            + self._get_move_string_features(state.opponent_prev_move, active=False)
+        )
+        # terminal indicator: signals forfeit/disconnect/timer wins where
+        # the losing team may still have non-fainted Pokémon on the field.
+        if state.battle_won:
+            terminal_token = "<won>"
+        elif state.battle_lost:
+            terminal_token = "<lost>"
+        else:
+            terminal_token = "<ongoing>"
+
+        full_text_list = (
+            [f"<{state.agent_format}>", force_switch]
+            + player_str
+            + move_str
+            + switch_str
+            + opponent_str
+            + opponent_bench_str
+            + fainted_str
+            + opp_fainted_str
+            + global_str
+            + prev_move_str
+            + [terminal_token]
+        )
+        text = " ".join(full_text_list)
+        text = np.array(text, dtype=np.str_)
+        numbers = np.array(numerical, dtype=np.float32)
+        return {"text": text, "numbers": numbers}

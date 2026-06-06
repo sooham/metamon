@@ -133,7 +133,7 @@ if __name__ == "__main__":
     import os
     from multiprocessing import Pool
     from collections import defaultdict
-    import json
+    import orjson
 
     parser = argparse.ArgumentParser(description="Generate replay stats")
     parser.add_argument(
@@ -181,8 +181,8 @@ if __name__ == "__main__":
     processed_sets = dict(results)
     output_dir = os.path.join(os.path.dirname(__file__), "replay_stats")
     os.makedirs(output_dir, exist_ok=True)
-    with open(os.path.join(output_dir, f"{args.format}_pokemon.json"), "w") as f:
-        json.dump(processed_sets, f, indent=2)
+    with open(os.path.join(output_dir, f"{args.format}_pokemon.json"), "wb") as f:
+        f.write(orjson.dumps(processed_sets, option=orjson.OPT_INDENT_2))
 
     weights = find_team_consistency_weights(team_rosters, num_workers=args.workers)
     results = {
@@ -194,5 +194,5 @@ if __name__ == "__main__":
             for roster, weight in sorted(weights, key=lambda x: x[1], reverse=True)
         ],
     }
-    with open(os.path.join(output_dir, f"{args.format}_team_rosters.json"), "w") as f:
-        json.dump(results, f, indent=2)
+    with open(os.path.join(output_dir, f"{args.format}_team_rosters.json"), "wb") as f:
+        f.write(orjson.dumps(results, option=orjson.OPT_INDENT_2))

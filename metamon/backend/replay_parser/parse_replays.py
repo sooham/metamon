@@ -1,4 +1,5 @@
 import multiprocessing
+import orjson
 import json
 import os
 import warnings
@@ -15,6 +16,7 @@ from metamon.backend.replay_parser.exceptions import (
     BackwardException,
     ForwardException,
     InvalidActionIndex,
+    WarningFlags,
 )
 from metamon.backend.replay_parser.replay_state import (
     Action,
@@ -34,6 +36,8 @@ class ReplayParser:
         verbose: bool = False,
         sleep_on_handled_exception: int = 0.1,
         team_predictor: Optional[TeamPredictor] = None,
+        compress: bool = True,
+        pretty: bool = False,
     ):
         self.output_dir = replay_output_dir
         self.team_output_dir = team_output_dir
@@ -41,6 +45,8 @@ class ReplayParser:
         self.sleep_on_handled_exception = sleep_on_handled_exception
         self.error_history = {"Forward": {}, "Backward": {}}
         self.team_predictor = team_predictor or NaiveUsagePredictor()
+        self.compress = compress
+        self.pretty = pretty
 
     def summarize_errors(self):
         return {
@@ -93,6 +99,7 @@ class ReplayParser:
                     active_pokemon=active_mon,
                     opponent_active_pokemon=opponent_mon,
                     opponent_team=opponent_team,
+                    player_team=player_team,
                     available_switches=switches,
                     player_prev_move=active_mon.last_used_move,
                     opponent_prev_move=opponent_mon.last_used_move,
@@ -114,7 +121,8 @@ class ReplayParser:
         return states, actions
 
     def state_action_to_obs_action_reward(
-        self, states: list[ReplayState], actions: list[Action]
+        self, states: list[ReplayState], actions: list[Action],
+        allow_missing: bool = False,
     ):
         universal_states = []
         action_idxs = []
@@ -127,6 +135,10 @@ class ReplayParser:
                 state=state, action=action
             )
             if universal_action is None:
+                if allow_missing:
+                    action_idxs.append(-1)
+                    universal_states.append(universal_state)
+                    continue
                 raise InvalidActionIndex(state, action)
             if self.verbose:
                 print(
@@ -139,10 +151,12 @@ class ReplayParser:
 
     def povreplay_to_seq(self, replay: backward.POVReplay):
         states, actions = self.povreplay_to_state_action(replay)
+        has_zoroark = WarningFlags.ZOROARK in replay.check_warnings
         universal_states, action_idxs = self.state_action_to_obs_action_reward(
-            states, actions
+            states, actions, allow_missing=has_zoroark,
         )
-        checks.check_action_idxs(universal_states, actions, action_idxs, gen=replay.gen)
+        if not has_zoroark:
+            checks.check_action_idxs(universal_states, actions, action_idxs, gen=replay.gen)
         return universal_states, action_idxs
 
     def save_to_disk(
@@ -162,8 +176,16 @@ class ReplayParser:
                 "states": [state.to_dict() for state in universal_states],
                 "actions": action_idxs,
             }
-            with lz4.frame.open(os.path.join(path, f"{filename}.json.lz4"), "wb") as f:
-                f.write(json.dumps(output_json).encode("utf-8"))
+            if self.pretty:
+                payload = json.dumps(output_json, indent=2, ensure_ascii=False).encode("utf-8")
+            else:
+                payload = orjson.dumps(output_json)
+            if self.compress:
+                with lz4.frame.open(os.path.join(path, f"{filename}.json.lz4"), "wb") as f:
+                    f.write(payload)
+            else:
+                with open(os.path.join(path, f"{filename}.json"), "wb") as f:
+                    f.write(payload)
 
         if self.team_output_dir is not None:
             path = self.team_output_dir
@@ -196,11 +218,15 @@ class ReplayParser:
 
     def parse_replay(self, path: str):
         # read replay data from disk
+        gameid = os.path.basename(path).replace(".json", "")
         with open(path, "r") as f:
             try:
-                data = json.load(f)
-            except json.decoder.JSONDecodeError as e:
-                warnings.warn(f"Skipping replay {path} due to known exception: {e}.")
+                data = orjson.loads(f.read())
+            except orjson.JSONDecodeError as e:
+                warnings.warn(
+                    f"Skipping replay {gameid} "
+                    f"({path}) due to known exception: {e}."
+                )
                 return
 
         # prepare data
@@ -238,7 +264,7 @@ class ReplayParser:
 
         except (ForwardException, BackwardException) as e:
             self.add_exception_to_history(e, path)
-            warning_str = f"{replay.gameid}:\n\t{e}"
+            warning_str = f"{replay.gameid} ({path}):\n\t{e}"
             for check_warning in replay.check_warnings:
                 warning_str += f"\n\t{termcolor.colored(f'Note: this replay has a {check_warning.value} warning flag, which may explain the above message.', 'yellow')}"
             warnings.warn(warning_str)

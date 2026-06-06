@@ -1,6 +1,6 @@
 import argparse
 import atexit
-import json
+import orjson
 import os
 from dataclasses import dataclass
 from multiprocessing import Pool, cpu_count
@@ -258,7 +258,7 @@ class PersistentShowdownValidator:
         if self._proc.stdin is None or self._proc.stdout is None:
             return None
         try:
-            self._proc.stdin.write(json.dumps(payload) + "\n")
+            self._proc.stdin.write(orjson.dumps(payload).decode("utf-8") + "\n")
             self._proc.stdin.flush()
         except BrokenPipeError:
             return None
@@ -266,8 +266,8 @@ class PersistentShowdownValidator:
         if not line:
             return None
         try:
-            return json.loads(line)
-        except json.JSONDecodeError:
+            return orjson.loads(line)
+        except orjson.JSONDecodeError:
             return None
 
     def _ping(self) -> bool:

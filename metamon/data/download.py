@@ -1,8 +1,9 @@
 import os
-import json
+import orjson
 import datetime
 import shutil
 import tarfile
+import time
 from collections import defaultdict
 
 from huggingface_hub import hf_hub_download
@@ -94,20 +95,20 @@ def _update_version_reference(key: str, name: str, version: str):
     version_reference = defaultdict(dict)
     if os.path.exists(VERSION_REFERENCE_PATH):
         with open(VERSION_REFERENCE_PATH, "r") as f:
-            existing_version_reference = json.load(f)
+            existing_version_reference = orjson.loads(f.read())
         version_reference.update(existing_version_reference)
 
     version_reference[key][
         name
     ] = f"version {version}, downloaded {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    with open(VERSION_REFERENCE_PATH, "w") as f:
-        json.dump(dict(version_reference), f)
+    with open(VERSION_REFERENCE_PATH, "wb") as f:
+        f.write(orjson.dumps(dict(version_reference)))
 
 
 def get_active_dataset_versions() -> dict:
     """Get the current version of a dataset."""
     with open(VERSION_REFERENCE_PATH, "r") as f:
-        version_reference = json.load(f)
+        version_reference = orjson.loads(f.read())
     return version_reference
 
 
@@ -392,24 +393,46 @@ def download_usage_stats(
     checks_extract_path = os.path.join(checks_path, f"gen{gen}")
 
     def _download_and_extract(tar_path, extract_path):
+        # Already extracted — nothing to do.
         if os.path.exists(extract_path):
             if not force_download:
                 return extract_path
             print(f"Clearing existing dataset at {extract_path}...")
             shutil.rmtree(extract_path)
-        repo_folder = os.path.basename(os.path.dirname(tar_path))
-        hf_hub_download(
-            cache_dir=None,
-            repo_id="jakegrigsby/metamon-usage-stats",
-            filename=f"{repo_folder}/{os.path.basename(tar_path)}",
-            local_dir=usage_stats_dir,
-            revision=version,
-            repo_type="dataset",
-        )
-        with tarfile.open(tar_path) as tar:
-            print(f"Extracting {tar_path}...")
-            tar.extractall(path=os.path.dirname(extract_path))
-        os.remove(tar_path)
+        # Acquire a per-file lock so only one process downloads + extracts.
+        lock_path = tar_path + ".lock"
+        os.makedirs(os.path.dirname(tar_path), exist_ok=True)
+        while True:
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                break
+            except FileExistsError:
+                # Another process is downloading; wait and re-check.
+                time.sleep(0.5)
+                if os.path.exists(extract_path):
+                    return extract_path
+        try:
+            # Re-check: another process may have finished while we waited.
+            if os.path.exists(extract_path):
+                return extract_path
+            repo_folder = os.path.basename(os.path.dirname(tar_path))
+            hf_hub_download(
+                cache_dir=None,
+                repo_id="jakegrigsby/metamon-usage-stats",
+                filename=f"{repo_folder}/{os.path.basename(tar_path)}",
+                local_dir=usage_stats_dir,
+                revision=version,
+                repo_type="dataset",
+            )
+            with tarfile.open(tar_path) as tar:
+                print(f"Extracting {tar_path}...")
+                tar.extractall(path=os.path.dirname(extract_path))
+            if os.path.exists(tar_path):
+                os.remove(tar_path)
+        finally:
+            os.close(fd)
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
 
     _download_and_extract(movesets_tar_path, movesets_extract_path)
     _download_and_extract(checks_tar_path, checks_extract_path)

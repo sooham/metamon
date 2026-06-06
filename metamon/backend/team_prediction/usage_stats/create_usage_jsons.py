@@ -1,5 +1,5 @@
 import os
-import json
+import orjson
 import argparse
 from collections import defaultdict
 from tqdm import tqdm
@@ -53,8 +53,8 @@ def main(args):
                                 f"{date}.json",
                             )
                             os.makedirs(os.path.dirname(path), exist_ok=True)
-                            with open(path, "w") as f:
-                                json.dump(stat.movesets, f)
+                            with open(path, "wb") as f:
+                                f.write(orjson.dumps(stat.movesets))
 
                             check_cheatsheet = {
                                 mon: stat.movesets[mon]["checks"]
@@ -69,8 +69,8 @@ def main(args):
                                 f"{date}.json",
                             )
                             os.makedirs(os.path.dirname(path), exist_ok=True)
-                            with open(path, "w") as f:
-                                json.dump(check_cheatsheet, f)
+                            with open(path, "wb") as f:
+                                f.write(orjson.dumps(check_cheatsheet))
 
                             valid_movesets_by_rank[rank].append(stat.movesets)
                         pbar.update(1)
@@ -86,8 +86,8 @@ def main(args):
                             f"{date}.json",
                         )
                         os.makedirs(os.path.dirname(path), exist_ok=True)
-                        with open(path, "w") as f:
-                            json.dump(inclusive_movesets, f)
+                        with open(path, "wb") as f:
+                            f.write(orjson.dumps(inclusive_movesets))
 
 
 if __name__ == "__main__":

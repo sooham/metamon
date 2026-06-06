@@ -99,6 +99,16 @@ if __name__ == "__main__":
         default=None,
         help="Directory for output .team files. `None` runs w/o saving to disk. Data will be saved to {--team_output_dir}/gen{gen}{format}_teams",
     )
+    parser.add_argument(
+        "--no-compress",
+        action="store_true",
+        help="Save parsed replays as plain JSON instead of lz4-compressed.",
+    )
+    parser.add_argument(
+        "--pretty",
+        action="store_true",
+        help="Pretty-print output JSON with indentation (larger files).",
+    )
     args = parser.parse_args()
 
     if args.raw_replay_dir is None:
@@ -131,6 +141,8 @@ if __name__ == "__main__":
         replay_output_dir=output_dir,
         team_output_dir=team_output_dir,
         verbose=args.verbose,
+        compress=not args.no_compress,
+        pretty=args.pretty,
         team_predictor=ALL_PREDICTORS[args.team_predictor](
             replay_stats_dir=args.replay_stats_dir
         ),

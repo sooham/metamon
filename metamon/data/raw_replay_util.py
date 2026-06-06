@@ -3,7 +3,7 @@ Pull Pokémon Showdown replays from HuggingFace dataset and convert them back to
 """
 
 import os
-import json
+import orjson
 import shutil
 import re
 import argparse
@@ -26,8 +26,8 @@ def write_replay_to_disk(
     output_path = Path(output_dir) / f"gen{gen_num}" / tier
     os.makedirs(output_path, exist_ok=True)
     file_path = str(output_path / replay_id) + ".json"
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(replay_data, f, indent=2)
+    with open(file_path, "wb") as f:
+        f.write(orjson.dumps(replay_data, option=orjson.OPT_INDENT_2))
     return True
 
 

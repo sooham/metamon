@@ -1,6 +1,6 @@
 import os
 import re
-import json
+import orjson
 import datetime
 import functools
 import warnings
@@ -587,14 +587,15 @@ class SmogonStat:
         return self._usage
 
 
-def load_between_dates(
+@functools.lru_cache(maxsize=128)
+def _cached_load_between_dates(
     dir_path: str,
     start_year: int,
     start_month: int,
     end_year: int,
     end_month: int,
-    warn_if_empty: bool = True,
 ) -> dict:
+    """Cached version of load_between_dates. Returns merged movesets dict."""
     start_date = datetime.date(start_year, start_month, 1)
     end_date = datetime.date(end_year, end_month, 1)
 
@@ -617,7 +618,7 @@ def load_between_dates(
         if not start_date <= date <= end_date:
             continue
         with open(os.path.join(dir_path, json_file), "r") as file:
-            data = json.load(file)
+            data = orjson.loads(file.read())
         selected_data.append(data)
     if not selected_data and warn_if_empty:
         warnings.warn(
@@ -627,6 +628,30 @@ def load_between_dates(
             )
         )
     return merge_movesets(selected_data)
+
+
+def load_between_dates(
+    dir_path: str,
+    start_year: int,
+    start_month: int,
+    end_year: int,
+    end_month: int,
+    warn_if_empty: bool = True,
+) -> dict:
+    """Public wrapper with warning support. Delegates to cached implementation."""
+    result = _cached_load_between_dates(
+        dir_path, start_year, start_month, end_year, end_month
+    )
+    if not result and warn_if_empty:
+        start_date = datetime.date(start_year, start_month, 1)
+        end_date = datetime.date(end_year, end_month, 1)
+        warnings.warn(
+            colored(
+                f"No Showdown usage stats found in {dir_path} between {start_date} and {end_date}",
+                "red",
+            )
+        )
+    return result
 
 
 class PreloadedSmogonUsageStats(SmogonStat):

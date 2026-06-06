@@ -1,4 +1,4 @@
-import json
+import orjson
 import os
 import shutil
 import datetime
@@ -135,7 +135,7 @@ def filter_elite_sets(
         "union_count": len(selected_files),
         "overwrite": overwrite,
     }
-    with open(output_dir / "elite_filter_meta.json", "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=2)
+    with open(output_dir / "elite_filter_meta.json", "wb") as f:
+        f.write(orjson.dumps(metadata, option=orjson.OPT_INDENT_2))
 
     return metadata

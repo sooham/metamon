@@ -123,13 +123,22 @@ class Move(PEMove):
         # we'll go from the name parsed from the replay --> dex id --> dex json's official move name
         lookup_name = move_name(name)
         self.lookup_name = lookup_name
-        try:
-            super().__init__(move_id=self.lookup_name, gen=gen)
-            self.charge_move = bool(self.entry.get("flags", {}).get("charge", False))
-            self.name = self.entry.get("name", name)
-        except:
+        # Some replays contain moves from higher generations (custom challenges,
+        # metronome calls, etc.).  Try the current gen first, then fall back to
+        # progressively higher gens — same strategy as Pokemon._lookup_pokedex_info.
+        found_gen = None
+        for fallback_gen in range(gen, 10):
+            try:
+                super().__init__(move_id=self.lookup_name, gen=fallback_gen)
+                found_gen = fallback_gen
+                break
+            except Exception:
+                continue
+        if found_gen is None:
             raise MovedexMissingEntry(name, self.lookup_name)
         self.gen_ = gen
+        self.charge_move = bool(self.entry.get("flags", {}).get("charge", False))
+        self.name = self.entry.get("name", name)
         self.pp = self.current_pp  # split from poke-env PP counter
         self.maximum_pp = self.pp
 
@@ -139,11 +148,25 @@ class Move(PEMove):
 
     def __deepcopy__(self, memo):
         # poke-env stores a ton of data in each Move. it is faster
-        # to remake the object than copy it.
-        new = self.__class__(name=self.name, gen=self.gen_)
-        new.pp = self.pp
+        # to manually copy fields than to go through __init__ (which
+        # hits the dex JSON and entry properties).
+        new = Move.__new__(Move)
+        # Copy poke-env parent internals (set in poke_env.environment.Move.__init__)
+        new._id = self._id
+        new._base_power_override = self._base_power_override
+        new._gen = self._gen
+        new._gen_data = self._gen_data
         new._current_pp = self.pp
-        self.maximum_pp = self.maximum_pp
+        new._is_empty = self._is_empty
+        new._dynamaxed_move = self._dynamaxed_move
+        new._request_target = self._request_target
+        # Copy metamon-specific fields
+        new.name = self.name
+        new.lookup_name = self.lookup_name
+        new.gen_ = self.gen_
+        new.pp = self.pp
+        new.maximum_pp = self.maximum_pp
+        new.charge_move = self.charge_move
         memo[id(self)] = new
         return new
 
@@ -206,7 +229,39 @@ class Pokemon:
         self.last_target: Optional[Targeting] = None
         self.last_targeted_by: Optional[TargetedBy] = None
         self.tricking: Optional["Pokemon"] = None
+        # Tracks remaining turns for a foreign-called charge move (Fly, Dig,
+        # etc.).  2 = charge turn pending + attack turn pending, 1 = only
+        # attack turn pending, 0 = no pending charge move.
+        self._pending_foreign_charge_remaining: int = 0
         self.update_pokedex_info(name)
+
+    def __deepcopy__(self, memo):
+        # Avoid Python's default recursive __dict__ traversal.
+        # Most fields are immutable strings/ints/enums — share them.
+        # Only deep-copy the few mutable complex fields (Move dicts,
+        # boosts, effects, cross-references to other Pokemon).
+        new = Pokemon.__new__(Pokemon)
+        # Must register in memo BEFORE deep-copying any field that may
+        # contain a back-reference to self (Targeting/TargetedBy namedtuples
+        # can reference this Pokemon, causing infinite recursion otherwise).
+        memo[id(self)] = new
+        new.__dict__ = self.__dict__.copy()
+        # Replace shared mutable fields with deep copies
+        new.moves = copy.deepcopy(self.moves, memo)
+        # had_moves Move objects are effectively immutable (PP never modified).
+        # Shallow-copy the dict so adding new moves doesn't affect other turns.
+        new.had_moves = self.had_moves.copy()
+        new.boosts = copy.deepcopy(self.boosts, memo)
+        new.type = self.type.copy() if self.type is not None else None
+        new.had_type = self.had_type.copy() if self.had_type is not None else None
+        new.effects = self.effects.copy()
+        new.move_change_to_from = self.move_change_to_from.copy()
+        new.last_used_move = copy.deepcopy(self.last_used_move, memo)
+        new.last_target = copy.deepcopy(self.last_target, memo)
+        new.last_targeted_by = copy.deepcopy(self.last_targeted_by, memo)
+        new.tricking = copy.deepcopy(self.tricking, memo)
+        new.transformed_into = copy.deepcopy(self.transformed_into, memo)
+        return new
 
     def __eq__(self, other):
         # the unique id is what ultimately matters. the showdown messages
@@ -283,6 +338,7 @@ class Pokemon:
         self.boosts = Boosts()
         self.transformed_into = None
         self.pending_foreign_move = None
+        self._pending_foreign_charge_remaining = 0
         self.moves = copy.deepcopy(self.had_moves)
         self.active_ability = self.had_ability
         self.move_change_to_from = {}
@@ -307,6 +363,7 @@ class Pokemon:
         fresh.max_hp = 100
         fresh.transformed_into = None
         fresh.pending_foreign_move = None
+        fresh._pending_foreign_charge_remaining = 0
         fresh.active_ability = fresh.had_ability
         fresh.active_item = fresh.had_item
         fresh.moves = copy.deepcopy(fresh.had_moves)
@@ -407,19 +464,18 @@ class Pokemon:
         if move.name not in self.moves:
             return
 
-        if self.transformed_into is None and move.name in self.had_moves:
-            # subtract pp from had_moves (the moves we brought to the battle)
-            curr_pp = self.had_moves[move.name].pp
+        def _subtract_pp(move_obj, used):
+            curr = move_obj.pp
             # you can always use the move 1 more time when curr_pp == 1, setting pp = 0
-            self.had_moves[move.name].set_pp(
-                curr_pp - (pp_used if curr_pp > 1 else min(pp_used, 1))
-            )
+            new_pp = curr - (used if curr > 1 else min(used, 1))
+            # PP tracking is approximate (no PP Up data, Mimic gives partial PP).
+            # Clamp to 0 instead of going negative.
+            move_obj.set_pp(max(0, new_pp))
 
-        # always subtract pp from current movset
-        curr_pp = self.moves[move.name].pp
-        self.moves[move.name].set_pp(
-            curr_pp - (pp_used if curr_pp > 1 else min(pp_used, 1))
-        )
+        # PP is tracked only in `moves`. `had_moves` keeps the original max PP
+        # so that its Move objects are effectively immutable and can be shared
+        # across turns without deep-copying.
+        _subtract_pp(self.moves[move.name], pp_used)
 
     def backfill_info(self, future_mon):
         """
@@ -458,10 +514,28 @@ class Pokemon:
 
         for move_name, future_move in future_mon.had_moves.items():
             if move_name not in self.had_moves:
+                if len(self.had_moves) >= 4:
+                    # Extra moves can appear due to Zoroark's Illusion or
+                    # Transform edge cases attributing moves to the wrong
+                    # Pokemon.  Cap at 4 rather than failing.
+                    continue
                 _backup_move(future_move, self.had_moves)
 
         if len(self.had_moves.keys()) > 4:
-            raise TooManyMoves(self)
+            # Zoroark's Illusion or Transform edge cases can cause
+            # forward-fill to attribute extra moves to the wrong Pokemon.
+            # The forward check now tolerates this; the backward pass
+            # should not crash on it either.
+            import warnings
+            warnings.warn(
+                f"{self.name} backfill produced {len(self.had_moves)} had_moves "
+                f"(capped at 4). Extra moves: "
+                f"{set(self.had_moves.keys()) - set(list(self.had_moves.keys())[:4])}"
+            )
+            # Keep only the first 4 moves
+            keep = list(self.had_moves.keys())[:4]
+            self.had_moves = {k: self.had_moves[k] for k in keep}
+            self.moves = {k: self.moves[k] for k in keep if k in self.moves}
 
         move_change_from_to = {v: k for k, v in self.move_change_to_from.items()}
         if self.transformed_into is None:
@@ -940,6 +1014,10 @@ class ParsedReplay:
     rules: List[str] = field(default_factory=list)
     winner: Optional[Winner] = None
     check_warnings: Set[WarningFlags] = field(default_factory=set)
+    # Packed team strings from |showteam| messages (side_id → packed).
+    # Only applied during backward fill to avoid leaking full-world-state
+    # information into forward-fill training states.
+    showteam_data: Optional[dict] = None
 
     def __getitem__(self, i):
         return self.turnlist[i]
@@ -1005,6 +1083,7 @@ class ReplayState:
     active_pokemon: Pokemon
     opponent_active_pokemon: Pokemon
     available_switches: List[Pokemon]
+    player_team: List[Pokemon]  # full player party (6 slots, may have None for unrevealed)
     player_prev_move: Move
     opponent_prev_move: Move
     opponent_team: List[Pokemon]

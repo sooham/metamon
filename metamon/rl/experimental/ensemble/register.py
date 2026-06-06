@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import orjson
 from pathlib import Path
 from typing import Type
 
@@ -15,7 +15,7 @@ _FAMILY_BASES: dict[str, Type] = {}
 
 
 def _load_presets() -> dict[str, list[EnsembleMemberSpec]]:
-    raw_presets = json.loads(_PRESETS_PATH.read_text())
+    raw_presets = orjson.loads(_PRESETS_PATH.read_bytes())
     return {
         name: [
             EnsembleMemberSpec(

@@ -1,4 +1,4 @@
-import json
+import orjson
 import os
 import warnings
 from functools import partial
@@ -189,4 +189,4 @@ if __name__ == "__main__":
         # terminates after n_challenges
         episodes=args.n_challenges,
     )
-    print(json.dumps(results, indent=4, sort_keys=True))
+    print(orjson.dumps(results, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS).decode("utf-8"))
