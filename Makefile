@@ -233,6 +233,9 @@ clean:
 show-tokenizer:
 	cursor $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
 
+clean-tokenizer:
+	rm -rf $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
+
 sample-inspect-wm-state:
 	make inspect-wm-state FILE=../../poke-datasets/parsed/gen1ou/smogtours-gen1ou-749168_Unrated_encore90411_vs_mindplate96156_02-23-2024_WIN.json FORMAT=gen1ou FLAGS="--show-all"
 
