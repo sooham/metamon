@@ -1,6 +1,6 @@
 import os
 import re
-import json
+import orjson
 from enum import Enum
 
 
@@ -91,7 +91,7 @@ def ts_to_dict(ts_file):
     # 11) Strip out newlines and tabs
     content = content.replace("\n", "").replace("\t", "")
     # 11) Parse the cleaned JSON
-    data = json.loads(content)
+    data = orjson.loads(content)
     return data
 
 

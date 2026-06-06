@@ -5,7 +5,7 @@ Perceiver-style cross attention architecture.
 """
 
 import os
-import json
+import orjson
 import random
 import lz4.frame
 from typing import Optional, List, Tuple
@@ -126,9 +126,9 @@ class TeamPreviewDataset(Dataset):
     def _load_json(self, filename: str) -> dict:
         if filename.endswith(".lz4"):
             with lz4.frame.open(filename, "rb") as f:
-                return json.load(f)
+                return orjson.loads(f.read())
         with open(filename, "r") as f:
-            return json.load(f)
+            return orjson.loads(f.read())
 
     def __getitem__(
         self, idx

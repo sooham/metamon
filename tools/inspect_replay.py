@@ -15,7 +15,7 @@ and displays them side by side, stepping turn by turn.
 
 import os
 import sys
-import json
+import orjson
 import re
 import argparse
 from datetime import datetime
@@ -97,7 +97,7 @@ def _find_parsed_replays(gameid: str) -> Dict[str, str]:
 def _load_parsed(path: str) -> dict:
     """Load a .json.lz4 parsed replay into a plain dict."""
     with lz4.frame.open(path, "rb") as fh:
-        return json.loads(fh.read().decode("utf-8"))
+        return orjson.loads(fh.read())
 
 
 def _pokemon_summary(p: dict) -> str:
@@ -266,7 +266,7 @@ Examples:
     raw_turns = []
     if raw_path:
         with open(raw_path) as f:
-            raw_data = json.load(f)
+            raw_data = orjson.loads(f.read())
         # Parse log into turn groups
         raw_turns = _parse_raw_turns(raw_data["log"])
 

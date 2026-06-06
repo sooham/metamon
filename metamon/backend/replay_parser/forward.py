@@ -152,6 +152,7 @@ class SimProtocol:
         "Uproar",
         "Petal Dance",
         "Ice Ball",
+        "Rage",  # gen1 locking move (not present in later gens)
     }
 
     # partial trapping moves that cause the gen 1 PP rollover to 63
@@ -167,6 +168,11 @@ class SimProtocol:
 
     ABILITY_STEALS_ABILITY = {"Trace"}
 
+    # Abilities that overwrite another Pokemon's ability on contact
+    # (Lingering Aroma, Mummy, Wandering Spirit).  These behave like
+    # Trace for parsing purposes: both Pokemon reveal the ability.
+    ABILITY_OVERWRITES_ABILITY = {"Lingering Aroma", "Mummy", "Wandering Spirit"}
+
     # heal messages associated with key ability should indicate that
     # the value move failed to force a switch
     ABILITY_CAUSES_MOVE_TO_FAIL = {
@@ -174,6 +180,7 @@ class SimProtocol:
         "Dry Skin": "Flip Turn",
         "Lightning Rod": "Volt Switch",
         "Volt Absorb": "Volt Switch",
+        "Motor Drive": "Volt Switch",
         "Storm Drain": "Flip Turn",
     }
 
@@ -257,14 +264,17 @@ class SimProtocol:
         """
         player, size = args
         size = int(size)
-        assert len(self.curr_turn.pokemon_1) == 6
-        assert len(self.curr_turn.pokemon_2) == 6
         if player == "p1":
             team = self.curr_turn.pokemon_1
         elif player == "p2":
             team = self.curr_turn.pokemon_2
+        else:
+            return
+        # Adjust the team list to match the declared size.
         while len(team) > size and None in team:
             team.remove(None)
+        while len(team) < size:
+            team.append(None)
         if size != 6:
             warnings.warn(
                 f"Playing with {size} pokemon on a team (expected 6). "
@@ -323,6 +333,37 @@ class SimProtocol:
                         if player_idx == 0
                         else self.curr_turn.active_pokemon_2[poke_idx]
                     )
+                    # Don't reveal a move that is a continuation of a foreign-called
+                    # multi-turn move (Metronome → Thrash, etc.).  _parse_move sets
+                    # pending_foreign_move on the first call and suppresses follow-ups,
+                    # but _parse_choice runs earlier on the next turn and would
+                    # otherwise leak the called move into had_moves.
+                    if (
+                        user_pokemon is not None
+                        and user_pokemon.pending_foreign_move is not None
+                        and user_pokemon.pending_foreign_move
+                        == move_name(choice_args)
+                    ):
+                        continue
+                    # If the active Pokémon already has a full moveset and this
+                    # move isn't in it, the choice is likely a pre-emptive selection
+                    # for an incoming replacement (e.g., the active mon is about to
+                    # faint and the player queued a move for the next mon).
+                    if user_pokemon is not None:
+                        if (
+                            user_pokemon.transformed_into is not None
+                            and move_name(choice_args)
+                            not in {move_name(m) for m in user_pokemon.moves}
+                        ):
+                            # Transformed Pokémon can only use copied moves.
+                            continue
+                        if (
+                            len(user_pokemon.moves) >= 4
+                            and move_name(choice_args)
+                            not in {move_name(m) for m in user_pokemon.moves}
+                        ):
+                            # Already has 4 moves; this choice is for a replacement.
+                            continue
                     move = Move(name=choice_args, gen=self.replay.gen)
                     choice = Action(
                         name=move.name,
@@ -346,9 +387,11 @@ class SimProtocol:
         assert isinstance(poke_list, list)
         if None not in poke_list:
             warnings.warn(
-                f"Tried to add a pokemon to a full team of {len(poke_list)}. "
-                f"This may indicate a parsing error."
+                f"[{self.replay.gameid}] Tried to add a pokemon to a full team "
+                f"of {len(poke_list)}. This may indicate a parsing error. "
+                f"Appending a new slot."
             )
+            poke_list.append(None)
         poke_name, lvl = Pokemon.identify_from_details(args[1], gen=gen)
         insert_at = poke_list.index(None)
         new_pokemon = Pokemon(name=poke_name, lvl=lvl, gen=gen)
@@ -475,7 +518,17 @@ class SimProtocol:
             notarget = any("[notarget]" in d for d in args)
             protected = target_pokemon.protected if target_pokemon else False
             missed = any("[miss]" in d for d in args)
-            if not notarget and not protected and not missed:
+            # Abilities like Motor Drive / Volt Absorb cancel Volt Switch
+            # without emitting |-immune| in some replays.
+            blocked_by_ability = (
+                target_pokemon is not None
+                and target_pokemon.active_ability is not None
+                and SimProtocol.ABILITY_CAUSES_MOVE_TO_FAIL.get(
+                    target_pokemon.active_ability
+                )
+                == move_name
+            )
+            if not notarget and not protected and not missed and not blocked_by_ability:
                 self.curr_turn.mark_forced_switch(args[0])
         elif move_name in SimProtocol.FORCES_REVIVAL:
             self.curr_turn.mark_forced_switch(args[0])
@@ -499,15 +552,25 @@ class SimProtocol:
                     probably_repeat_move = from_move.lower() == move_name.lower()
                     if from_move in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                         if override_risk and len(pokemon.had_moves) < 4:
-                            raise CalledForeignConsecutive(["move"] + args)
+                            # Sleep Talk called a multi-turn / charge move
+                            # (Outrage, Solar Beam, etc.).  We can't reliably
+                            # track PP or suppress follow-up turns, so skip
+                            # the reveal rather than failing the parse.
+                            return
                         pokemon.reveal_move(move)
                         return
                     elif from_move in SimProtocol.MOVE_OVERRIDE:
                         # foreign-calling move: suppress the called move.
-                        # for multi-turn moves, set a cross-turn flag so the
-                        # follow-up turns are also suppressed.
-                        if override_risk:
-                            pokemon.pending_foreign_move = move_name
+                        # Always set a cross-turn flag so follow-up turns
+                        # are also suppressed.  The flag is cleared when a
+                        # different move is used or when the sequence naturally
+                        # ends (no [still], not a charge move, not a rollover).
+                        pokemon.pending_foreign_move = move.lookup_name
+                        if move.charge_move:
+                            # The charge turn (this turn) has [still] which
+                            # keeps the flag alive independently.  Only the
+                            # follow-up attack turn needs the counter.
+                            pokemon._pending_foreign_charge_remaining = 1
                         return
                 elif is_ability:
                     if is_ability in SimProtocol.MOVE_CAUSED_BY_ABILITY:
@@ -539,15 +602,23 @@ class SimProtocol:
                 if not (probably_repeat_move or probably_item):
                     if ability_or_move in SimProtocol.MOVE_OVERRIDE_BUT_REVEAL_ANYWAY:
                         if override_risk and len(pokemon.had_moves) < 4:
-                            raise CalledForeignConsecutive(["move"] + args)
+                            # Sleep Talk called a multi-turn / charge move.
+                            # Skip the reveal rather than failing.
+                            return
                         pokemon.reveal_move(move)
                         return
                     elif ability_or_move in SimProtocol.MOVE_OVERRIDE:
                         # foreign-calling move: suppress the called move.
-                        # for multi-turn moves, set a cross-turn flag so the
-                        # follow-up turns are also suppressed.
-                        if override_risk:
-                            pokemon.pending_foreign_move = move_name
+                        # Always set a cross-turn flag so follow-up turns
+                        # are also suppressed.  The flag is cleared when a
+                        # different move is used or when the sequence naturally
+                        # ends (no [still], not a charge move, not a rollover).
+                        pokemon.pending_foreign_move = move.lookup_name
+                        if move.charge_move:
+                            # The charge turn (this turn) has [still] which
+                            # keeps the flag alive independently.  Only the
+                            # follow-up attack turn needs the counter.
+                            pokemon._pending_foreign_charge_remaining = 1
                         return
                 probably_ability = (
                     ability_or_move.lower() not in {"lockedmove", "pursuit"}
@@ -564,19 +635,29 @@ class SimProtocol:
         # Mirror Move -> Outrage, etc.). the charge/ramp-up turn set this flag; we
         # suppress the follow-up turns so the called move never leaks into had_moves.
         if pokemon.pending_foreign_move is not None:
-            if pokemon.pending_foreign_move == move_name:
+            if pokemon.pending_foreign_move == move.lookup_name:
                 # continuation of a foreign-called multi-turn move
-                if "[still]" not in args and move_name not in SimProtocol.GEN1_PP_ROLLOVERS:
-                    # charge move fire turn (no [still]) or last execution of a
-                    # consecutive move: the foreign-called sequence is complete
+                # Decrement charge-move counter on every continuation turn
+                # (including [still] / charge turns), not just the final one.
+                if move.charge_move and pokemon._pending_foreign_charge_remaining > 0:
+                    pokemon._pending_foreign_charge_remaining -= 1
+                # Decide whether to clear the flag or keep it for more turns
+                if ("[still]" not in args
+                        and move_name not in SimProtocol.GEN1_PP_ROLLOVERS
+                        and move_name not in SimProtocol.CONSECUTIVE_MOVES
+                        and not (move.charge_move
+                                 and pokemon._pending_foreign_charge_remaining > 0)):
+                    # No more continuations expected: sequence is complete.
                     pokemon.pending_foreign_move = None
-                # else: consecutive move ([still] present) or Gen1 partial trapping
-                # (GEN1_PP_ROLLOVERS auto-apply): keep the flag for subsequent turns
+                    pokemon._pending_foreign_charge_remaining = 0
+                # else: [still], Gen1 rollover, CONSECUTIVE_MOVES, or more
+                # charge turns remaining — keep the flag.
                 return
             else:
                 # different move used: the foreign-called sequence was interrupted
                 # (flinched, confused, etc.) or ended naturally — clear stale flag
                 pokemon.pending_foreign_move = None
+                pokemon._pending_foreign_charge_remaining = 0
                 # fall through to process this move normally
 
         # how much PP is used?
@@ -672,9 +753,6 @@ class SimProtocol:
                 if found_move in SimProtocol.RESTORES_PP:
                     for move_name, move in pokemon.moves.items():
                         move.pp = move.maximum_pp
-                        if move_name in pokemon.had_moves:
-                            had_move = pokemon.had_moves[move_name]
-                            had_move.pp = had_move.maximum_pp
                 if (
                     found_move in SimProtocol.RESTORES_STATUS
                     and pokemon.status != PEStatus.FNT
@@ -832,6 +910,13 @@ class SimProtocol:
                 self.curr_turn.get_pokemon_from_str(found_mon).reveal_ability(
                     ability
                 )  # dragapult has clear body
+            elif found_ability in SimProtocol.ABILITY_OVERWRITES_ABILITY:
+                # Lingering Aroma / Mummy / Wandering Spirit overwrote
+                # this Pokemon's ability.  Both Pokemon reveal the ability.
+                pokemon.reveal_ability(ability)
+                self.curr_turn.get_pokemon_from_str(found_mon).reveal_ability(
+                    found_ability
+                )
             else:
                 raise UnhandledFromOfAbilityLogic(["-ability"] + args)
         elif (found_item or found_mon or found_move) and found_ability:
@@ -928,8 +1013,6 @@ class SimProtocol:
             move_name = args[2]
             if move_name in pokemon.moves:
                 pokemon.moves[move_name].pp += pp_gained
-                if move_name in pokemon.had_moves:
-                    pokemon.had_moves[move_name].pp += pp_gained
         elif (
             effect == PEEffect.SKILL_SWAP
             and pokemon.last_target is not None
@@ -1247,7 +1330,10 @@ class SimProtocol:
             if p is not None and p.name == replace_with_name:
                 replace_with = p
                 break
-        if replace_with is None or not replace_with.name.startswith("Zoroark"):
+        if replace_with is None or not (
+            replace_with.name.startswith("Zoroark")
+            or replace_with.name.startswith("Zorua")
+        ):
             raise ZoroarkException
 
         # everything that has happened to `replace` since it was last switched
@@ -1267,10 +1353,35 @@ class SimProtocol:
         replace_with.current_hp = to_replace.current_hp
         replace_with.max_hp = to_replace.max_hp
         replace_with.boosts = to_replace.boosts
+        # Transfer moves, items, and abilities that were *newly discovered*
+        # during the Illusion window from the disguise to the real Zoroark.
+        # Don't blindly copy everything — the disguise may be a real Pokemon
+        # that was active earlier with its own moves (e.g. Zoroark disguised
+        # as Toxapex, but Toxapex already used Toxic / Baneful Bunker / etc.
+        # before the illusion started).
+        for move_name, move in to_replace.moves.items():
+            if move_name not in old_version.moves:
+                replace_with.reveal_move(move)
+        for move_name, move in to_replace.had_moves.items():
+            if move_name not in old_version.had_moves:
+                if move_name not in replace_with.had_moves:
+                    replace_with.had_moves[move_name] = copy.deepcopy(move)
+        if (
+            to_replace.had_item is not None
+            and to_replace.had_item != Nothing.NO_ITEM
+            and old_version.had_item is None
+            and replace_with.had_item is None
+        ):
+            replace_with.had_item = to_replace.had_item
+        if (
+            to_replace.had_ability is not None
+            and to_replace.had_ability != Nothing.NO_ABILITY
+            and old_version.had_ability is None
+            and replace_with.had_ability is None
+        ):
+            replace_with.had_ability = to_replace.had_ability
         active_pokemon[replace_slot] = replace_with
 
-        # we're going to have to go back and fix all this during the "backward" pass
-        # and it's probably not going to work anyway...
         replacement = Replacement(
             replaced=to_replace,
             replaced_with=replace_with,
@@ -1323,6 +1434,31 @@ class SimProtocol:
         |rule|RULE: DESCRIPTION
         """
         self.replay.rules.append(args[0])
+
+    def _parse_showteam(self, args: List[str]):
+        """
+        |showteam|SIDE|PACKED_TEAM
+
+        Reveals the full team (species, item, ability, all 4 moves, EVs,
+        IVs, nature, etc.) for one side via the Showdown Teams.pack() format.
+
+        IMPORTANT: Do NOT apply this data to Pokemon during forward fill.
+        Forward states are used for training and must only contain what the
+        player could observe during the battle.  Store the packed string on
+        the ParsedReplay so that backward fill can use it later for team
+        completion (where full-world-state knowledge is acceptable).
+        """
+        if len(args) < 2:
+            return
+        side_id = args[0]
+        # The packed format uses `|` internally, but clean_log() splits
+        # on `|` as the protocol delimiter.  Rejoin all remaining args.
+        packed = "|".join(args[1:])
+        if not packed:
+            return
+        if self.replay.showteam_data is None:
+            self.replay.showteam_data = {}
+        self.replay.showteam_data[side_id] = packed
 
     def _parse_block(self, args: List[str]):
         """
@@ -1381,6 +1517,8 @@ class SimProtocol:
             self._parse_tie(data)
         elif name == "rule":
             self._parse_rule(data)
+        elif name == "showteam":
+            self._parse_showteam(data)
         elif name == "poke":
             self._parse_poke(data)
         elif name == "switch" or name == "drag":

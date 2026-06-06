@@ -1,4 +1,4 @@
-import json
+import orjson
 import collections
 import functools
 from typing import Optional, Dict, Any, Callable, List
@@ -373,7 +373,7 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
                 }
                 eval_function = _get_default_eval(args, eval_kwargs)
                 results = eval_function(**eval_kwargs)
-                print(json.dumps(results, indent=4, sort_keys=True))
+                print(orjson.dumps(results, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS).decode("utf-8"))
                 all_results[battle_format].append(results)
     return all_results
 

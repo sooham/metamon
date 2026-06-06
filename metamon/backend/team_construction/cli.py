@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import json
+import orjson
 import os
 import random
 import shutil
@@ -862,11 +862,11 @@ def cmd_simulate(args: argparse.Namespace) -> None:
         "sampling_strategy": args.sampling_strategy,
         "sampling_metadata": sampling_metadata,
     }
-    with meta_path.open("r+", encoding="utf-8") as f:
-        payload = json.load(f)
+    with meta_path.open("rb+") as f:
+        payload = orjson.loads(f.read())
         payload.update(extra)
         f.seek(0)
-        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write(orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS))
         f.truncate()
 
     print(f"Simulated {len(examples)} battles -> {args.out}")
@@ -1263,8 +1263,8 @@ def cmd_equilibrium(args: argparse.Namespace) -> None:
             },
         }
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(
-            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+        args.out.write_bytes(
+            orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
         )
         print(f"Saved equilibrium artifact -> {args.out}")
 
@@ -2027,7 +2027,7 @@ def cmd_run_all(args: argparse.Namespace) -> None:
                 )
             )
             if equilibrium_path.exists():
-                eq_payload = json.loads(equilibrium_path.read_text(encoding="utf-8"))
+                eq_payload = orjson.loads(equilibrium_path.read_bytes())
                 row_mix = np.asarray(
                     eq_payload["equilibrium"]["row_mixture"], dtype=np.float64
                 )
@@ -2125,8 +2125,8 @@ def cmd_run_all(args: argparse.Namespace) -> None:
                 ),
             },
         }
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+        manifest_path.write_bytes(
+            orjson.dumps(manifest, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
         )
         _wandb_log("complete", manifest_path=str(manifest_path))
         _wandb_safe(

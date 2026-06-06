@@ -21,7 +21,7 @@ Example (May 2026 gen9ou supplement):
 from __future__ import annotations
 
 import argparse
-import json
+import orjson
 import os
 import subprocess
 import sys
@@ -201,8 +201,8 @@ def fill_and_write(
     ]
 
     write_team_index_csv(output_dir, out_names)
-    with open(output_dir / "predictions_meta.json", "w") as f:
-        json.dump(meta_rows, f, indent=2)
+    with open(output_dir / "predictions_meta.json", "wb") as f:
+        f.write(orjson.dumps(meta_rows, option=orjson.OPT_INDENT_2))
 
     return {
         "format": format_name,
@@ -276,15 +276,15 @@ def build_set(
             workers=workers,
         )
         summary.append(meta)
-        print(json.dumps(meta, indent=2))
+        print(orjson.dumps(meta, option=orjson.OPT_INDENT_2).decode("utf-8"))
 
         if validate:
             print(f"Validating {format_name} -> {out_verified / format_name}")
             run_validate(format_name, out_unfiltered, out_verified)
 
     summary_path = out_unfiltered / "build_summary.json"
-    with open(summary_path, "w") as f:
-        json.dump(summary, f, indent=2)
+    with open(summary_path, "wb") as f:
+        f.write(orjson.dumps(summary, option=orjson.OPT_INDENT_2))
     print(f"Wrote {summary_path}")
 
 

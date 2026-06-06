@@ -1,6 +1,6 @@
 import argparse
 import csv
-import json
+import orjson
 import random
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -67,14 +67,14 @@ def default_feature_state() -> dict:
 def load_state(path: Path) -> dict:
     if not path.exists():
         return default_state()
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    with path.open("rb") as f:
+        return orjson.loads(f.read())
 
 
 def save_state(path: Path, state: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
+    with path.open("wb") as f:
+        f.write(orjson.dumps(state, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS))
 
 
 def ensure_feature_bandit_state(state: dict | None) -> dict:
@@ -380,7 +380,7 @@ def main() -> None:
     args.history_path.parent.mkdir(parents=True, exist_ok=True)
     with args.history_path.open("a", encoding="utf-8") as f:
         f.write(
-            json.dumps(
+            orjson.dumps(
                 {
                     "match_num": state["matches"],
                     "winner": args.winner,
@@ -389,7 +389,7 @@ def main() -> None:
                     "team_a_next": team_a_next,
                     "team_b_next": team_b_next,
                 }
-            )
+            ).decode("utf-8")
             + "\n"
         )
 

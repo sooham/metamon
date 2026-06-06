@@ -1,7 +1,7 @@
 import copy
 import os
 import random
-import json
+import orjson
 import datetime
 from abc import ABC, abstractmethod
 from functools import lru_cache
@@ -232,9 +232,9 @@ def load_replay_stats_by_format(format: str, replay_stats_dir: Optional[str] = N
         f"{format}_team_rosters.json",
     )
     with open(pokemon_set_path, "r") as f:
-        pokemon_sets = json.load(f)
+        pokemon_sets = orjson.loads(f.read())
     with open(team_roster_path, "r") as f:
-        team_rosters = json.load(f)["rosters"]
+        team_rosters = orjson.loads(f.read())["rosters"]
 
     rosters = []
     for rw in team_rosters:

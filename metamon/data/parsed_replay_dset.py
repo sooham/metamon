@@ -12,7 +12,7 @@ Storage formats supported:
 """
 
 import os
-import json
+import orjson
 import random
 import csv
 import copy
@@ -452,16 +452,16 @@ class MetamonDataset(Dataset):
         data = fs.cat("/" + member_name)
         if member_name.endswith(".lz4"):
             data = lz4.frame.decompress(data)
-        return json.loads(data.decode("utf-8"))
+        return orjson.loads(data)
 
     def _load_json_from_disk(self, filename: str) -> dict:
         """DIRECTORY: Read file from disk."""
         if filename.endswith(".json.lz4"):
             with lz4.frame.open(filename, "rb") as f:
-                return json.loads(f.read().decode("utf-8"))
+                return orjson.loads(f.read())
         else:
             with open(filename, "r") as f:
-                return json.load(f)
+                return orjson.loads(f.read())
 
     def load_filename(self, filename: str):
         """Load and process a single battle trajectory."""

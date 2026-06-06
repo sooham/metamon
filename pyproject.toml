@@ -47,6 +47,9 @@ Repository = "https://github.com/UT-Austin-RPL/metamon"
 include = ["metamon*"]
 
 
+[tool.pytest.ini_options]
+addopts = "-n auto --dist worksteal"
+
 [tool.black]
 line-length = 88
 target-version = ["py310"]

@@ -1,0 +1,32 @@
+# WorldModel State-Learning Transformer — model hyperparameters.
+#
+# Training hyperparameters (lr, epochs, batch_size, etc.) are passed
+# via CLI flags to train.py and are NOT stored here.
+
+model:
+  # vocabulary size (auto-detected from tokenizer or data if not set)
+  vocab_size: null
+
+  # maximum prompt length:  2 × max_state_tokens + 7 delimiters
+  max_seq_len: 680
+
+  # residual stream / embedding dimension
+  d_model: 256
+
+  # number of attention heads
+  n_heads: 8
+
+  # number of transformer layers
+  n_layers: 6
+
+  # feed-forward hidden dimension (SwiGLU, applied to both gate & up projections)
+  d_ff: 1024
+
+  # dropout rate
+  dropout: 0.1
+
+  # RoPE base frequency
+  theta: 10000.0
+
+  # max tokens per state (must match WorldModelObservationSpace soft max)
+  max_state_tokens: 336

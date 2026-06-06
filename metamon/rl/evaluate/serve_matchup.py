@@ -7,7 +7,7 @@ runs battles. This is launched as a subprocess by the h2h/sweep launchers.
 Fully self-contained — all configuration is passed via CLI args.
 """
 
-import json
+import orjson
 import warnings
 from argparse import ArgumentParser
 from functools import partial
@@ -92,7 +92,7 @@ def main():
         timesteps=args.n_battles * 1000,
         episodes=args.n_battles,
     )
-    print(json.dumps(results, indent=4, sort_keys=True))
+    print(orjson.dumps(results, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS).decode("utf-8"))
 
 
 if __name__ == "__main__":

@@ -1,16 +1,36 @@
 METAMON_CACHE_DIR ?= $(HOME)/Repositories/poke-datasets
-FORMAT ?= gen4uu
+FORMAT ?= gen1ou
+FORMATS ?= $(FORMAT)
 
-.PHONY: parse-no-pred parse parse-all-no-pred
+.PHONY: parse-no-pred parse parse-all-no-pred battle battle-inspect \
+        tokenize-world-model parse-world-model inspect-wm-state \
+        generate-world-model-data inspect-wm-npz sample-inspect-wm-npz \
+        test test-quick test-forward test-backward test-e2e
 
-# Parse one format without team prediction (observed info only)
+# Open a battle replay in browser + parsed output in Cursor
+# Usage: make battle BATTLE_ID=smogtours-gen1ou-694141
+BATTLE_ID ?=
+battle:
+	@open https://replay.pokemonshowdown.com/$(BATTLE_ID)
+	@format=$$(echo $(BATTLE_ID) | sed -E 's/^(smogtours-)?//;s/-[0-9]+$$//'); \
+	dir="$(METAMON_CACHE_DIR)/parsed/$$format"; \
+	if [ -d "$$dir" ]; then \
+		find "$$dir" -name "$(BATTLE_ID)_*" -print0 | xargs -0 -n 1 cursor; \
+	else \
+		echo "No parsed directory: $$dir"; \
+	fi
+
+# Parse one format with player-team-only prediction.
+# Player's own Pokemon get predicted moves/items/abilities from usage stats.
+# Opponent info is forward-observed only (no prediction, no backfill leak).
+# Now includes opponent_bench, fainted_pokemon, opponent_fainted.
 parse-no-pred:
 	uv run python -m metamon.backend.replay_parser \
 		--format $(FORMAT) \
 		--team_predictor NoPredictor \
 		--raw_replay_dir $(METAMON_CACHE_DIR)/raw-replays \
 		--output_dir $(METAMON_CACHE_DIR)/parsed-no-pred \
-		--processes 10
+		--processes 10 --no-compress --pretty
 
 # Parse one format with default NaiveUsagePredictor
 parse:
@@ -18,7 +38,7 @@ parse:
 		--format $(FORMAT) \
 		--raw_replay_dir $(METAMON_CACHE_DIR)/raw-replays \
 		--output_dir $(METAMON_CACHE_DIR)/parsed-replays \
-		--processes 10
+		--processes 10 --no-compress --pretty
 
 # Parse all supported formats with NoPredictor
 parse-all-no-pred:
@@ -30,3 +50,216 @@ parse-all-no-pred:
 		echo "=== $$fmt ==="; \
 		$(MAKE) parse-no-pred FORMAT=$$fmt; \
 	done
+
+# Parse all supported formats with NoPredictor
+parse-all:
+	@for fmt in gen1ou gen1uu gen1nu gen1ubers \
+	            gen2ou gen2uu gen2nu gen2ubers \
+	            gen3ou gen3uu gen3nu gen3ubers \
+	            gen4ou gen4uu gen4nu gen4ubers \
+	            gen9ou; do \
+		echo "=== $$fmt ==="; \
+		$(MAKE) parse FORMAT=$$fmt; \
+	done
+
+# Inspect a random sample of 5 parsed battles from a format (one at a time in Cursor + browser)
+# Usage: make battle-inspect FORMAT=gen1ou
+battle-inspect:
+	@dir="$(METAMON_CACHE_DIR)/parsed/$(FORMAT)"; \
+	if [ ! -d "$$dir" ]; then \
+		echo "No parsed directory for format $(FORMAT): $$dir"; \
+		exit 1; \
+	fi; \
+	count=$$(find "$$dir" -name '*.json' -type f | wc -l | tr -d ' '); \
+	if [ "$$count" -eq 0 ]; then \
+		echo "No JSON files found in $$dir"; \
+		exit 1; \
+	fi; \
+	echo "=== Sampling 5 of $$count battles from $(FORMAT) ==="; \
+	find "$$dir" -name '*.json' -type f | sort -R | head -5 | while IFS= read -r f; do \
+		echo "--- $$(basename "$$f") ---"; \
+		battle_id=$$(basename "$$f" .json | cut -d_ -f1); \
+		open "https://replay.pokemonshowdown.com/$$battle_id"; \
+		cursor "$$f"; \
+	done
+
+# ── World Model Targets ──────────────────────────────────────────────
+
+# Build a tokenizer vocabulary for WorldModelObservationSpace from parsed replays.
+# Scans all replays in the parsed directory for the given formats, collects every
+# unique word in the token text observations, and saves to a JSON file.
+#
+# Usage:
+#   make tokenize-world-model FORMATS=gen1ou
+#   make tokenize-world-model FORMATS="gen1ou gen9ou"
+#
+# Start from an existing tokenizer to only add new tokens:
+#   make tokenize-world-model FORMATS=gen1ou \
+#       START_TOKENS=WorldModelObservationSpace-v0 \
+#       TOKENIZER_VERSION=WorldModelObservationSpace-v1
+TOKENIZER_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/tokenizers
+TOKENIZER_VERSION ?= WorldModelObservationSpace-v1
+START_TOKENS ?=
+NUM_WORKERS ?= 8
+EARLY_STOP ?= 20000
+tokenize-world-model:
+	mkdir -p $(TOKENIZER_OUTPUT_DIR)
+	uv run python -m metamon.tokenizer.tokenizer \
+		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed \
+		--formats $(FORMATS) \
+		--obs_space WorldModelObservationSpace \
+		--num_workers $(NUM_WORKERS) \
+		--early_stop $(EARLY_STOP) \
+		$(if $(START_TOKENS),--start_tokens $(TOKENIZER_OUTPUT_DIR)/$(START_TOKENS).json,) \
+		--save_tokens $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
+
+# Parse and validate with WorldModelObservationSpace.
+# Runs the standard pred parse, then spot-checks 5 random replays per format.
+# Usage:
+#   make parse-world-model FORMATS=gen1ou
+#   make parse-world-model FORMATS="gen1ou gen9ou"
+parse-world-model:
+	@for fmt in $(FORMATS); do \
+		echo "=== Parsing $$fmt ==="; \
+		$(MAKE) parse FORMAT=$$fmt; \
+	done
+	@for fmt in $(FORMATS); do \
+		echo "=== Validating world-model format on 5 random $$fmt replays ==="; \
+		dir="$(METAMON_CACHE_DIR)/parsed/$$fmt"; \
+		files=$$(find "$$dir" -name '*.json' -type f 2>/dev/null | sort -R | head -5); \
+		if [ -n "$$files" ]; then \
+			uv run python scripts/validate_world_model.py $$files; \
+			echo "=== All $$fmt spot-checks passed ==="; \
+		else \
+			echo "=== No files found for $$fmt ==="; \
+		fi; \
+	done
+
+# Inspect a single parsed replay through the WorldModelObservationSpace.
+# Prints the tokenized text for states 0 and -1 (or specified indices).
+# Usage:
+#   make inspect-wm-state FILE=/path/to/replay.json
+#   make inspect-wm-state FILE=/path/to/replay.json INDICES='0 5 10'
+#   make inspect-wm-state FILE=/path/to/replay.json FLAGS='--pretty'
+#   make inspect-wm-state FILE=/path/to/replay.json FLAGS='--pretty --show-all'
+FILE ?=
+INDICES ?= 0 -1
+FLAGS ?=
+inspect-wm-state:
+	@if [ -z "$(FILE)" ]; then \
+		echo "Usage: make inspect-wm-state FILE=/path/to/replay.json [INDICES='0 5 10'] [FLAGS='--pretty --show-all']"; \
+		exit 1; \
+	fi
+	uv run python scripts/inspect_world_model_state.py $(FILE) $(INDICES) $(FLAGS)
+
+# Generate world-model training data from parsed replays.
+# Automatically builds the WorldModel tokenizer if it doesn't exist yet.
+# Aborts early if parsed replays are missing for any requested format.
+#
+# Each output .npz contains:
+#   states  (seq_len, 336) int16  — token IDs for each state (padded to soft max)
+#   actions (seq_len-1,)  int16  — action index for each transition
+#   won     bool                  — whether POV won
+# Training pairs: (states[t], actions[t], states[t+1])
+#
+# Usage:
+#   make generate-world-model-data FORMATS=gen1ou
+#   make generate-world-model-data FORMATS="gen1ou gen9ou" WM_PROCESSES=8
+WM_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/world-model-samples
+WM_PROCESSES ?= 8
+TOKENIZER_FILE := $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
+generate-world-model-data:
+	@# ---- 1. Check parsed replays exist for every format ----
+	@missing=""; \
+	for fmt in $(FORMATS); do \
+		dir="$(METAMON_CACHE_DIR)/parsed/$$fmt"; \
+		if [ ! -d "$$dir" ] || [ -z "$$(ls -A "$$dir" 2>/dev/null)" ]; then \
+			missing="$$missing $$fmt"; \
+		fi; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "ERROR: No parsed replays found for:$$missing"; \
+		echo "  Run 'make parse FORMAT=<format>' first for each format."; \
+		exit 1; \
+	fi
+	@# ---- 2. Build tokenizer if missing ----
+	@if [ ! -f "$(TOKENIZER_FILE)" ]; then \
+		echo "Tokenizer $(TOKENIZER_FILE) not found — building it now..."; \
+		$(MAKE) tokenize-world-model FORMATS="$(FORMATS)"; \
+	fi
+	@# ---- 3. Generate sharded .npz files ----
+	mkdir -p $(WM_OUTPUT_DIR)
+	uv run python scripts/generate_world_model_data.py \
+		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed \
+		--tokenizer_path $(TOKENIZER_FILE) \
+		--output_dir $(WM_OUTPUT_DIR) \
+		--formats $(FORMATS) \
+		--processes $(WM_PROCESSES)
+
+# a rough idea for a different type of modelling 
+
+# ---- Tests ----
+
+# Run the full test suite (parallel by default via pytest-xdist)
+test:
+	uv run pytest tests/ -v
+
+# Quick smoke tests only (~30s)
+test-quick:
+	uv run pytest tests/test_forward_smoke.py tests/test_forward_edge_cases.py -v
+
+# Forward parsing tests only
+test-forward:
+	uv run pytest tests/test_forward_smoke.py tests/test_forward_structure.py tests/test_forward_pokemon.py tests/test_forward_actions.py tests/test_forward_edge_cases.py -v
+
+# Backward fill tests only
+test-backward:
+	uv run pytest tests/test_backward_smoke.py tests/test_backward_structure.py tests/test_backward_consistency.py -v
+
+# End-to-end pipeline tests only
+test-e2e:
+	uv run pytest tests/test_e2e_smoke.py tests/test_e2e_output.py -v
+
+clean:
+	@echo "WARNING: This will recursively delete ALL parsed replays and world-model sample data."
+	@read -p "Are you sure you want to continue? [y/N] " confirm; \
+	if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
+		rm -rf /Users/srafiz/Repositories/poke-datasets/parsed/*; \
+		rm -rf /Users/srafiz/Repositories/poke-datasets/world-model-samples/; \
+	else \
+		echo "Aborted."; \
+	fi
+
+show-tokenizer:
+	cursor $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
+
+sample-inspect-wm-state:
+	make inspect-wm-state FILE=../../poke-datasets/parsed/gen1ou/smogtours-gen1ou-749168_Unrated_encore90411_vs_mindplate96156_02-23-2024_WIN.json FORMAT=gen1ou FLAGS="--show-all"
+
+# ── World Model NPZ Inspection ─────────────────────────────────────
+
+WM_FORMAT ?= gen1ou
+WM_FLAGS ?=
+
+# Inspect a random battle from the world-model .npz training data.
+# Shows token IDs and detokenized text for selected states.
+# Pass all optional arguments through WM_FLAGS.
+# Usage:
+#   make inspect-wm-npz WM_FORMAT=gen1ou
+#   make inspect-wm-npz WM_FORMAT=gen1ou WM_FLAGS='--pretty --show-all --showdown'
+#   make inspect-wm-npz WM_FORMAT=gen1ou WM_FLAGS='--state-idx 0 5 10 --pretty'
+#   make inspect-wm-npz WM_FORMAT=gen1ou WM_FLAGS='--shard path/to/shard.npz --battle 3 --pretty'
+inspect-wm-npz:
+	uv run python scripts/inspect_wm_npz.py \
+		--wm_dir $(WM_OUTPUT_DIR) \
+		--tokenizer_path $(TOKENIZER_FILE) \
+		--format $(WM_FORMAT) \
+		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed \
+		$(WM_FLAGS)
+
+# Convenience: inspect a random world-model npz battle with pretty output and Showdown link.
+# Usage:
+#   make sample-inspect-wm-npz
+#   make sample-inspect-wm-npz WM_FORMAT=gen1ou
+sample-inspect-wm-npz:
+	make inspect-wm-npz WM_FORMAT=$(WM_FORMAT) WM_FLAGS='--pretty --show-all --showdown'

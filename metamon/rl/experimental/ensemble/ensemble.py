@@ -3,7 +3,7 @@ from __future__ import annotations
 import atexit
 from collections import deque
 from dataclasses import dataclass, field
-import json
+import orjson
 import math
 import os
 from typing import Any, Iterable, Optional
@@ -386,8 +386,8 @@ class HeuristicRouterEnsemblePolicy(nn.Module):
             "anchor_checkpoint": self.members[self.anchor_idx].spec.checkpoint,
             **self._anchor_metrics.to_dict(),
         }
-        with open(self._anchor_metrics_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, sort_keys=True)
+        with open(self._anchor_metrics_path, "wb") as f:
+            f.write(orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS))
 
     def get_actions(
         self,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import hashlib
-import json
+import orjson
 import os
 import random
 import shutil
@@ -663,7 +663,7 @@ def simulate_battles(
             with incremental_out.open("w", encoding="utf-8") as out_handle:
                 for idx, example in enumerate(examples, start=1):
                     out_handle.write(
-                        json.dumps(battle_example_to_json_dict(example)) + "\n"
+                        orjson.dumps(battle_example_to_json_dict(example)).decode("utf-8") + "\n"
                     )
                     if idx % max(1, incremental_flush_every) == 0:
                         out_handle.flush()
@@ -717,7 +717,7 @@ def simulate_battles(
                 examples.append(example)
                 if out_handle is not None:
                     out_handle.write(
-                        json.dumps(battle_example_to_json_dict(example)) + "\n"
+                        orjson.dumps(battle_example_to_json_dict(example)).decode("utf-8") + "\n"
                     )
                     if idx % max(1, incremental_flush_every) == 0:
                         out_handle.flush()
@@ -773,7 +773,7 @@ def save_examples_jsonl(path: Path, examples: Iterable[BattleExample]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for ex in examples:
-            f.write(json.dumps(battle_example_to_json_dict(ex)) + "\n")
+            f.write(orjson.dumps(battle_example_to_json_dict(ex)).decode("utf-8") + "\n")
 
 
 def load_examples_jsonl(path: Path) -> list[BattleExample]:
@@ -783,12 +783,12 @@ def load_examples_jsonl(path: Path) -> list[BattleExample]:
             line = line.strip()
             if not line:
                 continue
-            out.append(battle_example_from_json_dict(json.loads(line)))
+            out.append(battle_example_from_json_dict(orjson.loads(line)))
     return out
 
 
 def save_simulation_metadata(path: Path, metadata: SimulationMetadata) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(asdict(metadata), indent=2, sort_keys=True), encoding="utf-8"
+    path.write_bytes(
+        orjson.dumps(asdict(metadata), option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
     )

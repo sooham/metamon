@@ -1,7 +1,7 @@
 import random
 import os
 import copy
-import json
+import orjson
 import warnings
 from datetime import datetime
 from typing import Optional, Type, Any, List
@@ -442,7 +442,7 @@ class PokeEnvWrapper(OpenAIGymEnv):
                     path = os.path.join(self.save_trajectories_to, filename)
                     temp_path = path + ".tmp"
                     with lz4.frame.open(temp_path, "wb") as f:
-                        f.write(json.dumps(output_json).encode("utf-8"))
+                        f.write(orjson.dumps(output_json))
                     os.rename(temp_path, path)
 
                 if self.save_results_to is not None:

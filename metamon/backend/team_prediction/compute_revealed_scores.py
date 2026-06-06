@@ -8,7 +8,7 @@ Output:
 
 import argparse
 import csv
-import json
+import orjson
 import pathlib
 from collections import defaultdict
 from multiprocessing import Pool, cpu_count
@@ -127,8 +127,8 @@ def process_directory(
             writer.writerow([filename, gen, f"{score:.4f}"])
 
     meta_path = d_path / output_filename.replace(".csv", "_meta.json")
-    with open(meta_path, "w") as f:
-        json.dump(metadata, f, indent=2)
+    with open(meta_path, "wb") as f:
+        f.write(orjson.dumps(metadata, option=orjson.OPT_INDENT_2))
 
     if verbose:
         print(f"\nWrote {len(results)} entries to {output_path}")

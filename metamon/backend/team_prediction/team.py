@@ -19,15 +19,63 @@ from metamon.backend.team_prediction.usage_stats import get_usage_stats
 from metamon.backend.showdown_dex import Dex
 
 
+# Pokemon with fewer than 4 possible moves (Ditto, Unown, etc.)
+# Key: (pokemon_name, gen) -> expected moveset size
+_SMALL_MOVESETS: dict[tuple[str, int], int] = {
+    # Gen 1
+    ("ditto", 1): 1,
+    ("magikarp", 1): 1,
+    ("caterpie", 1): 1,
+    ("weedle", 1): 1,
+    ("metapod", 1): 1,
+    ("kakuna", 1): 1,
+    # Gen 2
+    ("unown", 2): 1,
+    ("ditto", 2): 1,
+    ("magikarp", 2): 1,
+    ("smeargle", 2): 1,
+    # Gen 3
+    ("ditto", 3): 1,
+    ("magikarp", 3): 1,
+    ("unown", 3): 1,
+    ("smeargle", 3): 1,
+    ("beldum", 3): 1,
+    ("wobbuffet", 3): 4,  # Counter, Mirror Coat, Safeguard, Destiny Bond
+    ("wynaut", 3): 4,
+    # Gen 4+
+    ("ditto", 4): 1,
+    ("magikarp", 4): 1,
+    ("unown", 4): 1,
+    ("smeargle", 4): 1,
+    ("beldum", 4): 1,
+    ("wobbuffet", 4): 4,
+    ("wynaut", 4): 4,
+    ("combee", 4): 2,
+}
+
+
 def moveset_size(pokemon_name: str, gen: int) -> int:
-    # attempts to handle cases where we would expect a Pokemon to have less than 4 moves
+    """Return the expected number of moves for a Pokemon.
+
+    Most Pokemon have exactly 4 moves. A few (Ditto, Unown, Smeargle, etc.)
+    have fewer. We use a hardcoded lookup for known edge cases and fall back
+    to loading usage stats only when necessary.
+    """
+    key = (pokemon_name, gen)
+    if key in _SMALL_MOVESETS:
+        return _SMALL_MOVESETS[key]
+    # For gen >= 5, use the gen-1 entry as a fallback (same small movesets)
+    if gen >= 5:
+        key_fallback = (pokemon_name, 4)
+        if key_fallback in _SMALL_MOVESETS:
+            return _SMALL_MOVESETS[key_fallback]
+    # Fall back to usage stats for rare edge cases
     stat = get_usage_stats(f"gen{gen}ubers")
     try:
         moves = len(set(stat[pokemon_name]["moves"].keys()) - {"Nothing"})
     except KeyError:
         return 4
-    moveset = min(moves, 4)
-    return moveset
+    return min(moves, 4)
 
 
 def _one_hidden_power(move_name: str) -> str:
@@ -79,10 +127,20 @@ class PokemonSet:
     def get_teamfile_name(cls, given_name: str, gen: int) -> tuple[str, str]:
         if given_name == cls.MISSING_NAME:
             return given_name, given_name
-        dex = Dex.from_gen(gen)
-        try:
-            entry = dex.get_pokedex_entry(given_name)
-        except KeyError:
+        # Try the current gen first, then fall back to higher gens (same
+        # strategy as Pokemon._lookup_pokedex_info).  Cross-gen Pokémon
+        # (e.g., Landorus-Therian in a gen1 replay) won't be found in the
+        # current gen's dex.
+        for fallback_gen in range(gen, 10):
+            dex = Dex.from_gen(fallback_gen)
+            try:
+                entry = dex.get_pokedex_entry(given_name)
+                if entry.get("inherit"):
+                    continue
+                break
+            except KeyError:
+                continue
+        else:
             return given_name, given_name
         name = entry.get("name", given_name)
         if "battleOnly" in entry:

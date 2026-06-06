@@ -2,7 +2,7 @@ import argparse
 import concurrent.futures
 import csv
 import itertools
-import json
+import orjson
 import os
 import random
 import re
@@ -559,7 +559,7 @@ def _run_single_mode(args: argparse.Namespace) -> None:
                 history_path.parent.mkdir(parents=True, exist_ok=True)
                 with history_path.open("a", encoding="utf-8") as f:
                     f.write(
-                        json.dumps(
+                        orjson.dumps(
                             {
                                 "batch": batch,
                                 "match_idx": match_idx,
@@ -573,7 +573,7 @@ def _run_single_mode(args: argparse.Namespace) -> None:
                                 "battle_id": a_match.get("battle_id", ""),
                                 "selection_mode": selection_mode,
                             }
-                        )
+                        ).decode("utf-8")
                         + "\n"
                     )
 
@@ -613,7 +613,7 @@ def _run_single_mode(args: argparse.Namespace) -> None:
 
         with batch_history_path.open("a", encoding="utf-8") as f:
             f.write(
-                json.dumps(
+                orjson.dumps(
                     {
                         "batch": batch,
                         "batch_win_rate": batch_wr,
@@ -627,7 +627,7 @@ def _run_single_mode(args: argparse.Namespace) -> None:
                         "top_moves": top_moves,
                         "modes": batch_modes,
                     }
-                )
+                ).decode("utf-8")
                 + "\n"
             )
 
@@ -813,7 +813,7 @@ def _run_multi_mode(args: argparse.Namespace) -> None:
                     history_path.parent.mkdir(parents=True, exist_ok=True)
                     with history_path.open("a", encoding="utf-8") as f:
                         f.write(
-                            json.dumps(
+                            orjson.dumps(
                                 {
                                     "batch": batch,
                                     "winner": winner,
@@ -821,7 +821,7 @@ def _run_multi_mode(args: argparse.Namespace) -> None:
                                     "team_b": team_b_names,
                                     "battle_id": a_match.get("battle_id", ""),
                                 }
-                            )
+                            ).decode("utf-8")
                             + "\n"
                         )
 
@@ -840,7 +840,7 @@ def _run_multi_mode(args: argparse.Namespace) -> None:
 
         with batch_history_path.open("a", encoding="utf-8") as f:
             f.write(
-                json.dumps(
+                orjson.dumps(
                     {
                         "batch": batch,
                         "epsilon": epsilon,
@@ -853,7 +853,7 @@ def _run_multi_mode(args: argparse.Namespace) -> None:
                         "cumulative_win_rate": cumulative_wr,
                         "top_names": top_names,
                     }
-                )
+                ).decode("utf-8")
                 + "\n"
             )
 

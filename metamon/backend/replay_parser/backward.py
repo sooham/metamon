@@ -1,5 +1,6 @@
 import copy
 import datetime
+import warnings
 from typing import List, Optional
 import collections
 
@@ -8,6 +9,7 @@ from metamon.backend.replay_parser import checks
 from metamon.backend.replay_parser.exceptions import *
 from metamon.backend.replay_parser.replay_state import (
     Action,
+    Move,
     Pokemon,
     Turn,
     Winner,
@@ -19,6 +21,49 @@ from metamon.backend.team_prediction.predictor import TeamPredictor
 from metamon.backend.team_prediction.team import TeamSet, PokemonSet
 
 
+def unpack_showteam(packed: str) -> list[dict]:
+    """Parse a Showdown Teams.pack() string into a list of per-Pokemon dicts.
+
+    Format: Pokemon separated by ``]``; fields within each separated by ``|``::
+
+        name|species|item|ability|moves(csv)|nature|evs(csv)|gender|ivs(csv)|
+        shiny|lvl|misc(csv)
+
+    Returns a list of dicts with keys: species, item, ability, moves, level,
+    tera_type.  Missing / empty fields are ``None``.
+    """
+    out = []
+    for blob in packed.split("]"):
+        blob = blob.strip()
+        if not blob:
+            continue
+        fields = blob.split("|")
+        if len(fields) < 5:
+            continue
+        species = fields[1].strip() or fields[0].strip() or None
+        item = fields[2].strip() or None
+        ability = fields[3].strip() or None
+        moves = [m.strip() for m in fields[4].split(",") if m.strip()]
+        level_str = ""
+        if len(fields) > 10:
+            level_str = fields[10].strip()
+        level = int(level_str) if level_str.isdigit() else 100
+        tera_type = None
+        if len(fields) > 11:
+            misc = fields[11].split(",")
+            if len(misc) >= 5:
+                tera_type = misc[4].strip() or None
+        out.append({
+            "species": species,
+            "item": item,
+            "ability": ability,
+            "moves": moves,
+            "level": level,
+            "tera_type": tera_type,
+        })
+    return out
+
+
 def fill_missing_team_info(
     battle_format: str,
     date_played: datetime.date,
@@ -26,6 +71,7 @@ def fill_missing_team_info(
     team_predictor: TeamPredictor,
     rating: Optional[int | str] = None,
     gameid: Optional[str] = None,
+    showteam_packed: Optional[str] = None,
 ) -> List[Pokemon]:
     """
     Team prediction works by:
@@ -35,12 +81,74 @@ def fill_missing_team_info(
     3. Filling missing information with the predicted team
     """
 
-    # 1. Convert the team to the format expected by the team_prediction module
     gen = metamon.backend.format_to_gen(battle_format)
+
+    # If showteam data is available, use it as ground truth instead of
+    # guessing from usage statistics.  This gives exact items, abilities,
+    # and all 4 moves without touching the usage stats tar.gz files.
+    if showteam_packed:
+        showteam_mons = unpack_showteam(showteam_packed)
+        for entry in showteam_mons:
+            species = entry["species"]
+            # Find the matching Pokemon in poke_list by name or had_name.
+            # showteam uses display names (e.g. "Altaria-Mega") while
+            # had_name is the dex baseSpecies (e.g. "Altaria").
+            match = None
+            for p in poke_list:
+                if p is not None and (p.name == species or p.had_name == species):
+                    match = p
+                    break
+            # If no existing slot, try to find a None slot
+            if match is None and None in poke_list:
+                idx = poke_list.index(None)
+                match = Pokemon(name=species, lvl=entry["level"], gen=gen)
+                match.current_hp = 100
+                match.max_hp = 100
+                poke_list[idx] = match
+            if match is None:
+                continue
+            # Ensure basic stats are set (new or never-seen mons may lack them)
+            if match.current_hp is None:
+                match.current_hp = 100
+            if match.max_hp is None:
+                match.max_hp = 100
+            # Apply ground-truth data
+            if entry["item"]:
+                match.had_item = entry["item"]
+                match.active_item = entry["item"]
+            if entry["ability"]:
+                match.had_ability = entry["ability"]
+                match.active_ability = entry["ability"]
+            if entry["tera_type"] and gen == 9:
+                match.tera_type = entry["tera_type"]
+            for mn in entry["moves"]:
+                try:
+                    move = Move(name=mn, gen=gen)
+                    match.reveal_move(move)
+                    match.had_moves[move.name] = copy.deepcopy(move)
+                except Exception as e:
+                    warnings.warn(
+                        f"showteam: could not add move {mn!r} for "
+                        f"{match.name}: {e}"
+                    )
+        # Ensure all Pokemon have basic HP set (new or never-seen mons may lack it)
+        for p in poke_list:
+            if p is not None:
+                if p.current_hp is None:
+                    p.current_hp = 100
+                if p.max_hp is None:
+                    p.max_hp = 100
+        # Build a minimal revealed_team for the return signature
+        converted_poke = [PokemonSet.from_ReplayPokemon(p, gen=gen) for p in poke_list]
+        revealed_team = TeamSet(
+            lead=converted_poke[0], reserve=converted_poke[1:], format=battle_format
+        )
+        return poke_list, revealed_team
+
+    # No showteam data — fall back to usage-stats-based prediction.
+    # 1. Convert the team to the format expected by the team_prediction module
     existing_species = set(p.had_name for p in poke_list if p is not None)
     converted_poke = [PokemonSet.from_ReplayPokemon(p, gen=gen) for p in poke_list]
-    # TODO/NOTE: this method of finding the lead pokemon doesn't hold for gen9,
-    # where the entire team is revealed at the start of the battle in an unrelated order.
     revealed_team = TeamSet(
         lead=converted_poke[0], reserve=converted_poke[1:], format=battle_format
     )
@@ -221,6 +329,7 @@ class POVReplay:
             return action and action.is_switch and action.target == replacement.replaced
 
         def _fix_turn(turn: Turn, replacement: Replacement):
+            # Fix action targets that pointed to the illusion disguise.
             for t in self._flatten_subturns_from_pov(turn):
                 action = t.action
                 if _broken_switch(action, replacement):
@@ -228,26 +337,44 @@ class POVReplay:
             for move_action in turn.get_moves(self.from_p1_pov):
                 if _broken_switch(move_action, replacement):
                     move_action.target = replacement.replaced_with
+            # Fix the active Pokemon's moves: if the active is still the
+            # illusion disguise, copy the real Zoroark's moves to it so
+            # action validation passes.  Compare by had_name (species) in
+            # case _fill_one_side replaced the object.
             for t in [s.turn for s in self._flatten_subturns_from_pov(turn)] + [turn]:
                 active = t.get_active_pokemon(self.from_p1_pov)
+                zoroark = t.get_pokemon_by_uid(
+                    replacement.replaced_with.unique_id
+                )
+                if zoroark is None:
+                    continue
                 if replacement.replaced_with in active:
                     return True
                 for p in t.get_active_pokemon(self.from_p1_pov):
-                    if p is not None and p == replacement.replaced:
-                        true_active_pokemon = t.get_pokemon_by_uid(
-                            replacement.replaced_with.unique_id
-                        )
-                        p.moves = true_active_pokemon.moves
+                    if p is None:
+                        continue
+                    if p == replacement.replaced or (
+                        p.had_name == replacement.replaced.had_name
+                        and p is not zoroark
+                    ):
+                        p.moves = zoroark.moves
+                        # Also copy item / ability that were transferred
+                        # to Zoroark during _parse_replace.
+                        if p.had_item is None and zoroark.had_item is not None:
+                            p.had_item = zoroark.had_item
+                        if p.had_ability is None and zoroark.had_ability is not None:
+                            p.had_ability = zoroark.had_ability
             return False
 
         for turn in replay.turnlist:
             for replacement in turn.get_replacements(self.from_p1_pov):
+                start_turn, end_turn = replacement.turn_range
                 fixed = False
-                for tstep in range(*replacement.turn_range):
-                    turn = replay.turnlist[tstep]
-                    fixed = _fix_turn(turn, replacement)
-                    if fixed:
-                        break
+                for t in replay.turnlist:
+                    if start_turn <= t.turn_number < end_turn:
+                        if _fix_turn(t, replacement):
+                            fixed = True
+                            break
 
     def _fill_one_side(self, replay, filled_replay):
         # take spectator replay and reveal one entire team from filled_replay
@@ -310,6 +437,12 @@ def add_filled_final_turn(
     filled_turn = replay[-1].create_next_turn()
     filled_turn.on_end_of_turn()
     date_played = replay.time_played.date()
+    showteam_1 = (
+        replay.showteam_data.get("p1") if replay.showteam_data else None
+    )
+    showteam_2 = (
+        replay.showteam_data.get("p2") if replay.showteam_data else None
+    )
     filled_turn.pokemon_1, revealed_team_1 = fill_missing_team_info(
         replay.format,
         date_played=date_played,
@@ -317,6 +450,7 @@ def add_filled_final_turn(
         team_predictor=team_predictor,
         rating=replay.ratings[0],
         gameid=replay.gameid,
+        showteam_packed=showteam_1,
     )
     filled_turn.pokemon_2, revealed_team_2 = fill_missing_team_info(
         replay.format,
@@ -325,6 +459,7 @@ def add_filled_final_turn(
         team_predictor=team_predictor,
         rating=replay.ratings[1],
         gameid=replay.gameid,
+        showteam_packed=showteam_2,
     )
     replay.turnlist.append(filled_turn)
     return replay, (revealed_team_1, revealed_team_2)
@@ -356,22 +491,33 @@ def backward_fill(
                     prev_pokemon.backfill_info(pokemon)
                 else:
                     # pokemon discovered in turn_t1 enters turn_t "fresh"
-                    assert None in prev_team
-                    prev_team[prev_team.index(None)] = pokemon.fresh_like()
+                    if None not in prev_team:
+                        # _parse_poke may have appended extra slots mid-battle
+                        # (team grew beyond 6).  Match that here.
+                        prev_team.append(pokemon.fresh_like())
+                    else:
+                        prev_team[prev_team.index(None)] = pokemon.fresh_like()
 
     # chop off the extra filled turn
     replay_filled.turnlist = replay_filled.turnlist[:-1]
     if team_predictor.fills_missing_info:
         checks.check_info_filled(replay_filled)
+    # Each POV needs its own copy of the original replay because
+    # _fill_one_side mutates replay in-place (overwrites one team).
+    # Passing the same replay to both POVs causes the second call
+    # to corrupt the first call's opponent data.
     from_p1 = POVReplay(
         copy.deepcopy(replay),
-        copy.deepcopy(replay_filled),
+        replay_filled,
         from_p1_pov=True,
         revealed_team=revealed_team_1,
     )
     checks.check_action_alignment(from_p1)
     from_p2 = POVReplay(
-        replay, replay_filled, from_p1_pov=False, revealed_team=revealed_team_2
+        copy.deepcopy(replay),
+        replay_filled,
+        from_p1_pov=False,
+        revealed_team=revealed_team_2,
     )
     checks.check_action_alignment(from_p2)
     return from_p1, from_p2
