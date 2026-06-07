@@ -37,6 +37,7 @@ dependencies = [
   "ratarmountcore",
   "poke-env @ git+https://github.com/UT-Austin-RPL/poke-env.git",
   "amago @ git+https://github.com/UT-Austin-RPL/amago@v3.4.0",
+  "websockets>=12.0",
 ]
 
 [project.urls]

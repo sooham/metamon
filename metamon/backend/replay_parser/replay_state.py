@@ -1078,18 +1078,24 @@ class ParsedReplay:
 
 @dataclass
 class ReplayState:
-    format: str
-    force_switch: bool
+    format: str # i.e GEN9OU
+    force_switch: bool # is the current player forced to switch? 
+
     active_pokemon: Pokemon
     opponent_active_pokemon: Pokemon
+
     available_switches: List[Pokemon]
     player_team: List[Pokemon]  # full player party (6 slots, may have None for unrevealed)
+    opponent_team: List[Pokemon] # full opponent party (6 slots, may have None for unrevealed)
+
+    # previous moves 
     player_prev_move: Move
     opponent_prev_move: Move
-    opponent_team: List[Pokemon]
+
     player_conditions: Dict[PESideCondition, int]
     opponent_conditions: Dict[PESideCondition, int]
-    battle_field: Dict[PEField, int]
+
+    battle_field: Dict[PEField, int] # TODO: figure out what field is 
     weather: PEWeather | Nothing
     battle_won: bool
     battle_lost: bool

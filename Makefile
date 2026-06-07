@@ -1,11 +1,14 @@
 METAMON_CACHE_DIR ?= $(HOME)/Repositories/poke-datasets
+RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/raw-replays
+MINI_RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/mini-raw-replays
 FORMAT ?= gen1ou
 FORMATS ?= $(FORMAT)
 
-.PHONY: parse-no-pred parse parse-all-no-pred battle battle-inspect \
+.PHONY: parse-no-pred parse parse-all-no-pred parse-all battle battle-inspect inspect-replay \
         tokenize-world-model parse-world-model inspect-wm-state \
         generate-world-model-data inspect-wm-npz sample-inspect-wm-npz \
-        test test-quick test-forward test-backward test-e2e
+        test test-quick test-forward test-backward test-e2e \
+        clean show-tokenizer clean-tokenizer sample-inspect-wm-state
 
 # Open a battle replay in browser + parsed output in Cursor
 # Usage: make battle BATTLE_ID=smogtours-gen1ou-694141
@@ -19,6 +22,23 @@ battle:
 	else \
 		echo "No parsed directory: $$dir"; \
 	fi
+
+# Inspect a replay using the interactive TUI
+# Usage: make inspect-replay <battleid>
+# Example: make inspect-replay gen4uu-184050323
+inspect-replay:
+	@battleid="$(word 2,$(MAKECMDGOALS))"; \
+	if [ -z "$$battleid" ]; then \
+		echo "Usage: make inspect-replay <battleid>"; \
+		echo "Example: make inspect-replay gen4uu-184050323"; \
+		exit 1; \
+	fi; \
+	echo "uv run python tools/inspect_replay.py $$battleid" --showdown; \
+	uv run python tools/inspect_replay.py "$$battleid" --showdown
+
+# Catch-all to prevent "No rule to make target" errors for positional arguments
+%:
+	@:
 
 # Parse one format with player-team-only prediction.
 # Player's own Pokemon get predicted moves/items/abilities from usage stats.
