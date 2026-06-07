@@ -38,26 +38,26 @@ from metamon.backend.replay_parser.str_parsing import (
     move_name,
 )
 
+# Global registries mapping string names to component constructors.
+# Populated by the @register_* decorators; consumed by get_observation_space(),
+# get_action_space(), and get_reward_function() for string-based instantiation
+# from configs or CLI arguments.
 ALL_OBSERVATION_SPACES = {}
 ALL_ACTION_SPACES = {}
 ALL_REWARD_FUNCTIONS = {}
 
 
 def register_observation_space(name: Optional[str] = None):
-    """
-    Decorator to register observation space classes.
+    """Decorator that registers an ObservationSpace subclass under a string name.
+
+    Registered classes are callable via ``get_observation_space(name)``, enabling
+    config-driven instantiation (e.g. CLI ``--obs_space DefaultObservationSpace``).
 
     Args:
-        name: Optional custom name for the observation space. If not provided, uses the class name.
+        name: Key to register under. Defaults to ``cls.__name__`` if not given.
 
-    Usage:
-        @register_observation_space()
-        class MyObservationSpace(ObservationSpace):
-            pass
-
-        @register_observation_space("CustomName")
-        class AnotherObservationSpace(ObservationSpace):
-            pass
+    Raises:
+        ValueError: If the name is already taken in the global registry.
     """
 
     def _register(cls):
@@ -71,20 +71,11 @@ def register_observation_space(name: Optional[str] = None):
 
 
 def register_action_space(name: Optional[str] = None):
-    """
-    Decorator to register action space classes.
+    """Decorator that registers an ActionSpace subclass under a string name.
 
-    Args:
-        name: Optional custom name for the action space. If not provided, uses the class name.
-
-    Usage:
-        @register_action_space()
-        class MyActionSpace(ActionSpace):
-            pass
-
-        @register_action_space("CustomName")
-        class AnotherActionSpace(ActionSpace):
-            pass
+    Mirror of ``register_observation_space`` for action spaces. Enables
+    ``get_action_space(name)`` for config-driven selection of how agent outputs
+    are mapped to ``UniversalAction`` indices.
     """
 
     def _register(cls):
@@ -98,20 +89,10 @@ def register_action_space(name: Optional[str] = None):
 
 
 def register_reward_function(name: Optional[str] = None):
-    """
-    Decorator to register reward function classes.
+    """Decorator that registers a RewardFunction subclass under a string name.
 
-    Args:
-        name: Optional custom name for the reward function. If not provided, uses the class name.
-
-    Usage:
-        @register_reward_function()
-        class MyRewardFunction(RewardFunction):
-            pass
-
-        @register_reward_function("CustomName")
-        class AnotherRewardFunction(RewardFunction):
-            pass
+    Mirror of ``register_observation_space`` for reward functions. Enables
+    ``get_reward_function(name)``.
     """
 
     def _register(cls):
@@ -125,22 +106,26 @@ def register_reward_function(name: Optional[str] = None):
 
 
 def get_observation_space_names():
-    """Get all registered observation space names."""
+    """Return sorted list of all registered observation space names."""
     return sorted(ALL_OBSERVATION_SPACES.keys())
 
 
 def get_action_space_names():
-    """Get all registered action space names."""
+    """Return sorted list of all registered action space names."""
     return sorted(ALL_ACTION_SPACES.keys())
 
 
 def get_reward_function_names():
-    """Get all registered reward function names."""
+    """Return sorted list of all registered reward function names."""
     return sorted(ALL_REWARD_FUNCTIONS.keys())
 
 
 def get_observation_space(name: str):
-    """Get an instantiated observation space object by name."""
+    """Look up and instantiate a registered observation space by name.
+
+    Calls the class constructor with no arguments, so the class must accept
+    ``__init__(self)`` or use defaults.
+    """
     if name not in ALL_OBSERVATION_SPACES:
         raise ValueError(
             f"Unknown observation space '{name}' (available: {get_observation_space_names()})"
@@ -149,7 +134,7 @@ def get_observation_space(name: str):
 
 
 def get_action_space(name: str):
-    """Get an instantiated action space object by name."""
+    """Look up and instantiate a registered action space by name."""
     if name not in ALL_ACTION_SPACES:
         raise ValueError(
             f"Unknown action space '{name}' (available: {get_action_space_names()})"
@@ -158,7 +143,7 @@ def get_action_space(name: str):
 
 
 def get_reward_function(name: str):
-    """Get an instantiated reward function object by name."""
+    """Look up and instantiate a registered reward function by name."""
     if name not in ALL_REWARD_FUNCTIONS:
         raise ValueError(
             f"Unknown reward function '{name}' (available: {get_reward_function_names()})"
@@ -167,10 +152,15 @@ def get_reward_function(name: str):
 
 
 def consistent_pokemon_order(pokemon):
-    """
-    Sorts Pokémon alphabetically according to their active species
-    name (which would include "formes") in lowercase with special
-    characters removed.
+    """Sort a list of Pokémon alphabetically by cleaned species name.
+
+    This deterministic ordering is critical: action indices for switches (4–8) depend
+    on the sort order of the available benchmark. Without a consistent order, the same
+    switch target could map to different indices across backends or parses.
+
+    Accepts lists of ``poke_env.Pokemon``, ``ReplayPokemon``, ``UniversalPokemon``,
+    or plain strings.  All are keyed by their species name after passing through
+    ``pokemon_name()`` (lowercase, special characters stripped).
     """
     if not pokemon:
         return []
@@ -190,9 +180,14 @@ def consistent_pokemon_order(pokemon):
 
 
 def consistent_move_order(moves):
-    """
-    Sorts moves alphabetically according to their name in lowercase
-    with special characters removed.
+    """Sort a list of moves alphabetically by cleaned move name.
+
+    The same determinism requirement as ``consistent_pokemon_order`` applies:
+    action indices for moves (0–3, 9–12) depend on this sort order, so it must
+    be stable and backend-agnostic.
+
+    Accepts lists of ``poke_env.Move``, ``ReplayMove``, ``UniversalMove``,
+    or plain strings.
     """
     if not moves:
         return []
@@ -217,13 +212,18 @@ _UNIVERSAL_MOVE_CACHE: dict[str, "UniversalMove"] = {}
 
 @dataclass
 class UniversalMove:
-    """An object that represents a move in the backend-agnostic "Universal" format.
+    """A move represented in the backend-agnostic Universal format.
 
-    Rarely constructed directly. Instead, use one of the following factory methods:
-        - UniversalMove.from_Move(move) - when move is from poke-env
-        - UniversalMove.from_ReplayMove(move) - when move is from the replay parser
-        - UniversalMove.from_dict(data) - when move is a dict from the parsed replay
-            dataset on disk
+    Provides static move metadata (name, type, category, base power, accuracy,
+    priority) plus dynamic per-battle state (current PP, max PP). This class is
+    the common currency between the three data sources (poke-env online battles,
+    replay-parser offline trajectories, and on-disk parsed JSON datasets).
+
+    Rarely constructed directly — use the factory classmethods:
+
+        * ``from_Move()`` — from a poke-env ``Move``
+        * ``from_ReplayMove()`` — from a replay-parser ``Move``
+        * ``from_dict()`` — from a JSON dict (dataset on disk)
     """
 
     name: str
@@ -249,19 +249,19 @@ class UniversalMove:
 
     @classmethod
     def blank_move(cls):
-        return cls(
-            name="nomove",
-            move_type="nomove",
-            category="nomove",
-            base_power=0,
-            accuracy=1.0,
-            priority=0,
-            current_pp=0,
-            max_pp=0,
-        )
+        """Return a sentinel UniversalMove representing 'no move'.
+
+        Used when a Pokémon has no previous move (e.g. first turn of the battle)
+        or the move is unknown.  All fields use obvious placeholder strings/zeros.
+        """
 
     @classmethod
     def from_ReplayMove(cls, move: Optional[ReplayMove]):
+        """Build from a replay-parser ``Move``, including dynamic PP state.
+
+        Delegates to ``from_Move`` for static properties, then layers on the
+        replay-parser-specific PP values.  If ``move`` is None, returns a blank.
+        """
         universal_move = cls.from_Move(move)
         if move is not None:
             universal_move.current_pp = move.pp
@@ -270,6 +270,13 @@ class UniversalMove:
 
     @classmethod
     def from_Move(cls, move: Optional[Move]):
+        """Build from a poke-env ``Move``, caching static properties by move ID.
+
+        Static properties (name, type, category, base_power, accuracy, priority)
+        never change for the same move ID, so they are memoized in a module-level
+        cache to avoid repeated string cleaning and object allocation.
+        Dynamic PP is *not* cached and is read fresh from the move object.
+        """
         if move is None:
             return cls.blank_move()
         assert isinstance(move, Move)
@@ -304,14 +311,24 @@ class UniversalMove:
 
 @dataclass
 class UniversalPokemon:
-    """An object that represents a pokemon in the backend-agnostic "Universal" format.
+    """A Pokémon represented in the backend-agnostic Universal format.
 
-    Rarely constructed directly. Instead, use one of the following factory methods:
-        - UniversalPokemon.from_ReplayPokemon(pokemon) - when pokemon is from the replay
-            parser
-        - UniversalPokemon.from_Pokemon(pokemon) - when pokemon is from poke-env
-        - UniversalPokemon.from_dict(data) - when pokemon is a dict from the parsed
-            replay dataset on disk
+    Holds both static species data (base stats, types, Tera type, base species)
+    and dynamic battle state (HP %, item, ability, status, effects, boosts,
+    current moves with PP).  This is the single Pokémon representation used by
+    all observation spaces, datasets, and the RL environment.
+
+    Rarely constructed directly — use the factory classmethods:
+
+        * ``from_ReplayPokemon()`` — from the replay parser's ``Pokemon``
+        * ``from_Pokemon()`` — from poke-env's ``Pokemon``
+        * ``from_dict()`` — from a JSON dict (dataset on disk)
+
+    .. note::
+
+        Movesets may exceed 4 entries due to Transform / Mimic edge cases in
+        the replay parser.  All factory methods truncate to 4 moves via ``[:4]``
+        as a safety net.
     """
 
     name: str
@@ -345,6 +362,14 @@ class UniversalPokemon:
 
     @staticmethod
     def universal_items(item_rep: Optional[str | ReplayNothing]) -> str:
+        """Normalize an item representation to a canonical string token.
+
+        Handles the multiple ways 'no item' can appear across backends:
+        ``None``, ``"unknown_item"``, empty string, ``"No Item"``,
+        ``"noitem"``, and the ``ReplayNothing.NO_ITEM`` sentinel.
+        All are mapped to ``"noitem"`` (after ``clean_no_numbers``).
+        Unknown items become ``"unknownitem"``.
+        """
         if item_rep is None or item_rep == "unknown_item":
             item_str = "unknownitem"
         elif item_rep == ReplayNothing.NO_ITEM:
@@ -361,6 +386,12 @@ class UniversalPokemon:
 
     @staticmethod
     def universal_abilities(ability_rep: Optional[str | ReplayNothing]) -> str:
+        """Normalize an ability representation to a canonical string token.
+
+        Same pattern as ``universal_items``: collapses None, unknown markers,
+        empty strings, and ``ReplayNothing.NO_ABILITY`` into ``"noability"``
+        or ``"unknownability"``.
+        """
         if ability_rep is None or ability_rep == "unknown_ability":
             ability_str = "unknownability"
         elif ability_rep == ReplayNothing.NO_ABILITY:
@@ -377,12 +408,17 @@ class UniversalPokemon:
 
     @staticmethod
     def universal_effects(effect: Optional[Effect]) -> str:
+        """Map a poke-env ``Effect`` to its cleaned name, or ``"noeffect"``."""
         if not effect:
             return "noeffect"
         return clean_no_numbers(effect.name)
 
     @staticmethod
     def universal_status(status_rep: Status | ReplayNothing) -> str:
+        """Map a poke-env ``Status`` or ``ReplayNothing.NO_STATUS`` to a string.
+
+        Missing/unknown status becomes ``"nostatus"``.
+        """
         if status_rep is None or status_rep == ReplayNothing.NO_STATUS:
             return "nostatus"
         assert isinstance(status_rep, Status)
@@ -390,6 +426,15 @@ class UniversalPokemon:
 
     @staticmethod
     def universal_types(type_rep: list, force_two: bool = True) -> str:
+        """Convert a list of types to a space-separated, sorted string.
+
+        ``None`` entries or ``ReplayNothing.NO_TERA_TYPE`` become ``"notype"``.
+        When ``force_two=True`` (the default for dual-type Pokémon), the list is
+        padded to exactly two entries.  When ``force_two=False`` (used for Tera
+        type, which is always a single type), the list is left as-is.
+
+        Types are sorted alphabetically so dual-type order doesn't matter.
+        """
         if force_two:
             while len(type_rep) < 2:
                 type_rep.append(None)
@@ -405,8 +450,14 @@ class UniversalPokemon:
 
     @classmethod
     def from_ReplayPokemon(cls, pokemon: ReplayPokemon):
-        assert isinstance(pokemon, ReplayPokemon)
-        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
+        """Build from the replay parser's ``Pokemon`` object.
+
+        Extracts base stats, stat boosts, current HP fraction, active item/ability,
+        and the most recently-applied volatile effect.  Moves are truncated to 4.
+
+        Guards against ``None`` HP (unrevealed opponent Pokémon during team preview)
+        by defaulting to 100/100.
+        """
         moves = [
             UniversalMove.from_ReplayMove(move)
             for move in pokemon.moves.values()
@@ -441,8 +492,17 @@ class UniversalPokemon:
 
     @classmethod
     def from_Pokemon(cls, pokemon: Pokemon):
-        # do not use Battle.available_moves
-        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
+        """Build from a poke-env ``Pokemon`` object.
+
+        Same extraction logic as ``from_ReplayPokemon`` but uses poke-env's
+        attribute names (``.species``, ``.current_hp_fraction``, ``.boosts``
+        dict, etc.).  Moves are truncated to 4.
+
+        .. warning::
+            Do NOT use ``Battle.available_moves`` when building a UniversalPokemon
+            for an observation — it may exclude disabled moves the agent still
+            needs to see.  Use ``pokemon.moves`` directly.
+        """
         moves = [UniversalMove.from_Move(move) for move in pokemon.moves.values()][:4]
         boosts = {f"{stat}_boost": boost for stat, boost in pokemon.boosts.items()}
         stats = {f"base_{stat}": val for stat, val in pokemon.base_stats.items()}
@@ -466,6 +526,10 @@ class UniversalPokemon:
         )
 
     def to_dict(self) -> dict:
+        """Serialize to a JSON-compatible dict for on-disk storage.
+
+        Nested moves are serialized via ``UniversalMove.to_dict()``.
+        """
         return {
             "name": self.name,
             "hp_pct": self.hp_pct,
@@ -495,13 +559,18 @@ class UniversalPokemon:
 
     @classmethod
     def from_dict(cls, data: dict):
-        # NOTE: new replay parser lets movesets go over 4 for some dittos... so temporary fix here
+        """Deserialize from a JSON dict (offline dataset on disk).
+
+        Handles backwards compatibility: missing ``tera_type`` defaults to
+        ``"notype"`` (pre-gen-9 datasets), missing ``base_species`` is inferred
+        from the display name by stripping forme suffixes (e.g. ``"Rotom-Wash"``
+        → ``"Rotom"``).  Moves are truncated to 4 as a safety net against
+        Transform/Mimic edge cases that can produce >4 move entries.
+        """
         data["moves"] = [UniversalMove(**m) for m in data["moves"][:4]]
         if "tera_type" not in data:
-            # if missing --> old version of the dataset --> gen 1-4 --> no tera
             data["tera_type"] = cls.universal_types([None], force_two=False)
         if "base_species" not in data:
-            # if missing --> old version of the dataset --> gen 1-4 --> we can get away with this
             data["base_species"] = data["name"].split("-")[0].strip()
         return cls(**data)
 
@@ -545,15 +614,29 @@ class UniversalPokemon:
 
 @dataclass
 class UniversalState:
-    """An object that represents a state in the backend-agnostic "Universal" format.
+    """A battle state represented in the backend-agnostic Universal format.
 
-    Rarely constructed directly. Instead, use one of the following factory methods:
-        - UniversalState.from_ReplayState(state) - when coming from a ReplayState
-            object in the replay parser
-        - UniversalState.from_Battle(battle) - when coming from a Battle object in the
-            online poke-env
-        - UniversalState.from_dict(data) - when state is a dict from the parsed replay
-            dataset on disk
+    This is the single state representation consumed by all observation spaces,
+    reward functions, and datasets.  It captures everything visible from one
+    player's point of view at a single timestep.
+
+    Fields are split into several logical groups:
+
+    * **Active Pokémon** — the player's and opponent's current Pokémon with
+      full HP, stats, boosts, status, moves, etc.
+    * **Bench** — switchable teammates (``available_switches``), revealed
+      opponent bench, and fainted Pokémon (own + opponent).
+    * **Battle context** — format, weather, side conditions, battle field,
+      forced switch flag.
+    * **History** — previous moves used by both active Pokémon.
+    * **Terminal** — ``battle_won`` / ``battle_lost`` flags.
+    * **Version-specific** — ``can_tera`` (gen 9 only), ``opponent_teampreview``.
+
+    Rarely constructed directly — use the factory classmethods:
+
+        * ``from_ReplayState()`` — from the replay parser's ``ReplayState``
+        * ``from_Battle()`` — from poke-env's ``Battle``
+        * ``from_dict()`` — from a JSON dict (dataset on disk)
     """
 
     format: str
@@ -713,6 +796,11 @@ class UniversalState:
     # fmt: on
 
     def to_dict(self) -> dict:
+        """Serialize to a JSON-compatible dict for on-disk storage.
+
+        All nested ``UniversalPokemon`` and ``UniversalMove`` objects are
+        recursively serialized via their own ``to_dict()`` methods.
+        """
         return {
             "format": self.format,
             "player_active_pokemon": self.player_active_pokemon.to_dict(),
@@ -787,12 +875,26 @@ class UniversalState:
 
 
 class UniversalAction:
+    """A player action represented as an integer index in the Universal format.
+
+    Maps the diverse action types (moves, switches, tera-moves, no-ops) into a
+    single integer space, which is what models consume.  The index alone is
+    sufficient to reconstruct the action given the corresponding ``UniversalState``
+    (which provides the sorted move/switch lists the index indexes into).
+
+    See ``from_ReplayAction()`` for the full index mapping table.
+    """
     def __init__(self, action_idx: int):
         self.action_idx = action_idx
 
     @property
     def missing(self) -> bool:
-        return self.action_idx == -1
+        """``True`` if the action was never revealed (index -1).
+
+        Missing actions occur when the player's choice is hidden because the
+        Pokémon was paralyzed, asleep, flinched, or the choice was ambiguous
+        due to Zoroark's Illusion.
+        """
 
     def __eq__(self, other: "UniversalAction") -> bool:
         return self.action_idx == other.action_idx
@@ -807,6 +909,29 @@ class UniversalAction:
     def from_ReplayAction(
         cls, state: ReplayState, action: ReplayAction
     ) -> Optional["UniversalAction"]:
+        """Convert a spectator-perspective ``ReplayAction`` to a UniversalAction index.
+
+        This is the canonical mapping from raw actions to the integer space:
+
+        ============  ========================================================
+        Index         Meaning
+        ============  ========================================================
+        -1            Missing / unrevealed action
+        0             No-op: Recharge, Struggle, or Fight (Gen 1 attack button)
+        1–3           Move (alphabetically sorted among active's 4 moves)
+        4–8           Switch (alphabetically sorted among ≤5 available switches)
+        9–12          Tera + move (index = 9 + move_index, Gen 9 only)
+        ============  ========================================================
+
+        Returns ``None`` if the action cannot be mapped (e.g. the move name
+        doesn't match any known move in the active Pokémon's moveset).
+
+        Edge cases handled:
+
+        * Zoroark switch-to-self (disguised Zoroark appears to switch to the
+          Pokémon it's impersonating) → treated as missing (index -1).
+        * Tera animation shown but move never revealed → missing (index -1).
+        """
         action_idx = None
         if action is None or (action.name is None and action.is_tera):
             # action was never revealed
@@ -844,19 +969,49 @@ class UniversalAction:
 
     @classmethod
     def maybe_valid_actions(cls, state: UniversalState) -> Set["UniversalAction"]:
+        """Return the set of *possibly* legal actions from a given state.
+
+        "Possibly" is the key word: this method uses only the information
+        available in a ``UniversalState`` (i.e., the offline dataset view).
+        It does NOT have access to poke-env's ``Battle.available_moves``
+        (which can disable moves due to Taunt, Disable, etc.).  Therefore
+        some actions in the returned set may actually be illegal.
+
+        The masking logic:
+
+        * If ``forced_switch`` is True, only switch indices (4–8) are included.
+        * Otherwise, move indices (0–3), tera move indices (9–12 if ``can_tera``),
+          AND switch indices (4–8) are all included.
+        * Indices 0–3 are filtered to the actual number of moves the active
+          Pokémon has (usually 4, but can be fewer).
+
+        This is used for legal-action masking during training/inference from
+        offline datasets.  For online play where the full battle state is
+        available, use ``definitely_valid_actions()`` instead.
+        """
         legal = []
-        if not state.forced_switch:
+        if not state.forced_switch: # add moves if not force switch
             moves = len(state.player_active_pokemon.moves)
             legal.extend(range(moves))
             if state.can_tera:
                 legal.extend(range(9, 9 + moves))
-        legal.extend(range(4, 4 + len(state.available_switches)))
+        legal.extend(range(4, 4 + len(state.available_switches))) # adding switches which start from 4
         return set(UniversalAction(action_idx=action_idx) for action_idx in legal)
 
     @classmethod
     def definitely_valid_actions(
         cls, state: UniversalState, battle: Battle
     ) -> Set["UniversalAction"]:
+        """Return the set of *definitely* legal actions using poke-env's full battle state.
+
+        Unlike ``maybe_valid_actions``, this method cross-references each candidate
+        action with ``action_idx_to_BattleOrder()``, which checks poke-env's
+        ``Battle.available_moves`` and ``Battle.available_switches``.  Only actions
+        that produce a non-None ``BattleOrder`` are included.
+
+        Used for online RL environment action masking where the full request
+        data is available.
+        """
         maybe_legal = cls.maybe_valid_actions(state)
         definitely_legal = set()
         for action in maybe_legal:
@@ -869,6 +1024,24 @@ class UniversalAction:
     def action_idx_to_BattleOrder(
         battle: Battle, action_idx: int
     ) -> Optional[BattleOrder]:
+        """Convert a Universal action index to a poke-env ``BattleOrder``.
+
+        This is the bridge from the integer model output to the online environment.
+        It handles several special cases:
+
+        * **Recharge** — ``available_moves`` is ``{"recharge"}``; the single
+          recharge option is always returned regardless of action_idx.
+        * **Struggle** — all move indices 0–3 map to Struggle (the agent sees
+          its 4 moves but all of them execute Struggle).
+        * **Fight** (Gen 1) — same override as Struggle: all move indices map
+          to the "Fight" button.
+        * **Tera** — indices 9–12 are detected via ``action_idx >= 9`` and
+          the Tera flag is set on the ``BattleOrder``.
+
+        Returns ``None`` if the index selects an invalid move/switch.  The
+        caller (environment) is responsible for handling invalid orders via
+        ``on_invalid_order``.
+        """
         valid_moves = {m.id for m in battle.available_moves}
         if valid_moves == {"recharge"}:
             # there is only one option; take it so it doesn't count as an invalid action
@@ -934,12 +1107,20 @@ class UniversalAction:
         return None
 
     def to_BattleOrder(self, battle: Battle) -> Optional[BattleOrder]:
+        """Instance wrapper around the static ``action_idx_to_BattleOrder``."""
         return UniversalAction.action_idx_to_BattleOrder(
             battle, action_idx=self.action_idx
         )
 
 
 class ActionSpace(ABC):
+    """Abstract interface for mapping between model outputs and UniversalAction indices.
+
+    Subclasses define the gym action space shape and translate raw agent outputs
+    (integers, logits, etc.) to/from ``UniversalAction`` objects.  This abstraction
+    allows different action parameterizations (e.g. with/without Tera) without
+    changing the rest of the pipeline.
+    """
 
     @property
     @abstractmethod
@@ -961,6 +1142,11 @@ class ActionSpace(ABC):
 
 @register_action_space()
 class DefaultActionSpace(ActionSpace):
+    """The standard action space: ``Discrete(13)`` covering indices 0–12.
+
+    Agent outputs are raw integers that directly become action indices.
+    This is the action space used by the paper and most models.
+    """
 
     @property
     def gym_space(self) -> gym.spaces.Space:
@@ -979,6 +1165,17 @@ class DefaultActionSpace(ActionSpace):
 
 @register_action_space()
 class MinimalActionSpace(DefaultActionSpace):
+    """A reduced action space without Tera: ``Discrete(9)`` covering indices 0–8.
+
+    Tera move indices (9–12) coming from a dataset are mapped to regular move
+    indices (0–3) by subtracting 9.  This allows training models that don't
+    model the Tera gimmick on Gen 9 data.
+
+    .. warning::
+        ``action_to_agent_output`` mutates ``action.action_idx`` in place
+        (subtracts 9), which may have side effects if the same ``UniversalAction``
+        is reused.
+    """
 
     @property
     def gym_space(self) -> gym.spaces.Discrete:
@@ -1003,6 +1200,13 @@ class MinimalActionSpace(DefaultActionSpace):
 
 
 class RewardFunction(ABC):
+    """Abstract base class for reward functions.
+
+    Subclasses implement ``__call__(last_state, state)`` which computes the
+    reward for transitioning from ``last_state`` to ``state``.  The constructor
+    accepts and ignores any keyword arguments so registries can instantiate
+    reward functions uniformly.
+    """
     def __init__(self, *args, **kwargs):
         pass
 
@@ -1016,9 +1220,23 @@ class RewardFunction(ABC):
 
 @register_reward_function()
 class DefaultShapedReward(RewardFunction):
-    """The default reward function used by the paper.
+    """The default reward function from the paper.
 
-    See the Appendix for a full description.
+    Reward components (all in [-1, 1] range except the terminal bonus):
+
+    * **Damage dealt**: opponent HP decrease (0 to 1)
+    * **HP healed / gained**: own active's HP increase (0 to 1)
+    * **Status inflicted**: +0.5 for giving the opponent a status condition
+    * **Status received**: -0.5 for taking a status condition
+    * **Opponent Pokémon KO'd**: +1.0 when ``opponents_remaining`` decreases
+    * **Own Pokémon KO'd**: -1.0 when ``available_switches`` shrinks
+    * **Victory**: +100.0 (sparse terminal)
+    * **Loss**: -100.0 (sparse terminal)
+
+    The active Pokémon is matched across the transition by ``base_species``
+    (not by unique ID), so it works even when the Pokémon object is replaced.
+    If the active can't be matched (e.g. Revival Blessing brought back a
+    previously-fainted mon), HP gain and status components are zeroed.
     """
 
     def __call__(self, last_state: UniversalState, state: UniversalState) -> float:
@@ -1072,10 +1290,12 @@ class DefaultShapedReward(RewardFunction):
 
 @register_reward_function()
 class AggressiveShapedReward(RewardFunction):
-    """
-    Edits the default reward function so that the sparse reward is +200 for winning / +0 for losing.
-    This discourages the original policies' annoying tendency to cling to lost positions.
-    Gamble and try to win! Also removes shaping for status conditions.
+    """A variant that removes loss penalty and increases win bonus to +200.
+
+    The original policies had a tendency to cling to lost positions, dragging
+    out unwinnable games.  This variant rewards only winning (0 for losing)
+    and removes status-condition shaping to focus purely on HP and KO outcomes.
+    The KO component is also doubled (2.0 vs 1.0).
     """
 
     def __call__(self, last_state: UniversalState, state: UniversalState) -> float:
@@ -1112,7 +1332,11 @@ class AggressiveShapedReward(RewardFunction):
 
 @register_reward_function()
 class BinaryReward(RewardFunction):
-    """A sparse variant of the default reward function."""
+    """A sparse-only variant: +100 for winning, -100 for losing, 0 otherwise.
+
+    No shaping components — purely terminal reward.  Useful for credit
+    assignment experiments and as a baseline for the shaped variants.
+    """
 
     def __call__(self, last_state: UniversalState, state: UniversalState) -> float:
         if state.battle_won:
@@ -1123,6 +1347,19 @@ class BinaryReward(RewardFunction):
 
 
 class ObservationSpace(ABC):
+    """Abstract interface for converting ``UniversalState`` to model observations.
+
+    Each subclass defines:
+
+    * ``gym_space`` — the Gymnasium observation space for the RL environment.
+    * ``state_to_obs(state)`` — the core conversion logic.
+    * ``tokenizable`` (optional) — which output keys are text that should be
+      tokenized, and their expected (maximum) token length.
+    * ``reset()`` (optional) — clear any history-dependent state between battles
+      (e.g. accumulated revealed-opponent sets).
+
+    The ``__call__`` method simply delegates to ``state_to_obs``.
+    """
     def __init__(self, *args, **kwargs):
         self.reset()
         pass
@@ -1156,12 +1393,27 @@ class ObservationSpace(ABC):
 
 @register_observation_space()
 class DefaultObservationSpace(ObservationSpace):
-    """The default observation space used by the paper.
+    """The default observation space from the paper.
 
-    Observations become a dictionary with two keys:
-        - "numbers": A 48-dimensional vector of numerical features
-        - "text": A string of text features with inconsistent length, but a consistent
-            number of whitespace-separated words.
+    Produces a dictionary with two keys:
+
+    * ``"numbers"`` — a ``(48,)`` float32 vector of numerical features:
+      HP fractions, base stats ÷ 255, stat boosts ÷ 6, move base power,
+      accuracy, priority, level, opponents remaining, etc.
+    * ``"text"`` — a single string with ~87 whitespace-separated tokens
+      encoding the format, player/opponent active Pokémon (species, item,
+      ability, types, status, effect), 4 moves (name, type, category),
+      up to 5 switches, conditions, weather, and previous moves.
+
+    All Pokémon and move lists are sorted alphabetically via
+    ``consistent_pokemon_order`` / ``consistent_move_order`` so the position
+    of an entity in the observation is deterministic across backends.
+
+    Padding: missing moves are filled with ``<blank>`` tokens; missing switches
+    are filled with ``<blank>`` × N padding blocks.  Numerical padding uses -2.0
+    (outside the normal [0,1] range) so models can learn to ignore it.
+
+    Observation size: ``numbers.shape == (48,)``, ~87 text tokens.
     """
 
     @property
@@ -1191,12 +1443,14 @@ class DefaultObservationSpace(ObservationSpace):
         }
 
     def _get_move_string_features(self, move: UniversalMove, active: bool) -> list[str]:
+        """Text tokens for a move: name, and optionally type + category if active."""
         out = [clean_name(move.name)]
         if active:
             out += [clean_name(move.move_type), clean_name(move.category)]
         return out
 
     def _get_move_pad_string(self, active: bool) -> list[str]:
+        """Blank text tokens to fill a missing move slot."""
         out = ["<blank>"]
         if active:
             out += ["<blank>", "<blank>"]
@@ -1205,11 +1459,16 @@ class DefaultObservationSpace(ObservationSpace):
     def _get_move_numerical_features(
         self, move: UniversalMove, active: bool
     ) -> list[float]:
+        """Numerical features for a move: base_power/200, accuracy, priority/5.
+
+        Returns empty list if the move is not active (bench/fainted Pokémon).
+        """
         if not active:
             return []
         return [move.base_power / 200.0, move.accuracy, move.priority / 5.0]
 
     def _get_move_pad_numerical(self, active: bool) -> list[float]:
+        """Numerical padding for missing move slots: ``[-2.0, -2.0, -2.0]``."""
         if not active:
             return []
         return [-2.0] * 3
@@ -1217,6 +1476,11 @@ class DefaultObservationSpace(ObservationSpace):
     def _get_pokemon_string_features(
         self, pokemon: UniversalPokemon, active: bool
     ) -> list[str]:
+        """Text tokens for a Pokémon: name, item, ability.
+
+        If active: adds types, effect, status. If bench: adds ``<moveset>``
+        tag followed by (possibly blank-padded) move names.
+        """
         out = [pokemon.name, pokemon.item, pokemon.ability]
         if active:
             out += [pokemon.types, pokemon.effect, pokemon.status]
@@ -1236,12 +1500,15 @@ class DefaultObservationSpace(ObservationSpace):
         return self._get_pokemon_string_features(pokemon, active)
 
     def _get_pokemon_pad_string(self, active: bool) -> list[str]:
+        """Blank text tokens to pad a missing Pokémon slot."""
         blanks = 3 + (4 if active else 5)
         return ["<blank>"] * blanks
 
     def _get_pokemon_numerical_features(
         self, pokemon: UniversalPokemon, active: bool
     ) -> list[float]:
+        """Numerical features for a Pokémon: HP fraction, level/100, base stats/255,
+        and (if active) boost stages/6 for all 7 stats."""
         out = [pokemon.hp_pct]
         if active:
             stat = lambda s: getattr(pokemon, f"base_{s}") / 255.0
@@ -1254,10 +1521,19 @@ class DefaultObservationSpace(ObservationSpace):
         return out
 
     def _get_pokemon_pad_numerical(self, active: bool) -> list[float]:
+        """Numerical padding for missing Pokémon slots."""
         blanks = 1 + (14 if active else 0)
         return [-2.0] * blanks
 
     def state_to_obs(self, state: UniversalState) -> dict[str, np.ndarray]:
+        """Convert a UniversalState to the default text+numbers observation.
+
+        Builds the observation by walking through a fixed sequence of entity blocks:
+        ``<player>``, ``<move>`` ×4, ``<switch>`` ×5, ``<opponent>``,
+        ``<conditions>``, ``<player_prev>``, ``<opp_prev>``.  All Pokémon and
+        moves are sorted alphabetically for determinism.  Missing switches/moves
+        are padded with ``<blank>`` tokens and -2.0 numerical features.
+        """
         player_str = ["<player>"] + self._get_pokemon_string_features(
             state.player_active_pokemon, active=True
         )
@@ -1347,7 +1623,7 @@ class ExpandedObservationSpace(DefaultObservationSpace):
     """
 
     def reset(self):
-        # reset the history-dependent features at the start of each battle
+        """Reset the history-dependent state at the start of each battle."""
         self.any_opponent_asleep = False
         self.any_opponent_frozen = False
         self.revealed_opponents = set()
@@ -1384,6 +1660,17 @@ class ExpandedObservationSpace(DefaultObservationSpace):
     def _get_move_numerical_features(
         self, move: UniversalMove, active: np.bool
     ) -> list[float]:
+        """Extends the default with a discretized PP warning feature.
+
+        PP tracking in replays is approximate (off-by-one errors from PP Ups,
+        Mimic-inherited PP, etc.).  Instead of a raw PP ratio, this emits a
+        discretized 'PP warning' in {0, 1, 2, 3}:
+
+        * 0 → PP ratio = 0 (move depleted)
+        * 1 → 0 < ratio < 0.25 (critical — 1 or 2 uses left)
+        * 2 → 0.25 ≤ ratio < 0.5 (low)
+        * 3 → ratio ≥ 0.5 (healthy)
+        """
         out = super()._get_move_numerical_features(move, active)
         if active:
             pp_ratio = move.current_pp / move.max_pp
@@ -1400,7 +1687,17 @@ class ExpandedObservationSpace(DefaultObservationSpace):
         return [-2.0] * 4
 
     def state_to_obs(self, state: UniversalState):
-        # get default observation + PP features
+        """Build observation with PP, revealed-opponent history, and sleep/freeze flags.
+
+        Extends the default observation by appending:
+
+        * Accumulated ``any_opponent_asleep`` / ``any_opponent_frozen`` booleans
+          (needed because sleep/freeze clause depends on whether the opponent
+          has *ever* been put to sleep/frozen by you).
+        * ``can_tera`` flag.
+        * Sorted list of all opponent species revealed so far (padded to 6 with
+          ``<blank>``).
+        """
         obs = super().state_to_obs(state)
 
         opponent = state.opponent_active_pokemon
@@ -1430,6 +1727,12 @@ class ExpandedObservationSpace(DefaultObservationSpace):
 
 @register_observation_space()
 class TeamPreviewObservationSpace(ExpandedObservationSpace):
+    """Extends ``ExpandedObservationSpace`` with opponent team preview info.
+
+    Appends the 6 opponent species shown during team preview (sorted, padded
+    with ``<blank>``).  This gives the agent complete knowledge of the
+    opponent's possible Pokémon from turn 1, matching what a human player sees.
+    """
 
     @property
     def tokenizable(self) -> dict[str, int]:
@@ -1437,7 +1740,7 @@ class TeamPreviewObservationSpace(ExpandedObservationSpace):
         return {"text": 87 + 13 + 6}
 
     def state_to_obs(self, state: UniversalState):
-        obs = super().state_to_obs(state)
+        """Build observation including team preview species."""
         teampreview = [opp_name for opp_name in sorted(state.opponent_teampreview)]
         while len(teampreview) < 6:
             teampreview.append("<blank>")
@@ -1449,8 +1752,11 @@ class TeamPreviewObservationSpace(ExpandedObservationSpace):
 
 @register_observation_space()
 class OpponentMoveObservationSpace(TeamPreviewObservationSpace):
-    """
-    Trades some text tokens to make space for the opponent's revealed moves.
+    """Trades move-category tokens to make room for the opponent's revealed moves.
+
+    Drops the move category string from our own active moves (saving 4 tokens)
+    and uses the budget to include the names of any opponent moves that have
+    been revealed so far (up to 4, ``<blank>``-padded).
     """
 
     def _get_move_string_features(self, move: UniversalMove, active: bool) -> list[str]:
@@ -1585,16 +1891,21 @@ class GroupedObservationSpace(ObservationSpace):
         return sorted_moves + [None] * (n - len(sorted_moves))
 
     def _get_blank_pokemon_text(self) -> list[str]:
-        # padding for empty switch slots."""
+        """Return a list of ``<blank>`` tokens for an empty Pokémon slot."""
         return ["<blank>"] * self.POKEMON_TEXT_LEN
 
     def _get_blank_pokemon_numbers(self) -> list[float]:
-        # padding for empty switch slots."""
+        """Return a list of -2.0 values for an empty Pokémon numerical slot."""
         return [-2.0] * self.POKEMON_NUM_LEN
 
     def _get_misc_text(self, state: UniversalState) -> list[str]:
-        # global text features: format, conditions, prev moves, opponent team
-        # note: "nofield" isn't in the tokenizer, so we map it to "<blank>"
+        """Build the text feature list for global (non-Pokémon) state.
+
+        Includes: format tag, forced-switch flag, weather, battle field,
+        side conditions, previous moves, revealed opponent species, and
+        team preview.  ``"nofield"`` is mapped to ``<blank>`` because it
+        isn't in the tokenizer vocabulary.
+        """
         battle_field = (
             state.battle_field if state.battle_field != "nofield" else "<blank>"
         )
@@ -1615,7 +1926,11 @@ class GroupedObservationSpace(ObservationSpace):
         return out
 
     def _get_misc_numbers(self, state: UniversalState) -> list[float]:
-        # global numeric features
+        """Build the numerical feature list for global state.
+
+        Includes: opponents_remaining/6, any_opponent_asleep flag,
+        any_opponent_frozen flag, can_tera flag.
+        """
         return [
             state.opponents_remaining / 6.0,
             float(self.any_opponent_asleep),
@@ -1694,10 +2009,13 @@ class GroupedObservationSpace(ObservationSpace):
 
 @register_observation_space()
 class PatchPokeAgentTeraBug(ObservationSpace):
-    """
-    Intentionally reintroduces a bug in the "pokeagent" backend that has been fixed.
-    This allows models that should use the "pokeagent" backend to still make sound decisions
-    when using the "metamon" backend by setting all tera_type to "notype".
+    """Wrapper that intentionally reintroduces a tera-type bug for PokeAgent compatibility.
+
+    The "pokeagent" backend had a bug where tera_type was never set, so models
+    trained with that backend learned to expect ``"notype"`` for all tera fields.
+    This wrapper patches the state by setting all player tera types to ``"notype"``
+    before delegating to the wrapped observation space, so those models can still
+    make sound decisions when run with the metamon backend.
     """
 
     def __init__(self, base_obs_space: ObservationSpace):
@@ -1727,18 +2045,21 @@ class PatchPokeAgentTeraBug(ObservationSpace):
 # Register patched versions of observation spaces for PokeAgent Challenge compatibility
 @register_observation_space("PAC-ExpandedObservationSpace")
 class PACExpandedObservationSpace(PatchPokeAgentTeraBug):
+    """PAC-compatible wrapper around ``ExpandedObservationSpace``."""
     def __init__(self):
         super().__init__(ExpandedObservationSpace())
 
 
 @register_observation_space("PAC-TeamPreviewObservationSpace")
 class PACTeamPreviewObservationSpace(PatchPokeAgentTeraBug):
+    """PAC-compatible wrapper around ``TeamPreviewObservationSpace``."""
     def __init__(self):
         super().__init__(TeamPreviewObservationSpace())
 
 
 @register_observation_space("PAC-OpponentMoveObservationSpace")
 class PACOpponentMoveObservationSpace(PatchPokeAgentTeraBug):
+    """PAC-compatible wrapper around ``OpponentMoveObservationSpace``."""
     def __init__(self):
         super().__init__(OpponentMoveObservationSpace())
 
@@ -1785,6 +2106,12 @@ class TokenizedObservationSpace(ObservationSpace):
         return gym.spaces.Dict(new_space_dict)
 
     def state_to_obs(self, state: UniversalState):
+        """Build base observation, then tokenize all keys listed in ``tokenizable``.
+
+        For each tokenizable key ``K``, the original text array is popped from
+        the observation dict and replaced with ``K_tokens`` — an int32 array
+        of vocabulary indices.
+        """
         obs = self.base_obs_space.state_to_obs(state)
         for tokenizable_key in self.base_obs_space.tokenizable.keys():
             base_obs_key = obs.pop(tokenizable_key)
@@ -1872,10 +2199,11 @@ class WorldModelObservationSpace(ObservationSpace):
 
     @staticmethod
     def _hp_str(hp_pct: float) -> list[str]:
-        """Format HP as space-separated fixed-point characters: '1 . 0 0' or 'unknown'.
+        """Format HP as space-separated fixed-point characters: ``1 . 0 0`` or ``unknown``.
 
-        HP is fixed-point with exactly 2 decimal places. Each character (digit or dot)
-        becomes a separate token so the tokenizer only needs 0-9 and '.' for HP values.
+        Each character (digit or dot) becomes a separate token so the tokenizer
+        only needs 0-9 and ``.`` for HP values.  This avoids needing a unique
+        vocabulary entry for every possible HP fraction.
         """
         if hp_pct is None:
             return ["unknown"]
@@ -1889,11 +2217,14 @@ class WorldModelObservationSpace(ObservationSpace):
 
     @classmethod
     def _boost_tokens(cls, pokemon) -> list[str]:
-        """Return <boosts> token list for a Pokémon.
+        """Return ``<boosts>`` token list for a Pokémon.
 
         Emits ``["<boosts>", "none"]`` if all boosts are zero, otherwise
         ``["<boosts>", "atk+1", "spa-1", ...]`` with one token per non-zero boost.
         Boost tokens look like ``atk+1``, ``spa-1``, ``spe+2`` (no leading zeros).
+
+        This is critical for world model state tracking: the model needs to
+        observe stat changes as discrete tokens to predict future boost states.
         """
         tokens = []
         for stat in cls._BOOST_STATS:
@@ -1906,12 +2237,18 @@ class WorldModelObservationSpace(ObservationSpace):
         return ["<boosts>", "none"]
 
     def _get_move_string_features(self, move: UniversalMove, active: bool) -> list[str]:
+        """Text tokens for a move: name, and optionally type + category if active."""
         out = [clean_name(move.name)]
         if active:
             out += [clean_name(move.move_type), clean_name(move.category)]
         return out
 
     def _get_move_pad_string(self, active: bool, use_unknownmove: bool = False) -> list[str]:
+        """Blank text tokens to fill a missing move slot.
+
+        Uses ``unknownmove`` as the pad token when ``use_unknownmove=True``
+        (for opponent movesets with unrevealed slots), otherwise ``<blank>``.
+        """
         pad_token = "unknownmove" if use_unknownmove else "<blank>"
         out = [pad_token]
         if active:
@@ -1921,11 +2258,13 @@ class WorldModelObservationSpace(ObservationSpace):
     def _get_move_numerical_features(
         self, move: UniversalMove, active: bool
     ) -> list[float]:
+        """Numerical features for a move: base_power/200, accuracy, priority/5."""
         if not active:
             return []
         return [move.base_power / 200.0, move.accuracy, move.priority / 5.0]
 
     def _get_move_pad_numerical(self, active: bool) -> list[float]:
+        """Numerical padding for missing move slots."""
         if not active:
             return []
         return [-2.0] * 3
@@ -1933,17 +2272,21 @@ class WorldModelObservationSpace(ObservationSpace):
     def _get_pokemon_string_features(
         self, pokemon: UniversalPokemon, active: bool
     ) -> list[str]:
-        """Base string features for any Pokémon (name, hp, item, ability, boosts).
+        """Base string features shared by all Pokémon blocks.
 
         Does NOT include types/effect/status (active-only) or moveset/moves —
         those are added by callers depending on context (player/opponent/bench).
+        Includes HP as space-separated digits and boost tokens.
         """
         out = [pokemon.name] + self._hp_str(pokemon.hp_pct) + [pokemon.item, pokemon.ability]
         out += self._boost_tokens(pokemon)
         return out
 
     def _get_player_active_string_features(self, pokemon: UniversalPokemon) -> list[str]:
-        """Full string features for the player's active Pokémon."""
+        """Full string features for the player's active Pokémon.
+
+        Includes: name, HP digits, item, ability, types, effect, status, boosts.
+        """
         return (
             [pokemon.name]
             + self._hp_str(pokemon.hp_pct)
@@ -1952,7 +2295,10 @@ class WorldModelObservationSpace(ObservationSpace):
         )
 
     def _get_player_bench_string_features(self, pokemon: UniversalPokemon) -> list[str]:
-        """Full string features for a player bench Pokémon (4 moves, <blank> padded)."""
+        """Full string features for a player bench Pokémon.
+
+        Includes 4 moves (``<blank>``-padded) after a ``<moveset>`` tag.
+        """
         out = (
             [pokemon.name]
             + self._hp_str(pokemon.hp_pct)
@@ -1969,11 +2315,19 @@ class WorldModelObservationSpace(ObservationSpace):
         return out
 
     def _get_player_fainted_string_features(self, pokemon: UniversalPokemon) -> list[str]:
-        """Full string features for a player fainted Pokémon (same format as bench)."""
+        """Full string features for a player fainted Pokémon.
+
+        Same format as bench (name, HP, item, ability, boosts, moveset + 4 moves).
+        """
         return self._get_player_bench_string_features(pokemon)
 
     def _get_opponent_active_string_features(self, pokemon: UniversalPokemon) -> list[str]:
-        """Full string features for the opponent's active Pokémon."""
+        """Full string features for the opponent's active Pokémon.
+
+        Uses ``<opponent_moveset>`` tag and only emits revealed moves — no
+        ``unknownmove`` fillers for unrevealed slots.  This avoids redundant
+        computation on tokens the model knows are meaningless.
+        """
         base = (
             [pokemon.name]
             + self._hp_str(pokemon.hp_pct)
@@ -1989,8 +2343,8 @@ class WorldModelObservationSpace(ObservationSpace):
     def _get_opponent_inactive_string_features(self, pokemon: UniversalPokemon) -> list[str]:
         """Full string features for an opponent bench / fainted Pokémon.
 
-        Includes status and effect (unlike player bench which omits them),
-        and only emits revealed moves (no unknownmove fillers).
+        Includes status and effect (unlike player bench).  Only emits revealed
+        moves (no ``unknownmove`` fillers).
         """
         out = (
             [pokemon.name]
@@ -2006,6 +2360,8 @@ class WorldModelObservationSpace(ObservationSpace):
     def _get_pokemon_numerical_features(
         self, pokemon: UniversalPokemon, active: bool
     ) -> list[float]:
+        """Numerical features for a Pokémon: HP fraction, plus (if active)
+        level/100, base stats/255, and boost stages/6."""
         out = [pokemon.hp_pct]
         if active:
             stat = lambda s: getattr(pokemon, f"base_{s}") / 255.0
@@ -2018,10 +2374,24 @@ class WorldModelObservationSpace(ObservationSpace):
         return out
 
     def _get_pokemon_pad_numerical(self, active: bool) -> list[float]:
+        """Numerical padding for missing Pokémon slots."""
         blanks = 1 + (14 if active else 0)
         return [-2.0] * blanks
 
     def state_to_obs(self, state: UniversalState) -> dict[str, np.ndarray]:
+        """Convert a UniversalState to the world-model observation format.
+
+        Builds a variable-length text string (~52–336 tokens) with entity blocks
+        for the player active, 4 moves, player bench (0–5), opponent active,
+        opponent bench (0–5), player fainted (0–5), opponent fainted (0–5),
+        conditions, previous moves, and a terminal token (``<ongoing>``,
+        ``<won>``, or ``<lost>``).
+
+        Unlike ``DefaultObservationSpace``, text blocks for bench/fainted
+        Pokémon are only emitted when they actually exist — no padding.
+        Numerical features are still padded to fixed shapes (5 slots each for
+        opponent bench, fainted, and opponent fainted).
+        """
         # ── player active ──
         player_str = ["<player>"] + self._get_player_active_string_features(
             state.player_active_pokemon
