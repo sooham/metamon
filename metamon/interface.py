@@ -614,7 +614,7 @@ class UniversalState:
         format = re.sub(r"\[|\]| ", "", state.format).lower()
         active = UniversalPokemon.from_ReplayPokemon(state.active_pokemon)
         opponent = UniversalPokemon.from_ReplayPokemon(state.opponent_active_pokemon)
-        switches = [UniversalPokemon.from_ReplayPokemon(p) for p in state.available_switches]
+        switches = [UniversalPokemon.from_ReplayPokemon(p) for p in consistent_pokemon_order(state.available_switches)]
         # opponent bench: non-active, non-fainted, revealed pokemon from opponent_team
         active_opp_id = state.opponent_active_pokemon.unique_id if state.opponent_active_pokemon else None
         opponent_bench = [
@@ -679,7 +679,7 @@ class UniversalState:
             possible_switches = [p for p in battle.team.values() if p.fainted and not p.active]
         else:
             possible_switches = [p for p in battle.team.values() if not p.fainted and not p.active]
-        switches = [UniversalPokemon.from_Pokemon(p) for p in possible_switches]
+        switches = [UniversalPokemon.from_Pokemon(p) for p in consistent_pokemon_order(possible_switches)]
         player_prev_move = UniversalMove.from_Move(battle.active_pokemon.previous_move)
         opponent_prev_move = UniversalMove.from_Move(battle.opponent_active_pokemon.previous_move)
         # NOTE: always assumes 6 in the party, and this will probably never change for backwards compat

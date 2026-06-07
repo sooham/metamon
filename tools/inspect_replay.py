@@ -17,13 +17,135 @@ import os
 import sys
 import orjson
 import re
+import asyncio
 import argparse
+import select
+import termios
+import tty
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 
 import lz4.frame
 
 from metamon.config import METAMON_CACHE_DIR
+
+# ── Terminal raw-mode helpers (arrow key support) ───────────────────────────
+
+# Cache the original terminal settings so we can restore on exit.
+_ORIG_TERMIOS: Optional[list] = None
+
+
+def _start_raw_mode() -> None:
+    """Put stdin in cbreak mode: read byte-by-byte, no echo, no buffering."""
+    global _ORIG_TERMIOS
+    if _ORIG_TERMIOS is not None:
+        return  # already in raw mode
+    try:
+        fd = sys.stdin.fileno()
+        _ORIG_TERMIOS = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+    except (termios.error, AttributeError):
+        pass  # not a real terminal (e.g. piped input)
+
+
+def _stop_raw_mode() -> None:
+    """Restore original terminal settings."""
+    global _ORIG_TERMIOS
+    if _ORIG_TERMIOS is None:
+        return
+    try:
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, _ORIG_TERMIOS)
+    except (termios.error, AttributeError):
+        pass
+    _ORIG_TERMIOS = None
+
+
+def _poll_keypress() -> Optional[str]:
+    """Non-blocking check for a keypress on stdin.
+
+    Returns one of the following (or ``None`` if no input is available):
+
+    * ``"RIGHT"``, ``"LEFT"``, ``"UP"``, ``"DOWN"`` — arrow keys
+    * ``"ENTER"`` — Return / Enter
+    * ``"ESC"`` — Escape
+    * A single character string for printable keys
+
+    Requires that `_start_raw_mode` has been called first.
+    """
+    try:
+        fd = sys.stdin.fileno()
+        r, _w, _x = select.select([fd], [], [], 0)
+        if not r:
+            return None
+        ch = os.read(fd, 6)  # read up to 6 bytes (longest escape sequence)
+        if not ch:
+            return None
+
+        # Arrow keys and other escape sequences start with 0x1b (ESC)
+        if ch[0] == 0x1b:
+            if len(ch) == 1:
+                return "ESC"
+            if ch[1] == 0x5b:  # '['
+                if len(ch) >= 3:
+                    seq = ch[2]
+                    if seq == 0x41:
+                        return "UP"
+                    if seq == 0x42:
+                        return "DOWN"
+                    if seq == 0x43:
+                        return "RIGHT"
+                    if seq == 0x44:
+                        return "LEFT"
+            return None  # unknown escape, ignore
+
+        if ch == b'\r' or ch == b'\n':
+            return "ENTER"
+        if ch == b'\x7f' or ch == b'\x08':
+            return "BACKSPACE"
+        if ch == b'\t':
+            return "TAB"
+
+        return ch.decode("utf-8", errors="replace") if len(ch) == 1 else None
+    except (OSError, TypeError):
+        return None
+
+
+def _read_line_in_raw_mode(prompt: str = "") -> str:
+    """Read a full line of input while in raw mode.
+
+    Echoes typed characters and handles backspace.  Arrow keys are
+    *not* handled here — call `_poll_keypress` first if you need them.
+    """
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    buf: List[str] = []
+    try:
+        fd = sys.stdin.fileno()
+        while True:
+            r, _w, _x = select.select([fd], [], [])
+            if not r:
+                continue
+            ch = os.read(fd, 16)
+            if not ch:
+                break
+            b = ch[0]
+            if b in (0x0a, 0x0d):  # Enter
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                return "".join(buf)
+            if b in (0x7f, 0x08):  # Backspace
+                if buf:
+                    buf.pop()
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+            elif 0x20 <= b < 0x7f:  # printable
+                char = chr(b)
+                buf.append(char)
+                sys.stdout.write(char)
+                sys.stdout.flush()
+    except (OSError, EOFError):
+        return "".join(buf)
+    return "".join(buf)
 
 _CACHE_DIR = os.path.expanduser(METAMON_CACHE_DIR) if METAMON_CACHE_DIR else None
 
@@ -54,6 +176,9 @@ def _parse_raw_turns(log: str) -> List[Tuple[int, List[str]]]:
         line = line.strip()
         if not line:
             continue
+        # Skip bare "|" separator lines (no protocol content)
+        if line == "|":
+            continue
         m = re.match(r"^\|turn\|(\d+)", line)
         if m:
             if current_lines:
@@ -69,6 +194,9 @@ def _parse_raw_turns(log: str) -> List[Tuple[int, List[str]]]:
 
 def _raw_line_type(line: str) -> str:
     """Extract the protocol message type from a line (e.g. ``|move|`` → ``move``)."""
+    # Bare pipe separator — not a protocol message
+    if line == "|":
+        return ""
     m = re.match(r"^\|([-\w]+)", line)
     return m.group(1) if m else "?"
 
@@ -219,9 +347,136 @@ def _count_line_types(lines: List[str]) -> Dict[str, int]:
     return counts
 
 
+# ── Full raw-log display ("R" key) ───────────────────────────────────────────
+
+# ANSI escape codes for colourised output.
+_ANSI = {
+    "reset": "\033[0m",
+    "bold": "\033[1m",
+    "dim": "\033[2m",
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "blue": "\033[34m",
+    "magenta": "\033[35m",
+    "cyan": "\033[36m",
+    "bold_red": "\033[1;31m",
+    "bold_yellow": "\033[1;33m",
+    "bold_cyan": "\033[1;36m",
+}
+
+# Mapping from protocol line type → ANSI colour
+_LINE_COLOURS: Dict[str, str] = {
+    "turn": "bold_yellow",
+    "move": "green",
+    "switch": "green",
+    "faint": "bold_red",
+    "drag": "bold_red",
+    "-damage": "red",
+    "-heal": "green",
+    "-status": "blue",
+    "-boost": "blue",
+    "-unboost": "blue",
+    "-curestatus": "blue",
+    "-transform": "blue",
+    "-sidestart": "cyan",
+    "-sideend": "cyan",
+    "-fieldstart": "cyan",
+    "-fieldend": "cyan",
+    "-weather": "cyan",
+    "-ability": "magenta",
+    "-item": "magenta",
+    "-enditem": "magenta",
+    "player": "bold_cyan",
+    "teamsize": "dim",
+    "gen": "dim",
+    "tier": "dim",
+    "chat": "dim",
+    "c": "dim",
+    "c:": "dim",
+    "raw": "dim",
+    "inactive": "dim",
+    "callback": "dim",
+    "debug": "dim",
+}
+
+
+def _format_full_log(log_text: str) -> str:
+    """Return a colourised, turn-grouped rendering of the full protocol log."""
+    turns = _parse_raw_turns(log_text)
+    out: List[str] = []
+    a = _ANSI
+
+    # Legend
+    out.append(f"{a['bold']}Protocol log ({len(log_text.splitlines())} lines, {len(turns)} turns){a['reset']}")
+    out.append(
+        f"  {a['bold_yellow']}turn{a['reset']}  "
+        f"{a['green']}move/switch{a['reset']}  "
+        f"{a['red']}-damage{a['reset']}  "
+        f"{a['blue']}-status/boost{a['reset']}  "
+        f"{a['cyan']}field/weather{a['reset']}  "
+        f"{a['dim']}other{a['reset']}"
+    )
+    out.append("─" * 72)
+
+    for turn_num, lines in turns:
+        if turn_num == 0:
+            header = f"{a['bold']}── Preamble ──{a['reset']}"
+        else:
+            header = f"{a['bold_yellow']}── Turn {turn_num} ──{a['reset']}"
+        out.append(f"\n{header}")
+
+        for line in lines:
+            ltype = _raw_line_type(line)
+            colour = _LINE_COLOURS.get(ltype)
+            if colour:
+                out.append(f"  {a[colour]}{line}{a['reset']}")
+            else:
+                out.append(f"  {line}")
+
+    return "\n".join(out)
+
+
+def _display_full_raw_log(log_text: str) -> None:
+    """Show the raw protocol log in a pager (``less``), one line per
+    protocol message.  If stdout is not a terminal, print plainly."""
+    import shutil
+    import subprocess
+
+    if not sys.stdout.isatty():
+        print(log_text)
+        return
+
+    pager = os.environ.get("PAGER", "") or shutil.which("less") or ""
+    if pager:
+        cmd = [pager, "-RX", "-"]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
+        try:
+            proc.communicate(input=log_text, timeout=120)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    else:
+        print(log_text)
+
+
+# ── Async helpers ────────────────────────────────────────────────────────────
+
+async def _ainput(prompt: str = "", *, use_raw: bool = False) -> str:
+    """Async wrapper around line input.
+
+    When ``use_raw`` is True, reads via `_read_line_in_raw_mode` (needed
+    when `_start_raw_mode` has been called).  Otherwise uses the standard
+    ``input()`` function in a thread.
+    """
+    if use_raw:
+        loop = asyncio.get_event_loop()
+        return (await loop.run_in_executor(None, _read_line_in_raw_mode, prompt)).strip().lower()
+    return (await asyncio.to_thread(input, prompt)).strip().lower()
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(
         description="Inspect a metamon replay at all pipeline stages",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -248,6 +503,22 @@ Examples:
         action="store_true",
         help="Print a one-page summary instead of stepping through",
     )
+    parser.add_argument(
+        "--showdown",
+        action="store_true",
+        help="Open the replay on replay.pokemonshowdown.com and sync turn navigation",
+    )
+    parser.add_argument(
+        "--chrome-port",
+        type=int,
+        default=9222,
+        help="Chrome remote debugging port (default: 9222)",
+    )
+    parser.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="Open replay in browser but don't sync terminal navigation (read-only)",
+    )
     args = parser.parse_args()
 
     gameid = args.gameid
@@ -264,11 +535,13 @@ Examples:
     # ── 2. Load raw data ──────────────────────────────────────────────────
     raw_data = None
     raw_turns = []
+    full_raw_log = ""  # cached for "R" command
     if raw_path:
         with open(raw_path) as f:
             raw_data = orjson.loads(f.read())
+        full_raw_log = raw_data.get("log", "")
         # Parse log into turn groups
-        raw_turns = _parse_raw_turns(raw_data["log"])
+        raw_turns = _parse_raw_turns(full_raw_log)
 
     # ── 3. Load parsed data ───────────────────────────────────────────────
     parsed_data = {}
@@ -295,8 +568,35 @@ Examples:
         opponent = parts[4] if len(parts) > 4 else "?"
         print(f"Parsed {result_key:5s}: POV of {pov_player} vs {opponent} — {len(pdata['states'])} states → .../{os.path.relpath(path, _CACHE_DIR) if _CACHE_DIR else path}")
 
+    # ── 4b. Set up Showdown bridge (if requested) ───────────────────────
+    bridge = None
+    if args.showdown:
+        from showdown_bridge import ShowdownBridge, CDPConnectionError
+        bridge = ShowdownBridge(args.gameid, port=args.chrome_port)
+        try:
+            await bridge.connect()
+            await bridge.open_replay()
+            print(f"\n  🌐 Showdown replay opened — {bridge.max_turn} turns (0–{bridge.max_turn})")
+            # Warn if the local raw data has different players than the online replay
+            if raw_data and bridge.remote_players:
+                remote_p1, remote_p2 = bridge.remote_players
+                local_players = raw_data.get("players", [])
+                if len(local_players) == 2:
+                    if local_players[0] != remote_p1 or local_players[1] != remote_p2:
+                        print(f"  ℹ️  Player names differ (dataset uses anonymized names):")
+                        print(f"       Local:  {local_players[0]} vs {local_players[1]}")
+                        print(f"       Remote: {remote_p1} vs {remote_p2}")
+        except CDPConnectionError as e:
+            print(f"\n  ⚠️  Showdown bridge unavailable: {e}")
+            print(f"     Terminal-only mode.")
+            print(f"     Start Chrome: open -a 'Google Chrome' --args --remote-debugging-port={args.chrome_port}")
+            bridge = None
+
     if args.raw_only:
         _print_raw_only(raw_data, raw_turns, gameid)
+        if bridge and bridge.is_active:
+            print("\n  (Browser tab left open — close it manually)")
+            # Don't disconnect — leave the tab open for the user to browse
         return
 
     # ── 5. Run forward pass ───────────────────────────────────────────────
@@ -309,6 +609,13 @@ Examples:
     # ── 6. Summary mode ───────────────────────────────────────────────────
     if args.summary:
         _print_summary(gameid, raw_data, raw_turns, forward_replay, parsed_data)
+        if bridge and bridge.is_active:
+            # Jump to last turn for a good summary view
+            try:
+                await bridge.goto_turn(bridge.max_turn or 0)
+            except Exception:
+                pass
+            print("\n  (Browser tab left open at final turn — close it manually)")
         return
 
     # ── 7. Interactive turn-by-turn mode ──────────────────────────────────
@@ -340,77 +647,31 @@ Examples:
           f"  LOSS={len(parsed_loss['states']) if parsed_loss else 0}")
     print(f"  ⚠️  Parsed states are per-player decision points (including sub-turns)")
     print(f"     and don't align 1:1 with global turns. Use 'a' to browse independently.")
+    if bridge and bridge.is_active and not args.no_sync:
+        print(f"  🌐 Browser sync ACTIVE — turns navigate together")
+    elif bridge and bridge.is_active:
+        print(f"  🌐 Browser OPEN (read-only, --no-sync)")
     print()
-    print(f"  Press ENTER to advance, 'q' to quit.  Commands: n/p/j<N>/r/f/a/s/h")
+    print(f"  Press ENTER or → to advance, ← to go back, 'q' to quit.")
+    print(f"  Commands: n/p/j<N>/r/R/f/a/s/h")
 
     current_turn = 1  # start at turn 1
     current_parsed = 0  # separate index for parsed state browsing
 
-    while True:
-        # Show which parsed index roughly corresponds to the current forward turn
-        # (just use proportional scaling as a hint)
-        approx_parsed = int(current_turn * n_parsed_states / max(max_turns, 1)) if n_parsed_states else 0
-        approx_parsed = min(approx_parsed, n_parsed_states - 1)
+    # Switch terminal to raw mode for arrow-key support
+    _start_raw_mode()
 
-        cmd = input(
-            f"\n📌 [turn {current_turn}/{max_turns}]"
-            f"  (parsed ~{approx_parsed}/{n_parsed_states-1}) > "
-        ).strip().lower()
+    async def _sync_browser(turn: int) -> None:
+        """Send a turn change to the browser, swallowing errors."""
+        if bridge and bridge.is_active and not args.no_sync:
+            try:
+                await bridge.goto_turn(turn)
+            except Exception as e:
+                print(f"  ⚠️  Browser sync failed: {e}")
 
-        if cmd in ("q", "quit", "exit"):
-            print("Goodbye!")
-            break
-        elif cmd in ("n", "next", ""):
-            current_turn = min(current_turn + 1, max_turns)
-        elif cmd in ("p", "prev"):
-            current_turn = max(current_turn - 1, 1)
-        elif cmd in ("h", "help"):
-            print("  n/next/Enter  – next turn")
-            print("  p/prev        – previous turn")
-            print("  j <N>         – jump to turn N")
-            print("  r             – show full raw log for current turn")
-            print("  f             – show full forward state for current turn")
-            print("  a             – browse parsed states independently")
-            print("  s             – show summary")
-            print("  q/quit/exit   – quit")
-            continue
-        elif cmd.startswith("j"):
-            parts = cmd.split()
-            if len(parts) == 2 and parts[1].isdigit():
-                target = int(parts[1])
-                if 1 <= target <= max_turns:
-                    current_turn = target
-                else:
-                    print(f"  Turn out of range (1–{max_turns})")
-            else:
-                print("  Usage: j <turn_number>")
-                continue
-        elif cmd.isdigit():
-            target = int(cmd)
-            if 1 <= target <= max_turns:
-                current_turn = target
-            else:
-                print(f"  Turn out of range (1–{max_turns})")
-                continue
-        elif cmd == "r":
-            _display_raw_turn(raw_by_turn, current_turn)
-            continue
-        elif cmd == "f":
-            _display_forward_turn_full(fwd_by_num, current_turn)
-            continue
-        elif cmd == "a":
-            _browse_parsed(parsed_win, parsed_loss, current_parsed)
-            continue
-        elif cmd == "s":
-            _print_summary(gameid, raw_data, raw_turns, forward_replay, parsed_data)
-            continue
-        else:
-            print(f"  Unknown command: '{cmd}' (type 'h' for help)")
-            continue
-
-        # Full display for the current turn
+    def _display_current_turn() -> None:
+        """Print the full turn display (raw, forward, parsed) for `current_turn`."""
         _print_turn_separator(current_turn)
-
         # ── Raw log ──
         if current_turn in raw_by_turn:
             raw_lines = raw_by_turn[current_turn]
@@ -418,7 +679,6 @@ Examples:
             counts = _count_line_types(raw_lines)
             type_summary = " | ".join(f"{t}={c}" for t, c in sorted(counts.items()))
             print(f"     Types: {type_summary}")
-            # Show action lines first, then other important lines
             important = [l for l in raw_lines
                          if _raw_line_type(l) in ("move", "switch", "faint", "drag")]
             important += [l for l in raw_lines
@@ -433,7 +693,6 @@ Examples:
                 print(f"     ... ({len(important) - 10} more important lines, use 'r' for full)")
         else:
             print("\n  📝 RAW LOG: (no raw data for this turn)")
-
         # ── Forward pass ──
         print(f"\n  🔍 FORWARD (spectator view):")
         if current_turn in fwd_by_num:
@@ -442,11 +701,128 @@ Examples:
                 print(s)
         else:
             print("    (no forward data for this turn)")
-
         # ── Parsed (approximate index) ──
+        approx_parsed = int(current_turn * n_parsed_states / max(max_turns, 1)) if n_parsed_states else 0
+        approx_parsed = min(approx_parsed, n_parsed_states - 1)
         print(f"\n  🤖 PARSED (RL training data, approx index {approx_parsed}):")
         print(f"     (parsed states are per-player decision points; use 'a' to browse accurately)")
         _display_parsed_at_index(parsed_win, parsed_loss, approx_parsed)
+
+    # Show turn 1 immediately (before the first prompt)
+    if bridge and bridge.is_active and not args.no_sync:
+        try:
+            await bridge.goto_turn(1)
+        except Exception:
+            pass
+    _display_current_turn()
+
+    while True:
+        # Show which parsed index roughly corresponds to the current forward turn
+        approx_parsed = int(current_turn * n_parsed_states / max(max_turns, 1)) if n_parsed_states else 0
+        approx_parsed = min(approx_parsed, n_parsed_states - 1)
+
+        # Poll for arrow keys first (non-blocking in raw mode)
+        key = _poll_keypress()
+        if key == "RIGHT" or key == "n":
+            current_turn = min(current_turn + 1, max_turns)
+            await _sync_browser(current_turn)
+            _display_current_turn()
+            continue
+        elif key == "LEFT" or key == "p":
+            current_turn = max(current_turn - 1, 1)
+            await _sync_browser(current_turn)
+            _display_current_turn()
+            continue
+        elif key == "ENTER":
+            current_turn = min(current_turn + 1, max_turns)
+            await _sync_browser(current_turn)
+            _display_current_turn()
+            continue
+
+        cmd = await _ainput(
+            f"\n📌 [turn {current_turn}/{max_turns}]"
+            f"  (parsed ~{approx_parsed}/{n_parsed_states-1}) > ",
+            use_raw=True,
+        )
+
+        if cmd in ("q", "quit", "exit"):
+            print("Goodbye!")
+            break
+        elif cmd in ("n", "next"):
+            current_turn = min(current_turn + 1, max_turns)
+            await _sync_browser(current_turn)
+            _display_current_turn()
+            continue
+        elif cmd in ("p", "prev"):
+            current_turn = max(current_turn - 1, 1)
+            await _sync_browser(current_turn)
+            _display_current_turn()
+            continue
+        elif cmd in ("",):
+            # Empty line (Enter) — same as next
+            current_turn = min(current_turn + 1, max_turns)
+            await _sync_browser(current_turn)
+            _display_current_turn()
+            continue
+        elif cmd in ("h", "help"):
+            print("  n/next/Enter/→ – next turn")
+            print("  p/prev/←       – previous turn")
+            print("  j <N>          – jump to turn N")
+            print("  r              – show full raw log for current turn")
+            print("  R              – show entire raw log (colourised, paged)")
+            print("  f              – show full forward state for current turn")
+            print("  a              – browse parsed states independently")
+            print("  s              – show summary")
+            print("  q/quit/exit    – quit")
+            continue
+        elif cmd.startswith("j"):
+            parts = cmd.split()
+            if len(parts) == 2 and parts[1].isdigit():
+                target = int(parts[1])
+                if 1 <= target <= max_turns:
+                    current_turn = target
+                    await _sync_browser(current_turn)
+                    _display_current_turn()
+                else:
+                    print(f"  Turn out of range (1–{max_turns})")
+            else:
+                print("  Usage: j <turn_number>")
+                continue
+        elif cmd.isdigit():
+            target = int(cmd)
+            if 1 <= target <= max_turns:
+                current_turn = target
+                await _sync_browser(current_turn)
+                _display_current_turn()
+            else:
+                print(f"  Turn out of range (1–{max_turns})")
+                continue
+        elif cmd == "r":
+            _display_raw_turn(raw_by_turn, current_turn)
+            continue
+        elif cmd == "R":
+            _display_full_raw_log(full_raw_log)
+            continue
+        elif cmd == "f":
+            _display_forward_turn_full(fwd_by_num, current_turn)
+            continue
+        elif cmd == "a":
+            current_parsed = await _browse_parsed(parsed_win, parsed_loss, current_parsed)
+            continue
+        elif cmd == "s":
+            _print_summary(gameid, raw_data, raw_turns, forward_replay, parsed_data)
+            continue
+        else:
+            print(f"  Unknown command: '{cmd}' (type 'h' for help)")
+            continue
+
+    # ── Cleanup ───────────────────────────────────────────────────────────
+    _stop_raw_mode()
+    if bridge and bridge.is_active:
+        try:
+            await bridge.disconnect()
+        except Exception:
+            pass
 
 
 def _display_raw_turn(raw_by_turn: Dict[int, List[str]], turn_num: int):
@@ -508,7 +884,7 @@ def _display_parsed_at_index(parsed_win: dict, parsed_loss: dict, idx: int):
               f" | won={state['battle_won']} | lost={state['battle_lost']}")
 
 
-def _browse_parsed(parsed_win: dict, parsed_loss: dict, start_idx: int = 0):
+async def _browse_parsed(parsed_win: dict, parsed_loss: dict, start_idx: int = 0):
     """Interactive browser for parsed states (decision points)."""
     n_states = max(
         len(parsed_win["states"]) if parsed_win else 0,
@@ -516,7 +892,7 @@ def _browse_parsed(parsed_win: dict, parsed_loss: dict, start_idx: int = 0):
     )
     if n_states == 0:
         print("  No parsed data available.")
-        return
+        return start_idx
 
     idx = start_idx
     print(f"\n  🤖 PARSED STATE BROWSER ({n_states} states)")
@@ -526,7 +902,7 @@ def _browse_parsed(parsed_win: dict, parsed_loss: dict, start_idx: int = 0):
         print(f"\n  ── Parsed state {idx}/{n_states-1} ──")
         _display_parsed_at_index(parsed_win, parsed_loss, idx)
 
-        cmd = input(f"\n  📌 [parsed {idx}/{n_states-1}] > ").strip().lower()
+        cmd = await _ainput(f"\n  📌 [parsed {idx}/{n_states-1}] > ")
         if cmd in ("q", "quit", "back", ""):
             break
         elif cmd in ("n", "next"):
@@ -633,4 +1009,11 @@ def _print_summary(gameid: str, raw_data: dict, raw_turns: list,
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        _stop_raw_mode()
+        print("\nInterrupted.")
+    except EOFError:
+        _stop_raw_mode()
+        print("\nGoodbye!")
