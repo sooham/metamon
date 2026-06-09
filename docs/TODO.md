@@ -1,0 +1,3 @@
+- Add Random teamset generation for a format
+- Add Random battle environment where RL, trained IL, neural baselines plays with random teams
+- Add Random battle environment where online battles can be instantiated with random teams 
