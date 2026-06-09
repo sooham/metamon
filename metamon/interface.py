@@ -1,8 +1,18 @@
+from __future__ import annotations
+
 import copy
 import re
 import warnings
 from dataclasses import dataclass
-from typing import Optional, List, Any, Set
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Type,
+)
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -42,12 +52,12 @@ from metamon.backend.replay_parser.str_parsing import (
 # Populated by the @register_* decorators; consumed by get_observation_space(),
 # get_action_space(), and get_reward_function() for string-based instantiation
 # from configs or CLI arguments.
-ALL_OBSERVATION_SPACES = {}
-ALL_ACTION_SPACES = {}
-ALL_REWARD_FUNCTIONS = {}
+ALL_OBSERVATION_SPACES: Dict[str, Type["ObservationSpace"]] = {}
+ALL_ACTION_SPACES: Dict[str, Type["ActionSpace"]] = {}
+ALL_REWARD_FUNCTIONS: Dict[str, Type["RewardFunction"]] = {}
 
 
-def register_observation_space(name: Optional[str] = None):
+def register_observation_space(name: Optional[str] = None) -> Callable[[Type["ObservationSpace"]], Type["ObservationSpace"]]:
     """Decorator that registers an ObservationSpace subclass under a string name.
 
     Registered classes are callable via ``get_observation_space(name)``, enabling
@@ -60,7 +70,7 @@ def register_observation_space(name: Optional[str] = None):
         ValueError: If the name is already taken in the global registry.
     """
 
-    def _register(cls):
+    def _register(cls: Type["ObservationSpace"]) -> Type["ObservationSpace"]:
         obs_name = name if name is not None else cls.__name__
         if obs_name in ALL_OBSERVATION_SPACES:
             raise ValueError(f"Observation space '{obs_name}' is already registered!")
@@ -70,7 +80,7 @@ def register_observation_space(name: Optional[str] = None):
     return _register
 
 
-def register_action_space(name: Optional[str] = None):
+def register_action_space(name: Optional[str] = None) -> Callable[[Type["ActionSpace"]], Type["ActionSpace"]]:
     """Decorator that registers an ActionSpace subclass under a string name.
 
     Mirror of ``register_observation_space`` for action spaces. Enables
@@ -78,7 +88,7 @@ def register_action_space(name: Optional[str] = None):
     are mapped to ``UniversalAction`` indices.
     """
 
-    def _register(cls):
+    def _register(cls: Type["ActionSpace"]) -> Type["ActionSpace"]:
         action_name = name if name is not None else cls.__name__
         if action_name in ALL_ACTION_SPACES:
             raise ValueError(f"Action space '{action_name}' is already registered!")
@@ -88,14 +98,14 @@ def register_action_space(name: Optional[str] = None):
     return _register
 
 
-def register_reward_function(name: Optional[str] = None):
+def register_reward_function(name: Optional[str] = None) -> Callable[[Type["RewardFunction"]], Type["RewardFunction"]]:
     """Decorator that registers a RewardFunction subclass under a string name.
 
     Mirror of ``register_observation_space`` for reward functions. Enables
     ``get_reward_function(name)``.
     """
 
-    def _register(cls):
+    def _register(cls: Type["RewardFunction"]) -> Type["RewardFunction"]:
         reward_name = name if name is not None else cls.__name__
         if reward_name in ALL_REWARD_FUNCTIONS:
             raise ValueError(f"Reward function '{reward_name}' is already registered!")
@@ -105,22 +115,22 @@ def register_reward_function(name: Optional[str] = None):
     return _register
 
 
-def get_observation_space_names():
+def get_observation_space_names() -> List[str]:
     """Return sorted list of all registered observation space names."""
     return sorted(ALL_OBSERVATION_SPACES.keys())
 
 
-def get_action_space_names():
+def get_action_space_names() -> List[str]:
     """Return sorted list of all registered action space names."""
     return sorted(ALL_ACTION_SPACES.keys())
 
 
-def get_reward_function_names():
+def get_reward_function_names() -> List[str]:
     """Return sorted list of all registered reward function names."""
     return sorted(ALL_REWARD_FUNCTIONS.keys())
 
 
-def get_observation_space(name: str):
+def get_observation_space(name: str) -> "ObservationSpace":
     """Look up and instantiate a registered observation space by name.
 
     Calls the class constructor with no arguments, so the class must accept
@@ -133,7 +143,7 @@ def get_observation_space(name: str):
     return ALL_OBSERVATION_SPACES[name]()
 
 
-def get_action_space(name: str):
+def get_action_space(name: str) -> "ActionSpace":
     """Look up and instantiate a registered action space by name."""
     if name not in ALL_ACTION_SPACES:
         raise ValueError(
@@ -142,7 +152,7 @@ def get_action_space(name: str):
     return ALL_ACTION_SPACES[name]()
 
 
-def get_reward_function(name: str):
+def get_reward_function(name: str) -> "RewardFunction":
     """Look up and instantiate a registered reward function by name."""
     if name not in ALL_REWARD_FUNCTIONS:
         raise ValueError(
@@ -151,7 +161,7 @@ def get_reward_function(name: str):
     return ALL_REWARD_FUNCTIONS[name]()
 
 
-def consistent_pokemon_order(pokemon):
+def consistent_pokemon_order(pokemon: List[Any]) -> List[Any]:
     """Sort a list of Pokémon alphabetically by cleaned species name.
 
     This deterministic ordering is critical: action indices for switches (4–8) depend
@@ -179,7 +189,7 @@ def consistent_pokemon_order(pokemon):
     return sorted(pokemon, key=key)
 
 
-def consistent_move_order(moves):
+def consistent_move_order(moves: List[Any]) -> List[Any]:
     """Sort a list of moves alphabetically by cleaned move name.
 
     The same determinism requirement as ``consistent_pokemon_order`` applies:
@@ -235,7 +245,7 @@ class UniversalMove:
     current_pp: int
     max_pp: int
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "move_type": self.move_type,
@@ -248,15 +258,25 @@ class UniversalMove:
         }
 
     @classmethod
-    def blank_move(cls):
+    def blank_move(cls) -> "UniversalMove":
         """Return a sentinel UniversalMove representing 'no move'.
 
         Used when a Pokémon has no previous move (e.g. first turn of the battle)
         or the move is unknown.  All fields use obvious placeholder strings/zeros.
         """
+        return cls(
+            name="<blank>",
+            move_type="notype",
+            category="status",
+            base_power=0,
+            accuracy=0.0,
+            priority=0,
+            current_pp=0,
+            max_pp=0,
+        )
 
     @classmethod
-    def from_ReplayMove(cls, move: Optional[ReplayMove]):
+    def from_ReplayMove(cls, move: Optional[ReplayMove]) -> "UniversalMove":
         """Build from a replay-parser ``Move``, including dynamic PP state.
 
         Delegates to ``from_Move`` for static properties, then layers on the
@@ -269,7 +289,7 @@ class UniversalMove:
         return universal_move
 
     @classmethod
-    def from_Move(cls, move: Optional[Move]):
+    def from_Move(cls, move: Optional[Move]) -> "UniversalMove":
         """Build from a poke-env ``Move``, caching static properties by move ID.
 
         Static properties (name, type, category, base_power, accuracy, priority)
@@ -449,7 +469,7 @@ class UniversalPokemon:
         return " ".join(sorted(type_strs))
 
     @classmethod
-    def from_ReplayPokemon(cls, pokemon: ReplayPokemon):
+    def from_ReplayPokemon(cls, pokemon: ReplayPokemon) -> "UniversalPokemon":
         """Build from the replay parser's ``Pokemon`` object.
 
         Extracts base stats, stat boosts, current HP fraction, active item/ability,
@@ -491,7 +511,7 @@ class UniversalPokemon:
         )
 
     @classmethod
-    def from_Pokemon(cls, pokemon: Pokemon):
+    def from_Pokemon(cls, pokemon: Pokemon) -> "UniversalPokemon":
         """Build from a poke-env ``Pokemon`` object.
 
         Same extraction logic as ``from_ReplayPokemon`` but uses poke-env's
@@ -525,7 +545,7 @@ class UniversalPokemon:
             **(boosts | stats),
         )
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Serialize to a JSON-compatible dict for on-disk storage.
 
         Nested moves are serialized via ``UniversalMove.to_dict()``.
@@ -558,7 +578,7 @@ class UniversalPokemon:
         }
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(cls, data: Dict[str, Any]) -> "UniversalPokemon":
         """Deserialize from a JSON dict (offline dataset on disk).
 
         Handles backwards compatibility: missing ``tera_type`` defaults to
@@ -575,7 +595,7 @@ class UniversalPokemon:
         return cls(**data)
 
     @staticmethod
-    def metamon_to_poke_env(pokemon: ReplayPokemon, is_active: bool) -> Pokemon:
+    def metamon_to_poke_env(pokemon: Optional[ReplayPokemon], is_active: bool) -> Optional[Pokemon]:
         """
         Straight-through conversion from metamon replay parser Pokemon object
         to poke-env Pokemon object. An ugly alternative to adding a
@@ -667,7 +687,7 @@ class UniversalState:
         return format_for_agent(self.format)
 
     @staticmethod
-    def universal_conditions(condition_rep) -> str:
+    def universal_conditions(condition_rep: Any) -> str:
         if not condition_rep:
             return "noconditions"
         most_recent = max(condition_rep.keys(), key=condition_rep.get)
@@ -675,7 +695,7 @@ class UniversalState:
         return clean_no_numbers(most_recent.name)
 
     @staticmethod
-    def universal_field(field_rep) -> str:
+    def universal_field(field_rep: Any) -> str:
         if not field_rep:
             return "nofield"
         most_recent = max(field_rep.keys(), key=field_rep.get)
@@ -683,7 +703,7 @@ class UniversalState:
         return clean_no_numbers(most_recent.name)
 
     @staticmethod
-    def universal_weather(weather_rep) -> str:
+    def universal_weather(weather_rep: Any) -> str:
         if not weather_rep or weather_rep == ReplayNothing.NO_WEATHER:
             return "noweather"
         if isinstance(weather_rep, dict):
@@ -692,7 +712,7 @@ class UniversalState:
 
     # fmt: off
     @classmethod
-    def from_ReplayState(cls, state: ReplayState):
+    def from_ReplayState(cls, state: ReplayState) -> "UniversalState":
         assert isinstance(state, ReplayState)
         format = re.sub(r"\[|\]| ", "", state.format).lower()
         active = UniversalPokemon.from_ReplayPokemon(state.active_pokemon)
@@ -749,7 +769,7 @@ class UniversalState:
         )
 
     @classmethod
-    def from_Battle(cls, battle: Battle):
+    def from_Battle(cls, battle: Battle) -> "UniversalState":
         # do not use Battle.available_switches or Battle.available_moves
         format = battle.battle_tag.split("-")[1]
         weather = cls.universal_weather(battle.weather)
@@ -795,7 +815,7 @@ class UniversalState:
         )
     # fmt: on
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Serialize to a JSON-compatible dict for on-disk storage.
 
         All nested ``UniversalPokemon`` and ``UniversalMove`` objects are
@@ -824,7 +844,7 @@ class UniversalState:
         }
 
     @classmethod
-    def from_dict(cls, data: dict):
+    def from_dict(cls, data: Dict[str, Any]) -> "UniversalState":
         # convert nested Pokemon objects
         data["player_active_pokemon"] = UniversalPokemon.from_dict(
             data["player_active_pokemon"]
@@ -884,7 +904,7 @@ class UniversalAction:
 
     See ``from_ReplayAction()`` for the full index mapping table.
     """
-    def __init__(self, action_idx: int):
+    def __init__(self, action_idx: int) -> None:
         self.action_idx = action_idx
 
     @property
@@ -896,13 +916,15 @@ class UniversalAction:
         due to Zoroark's Illusion.
         """
 
-    def __eq__(self, other: "UniversalAction") -> bool:
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, UniversalAction):
+            return NotImplemented
         return self.action_idx == other.action_idx
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return str(self.action_idx)
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash(self.action_idx)
 
     @classmethod
@@ -1124,7 +1146,7 @@ class ActionSpace(ABC):
 
     @property
     @abstractmethod
-    def gym_space(self) -> gym.spaces.Discrete:
+    def gym_space(self) -> gym.spaces.Space:
         raise NotImplementedError
 
     @abstractmethod
@@ -1207,7 +1229,7 @@ class RewardFunction(ABC):
     accepts and ignores any keyword arguments so registries can instantiate
     reward functions uniformly.
     """
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         pass
 
     def __name__(self) -> str:
@@ -1360,16 +1382,14 @@ class ObservationSpace(ABC):
 
     The ``__call__`` method simply delegates to ``state_to_obs``.
     """
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.reset()
-        pass
 
     def __name__(self) -> str:
         return self.__class__.__name__
 
-    def reset(self):
+    def reset(self) -> None:
         """Clear any internal state (between battles)."""
-        pass
 
     @property
     def tokenizable(self) -> dict[str, int]:
@@ -1383,10 +1403,10 @@ class ObservationSpace(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def state_to_obs(self, state: UniversalState):
+    def state_to_obs(self, state: UniversalState) -> Dict[str, np.ndarray]:
         raise NotImplementedError
 
-    def __call__(self, state: UniversalState) -> dict[str, np.ndarray]:
+    def __call__(self, state: UniversalState) -> Dict[str, np.ndarray]:
         obs = self.state_to_obs(state)
         return obs
 
@@ -1417,7 +1437,7 @@ class DefaultObservationSpace(ObservationSpace):
     """
 
     @property
-    def gym_space(self):
+    def gym_space(self) -> gym.spaces.Dict:
         return gym.spaces.Dict(
             {
                 "numbers": gym.spaces.Box(
@@ -1622,14 +1642,14 @@ class ExpandedObservationSpace(DefaultObservationSpace):
     This observation space moves some of that information into every timestep. Also adds tera types for gen 9.
     """
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset the history-dependent state at the start of each battle."""
         self.any_opponent_asleep = False
         self.any_opponent_frozen = False
         self.revealed_opponents = set()
 
     @property
-    def gym_space(self):
+    def gym_space(self) -> gym.spaces.Dict:
         base_space = super().gym_space
         base_space["numbers"] = gym.spaces.Box(
             low=-10.0,
@@ -1658,7 +1678,7 @@ class ExpandedObservationSpace(DefaultObservationSpace):
         return ["<blank>"] * blanks
 
     def _get_move_numerical_features(
-        self, move: UniversalMove, active: np.bool
+        self, move: UniversalMove, active: bool
     ) -> list[float]:
         """Extends the default with a discretized PP warning feature.
 
@@ -1686,7 +1706,7 @@ class ExpandedObservationSpace(DefaultObservationSpace):
             return []
         return [-2.0] * 4
 
-    def state_to_obs(self, state: UniversalState):
+    def state_to_obs(self, state: UniversalState) -> Dict[str, np.ndarray]:
         """Build observation with PP, revealed-opponent history, and sleep/freeze flags.
 
         Extends the default observation by appending:
@@ -1739,8 +1759,9 @@ class TeamPreviewObservationSpace(ExpandedObservationSpace):
         # adds 6 new tokens for teampreview
         return {"text": 87 + 13 + 6}
 
-    def state_to_obs(self, state: UniversalState):
+    def state_to_obs(self, state: UniversalState) -> Dict[str, np.ndarray]:
         """Build observation including team preview species."""
+        obs = super().state_to_obs(state)
         teampreview = [opp_name for opp_name in sorted(state.opponent_teampreview)]
         while len(teampreview) < 6:
             teampreview.append("<blank>")
@@ -1798,7 +1819,7 @@ class GroupedObservationSpace(ObservationSpace):
     MISC_NUM_LEN = 4  # opp_remaining, sleep, freeze, can_tera
     NUM_SWITCHES = 5
 
-    def reset(self):
+    def reset(self) -> None:
         self.any_opponent_asleep = False
         self.any_opponent_frozen = False
         self.revealed_opponents = set()
@@ -2018,22 +2039,22 @@ class PatchPokeAgentTeraBug(ObservationSpace):
     make sound decisions when run with the metamon backend.
     """
 
-    def __init__(self, base_obs_space: ObservationSpace):
+    def __init__(self, base_obs_space: ObservationSpace) -> None:
         self.base_obs_space = base_obs_space
         super().__init__()
 
-    def reset(self):
+    def reset(self) -> None:
         self.base_obs_space.reset()
 
     @property
-    def gym_space(self):
+    def gym_space(self) -> gym.spaces.Space:
         return self.base_obs_space.gym_space
 
     @property
-    def tokenizable(self):
+    def tokenizable(self) -> Dict[str, int]:
         return self.base_obs_space.tokenizable
 
-    def state_to_obs(self, state: UniversalState):
+    def state_to_obs(self, state: UniversalState) -> Dict[str, np.ndarray]:
         patched_state = copy.deepcopy(state)
         # patch player pokemon tera types to "notype"
         patched_state.player_active_pokemon.tera_type = "notype"
@@ -2046,21 +2067,21 @@ class PatchPokeAgentTeraBug(ObservationSpace):
 @register_observation_space("PAC-ExpandedObservationSpace")
 class PACExpandedObservationSpace(PatchPokeAgentTeraBug):
     """PAC-compatible wrapper around ``ExpandedObservationSpace``."""
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(ExpandedObservationSpace())
 
 
 @register_observation_space("PAC-TeamPreviewObservationSpace")
 class PACTeamPreviewObservationSpace(PatchPokeAgentTeraBug):
     """PAC-compatible wrapper around ``TeamPreviewObservationSpace``."""
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(TeamPreviewObservationSpace())
 
 
 @register_observation_space("PAC-OpponentMoveObservationSpace")
 class PACOpponentMoveObservationSpace(PatchPokeAgentTeraBug):
     """PAC-compatible wrapper around ``OpponentMoveObservationSpace``."""
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(OpponentMoveObservationSpace())
 
 
@@ -2077,15 +2098,15 @@ class TokenizedObservationSpace(ObservationSpace):
         self,
         base_obs_space: ObservationSpace,
         tokenizer: PokemonTokenizer,
-    ):
+    ) -> None:
         self.base_obs_space = base_obs_space
         self.tokenizer = tokenizer
 
-    def reset(self):
+    def reset(self) -> None:
         self.base_obs_space.reset()
 
     @property
-    def gym_space(self):
+    def gym_space(self) -> gym.spaces.Dict:
         tokenizable = self.base_obs_space.tokenizable
         base_space = copy.deepcopy(self.base_obs_space.gym_space)
         new_space_dict = {
@@ -2105,7 +2126,7 @@ class TokenizedObservationSpace(ObservationSpace):
 
         return gym.spaces.Dict(new_space_dict)
 
-    def state_to_obs(self, state: UniversalState):
+    def state_to_obs(self, state: UniversalState) -> Dict[str, np.ndarray]:
         """Build base observation, then tokenize all keys listed in ``tokenizable``.
 
         For each tokenizable key ``K``, the original text array is popped from
@@ -2167,7 +2188,7 @@ class WorldModelObservationSpace(ObservationSpace):
     NUM_OPPONENT_FAINTED_SLOTS = 5
 
     @property
-    def gym_space(self):
+    def gym_space(self) -> gym.spaces.Dict:
         return gym.spaces.Dict(
             {
                 "numbers": gym.spaces.Box(
