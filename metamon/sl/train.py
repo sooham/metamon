@@ -260,7 +260,7 @@ def train(args):
     wandb_run: Optional["wandb"] = None
     if args.wandb and _wandb_available:
         wandb_run = wandb.init(
-            project=args.wandb_project or "metamon-sl",
+            project=args.wandb_project or "metamon-" + "-".join(args.formats),
             name=args.wandb_name or save_dir.name,
             config={
                 **model_cfg,
@@ -460,7 +460,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb", action="store_true",
                         help="Enable Weights & Biases logging.")
     parser.add_argument("--wandb_project", type=str, default=None,
-                        help="Wandb project name (default: metamon-sl).")
+                        help="Wandb project name (default: metamon-<format>).")
     parser.add_argument("--wandb_name", type=str, default=None,
                         help="Wandb run name (default: save_dir basename).")
     args = parser.parse_args()
