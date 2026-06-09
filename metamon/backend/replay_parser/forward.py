@@ -185,8 +185,10 @@ class SimProtocol:
     }
 
     # https://bulbapedia.bulbagarden.net/wiki/Category:Item-manipulating_moves
-    # we are missing some of these; lookout for UnhandledFromMoveItemLogic
-    ITEM_APPROVED_SKIP = {"Knock Off", "Recycle", "Fling", "Corrosive Gas"}
+    # Moves whose -item/-enditem messages can be safely ignored by the forward pass
+    # (the backward fill will propagate item info from the predicted final turn).
+    # Missing: Natural Gift (no protocol message at all — needs _parse_move handling).
+    ITEM_APPROVED_SKIP = {"Knock Off", "Recycle", "Fling", "Corrosive Gas", "Incinerate"}
     ITEM_UNNAMED_STOLEN = {"Trick", "Switcheroo"}
     ITEM_NAMED_STOLEN = {"Thief", "Covet"}
     ITEMS_THAT_SWITCH_THE_USER_OUT = {"Eject Button", "Eject Pack"}
@@ -216,7 +218,11 @@ class SimProtocol:
         "Quark Drive",
         "Orichalcum Pulse",
         "Hadron Engine",
+        "Hunger Switch",
         "Poison Puppeteer",
+        "Tera Shell",
+        "Tera Shift",
+        "Teraform Zero",
     }
 
     def __init__(self, replay: ParsedReplay):
