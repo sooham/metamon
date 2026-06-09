@@ -56,6 +56,12 @@ class ReplayParser:
 
     @staticmethod
     def clean_log(raw_replay_json):
+        """
+        Nice cleaning function which turns ugly one line battle logs 
+        i.e |player|p1|mist98895|209\n|player|p2|typhlosion10919|#typhlosion10919\n|game ... 
+        into a list of list structure 
+        i.e [["player", "p1", "mist98895", "209"], ...] 
+        """
         log = [
             [x.strip() for x in line.split("|")[1:]]
             for line in raw_replay_json["log"].split("\n")

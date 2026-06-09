@@ -21,9 +21,24 @@ from metamon.backend.replay_parser.str_parsing import move_name, pokemon_name
 
 
 class Nothing(Enum):
-    """
-    `None` means "unknown", while these values mean
-    "Known to be missing or N/A"
+    """Sentinel values for "known to be absent," distinct from ``None`` (= unknown).
+
+    ``None`` means the parser hasn't seen enough information yet.  These enum
+    members mean the parser *has* confirmed the slot is empty.
+
+    Where each value is used:
+
+    * ``NO_ITEM`` — consumed by :meth:`Pokemon.reveal_item` and
+      :meth:`UniversalPokemon.universal_items`; distinguishes "confirmed no item"
+      from "haven't seen the item reveal message yet."
+    * ``NO_ABILITY`` — same pattern for abilities; used by
+      :meth:`Pokemon.reveal_ability` and :meth:`UniversalPokemon.universal_abilities`.
+    * ``NO_WEATHER`` — filler for turns before weather is set or after it clears;
+      consumed by :meth:`UniversalState.universal_weather`.
+    * ``NO_STATUS`` — filler for Pokémon that haven't taken a status condition;
+      consumed by :meth:`UniversalPokemon.universal_status`.
+    * ``NO_TERA_TYPE`` — filler for Pokémon in generations without Tera or before
+      the Tera type is revealed; consumed by :meth:`UniversalPokemon.universal_types`.
     """
 
     NO_ITEM = auto()
@@ -34,41 +49,106 @@ class Nothing(Enum):
 
 
 class BackwardMarkers(Enum):
-    """
-    Mark info with "all we know is that we definitely can't know this"
+    """Sentinel for "we know we can't know this" during the backward pass.
+
+    During :meth:`Pokemon.backfill_info`, when a future turn has *less* info than
+    the current turn (e.g. a Pokémon was revealed in the current turn but its
+    status hasn't been re-sent yet), the backward pass marks the slot with
+    ``FORCE_UNKNOWN``.  This prevents the backward pass from overwriting known
+    data with stale ``None`` values.
+
+    Used by :func:`unknown` and checked in every ``_fill_if`` call inside
+    ``backfill_info``.
     """
 
     FORCE_UNKNOWN = auto()
 
 
 def unknown(x: Any) -> bool:
-    """
-    Check if a value is considered "unknown"
+    """Return ``True`` if *x* is ``None`` or ``BackwardMarkers.FORCE_UNKNOWN``.
+
+    Used throughout :meth:`Pokemon.backfill_info` to decide whether a field
+    should be filled from a future turn's copy of the same Pokémon.
     """
     return x is None or x == BackwardMarkers.FORCE_UNKNOWN
 
 
-# organize some info for tracking down edge cases
+# ── Named-tuple helpers for tracking targeting relationships ──────────────────
+# These are used by the forward parser to follow which Pokémon targeted which
+# other Pokémon with what move.  They support Mimic, Transform, Skill Swap,
+# Trick, and forced-switch logic.
 
 TargetedBy = namedtuple("TargetedBy", ["pokemon", "move"])
+"""Represents the Pokémon and move that *targeted* a given Pokémon.
+
+Stored in ``Pokemon.last_targeted_by``.  Read by :meth:`Pokemon.mimic` to
+identify which move was copied.
+"""
 
 Targeting = namedtuple("Targeting", ["pokemon", "move"])
+"""Represents a Pokémon and the move it *used* to target another Pokémon.
+
+Stored in ``Pokemon.last_target``.  Checked during Mimic resolution and when
+tracking the source of Transform.
+"""
 
 Replacement = namedtuple("Replacement", ["replaced", "replaced_with", "turn_range"])
+"""Records a Zoroark/Zorua Illusion replacement event.
+
+* ``replaced`` — the disguise Pokémon that was shown before Illusion broke.
+* ``replaced_with`` — the real Zoroark/Zorua that was revealed by ``|replace|``.
+* ``turn_range`` — the range of turns (inclusive) during which the illusion was
+  active, stored as a ``(first_turn, last_turn)`` tuple.
+
+Populated by ``_parse_replace`` in :mod:`~metamon.backend.replay_parser.forward`;
+consumed by ``_resolve_zoroark`` in :mod:`~metamon.backend.replay_parser.backward`.
+"""
 
 
 class Winner(Enum):
+    """Battle outcome from the spectator's point of view."""
+
     TIE = 0
+    """The battle ended in a tie (``|tie`` message)."""
     PLAYER_1 = 1
+    """Player 1 won (``|win|p1name``)."""
     PLAYER_2 = 2
+    """Player 2 won (``|win|p2name``)."""
 
 
 class Boosts:
-    """
-    Stat stage boosts
+    """Stat stage boosts for a Pokémon (range [-6, +6] for each stat).
+
+    Tracks seven stat stages: atk, spa, def, spd, spe, accuracy, evasion.
+    Gen 1 only uses the first five; accuracy/evasion appear in later gens.
+
+    Used by:
+    * :class:`Pokemon` — each Pokémon carries a ``Boosts`` instance that is
+      mutated in place during ``|-boost|`` / ``|-unboost|`` messages.
+    * :meth:`Pokemon.on_switch_out` — resets boosts to zero on switch.
+    * :meth:`Pokemon.fresh_like` — resets for fresh copies.
+    * :meth:`UniversalPokemon.from_ReplayPokemon` / :meth:`UniversalPokemon.from_Pokemon`
+      — reads boost stages into the universal format.
+
+    Edge cases / limitations:
+    * ``|-swapboost|`` (Heart Swap, Guard Swap, Power Swap) is handled at the
+      protocol level, not in this class.  The parser reads the message and
+      manually swaps boost attrs between two Pokémon.
+    * ``|-clearboost|`` resets all boosts.  The parser handles this by
+      reassigning ``pokemon.boosts = Boosts()`` rather than zeroing each
+      attribute individually.
     """
 
-    def __init__(self, atk_=0, spa_=0, def_=0, spd_=0, spe_=0, accuracy_=0, evasion_=0):
+    def __init__(
+        self,
+        atk_: int = 0,
+        spa_: int = 0,
+        def_: int = 0,
+        spd_: int = 0,
+        spe_: int = 0,
+        accuracy_: int = 0,
+        evasion_: int = 0,
+    ) -> None:
         self.atk_: int = atk_
         self.spa_: int = spa_
         self.def_: int = def_
@@ -78,18 +158,31 @@ class Boosts:
         self.evasion_: int = evasion_
 
     @property
-    def stat_attrs(self):
+    def stat_attrs(self) -> List[str]:
+        """Return the list of attribute names (with trailing underscores).
+
+        Used to iterate over all seven boost fields in
+        :meth:`UniversalPokemon.from_ReplayPokemon`.
+        """
         return [
             f"{s}_" for s in ["atk", "spa", "def", "spd", "spe", "accuracy", "evasion"]
         ]
 
-    def set_to_with_str(self, s: str, value: int):
+    def set_to_with_str(self, s: str, value: int) -> None:
+        """Set a boost stage directly by stat name string.
+
+        Raises :class:`RareValueError` if *s* is not a recognised stat.
+        """
         if hasattr(self, f"{s}_"):
             setattr(self, f"{s}_", value)
         else:
             raise RareValueError(f"Unknown stat: '{s}'")
 
-    def change_with_str(self, s: str, value: int):
+    def change_with_str(self, s: str, value: int) -> None:
+        """Increment/decrement a boost stage by *value*, clamped to [-6, 6].
+
+        Raises :class:`RareValueError` if *s* is not a recognised stat.
+        """
         try:
             stage = getattr(self, f"{s}_")
         except AttributeError:
@@ -98,10 +191,12 @@ class Boosts:
             # stat "stages" are always in [-6, 6]
             setattr(self, f"{s}_", min(max(stage + value, -6), 6))
 
-    def get_boost(self, s: str):
+    def get_boost(self, s: str) -> int:
+        """Return the current stage for stat *s*."""
         return getattr(self, f"{s}_")
 
-    def to_dict(self):
+    def to_dict(self) -> Dict[str, int]:
+        """Serialize to a plain dict (consumed by ``Boosts.to_dict()`` serialization)."""
         return {
             "atk": self.atk_,
             "spa": self.spa_,
@@ -114,11 +209,39 @@ class Boosts:
 
 
 class Move(PEMove):
-    """
-    A wrapper around poke-env's Move object with its own pp counter
+    """A wrapper around poke-env's :class:`~poke_env.environment.Move` with its own PP counter.
+
+    Poke-env manages PP globally within a battle; the replay parser needs
+    per-Pokémon PP tracking because it reads a spectator log and must
+    reconstruct each Pokémon's PP state independently.
+
+    Where it's used:
+
+    * :class:`Pokemon` — each Pokémon holds a ``moves`` dict of ``Move`` objects.
+    * :meth:`Pokemon.reveal_move` — creates new ``Move`` instances when a move
+      is first seen.
+    * :meth:`Pokemon.use_move` — calls ``move.set_pp()`` after each use.
+    * :meth:`Pokemon.backfill_info` — propagates PP from future turns backwards.
+    * :meth:`Move.from_transform` — creates fresh copies for Transform.
+
+    Edge cases / limitations:
+
+    * **PP tracking is approximate.**  The parser does not know about PP Ups
+      (which increase max PP above the base value).  Off-by-one PP errors are
+      expected and handled by discretization in downstream observation spaces.
+    * **Mimic / Transform PP** — these moves copy from another Pokémon; the
+      copied move starts with 5 PP.  This is handled in :meth:`Pokemon.mimic`
+      and :meth:`Pokemon.transform` / :meth:`Move.from_transform`.
+    * **Gen 1 PP rollover** — partial-trapping moves (Wrap, Bind, Fire Spin, Clamp)
+      cause PP to roll over from 0 to 63 after first use.  The parser handles
+      this with special constants in :mod:`~metamon.backend.replay_parser.forward`.
+    * **Foreign-summoned moves** (Metronome, Sleep Talk, etc.) — the move
+      revealed by these is suppressed from being added to ``had_moves`` because
+      the user doesn't actually know it.  This is managed at the protocol level,
+      not in this class.
     """
 
-    def __init__(self, name: str, gen: int):
+    def __init__(self, name: str, gen: int) -> None:
         # in an attempt to handle `choice` messages that give names in a case/space insensitive format,
         # we'll go from the name parsed from the replay --> dex id --> dex json's official move name
         lookup_name = move_name(name)
@@ -142,11 +265,12 @@ class Move(PEMove):
         self.pp = self.current_pp  # split from poke-env PP counter
         self.maximum_pp = self.pp
 
-    def set_pp(self, pp: int):
+    def set_pp(self, pp: int) -> None:
+        """Set the current PP (also updates the underlying poke-env counter)."""
         self.pp = pp
         self._current_pp = pp
 
-    def __deepcopy__(self, memo):
+    def __deepcopy__(self, memo: dict) -> "Move":
         # poke-env stores a ton of data in each Move. it is faster
         # to manually copy fields than to go through __init__ (which
         # hits the dex JSON and entry properties).
@@ -170,22 +294,68 @@ class Move(PEMove):
         memo[id(self)] = new
         return new
 
-    def from_transform(self):
+    def from_transform(self) -> "Move":
+        """Create a fresh copy of this move with 5 PP for Transform.
+
+        When a Pokémon uses Transform, it copies the opponent's moves
+        but starts with only 5 PP each.  This method creates that copy.
+
+        Called by :meth:`Pokemon.transform`.
+        """
         new_move = Move(name=self.name, gen=self.gen_)
         new_move.set_pp(5)
         new_move.maximum_pp = 5
         return new_move
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Move):
+            return NotImplemented
         return self.name == other.name and self.pp == other.pp
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"{self.name} ({self.pp})"
 
 
 class Pokemon:
+    """A single Pokémon during a parsed replay.
 
-    def __init__(self, name: str, lvl: int, gen: int):
+    Tracks everything the parser learns about a Pokémon: species, stats,
+    moves, item, ability, HP, status, boosts, effects, Transform state,
+    foreign-move tracking, and targeting relationships.
+
+    Where it's used:
+
+    * :class:`Turn` — each turn holds 12 ``Pokemon`` slots (6 per side).
+    * :meth:`SimProtocol.interpret_message` in :mod:`~metamon.backend.replay_parser.forward`
+      — mutates ``Pokemon`` instances as messages reveal new info.
+    * :meth:`Pokemon.backfill_info` in :mod:`~metamon.backend.replay_parser.backward`
+      — propagates known info from later turns backward.
+    * :meth:`UniversalPokemon.from_ReplayPokemon` in :mod:`metamon.interface`
+      — converts to the backend-agnostic format.
+    * :meth:`Pokemon.metamon_to_poke_env` — converts to poke-env's ``Pokemon``
+      for online battles.
+
+    Edge cases / limitations:
+
+    * **Zoroark Illusion** — the spectator sees the disguise species.  When
+      ``|replace|`` fires, the parser must rewind and reassign moves/items/abilities.
+      This is handled at the Turn level via :attr:`Turn.replacements_1` /
+      :attr:`Turn.replacements_2` and ``_resolve_zoroark`` in the backward pass.
+    * **Transform** — the transformed Pokémon's ``transformed_into`` pointer is
+      set, but name/stats/ability/type are NOT changed here.  The backward pass
+      (`_resolve_transforms`) propagates moves learned during transformation.
+    * **Mimic** — temporarily replaces a move; ``move_change_to_from`` tracks
+      the mapping so the original can be restored on switch-out.
+    * **Moveset size** — ``had_moves`` can exceed 4 entries due to Transform/Mimic
+      and Zoroark.  Downstream consumers truncate to 4.
+    * **PP tracking** — approximate (no PP Ups data).  Off-by-one errors are
+      expected and handled by discretization in observation spaces.
+    * **Foreign-summoned moves** — moves revealed by Metronome, Mirror Move,
+      etc. are NOT added to ``had_moves`` because the user doesn't actually
+      know them.  Tracked via ``pending_foreign_move``.
+    """
+
+    def __init__(self, name: str, lvl: int, gen: int) -> None:
         # basic info
         self.name: Optional[str] = None  # changes on forme change
         self.had_name: Optional[str] = None  # never changes
@@ -235,7 +405,7 @@ class Pokemon:
         self._pending_foreign_charge_remaining: int = 0
         self.update_pokedex_info(name)
 
-    def __deepcopy__(self, memo):
+    def __deepcopy__(self, memo: dict) -> "Pokemon":
         # Avoid Python's default recursive __dict__ traversal.
         # Most fields are immutable strings/ints/enums — share them.
         # Only deep-copy the few mutable complex fields (Move dicts,
@@ -263,16 +433,18 @@ class Pokemon:
         new.transformed_into = copy.deepcopy(self.transformed_into, memo)
         return new
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         # the unique id is what ultimately matters. the showdown messages
         # ID pokemon by species/form/level/status, and we need to map that
         # info to the correct Pokemon object.
         if other is None:
             return False
+        if not isinstance(other, Pokemon):
+            return NotImplemented
         return self.unique_id == other.unique_id
 
     @staticmethod
-    def _lookup_pokedex_info(name: str, gen: int):
+    def _lookup_pokedex_info(name: str, gen: int) -> Dict[str, Any]:
         lookup_name = pokemon_name(name)
         # Try the current gen first, then fall back to progressively higher gens.
         # Some replays tagged with a low-gen format (e.g. gen1ou) may contain
@@ -307,7 +479,12 @@ class Pokemon:
 
         return info
 
-    def update_pokedex_info(self, name: str):
+    def update_pokedex_info(self, name: str) -> None:
+        """Look up *name* in the Pokédex and set species, types, base stats,
+        and auto-reveal single-ability / required-item / required-ability / tera.
+
+        Called during ``__init__`` and again on forme changes.
+        """
         pokedex_info = self._lookup_pokedex_info(name, gen=self.gen)
         self.name = pokedex_info["name"]
         if self.had_name is None:
@@ -333,8 +510,15 @@ class Pokemon:
         if required_tera is not None and self.gen == 9:
             self.tera_type = required_tera
 
-    def on_switch_out(self):
-        # many temporary effects and changes revert on switch out
+    def on_switch_out(self) -> None:
+        """Reset temporary state when this Pokémon switches out.
+
+        Clears: boosts, Transform, foreign-move tracking, moves (restored
+        from ``had_moves``), active ability (restored from ``had_ability``),
+        type (restored from ``had_type``), effects, and Mimic mappings.
+
+        Called by :meth:`SimProtocol._parse_switch` in the forward parser.
+        """
         self.boosts = Boosts()
         self.transformed_into = None
         self.pending_foreign_move = None
@@ -345,16 +529,29 @@ class Pokemon:
         self.type = self.had_type
         self.effects = {}
 
-    def on_end_of_turn(self):
-        # "within-turn state" is reset
+    def on_end_of_turn(self) -> None:
+        """Reset within-turn state at the end of each turn.
+
+        Clears: ``last_target``, ``last_targeted_by``, ``protected``,
+        ``tricking``, ``transformed_this_turn``.
+
+        Called by :meth:`Turn.on_end_of_turn`.
+        """
         self.last_target = None
         self.last_targeted_by = None
         self.protected = False
         self.tricking = None
         self.transformed_this_turn = False
 
-    def fresh_like(self):
-        # returns a version of this pokemon before it entered a battle
+    def fresh_like(self) -> "Pokemon":
+        """Return a deep copy of this Pokémon as it was *before* entering battle.
+
+        Resets boosts, status, effects, HP, Transform, foreign-move tracking,
+        ability, item, moves, and type.  Used by the backward pass to create
+        fresh copies for team prediction / final-turn filling.
+
+        Called by :class:`~metamon.backend.replay_parser.backward.TeamPredictor`.
+        """
         fresh = copy.deepcopy(self)
         fresh.boosts = Boosts()
         fresh.status = Nothing.NO_STATUS
@@ -371,8 +568,10 @@ class Pokemon:
         fresh.on_end_of_turn()
         return fresh
 
-    def mimic(self, move_name: str):
+    def mimic(self, move_name: str) -> None:
         """
+        Handle Mimic: replace the Mimic move slot with a copy of the targeted move.
+
         TODO/Dev note: Mimic is really hard from the replay POV and this isn't perfect.
 
         - Copying moves that we actually already knew, but had not yet revealed...
@@ -411,10 +610,25 @@ class Pokemon:
         self.moves[copied_move.name] = copied_move
 
     def get_pp_for_move_name(self, move_name: str) -> Optional[int]:
+        """Return the current PP of *move_name* if known, or ``None``."""
         if move_name in self.moves:
             return self.moves[move_name].pp
 
-    def reveal_move(self, move: Move):
+    def reveal_move(self, move: Move) -> None:
+        """Add *move* to this Pokémon's ``moves`` and ``had_moves`` dicts.
+
+        No-ops for ``Struggle``, ``Recharge``, and ``Fight`` (Gen 1 attack
+        button), which are not real moves.
+
+        If the Pokémon is transformed, creates a 5-PP Transform copy instead
+        of the full-PP original.
+
+        Called from :meth:`SimProtocol._parse_move` when a move usage is
+        observed.
+
+        Edge case: Transform/Mimic/Zoroark can cause ``had_moves`` to exceed
+        4 entries.  Downstream consumers truncate to 4.
+        """
         if move.name in {"Struggle", "Recharge", "Fight"}:
             return
 
@@ -427,20 +641,52 @@ class Pokemon:
                 self.moves[move.name] = move
                 self.had_moves[move.name] = copy.deepcopy(move)
 
-    def reveal_ability(self, ability: str):
+    def reveal_ability(self, ability: str | Nothing) -> None:
+        """Set the active ability and (if not yet known) the permanent ability.
+
+        If the Pokémon is transformed, ``had_ability`` is NOT overwritten
+        (the transform is temporary).
+
+        Called from :meth:`update_pokedex_info` (single-ability species) and
+        from :meth:`SimProtocol._parse_switch` / ``|-ability|`` messages.
+
+        Edge case: abilities that overwrite other abilities (Lingering Aroma,
+        Mummy, Wandering Spirit) change ``active_ability`` without changing
+        ``had_ability``.  The parser tracks this via ``[from] ability: [of]``
+        messages.
+        """
         self.active_ability = ability
         if self.had_ability is None and not self.transformed_into:
             self.had_ability = ability
 
-    def reveal_item(self, item: str):
+    def reveal_item(self, item: str | Nothing) -> None:
+        """Set the active item and (if not yet known) the permanent item.
+
+        Called from :meth:`update_pokedex_info` (species with required items)
+        and from ``|-item|`` messages.
+
+        Edge case: Trick/Switcheroo change ``active_item`` without changing
+        ``had_item``.  The parser tracks this via ``tricking`` on the Pokémon.
+        """
         self.active_item = item
         if self.had_item is None:
             self.had_item = item
 
-    def transform(self, other):
-        # too complicated to change the name, stats, ability, & types here.
-        # only change things that won't carry forward after switching out.
-        # we try to take care of the rest at the very end (`resolve_transforms`)
+    def transform(self, other: "Pokemon") -> None:
+        """Handle Transform: copy the target's boosts, ability, and moves.
+
+        **Name, stats, ability, and types are NOT changed here** — those are
+        handled later by ``_resolve_transforms`` in the backward pass.
+
+        Moves are copied with 5 PP each (via :meth:`Move.from_transform`).
+        Sets ``transformed_this_turn = True`` and ``transformed_into = other``.
+
+        Called by :meth:`SimProtocol._parse_move` when the move name is
+        ``"transform"``.
+
+        Edge case: if the target itself later transforms, the backward pass
+        must resolve the chain.  Only the final target's moves are propagated.
+        """
         self.transformed_this_turn = True
         self.transformed_into = other
         self.boosts = copy.deepcopy(other.boosts)
@@ -455,7 +701,24 @@ class Pokemon:
     def last_used_move_pp(self) -> Optional[int]:
         return self.last_used_move.pp if self.last_used_move is not None else None
 
-    def use_move(self, move: Move, pp_used: int):
+    def use_move(self, move: Move, pp_used: int) -> None:
+        """Record that this Pokémon used *move*, consuming *pp_used* PP.
+
+        Sets ``last_used_move``, reveals the move (if not already known),
+        and subtracts PP.  PP tracking uses ``max(0, new_pp)`` to avoid
+        negative values from approximate tracking (no PP Ups data).
+
+        Called by :meth:`SimProtocol._parse_move`.
+
+        Edge cases:
+
+        * **Struggle** — PP is not consumed.
+        * **Foreign-summoned moves** (Metronome, etc.) — the revealed move
+          is not added to ``had_moves`` (``reveal_move`` is called but the
+          move was suppressed earlier by the protocol handler).
+        * **PP rollover** (Gen 1 partial trapping) — handled by the caller
+          passing a special ``pp_used`` value.
+        """
         self.last_used_move = move
         if move.name == "Struggle":
             return
@@ -477,10 +740,26 @@ class Pokemon:
         # across turns without deep-copying.
         _subtract_pp(self.moves[move.name], pp_used)
 
-    def backfill_info(self, future_mon):
+    def backfill_info(self, future_mon: "Pokemon") -> None:
         """
         Update this Pokemon's info based on a version of itself from later in the battle
-        (when we've hopefully learned more about it)
+        (when we've hopefully learned more about it).
+
+        Propagates: had_item, had_ability, had_name, max_hp, current_hp, tera_type,
+        and any moves discovered later.  Movesets are capped at 4 to handle
+        Transform/Mimic/Zoroark overflow.
+
+        Called exclusively from :mod:`~metamon.backend.replay_parser.backward`
+        during the backward-fill pass.
+
+        Edge cases:
+
+        * **Moveset overflow** — if backfill produces >4 moves (Zoroark, Transform),
+          a warning is emitted and only the first 4 are kept.
+        * **Mimic moves** — ``move_change_to_from`` mappings prevent Mimic-replaced
+          moves from being incorrectly restored during backward fill.
+        * **Transformed Pokémon** — if ``transformed_into`` is set, moves are NOT
+          backfilled (they belong to the transform target, not this Pokémon).
         """
         if future_mon != self:
             raise ValueError(
@@ -546,11 +825,28 @@ class Pokemon:
     @staticmethod
     def identify_from_details(
         s: str, gen: int, get_base_species: bool = False
-    ) -> tuple[str, int]:
+    ) -> Tuple[str, int]:
         """
-        pokemon info from showdown `DETAILS` arg
+        Parse a Showdown ``DETAILS`` string into (species_name, level).
 
-        https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md#identifying-pok%C3%A9mon
+        Removes shiny marker, Tera type suffix, gender suffix, and level suffix.
+        Falls back to higher-generation Pokédex if the species doesn't exist in
+        the current gen (same strategy as :meth:`_lookup_pokedex_info`).
+
+        Reference: `SIM-PROTOCOL § Identifying Pokémon
+        <https://github.com/smogon/pokemon-showdown/blob/master/sim/SIM-PROTOCOL.md#identifying-pok%C3%A9mon>`_
+
+        Args:
+            s: The raw DETAILS string from a ``|switch|`` or ``|poke|`` message.
+            gen: Generation number for Pokédex resolution.
+            get_base_species: If ``True``, return the base species (forme-stripped)
+                instead of the specific forme name.
+
+        Returns:
+            A ``(name, level)`` tuple.
+
+        Used by :meth:`SimProtocol._parse_switch` and
+        :meth:`SimProtocol._parse_poke` in the forward parser.
         """
         name = s.replace(", shiny", "")  # chop off shiny
         name = re.sub(r",\s*tera:.*$", "", name)  # chop off tera info
@@ -580,24 +876,29 @@ class Pokemon:
 
         return name_out, lvl
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"{self.name} - {self.active_ability} - {self.active_item} : {self._moveset_str}"
 
     @property
-    def _moveset_str(self):
+    def _moveset_str(self) -> str:
+        """Space-separated string of move names and PP for debug display."""
         return " ".join(str(m) for m in self.moves.values())
 
-    def start_effect(self, effect: PEEffect):
+    def start_effect(self, effect: PEEffect) -> None:
         if effect not in self.effects:
             self.effects[effect] = 0
         elif effect.is_action_countable:
             self.effects[effect] += 1
 
-    def end_effect(self, effect: PEEffect):
+    def end_effect(self, effect: PEEffect) -> None:
+        """Remove a volatile effect.
+
+        Called from ``|-end|`` messages.
+        """
         if effect in self.effects:
             self.effects.pop(effect)
 
-    def __str__(self):
+    def __str__(self) -> str:
         items = [
             f"name={self.name}",
             f"\t\tlvl={self.lvl}",
@@ -613,7 +914,7 @@ class Pokemon:
         ]
         return "\n".join(items)
 
-    def fill_from_PokemonSet(self, pokemon_set):
+    def fill_from_PokemonSet(self, pokemon_set) -> "Pokemon":
         """
         Fill unknown details based on the outputs of our team prediction module.
         """
@@ -667,6 +968,29 @@ class Pokemon:
 
 @dataclass
 class Action:
+    """A single player action during a turn.
+
+    Represents one move, switch, no-op, or revival action.  Every turn has
+    up to 2 action slots per player (one per active Pokémon in doubles).
+
+    Where it's used:
+
+    * :attr:`Turn.moves_1` / :attr:`Turn.moves_2` — the parsed moves.
+    * :attr:`Turn.choices_1` / :attr:`Turn.choices_2` — raw ``|choice|`` data.
+    * :class:`Subturn` — forced-switch sub-actions.
+    * :class:`UniversalAction.from_ReplayAction` — converts to the universal index.
+
+    Edge cases / limitations:
+
+    * **Zoroark Illusion** — actions may be attributed to the disguise Pokémon
+      rather than the real Zoroark.  The backward pass fixes this via
+      ``_resolve_zoroark``.
+    * **Missing actions** — when a Pokémon can't move (paralysis, sleep, flinch),
+      the action slot is ``None``.  The universal converter maps this to index -1.
+    * **Tera + move** — when a move is Tera-boosted, ``is_tera=True`` and the
+      move index is shifted by +9 in the universal action space.
+    """
+
     name: str
     user: Optional[Pokemon]
     target: Optional[Pokemon]
@@ -675,10 +999,10 @@ class Action:
     is_tera: bool = False
     is_revival: bool = False
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Action: {self.name}"
 
-    def __str__(self):
+    def __str__(self) -> str:
         items = [
             f"name={self.name}",
             f"is_switch={self.is_switch}",
@@ -689,6 +1013,34 @@ class Action:
 
 @dataclass
 class Turn:
+    """A single turn (or subturn) during a parsed battle.
+
+    Holds both players' teams, active Pokémon, moves, choices, weather,
+    side conditions, field effects, Zoroark replacements, and forced-switch
+    subturns.  Every turn number contains a complete snapshot.
+
+    Where it's used:
+
+    * :attr:`ParsedReplay.turnlist` — the full turn-by-turn battle transcript.
+    * :meth:`SimProtocol.interpret_message` — mutates the current turn.
+    * :meth:`Turn.create_next_turn` — called at ``|turn|`` boundaries.
+    * :meth:`Turn.create_subturn` — called for forced switches (U-turn, etc.).
+    * :meth:`Turn.get_pokemon_from_str` — resolves Showdown slot IDs to Pokémon.
+    * :meth:`POVReplay._align_states_actions` — flattens turns into (state, action) pairs.
+
+    Edge cases:
+
+    * **Subturns** — forced switches create subturns in :attr:`Turn.subturns`.
+      Each subturn is a partial Turn with a single forced-switch action.
+    * **Zoroark replacements** — :attr:`Turn.replacements_1` /
+      :attr:`Turn.replacements_2` record Illusion break events for the
+      backward pass.
+    * **Doubles** — ``active_pokemon_1`` and ``active_pokemon_2`` have 2 slots.
+      Slot index 1 (``b``) is only used in doubles formats.
+    * **Team preview** — :attr:`Turn.teampreview_1` / :attr:`Turn.teampreview_2`
+      hold the 6 Pokémon shown before turn 1.
+    """
+
     pokemon_1: List[Optional[Pokemon]] = field(default_factory=lambda: [None] * 6)
     pokemon_2: List[Optional[Pokemon]] = field(default_factory=lambda: [None] * 6)
     active_pokemon_1: List[Optional[Pokemon]] = field(
@@ -986,6 +1338,20 @@ class Turn:
 
 @dataclass
 class Subturn:
+    """A forced-switch action embedded within a turn.
+
+    Created by :meth:`Turn.mark_forced_switch` when a move or item forces a
+    switch (U-turn, Volt Switch, Eject Button, Red Card, Roar, Dragon Tail,
+    Revival Blessing, etc.).
+
+    The subturn starts with ``turn=None`` (unfilled) and is later populated
+    with a deep-copied Turn by :meth:`SimProtocol._fill_subturn` when the
+    switch-in message arrives.
+
+    Edge case: some forced switches *fail* (e.g. U-turn into Protect).  The
+    parser detects unfilled subturns and emits warnings rather than crashing.
+    """
+
     turn: Optional[Turn]
     team: int
     slot: int
@@ -993,17 +1359,40 @@ class Subturn:
 
     @property
     def unfilled(self) -> bool:
+        """True if the subturn has not yet been filled with a Turn copy."""
         return self.turn is None
 
     def matches_slot(self, team: int, slot: int) -> bool:
+        """Check if this subturn targets the given *team* and *slot*."""
         return self.team == team and self.slot == slot
 
     def fill_turn(self, turn: Turn) -> None:
+        """Populate this subturn with a copy of *turn*."""
         self.turn = turn
 
 
 @dataclass
 class ParsedReplay:
+    """Top-level container for a fully parsed battle replay.
+
+    Holds metadata (game ID, format, players, ratings, generation, rules,
+    winner) and the full turn-by-turn trajectory in :attr:`turnlist`.
+
+    Where it's used:
+
+    * :func:`ReplayParser.parse_replay` — creates this after forward + backward fill.
+    * :meth:`ParsedReplay.get_pov_turnlist` — extracts one player's POV.
+    * :class:`POVReplay` — converts to one-sided (WIN/LOSS) trajectory files.
+    * :attr:`check_warnings` — accumulates :class:`WarningFlags` during parsing
+      to flag replays with known edge cases (Zoroark, Transform, etc.).
+
+    Edge cases:
+
+    * **``showteam_data``** — when present, provides exact team data from
+      ``|showteam|`` messages, used by the backward pass instead of
+      usage-stats-based prediction.
+    """
+
     gameid: str
     time_played: datetime
     format: Optional[str] = None
@@ -1019,18 +1408,25 @@ class ParsedReplay:
     # information into forward-fill training states.
     showteam_data: Optional[dict] = None
 
-    def __getitem__(self, i):
+    def __getitem__(self, i: int) -> Turn:
         return self.turnlist[i]
 
     def has_warning(self, warning: WarningFlags) -> bool:
+        """Check if *warning* was raised during parsing."""
         return warning in self.check_warnings
 
     def add_warning(self, warning: WarningFlags) -> None:
+        """Record a warning flag (idempotent)."""
         self.check_warnings.add(warning)
 
     def get_pov_turnlist(
         self, from_p1_pov: bool, start_from_turn: int = 0
-    ) -> list[Turn]:
+    ) -> List[Turn]:
+        """Return turns from one player's POV, with subturns flattened in.
+
+        Skips subturns belonging to the other player.  Used by
+        :class:`POVReplay` to build one-sided trajectories.
+        """
         flat = []
         for turn in self.turnlist[start_from_turn:]:
             for subturn in turn.subturns:
@@ -1055,7 +1451,7 @@ class ParsedReplay:
     def replay_url(self) -> str:
         return f"https://replay.pokemonshowdown.com/{self.gameid}"
 
-    def __str__(self):
+    def __str__(self) -> str:
         turnlist_str = "\n\n\t".join(
             [f"Turn {i} -> {str(x)}" for i, x in enumerate(self.turnlist)]
         )
@@ -1078,24 +1474,51 @@ class ParsedReplay:
 
 @dataclass
 class ReplayState:
-    format: str # i.e GEN9OU
-    force_switch: bool # is the current player forced to switch? 
+    """A single state from one player's POV, sampled from a ``ParsedReplay``.
+
+    This is the intermediate representation between a ``ParsedReplay`` (spectator
+    view) and a :class:`~metamon.interface.UniversalState` (backend-agnostic).
+    It captures everything visible to one player at one timestep.
+
+    Where it's used:
+
+    * :class:`POVReplay` — generates ``ReplayState`` objects for the WIN and
+      LOSS trajectories.
+    * :meth:`UniversalState.from_ReplayState` — converts to the universal format.
+    * :class:`~metamon.data.parsed_replay_dset.ParsedReplayDataset` — loads
+      these from disk as (state, action) pairs.
+
+    Fields are one-sided: ``active_pokemon`` is the player's, ``opponent_active_pokemon``
+    is the enemy's.  Bench, fainted, and team preview follow the same convention.
+
+    Edge cases:
+
+    * **``opponent_teampreview``** — may be empty for old datasets (pre-v3 format).
+    * **``player_team`` / ``opponent_team``** — 6-slot lists with ``None`` for
+      unrevealed Pokémon.
+    * **``force_switch``** — ``True`` when the player MUST switch (U-turn hit,
+      Eject Button activation, etc.).  During these states only switch indices
+      (4–8) are considered legal actions.
+    """
+
+    format: str  # i.e GEN9OU
+    force_switch: bool  # is the current player forced to switch?
 
     active_pokemon: Pokemon
     opponent_active_pokemon: Pokemon
 
     available_switches: List[Pokemon]
     player_team: List[Pokemon]  # full player party (6 slots, may have None for unrevealed)
-    opponent_team: List[Pokemon] # full opponent party (6 slots, may have None for unrevealed)
+    opponent_team: List[Pokemon]  # full opponent party (6 slots, may have None for unrevealed)
 
-    # previous moves 
+    # previous moves
     player_prev_move: Move
     opponent_prev_move: Move
 
     player_conditions: Dict[PESideCondition, int]
     opponent_conditions: Dict[PESideCondition, int]
 
-    battle_field: Dict[PEField, int] # TODO: figure out what field is 
+    battle_field: Dict[PEField, int]  # field effects (weather, terrain, etc.)
     weather: PEWeather | Nothing
     battle_won: bool
     battle_lost: bool
