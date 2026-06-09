@@ -109,7 +109,7 @@ class SimProtocol:
         "Flip Turn",
         "Parting Shot",
         "Shed Tail",
-        # "Teleport", # technically does this but always fails in trainer battles
+        "Teleport",
         "U-turn",
         "Volt Switch",
     }
@@ -153,6 +153,7 @@ class SimProtocol:
         "Petal Dance",
         "Ice Ball",
         "Rage",  # gen1 locking move (not present in later gens)
+        "Raging Fury",
     }
 
     # partial trapping moves that cause the gen 1 PP rollover to 63
