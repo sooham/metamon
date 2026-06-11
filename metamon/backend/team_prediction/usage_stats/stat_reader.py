@@ -620,13 +620,6 @@ def _cached_load_between_dates(
         with open(os.path.join(dir_path, json_file), "r") as file:
             data = orjson.loads(file.read())
         selected_data.append(data)
-    if not selected_data and warn_if_empty:
-        warnings.warn(
-            colored(
-                f"No Showdown usage stats found in {dir_path} between {start_date} and {end_date}",
-                "red",
-            )
-        )
     return merge_movesets(selected_data)
 
 

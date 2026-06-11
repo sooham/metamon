@@ -15,6 +15,7 @@ from metamon import interface
 from metamon.backend.replay_parser import backward, forward, checks
 from metamon.backend.replay_parser.exceptions import (
     BackwardException,
+    CustomRulesException,
     ForwardException,
     InvalidActionIndex,
     WarningFlags,
@@ -69,6 +70,22 @@ class ReplayParser:
             if line.replace("|", "").strip() != ""
         ]
         return log
+
+    @staticmethod
+    def _detect_capture_format(log):
+        """Detect capture/tournament formats where |poke| messages appear
+        after |start|, meaning Pokemon are added mid-battle (e.g. defeated
+        Pokemon are captured by the opponent).  Normal battles only emit
+        |poke| during team preview, before |start|."""
+        started = False
+        for line in log:
+            if not line:
+                continue
+            if line[0] == "start":
+                started = True
+            elif started and line[0] == "poke":
+                return True
+        return False
 
     def povreplay_to_state_action(self, replay: backward.POVReplay):
         # TODO for future reference: here is where we start intentionally
@@ -261,6 +278,12 @@ class ReplayParser:
         log = self.clean_log(data)
 
         try:
+            # Skip capture-format tournaments (Pokemon are added mid-battle).
+            if self._detect_capture_format(log):
+                raise CustomRulesException(
+                    "Capture format detected (|poke| messages after |start|)"
+                )
+
             # forward fill
             replay = forward.forward_fill(replay, log, verbose=self.verbose)
 
