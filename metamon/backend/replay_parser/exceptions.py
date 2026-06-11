@@ -57,6 +57,18 @@ class CrossGenPokemonException(ForwardException):
         )
 
 
+class CustomRulesException(ForwardException):
+    """Raised when a battle uses custom/mod rules that make the replay
+    unsuitable for training (e.g. MissingNo, -All Moves, !Obtainable Moves,
+    Metronome-only battles, etc.)."""
+
+    def __init__(self, reason: str):
+        super().__init__(
+            f"Custom rules detected: {reason}. "
+            f"Skipping — this replay is not a standard competitive battle."
+        )
+
+
 class SoftLockedGen(ForwardException):
     def __init__(self, gen: int):
         super().__init__(

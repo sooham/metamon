@@ -878,9 +878,12 @@ def _cached_smogon_stats(
     load_nearest_lower_rank: bool,
     search_lower_ranks_on_miss: bool,
 ):
-    print(
-        f"Loading usage stats for {format} between {start_date} and {end_date} (rank={rank})"
-    )
+    # Cache-load messages are suppressed during multiprocessing to avoid
+    # interleaving with the tqdm progress bar. Uncomment the print below
+    # for single-process debugging if needed.
+    # print(
+    #     f"Loading usage stats for {format} between {start_date} and {end_date} (rank={rank})"
+    # )
     assert_usage_rank_available(format, rank)
     stats = PreloadedSmogonUsageStats(
         format=format,

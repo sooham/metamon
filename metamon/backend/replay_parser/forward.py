@@ -284,8 +284,8 @@ class SimProtocol:
             team.append(None)
         if size != 6:
             warnings.warn(
-                f"Playing with {size} pokemon on a team (expected 6). "
-                f"Parser will continue with {size} slots."
+                f"[{self.replay.gameid}] Playing with {size} pokemon on a "
+                f"team (expected 6). Parser will continue with {size} slots."
             )
 
     def _parse_turn(self, args: List[str]):
@@ -400,6 +400,10 @@ class SimProtocol:
             )
             poke_list.append(None)
         poke_name, lvl = Pokemon.identify_from_details(args[1], gen=gen)
+        # Skip replays containing MissingNo — it only appears in custom
+        # rulesets (+MissingNo) and is not a legal competitive Pokémon.
+        if poke_name == "MissingNo.":
+            raise CustomRulesException("MissingNo. in team preview")
         insert_at = poke_list.index(None)
         new_pokemon = Pokemon(name=poke_name, lvl=lvl, gen=gen)
         # Reject cross-generation Pokémon early (custom/challenge matches
@@ -530,21 +534,28 @@ class SimProtocol:
 
         # forced selection of another pokemon
         if move_name in SimProtocol.MOVES_THAT_SWITCH_THE_USER_OUT:
-            notarget = any("[notarget]" in d for d in args)
-            protected = target_pokemon.protected if target_pokemon else False
-            missed = any("[miss]" in d for d in args)
-            # Abilities like Motor Drive / Volt Absorb cancel Volt Switch
-            # without emitting |-immune| in some replays.
-            blocked_by_ability = (
-                target_pokemon is not None
-                and target_pokemon.active_ability is not None
-                and SimProtocol.ABILITY_CAUSES_MOVE_TO_FAIL.get(
-                    target_pokemon.active_ability
+            # Teleport only switches the user out in Gen 8+.
+            # In Gens 1-7 it always fails in trainer battles, which is
+            # what Showdown simulates.
+            # (https://bulbapedia.bulbagarden.net/wiki/Teleport_(move))
+            if move_name == "Teleport" and self.replay.gen < 8:
+                pass
+            else:
+                notarget = any("[notarget]" in d for d in args)
+                protected = target_pokemon.protected if target_pokemon else False
+                missed = any("[miss]" in d for d in args)
+                # Abilities like Motor Drive / Volt Absorb cancel Volt Switch
+                # without emitting |-immune| in some replays.
+                blocked_by_ability = (
+                    target_pokemon is not None
+                    and target_pokemon.active_ability is not None
+                    and SimProtocol.ABILITY_CAUSES_MOVE_TO_FAIL.get(
+                        target_pokemon.active_ability
+                    )
+                    == move_name
                 )
-                == move_name
-            )
-            if not notarget and not protected and not missed and not blocked_by_ability:
-                self.curr_turn.mark_forced_switch(args[0])
+                if not notarget and not protected and not missed and not blocked_by_ability:
+                    self.curr_turn.mark_forced_switch(args[0])
         elif move_name in SimProtocol.FORCES_REVIVAL:
             self.curr_turn.mark_forced_switch(args[0])
 

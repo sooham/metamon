@@ -511,6 +511,34 @@ class WorldModelTransformer(nn.Module):
 
         return generated, generated_lengths
 
+    # ── Checkpointing ────────────────────────────────────────────────
+
+    def save_checkpoint(self, path: str, **extra) -> None:
+        """Save model weights and optional extra data to a checkpoint file.
+
+        Args:
+            path: filesystem path for the checkpoint (e.g. ``checkpoint.pt``).
+            **extra: additional key-value pairs stored alongside
+                     ``model_state_dict`` (e.g. epoch, optimizer state).
+        """
+        ckpt = {"model_state_dict": self.state_dict(), **extra}
+        torch.save(ckpt, path)
+
+    def load_checkpoint(self, path: str, map_location=None) -> dict:
+        """Load state_dict into this model from a checkpoint file.
+
+        Args:
+            path: filesystem path to the checkpoint.
+            map_location: device remap (passed to :func:`torch.load`).
+
+        Returns:
+            The full checkpoint dict (including any extra keys stored
+            alongside ``model_state_dict``).
+        """
+        ckpt = torch.load(path, map_location=map_location)
+        self.load_state_dict(ckpt["model_state_dict"])
+        return ckpt
+
 
 # ── Token IDs whose loss is always ignored ──────────────────────────────
 # These tokens are structural (they carry no Pokémon-state information) or

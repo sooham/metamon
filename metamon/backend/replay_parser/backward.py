@@ -81,7 +81,13 @@ def fill_missing_team_info(
     3. Filling missing information with the predicted team
     """
 
-    gen = metamon.backend.format_to_gen(battle_format)
+    try:
+        gen = metamon.backend.format_to_gen(battle_format)
+    except ValueError as e:
+        raise BackwardException(
+            f"Cannot parse generation from format '{battle_format}' "
+            f"(gameid={gameid}): {e}"
+        ) from e
 
     # If showteam data is available, use it as ground truth instead of
     # guessing from usage statistics.  This gives exact items, abilities,

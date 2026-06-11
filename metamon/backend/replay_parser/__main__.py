@@ -1,4 +1,5 @@
 import os
+import sys
 import glob
 import random
 import tqdm
@@ -151,7 +152,7 @@ if __name__ == "__main__":
         random.shuffle(filenames)
         parser.parse_parallel(filenames, args.processes)
     else:
-        for filename in tqdm.tqdm(filenames):
+        for filename in tqdm.tqdm(filenames, file=sys.stdout):
             parser.parse_replay(filename)
         errors = parser.summarize_errors()
         for fb, sub in errors.items():
