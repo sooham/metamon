@@ -338,11 +338,62 @@ def _load_text_observations(filename: str, obs_space_template) -> list[str]:
     return [o["text"].tolist() for o in obs_list]
 
 
+# ── Multiprocessing worker ───────────────────────────────────────────────
+
+def _worker_process_batch(args_tuple):
+    """Multiprocessing worker: load and tokenize a batch of replay files.
+
+    Each worker loads a snapshot of the base tokenizer, then processes
+    every replay in its batch independently.  New tokens discovered by
+    different workers are merged by the main process afterwards.
+
+    Args:
+        args_tuple: ``(filenames, tokenizer_path, obs_space_name)``
+
+    Returns:
+        ``(new_tokens, battles_processed, battles_with_new)`` where
+        *new_tokens* is a :class:`set` of token strings that are new
+        relative to the snapshot.
+    """
+    import copy
+    from metamon.interface import get_observation_space
+
+    filenames, tokenizer_path, obs_space_name = args_tuple
+
+    tokenizer = PokemonTokenizer()
+    tokenizer.load_tokens_from_disk(tokenizer_path)
+    tokenizer._frozen = False
+
+    obs_space_template = get_observation_space(obs_space_name)
+
+    new_tokens = set()
+    battles_processed = 0
+    battles_with_new = 0
+
+    for fn in filenames:
+        try:
+            text_strs = _load_text_observations(fn, copy.deepcopy(obs_space_template))
+        except Exception:
+            continue
+        battles_processed += 1
+        battle_had_new = False
+        for text_str in text_strs:
+            for word in text_str.split():
+                if tokenizer.add_token_for(word):
+                    new_tokens.add(word)
+                    battle_had_new = True
+        if battle_had_new:
+            battles_with_new += 1
+
+    return new_tokens, battles_processed, battles_with_new
+
+
 # ── CLI vocabulary builder ──────────────────────────────────────────────
 
 if __name__ == "__main__":
     import copy
-    import concurrent.futures
+    import multiprocessing as mp
+    import tempfile
     from argparse import ArgumentParser
     import tqdm
 
@@ -359,9 +410,9 @@ if __name__ == "__main__":
     parser.add_argument("--save_tokens", type=str, default=None)
     parser.add_argument("--obs_space", type=str, default="DefaultObservationSpace")
     parser.add_argument("--num_workers", type=int, default=1,
-        help="Number of worker threads for parallel replay loading (default: 1 = single-threaded).")
+        help="Number of worker processes for parallel replay loading (default: 1 = single-process).")
     parser.add_argument("--early_stop", type=int, default=10000,
-        help="Stop after this many consecutive battles produce no new tokens (default: 10000).")
+        help="Stop after this many consecutive battles produce no new tokens. 0 = never stop (default: 10000).")
     parser.add_argument("--verbose", action="store_true",
         help="Print every newly-added token during vocabulary building.")
     parser.add_argument(
@@ -442,83 +493,84 @@ if __name__ == "__main__":
     STALENESS_DECAY = 200
     early_stop_battles = args.early_stop
 
-    def _process_text_str(text_str: str, tokenizer) -> bool:
-        """Return True if any new token was registered."""
-        return tokenizer.tokenize_text_only(text_str)
-
     if args.num_workers > 1:
-        # ── parallel path: bounded sliding window of in-flight futures ──
-        # Using as_completed() on 196k+ futures scales quadratically because
-        # it re-registers waiters on all remaining futures each iteration.
-        # Instead, keep a small pool of futures and refill as they complete.
-        obs_space_template = copy.deepcopy(obs_space)
-        MAX_IN_FLIGHT = max(args.num_workers * 8, 256)
+        # ── multiprocessing path ──
+        # Workers do file I/O, JSON parsing, state_to_obs(), AND tokenization
+        # in subprocesses, bypassing the GIL.  Batches of replays are distributed
+        # via mp.Pool.imap_unordered; the main process merges discovered tokens
+        # and tracks staleness for early stopping.
 
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=args.num_workers
-        ) as executor:
-            future_to_fn: dict = {}
-            filename_iter = iter(dset.filenames)
-            pbar = tqdm.tqdm(total=len(dset), desc="Tokenizing replays")
+        # Save a snapshot of the current tokenizer for workers to clone.
+        # We re-save it after each wave so that workers launched in later waves
+        # benefit from tokens discovered earlier.
+        tmpdir = tempfile.mkdtemp(prefix="tokenizer_")
+        base_tok_path = os.path.join(tmpdir, "base_tokenizer.json")
+        tokenizer.save_tokens_to_disk(base_tok_path)
 
-            # Fill the initial pool
-            for _ in range(min(MAX_IN_FLIGHT, len(dset))):
-                try:
-                    fn = next(filename_iter)
-                except StopIteration:
-                    break
-                future_to_fn[executor.submit(_load_text_observations, fn, obs_space_template)] = fn
+        # Split filenames into reasonably-sized batches.
+        BATCH_SIZE = 500
+        filenames = dset.filenames
+        batches = [filenames[i:i + BATCH_SIZE] for i in range(0, len(filenames), BATCH_SIZE)]
 
-            early_stop = False
-            while future_to_fn:
-                # Wait for at least one future to complete
-                done, _ = concurrent.futures.wait(
-                    future_to_fn, return_when=concurrent.futures.FIRST_COMPLETED
-                )
-                for future in done:
-                    fn = future_to_fn.pop(future)
-                    pbar.update(1)
+        # Waves let us re-save the tokenizer periodically and support early
+        # stopping without having to drain the entire imap queue.
+        WAVE_SIZE = max(args.num_workers * 4, 16)
 
-                    added_in_battle = False
-                    try:
-                        for text_str in future.result():
-                            total_dataset_size += 1
-                            if _process_text_str(text_str, tokenizer):
-                                added_in_battle = True
-                    except Exception as e:
-                        # Don't let a single corrupt file crash the whole run
-                        print(f"\nWarning: failed to process {fn}: {e}")
+        pbar = tqdm.tqdm(total=len(filenames), desc="Tokenizing replays")
 
-                    battles_processed += 1
-                    if added_in_battle:
-                        staleness = max(0, staleness - STALENESS_DECAY)
+        pool = mp.Pool(processes=args.num_workers)
+        try:
+            batch_idx = 0
+            stopped_early = False
+
+            while batch_idx < len(batches) and not stopped_early:
+                wave = batches[batch_idx:batch_idx + WAVE_SIZE]
+                batch_idx += len(wave)
+
+                wave_args = [(b, base_tok_path, args.obs_space) for b in wave]
+
+                for new_tokens, n_battles, n_with_new in pool.imap_unordered(
+                    _worker_process_batch, wave_args
+                ):
+                    total_dataset_size += n_battles
+                    battles_processed += n_battles
+                    pbar.update(n_battles)
+
+                    if n_with_new > 0:
+                        for word in new_tokens:
+                            tokenizer.add_token_for(word, verbose=args.verbose)
+                        staleness = max(0, staleness - STALENESS_DECAY * n_with_new)
                     else:
-                        staleness += 1
-                        if staleness >= early_stop_battles:
+                        staleness += n_battles
+                        if early_stop_battles > 0 and staleness >= early_stop_battles:
                             print(
                                 f"\nEarly stopping at battle {battles_processed} "
                                 f"(staleness={staleness}, vocabulary size={len(tokenizer)})"
                             )
-                            early_stop = True
+                            stopped_early = True
                             break
 
-                    # Submit next file to keep the pool full
-                    try:
-                        next_fn = next(filename_iter)
-                    except StopIteration:
-                        pass
-                    else:
-                        future_to_fn[executor.submit(
-                            _load_text_observations, next_fn, obs_space_template
-                        )] = next_fn
+                # Re-save so the next wave picks up tokens discovered so far.
+                if not stopped_early:
+                    tokenizer.save_tokens_to_disk(base_tok_path)
 
-                if early_stop:
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    break
+        finally:
+            if stopped_early:
+                pool.terminate()
+            pool.close()
+            pool.join()
 
-            pbar.close()
+        pbar.close()
+
+        # Clean up temporary tokenizer snapshots.
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
     else:
         # ── sequential path ──
+        def _process_text_str(text_str: str, tokenizer) -> bool:
+            """Return True if any new token was registered."""
+            return tokenizer.tokenize_text_only(text_str)
+
         for obs_seq, *_ in tqdm.tqdm(dset):
             added_in_battle = False
             for text_obs in obs_seq["text"]:
@@ -530,7 +582,7 @@ if __name__ == "__main__":
                 staleness = max(0, staleness - STALENESS_DECAY)
             else:
                 staleness += 1
-                if staleness >= early_stop_battles:
+                if early_stop_battles > 0 and staleness >= early_stop_battles:
                     print(
                         f"\nEarly stopping at battle {battles_processed} "
                         f"(staleness={staleness}, vocabulary size={len(tokenizer)})"
