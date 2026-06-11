@@ -16,7 +16,7 @@ BATTLE_ID ?=
 battle:
 	@open https://replay.pokemonshowdown.com/$(BATTLE_ID)
 	@format=$$(echo $(BATTLE_ID) | sed -E 's/^(smogtours-)?//;s/-[0-9]+$$//'); \
-	dir="$(METAMON_CACHE_DIR)/parsed/$$format"; \
+	dir="$(METAMON_CACHE_DIR)/parsed-replays/$$format"; \
 	if [ -d "$$dir" ]; then \
 		find "$$dir" -name "$(BATTLE_ID)_*" -print0 | xargs -0 -n 1 cursor; \
 	else \
@@ -85,7 +85,7 @@ parse-all:
 # Inspect a random sample of 5 parsed battles from a format (one at a time in Cursor + browser)
 # Usage: make battle-inspect FORMAT=gen1ou
 battle-inspect:
-	@dir="$(METAMON_CACHE_DIR)/parsed/$(FORMAT)"; \
+	@dir="$(METAMON_CACHE_DIR)/parsed-replays/$(FORMAT)"; \
 	if [ ! -d "$$dir" ]; then \
 		echo "No parsed directory for format $(FORMAT): $$dir"; \
 		exit 1; \
@@ -124,7 +124,7 @@ EARLY_STOP ?= 20000
 tokenize-world-model:
 	mkdir -p $(TOKENIZER_OUTPUT_DIR)
 	uv run python -m metamon.tokenizer.tokenizer \
-		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed \
+		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed-replays \
 		--formats $(FORMATS) \
 		--obs_space WorldModelObservationSpace \
 		--num_workers $(NUM_WORKERS) \
@@ -143,7 +143,7 @@ parse-world-model:
 	done
 	@for fmt in $(FORMATS); do \
 		echo "=== Validating world-model format on 5 random $$fmt replays ==="; \
-		dir="$(METAMON_CACHE_DIR)/parsed/$$fmt"; \
+		dir="$(METAMON_CACHE_DIR)/parsed-replays/$$fmt"; \
 		files=$$(find "$$dir" -name '*.json' -type f 2>/dev/null | sort -R | head -5); \
 		if [ -n "$$files" ]; then \
 			uv run python scripts/validate_world_model.py $$files; \
@@ -190,7 +190,7 @@ generate-world-model-data:
 	@# ---- 1. Check parsed replays exist for every format ----
 	@missing=""; \
 	for fmt in $(FORMATS); do \
-		dir="$(METAMON_CACHE_DIR)/parsed/$$fmt"; \
+		dir="$(METAMON_CACHE_DIR)/parsed-replays/$$fmt"; \
 		if [ ! -d "$$dir" ] || [ -z "$$(ls -A "$$dir" 2>/dev/null)" ]; then \
 			missing="$$missing $$fmt"; \
 		fi; \
@@ -208,7 +208,7 @@ generate-world-model-data:
 	@# ---- 3. Generate sharded .npz files ----
 	mkdir -p $(WM_OUTPUT_DIR)
 	uv run python scripts/generate_world_model_data.py \
-		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed \
+		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed-replays \
 		--tokenizer_path $(TOKENIZER_FILE) \
 		--output_dir $(WM_OUTPUT_DIR) \
 		--formats $(FORMATS) \
@@ -239,11 +239,12 @@ test-e2e:
 	uv run pytest tests/test_e2e_smoke.py tests/test_e2e_output.py -v
 
 clean:
-	@echo "WARNING: This will recursively delete ALL parsed replays and world-model sample data."
+	@echo "WARNING: This will recursively delete ALL parsed replays, world-model samples, and tokenizers."
 	@read -p "Are you sure you want to continue? [y/N] " confirm; \
 	if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
-		rm -rf /Users/srafiz/Repositories/poke-datasets/parsed/*; \
-		rm -rf /Users/srafiz/Repositories/poke-datasets/world-model-samples/; \
+		rm -rf $(METAMON_CACHE_DIR)/parsed-replays/*; \
+		rm -rf $(WM_OUTPUT_DIR); \
+		rm -rf $(TOKENIZER_OUTPUT_DIR); \
 	else \
 		echo "Aborted."; \
 	fi
@@ -255,7 +256,7 @@ clean-tokenizer:
 	rm -rf $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
 
 sample-inspect-wm-state:
-	make inspect-wm-state FILE=../../poke-datasets/parsed/gen1ou/smogtours-gen1ou-749168_Unrated_encore90411_vs_mindplate96156_02-23-2024_WIN.json FORMAT=gen1ou FLAGS="--show-all"
+	make inspect-wm-state FILE=$(METAMON_CACHE_DIR)/parsed-replays/gen1ou/smogtours-gen1ou-749168_Unrated_encore90411_vs_mindplate96156_02-23-2024_WIN.json FORMAT=gen1ou FLAGS="--show-all"
 
 # ── World Model NPZ Inspection ─────────────────────────────────────
 
@@ -275,7 +276,7 @@ inspect-wm-npz:
 		--wm_dir $(WM_OUTPUT_DIR) \
 		--tokenizer_path $(TOKENIZER_FILE) \
 		--format $(WM_FORMAT) \
-		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed \
+		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed-replays \
 		$(WM_FLAGS)
 
 # Convenience: inspect a random world-model npz battle with pretty output and Showdown link.

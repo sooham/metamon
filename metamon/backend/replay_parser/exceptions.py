@@ -48,6 +48,15 @@ class StrParsingException(ForwardException):
         super().__init__(f"`{parse_func_name}` fails to parse message input: `{inp}`")
 
 
+class CrossGenPokemonException(ForwardException):
+    def __init__(self, pokemon_name: str, pokemon_gen: int, replay_gen: int):
+        super().__init__(
+            f"Pokemon '{pokemon_name}' belongs to Generation {pokemon_gen} "
+            f"but the replay is labeled as Generation {replay_gen}. "
+            f"Skipping — this is likely a custom/challenge match with cross-gen species."
+        )
+
+
 class SoftLockedGen(ForwardException):
     def __init__(self, gen: int):
         super().__init__(
