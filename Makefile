@@ -120,7 +120,7 @@ battle-inspect:
 TOKENIZER_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/tokenizers
 TOKENIZER_VERSION ?= WorldModelObservationSpace-v1
 NUM_WORKERS ?= 32
-EARLY_STOP ?= 20000
+EARLY_STOP ?= 0
 tokenize-world-model:
 	mkdir -p $(TOKENIZER_OUTPUT_DIR)
 	uv run python -m metamon.tokenizer.tokenizer \
