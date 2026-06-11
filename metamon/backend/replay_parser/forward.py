@@ -402,6 +402,14 @@ class SimProtocol:
         poke_name, lvl = Pokemon.identify_from_details(args[1], gen=gen)
         insert_at = poke_list.index(None)
         new_pokemon = Pokemon(name=poke_name, lvl=lvl, gen=gen)
+        # Reject cross-generation Pokémon early (custom/challenge matches
+        # mislabeled with a lower-gen format).
+        if new_pokemon.dex_gen > gen:
+            raise CrossGenPokemonException(
+                pokemon_name=new_pokemon.name,
+                pokemon_gen=new_pokemon.dex_gen,
+                replay_gen=gen,
+            )
         # add to team, where it will change throughout the battle
         poke_list[insert_at] = new_pokemon
         sub_str = args[0][0:2]

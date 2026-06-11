@@ -444,7 +444,7 @@ class Pokemon:
         return self.unique_id == other.unique_id
 
     @staticmethod
-    def _lookup_pokedex_info(name: str, gen: int) -> Dict[str, Any]:
+    def _lookup_pokedex_info(name: str, gen: int) -> tuple[Dict[str, Any], int]:
         lookup_name = pokemon_name(name)
         # Try the current gen first, then fall back to progressively higher gens.
         # Some replays tagged with a low-gen format (e.g. gen1ou) may contain
@@ -477,7 +477,7 @@ class Pokemon:
             if gen <= 2 and "abilities" in info:
                 info["abilities"] = {"0": "No Ability"}
 
-        return info
+        return info, found_gen
 
     def update_pokedex_info(self, name: str) -> None:
         """Look up *name* in the Pokédex and set species, types, base stats,
@@ -485,7 +485,8 @@ class Pokemon:
 
         Called during ``__init__`` and again on forme changes.
         """
-        pokedex_info = self._lookup_pokedex_info(name, gen=self.gen)
+        pokedex_info, found_gen = self._lookup_pokedex_info(name, gen=self.gen)
+        self.dex_gen: int = found_gen
         self.name = pokedex_info["name"]
         if self.had_name is None:
             self.had_name = pokedex_info["baseSpecies"]
