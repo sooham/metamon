@@ -481,24 +481,23 @@ def train(args):
                 "epoch": epoch,
             })
 
-        # ---- checkpoint ----
-        ckpt = {
-            "epoch": epoch,
-            "global_step": global_step,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
-            "config": model_cfg,
-            "vocab_size": vocab_size,
-            "bos_id": bos_id,
-            "eos_id": eos_id,
-            "boa_id": boa_id,
-            "eoa_id": eoa_id,
-        }
-        ckpt_path = save_dir / f"checkpoint_epoch{epoch:04d}.pt"
-        torch.save(ckpt, ckpt_path)
-        if args.print_interval > 0:
-            print(f"  Saved checkpoint to {ckpt_path}")
+        # ---- checkpoint (every 10 epochs, overwrite single file) ----
+        if args.checkpoint is not None and (epoch + 1) % 10 == 0:
+            model.save_checkpoint(
+                args.checkpoint,
+                epoch=epoch,
+                global_step=global_step,
+                optimizer_state_dict=optimizer.state_dict(),
+                scheduler_state_dict=scheduler.state_dict(),
+                config=model_cfg,
+                vocab_size=vocab_size,
+                bos_id=bos_id,
+                eos_id=eos_id,
+                boa_id=boa_id,
+                eoa_id=eoa_id,
+            )
+            if args.print_interval > 0:
+                print(f"  Saved checkpoint to {args.checkpoint}")
 
     if log_file:
         log_file.close()
@@ -527,6 +526,8 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to save checkpoint every 10 epochs (overwrites). If absent, no checkpointing.")
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--prefetch_factor", type=int, default=2)
     # Logging

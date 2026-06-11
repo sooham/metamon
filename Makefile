@@ -239,11 +239,20 @@ test-e2e:
 	uv run pytest tests/test_e2e_smoke.py tests/test_e2e_output.py -v
 
 clean:
-	@echo "WARNING: This will recursively delete ALL parsed replays, world-model samples, and tokenizers."
+	@echo "WARNING: This will delete ALL parsed PoV replays, world-model samples, and tokenizers."
+	@echo "Usage statistics (replay_stats, revealed_teams, usage-stats) and raw replays will NOT be affected."
 	@read -p "Are you sure you want to continue? [y/N] " confirm; \
 	if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
-		rm -rf $(METAMON_CACHE_DIR)/parsed-replays/*; \
+		echo "removing parsed replays (preserving replay_stats and revealed_teams)"; \
+		for dir in $(METAMON_CACHE_DIR)/parsed-replays/*/; do \
+			name=$$(basename "$$dir"); \
+			if [ "$$name" != "replay_stats" ] && [ "$$name" != "revealed_teams" ]; then \
+				rm -rf "$$dir"; \
+			fi; \
+		done; \
+		echo "removing world model outputs"; \
 		rm -rf $(WM_OUTPUT_DIR); \
+		echo "removing tokenizers"; \
 		rm -rf $(TOKENIZER_OUTPUT_DIR); \
 	else \
 		echo "Aborted."; \

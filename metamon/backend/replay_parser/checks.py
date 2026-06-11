@@ -12,15 +12,44 @@ def check_finished(replay):
         raise UnfinishedReplayException(replay.replay_url)
 
 
+# Species Clause markers across common Pokémon Showdown server languages.
+# We trust the server's rule declaration: if Species Clause is declared (in any
+# language), the server enforced it and there are no duplicate species.  The
+# duplicate-species scan below is defense-in-depth for parser bugs.
+_SPECIES_CLAUSE_MARKERS = [
+    "species clause",       # English
+    "especie",              # Spanish (Cláusula de Especie), Portuguese (Cláusula de Espécie)
+    "espèce",               # French (Clause de l'Espèce)
+    "artenklausel",         # German (Artenklausel)
+    "soortclausule",        # Dutch (Soortclausule)
+    "specie",               # Italian (Clausola Specie)
+    "物种",                 # Chinese Simplified (物种条款)
+    "物種",                 # Chinese Traditional (物種條款)
+    "種族",                 # Japanese (種族条項)
+    "종족",                 # Korean (종족 조항)
+]
+
+
+def _has_species_clause(replay) -> bool:
+    """Check whether any rule in *replay.rules* declares a Species Clause.
+
+    Matches against known translations so that non-English servers (Pandora,
+    etc.) are not incorrectly rejected.
+    """
+    for rule in replay.rules:
+        rule_lower = rule.lower()
+        for marker in _SPECIES_CLAUSE_MARKERS:
+            if marker in rule_lower:
+                return True
+    return False
+
+
 def check_replay_rules(replay):
-    # if the replay didn't use species clause then we probably didn't track
-    # the switches correctly. luckily this is a very common rule.
-    species_clause = False
     for rule in replay.rules:
         if rule.startswith("Scalemons Mod"):
             raise Scalemons(replay)
-        species_clause |= rule.startswith("Species Clause")
-    if not species_clause:
+
+    if not _has_species_clause(replay):
         raise NoSpeciesClause(replay)
 
     # check species clause was effectively maintained

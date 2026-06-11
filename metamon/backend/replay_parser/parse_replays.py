@@ -2,6 +2,7 @@ import multiprocessing
 import orjson
 import json
 import os
+import sys
 import warnings
 from datetime import datetime
 from typing import Optional
@@ -215,8 +216,12 @@ class ReplayParser:
 
     def parse_parallel(self, file_paths: list[str], pool_size: int = 8):
         pool = multiprocessing.Pool(pool_size)
+        # Write the progress bar to stdout so it doesn't compete with
+        # warnings.warn() output from worker processes (which goes to stderr).
         for _ in tqdm.tqdm(
-            pool.imap_unordered(self.parse_replay, file_paths), total=len(file_paths)
+            pool.imap_unordered(self.parse_replay, file_paths),
+            total=len(file_paths),
+            file=sys.stdout,
         ):
             pass
         pool.close()
@@ -238,9 +243,19 @@ class ReplayParser:
         # prepare data
         p1_username, p2_username = data["players"]
         time_played = datetime.fromtimestamp(int(data["uploadtime"]))
+        # Some raw replays have formatid="MISSING" (malformed upload).
+        # Fall back to the 'format' field, then to parsing gen from the log.
+        formatid = data.get("formatid", "")
+        if formatid == "MISSING" or not formatid:
+            formatid = data.get("format", "")
+        if not formatid or formatid == "MISSING":
+            # Last resort: extract gen from the |gen|N line in the log
+            import re
+            m = re.search(r"\|gen\|(\d+)", data.get("log", ""))
+            formatid = f"gen{m.group(1)}ou" if m else "MISSING"
         replay = forward.ParsedReplay(
             gameid=os.path.basename(path).replace(".json", ""),
-            format=data["formatid"],
+            format=formatid,
             time_played=time_played,
         )
         log = self.clean_log(data)

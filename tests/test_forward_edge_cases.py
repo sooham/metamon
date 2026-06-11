@@ -126,6 +126,136 @@ class TestForwardEdgeCases:
         with pytest.raises(NoSpeciesClause):
             forward_fill(replay, log)
 
+    def test_spanish_species_clause_parses(self):
+        """Spanish Species Clause (Cláusula de Especie) should be accepted."""
+        log = [
+            ["gen", "1"],
+            ["tier", "[Gen 1] OU"],
+            ["rule", "Cláusula de Especie: Hasta un Pokémon de cada especie"],
+            ["player", "p1", "Alice", ""],
+            ["player", "p2", "Bob", ""],
+            ["teamsize", "p1", "1"],
+            ["teamsize", "p2", "1"],
+            ["poke", "p1", "Charizard", ""],
+            ["poke", "p2", "Alakazam", ""],
+            ["start", ""],
+            ["switch", "p1a: Charizard", "Charizard", "100/100"],
+            ["switch", "p2a: Alakazam", "Alakazam", "100/100"],
+            ["turn", "1"],
+            ["move", "p1a: Charizard", "Flamethrower", "p2a: Alakazam"],
+            ["-damage", "p2a: Alakazam", "0 fnt"],
+            ["faint", "p2a: Alakazam"],
+            ["turn", "2"],
+            ["turn", "3"],
+            ["turn", "4"],
+            ["turn", "5"],
+            ["win", "Alice"],
+        ]
+        replay = ParsedReplay(
+            gameid="test-spanish-sc",
+            format="gen1ou",
+            time_played=datetime.datetime(2020, 1, 1),
+        )
+        # Should NOT raise — Spanish Species Clause is valid
+        forward_fill(replay, log)
+
+    def test_lowercase_species_clause_parses(self):
+        """Lowercase 'species clause' should be accepted."""
+        log = [
+            ["gen", "1"],
+            ["tier", "[Gen 1] OU"],
+            ["rule", "species clause: limit one of each pokémon"],
+            ["player", "p1", "Alice", ""],
+            ["player", "p2", "Bob", ""],
+            ["teamsize", "p1", "1"],
+            ["teamsize", "p2", "1"],
+            ["poke", "p1", "Charizard", ""],
+            ["poke", "p2", "Alakazam", ""],
+            ["start", ""],
+            ["switch", "p1a: Charizard", "Charizard", "100/100"],
+            ["switch", "p2a: Alakazam", "Alakazam", "100/100"],
+            ["turn", "1"],
+            ["move", "p1a: Charizard", "Flamethrower", "p2a: Alakazam"],
+            ["-damage", "p2a: Alakazam", "0 fnt"],
+            ["faint", "p2a: Alakazam"],
+            ["turn", "2"],
+            ["turn", "3"],
+            ["turn", "4"],
+            ["turn", "5"],
+            ["win", "Alice"],
+        ]
+        replay = ParsedReplay(
+            gameid="test-lowercase-sc",
+            format="gen1ou",
+            time_played=datetime.datetime(2020, 1, 1),
+        )
+        # Should NOT raise — lowercase Species Clause is valid
+        forward_fill(replay, log)
+
+    def test_german_species_clause_parses(self):
+        """German Artenklausel should be accepted."""
+        log = [
+            ["gen", "1"],
+            ["tier", "[Gen 1] OU"],
+            ["rule", "Artenklausel: Nur ein Pokémon pro Art"],
+            ["player", "p1", "Alice", ""],
+            ["player", "p2", "Bob", ""],
+            ["teamsize", "p1", "1"],
+            ["teamsize", "p2", "1"],
+            ["poke", "p1", "Charizard", ""],
+            ["poke", "p2", "Alakazam", ""],
+            ["start", ""],
+            ["switch", "p1a: Charizard", "Charizard", "100/100"],
+            ["switch", "p2a: Alakazam", "Alakazam", "100/100"],
+            ["turn", "1"],
+            ["move", "p1a: Charizard", "Flamethrower", "p2a: Alakazam"],
+            ["-damage", "p2a: Alakazam", "0 fnt"],
+            ["faint", "p2a: Alakazam"],
+            ["turn", "2"],
+            ["turn", "3"],
+            ["turn", "4"],
+            ["turn", "5"],
+            ["win", "Alice"],
+        ]
+        replay = ParsedReplay(
+            gameid="test-german-sc",
+            format="gen1ou",
+            time_played=datetime.datetime(2020, 1, 1),
+        )
+        forward_fill(replay, log)
+
+    def test_chinese_species_clause_parses(self):
+        """Chinese 物种条款 should be accepted."""
+        log = [
+            ["gen", "1"],
+            ["tier", "[Gen 1] OU"],
+            ["rule", "物种条款: 每种宝可梦只限一只"],
+            ["player", "p1", "Alice", ""],
+            ["player", "p2", "Bob", ""],
+            ["teamsize", "p1", "1"],
+            ["teamsize", "p2", "1"],
+            ["poke", "p1", "Charizard", ""],
+            ["poke", "p2", "Alakazam", ""],
+            ["start", ""],
+            ["switch", "p1a: Charizard", "Charizard", "100/100"],
+            ["switch", "p2a: Alakazam", "Alakazam", "100/100"],
+            ["turn", "1"],
+            ["move", "p1a: Charizard", "Flamethrower", "p2a: Alakazam"],
+            ["-damage", "p2a: Alakazam", "0 fnt"],
+            ["faint", "p2a: Alakazam"],
+            ["turn", "2"],
+            ["turn", "3"],
+            ["turn", "4"],
+            ["turn", "5"],
+            ["win", "Alice"],
+        ]
+        replay = ParsedReplay(
+            gameid="test-chinese-sc",
+            format="gen1ou",
+            time_played=datetime.datetime(2020, 1, 1),
+        )
+        forward_fill(replay, log)
+
     def test_unsupported_gen_raises_soft_locked(self):
         """Gen 5-8 (unsupported) should raise SoftLockedGen."""
         log = [

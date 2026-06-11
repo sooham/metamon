@@ -310,6 +310,105 @@ class TestMetadata:
         with pytest.raises(NoSpeciesClause):
             forward_fill(replay, log)
 
+    # -- Scenario 2b: non-English Species Clause variants --------------------
+
+    def test_spanish_species_clause_parses(self):  # Gen:1  Gimmick: spanish-rules — Cláusula de Especie.
+        """Spanish Species Clause should be accepted."""
+        log = [
+            ["gen", "1"],
+            ["tier", "[Gen 1] OU"],
+            ["rule", "Cláusula de Especie: Hasta un Pokémon de cada especie"],
+            ["player", "p1", "Alice", ""],
+            ["player", "p2", "Bob", ""],
+            ["teamsize", "p1", "1"],
+            ["teamsize", "p2", "1"],
+            ["poke", "p1", "Charizard", ""],
+            ["poke", "p2", "Alakazam", ""],
+            ["start", ""],
+            ["switch", "p1a: Charizard", "Charizard", "100/100"],
+            ["switch", "p2a: Alakazam", "Alakazam", "100/100"],
+        ] + make_winner("Alice")
+
+        replay = ParsedReplay(
+            gameid="test-spanish-sc",
+            format="gen1ou",
+            time_played=datetime.datetime(2020, 1, 1),
+        )
+        # Should NOT raise — Spanish Species Clause is recognized
+        forward_fill(replay, log)
+
+    def test_lowercase_species_clause_parses(self):  # Gen:1  Gimmick: lowercase-rules.
+        """Lowercase 'species clause' should be accepted."""
+        log = [
+            ["gen", "1"],
+            ["tier", "[Gen 1] OU"],
+            ["rule", "species clause: limit one of each pokémon"],
+            ["player", "p1", "Alice", ""],
+            ["player", "p2", "Bob", ""],
+            ["teamsize", "p1", "1"],
+            ["teamsize", "p2", "1"],
+            ["poke", "p1", "Charizard", ""],
+            ["poke", "p2", "Alakazam", ""],
+            ["start", ""],
+            ["switch", "p1a: Charizard", "Charizard", "100/100"],
+            ["switch", "p2a: Alakazam", "Alakazam", "100/100"],
+        ] + make_winner("Alice")
+
+        replay = ParsedReplay(
+            gameid="test-lowercase-sc",
+            format="gen1ou",
+            time_played=datetime.datetime(2020, 1, 1),
+        )
+        forward_fill(replay, log)
+
+    def test_german_species_clause_parses(self):  # Gen:1  Gimmick: german-rules — Artenklausel.
+        """German Artenklausel should be accepted."""
+        log = [
+            ["gen", "1"],
+            ["tier", "[Gen 1] OU"],
+            ["rule", "Artenklausel: Nur ein Pokémon pro Art"],
+            ["player", "p1", "Alice", ""],
+            ["player", "p2", "Bob", ""],
+            ["teamsize", "p1", "1"],
+            ["teamsize", "p2", "1"],
+            ["poke", "p1", "Charizard", ""],
+            ["poke", "p2", "Alakazam", ""],
+            ["start", ""],
+            ["switch", "p1a: Charizard", "Charizard", "100/100"],
+            ["switch", "p2a: Alakazam", "Alakazam", "100/100"],
+        ] + make_winner("Alice")
+
+        replay = ParsedReplay(
+            gameid="test-german-sc",
+            format="gen1ou",
+            time_played=datetime.datetime(2020, 1, 1),
+        )
+        forward_fill(replay, log)
+
+    def test_chinese_species_clause_parses(self):  # Gen:1  Gimmick: chinese-rules — 物种条款.
+        """Chinese 物种条款 should be accepted."""
+        log = [
+            ["gen", "1"],
+            ["tier", "[Gen 1] OU"],
+            ["rule", "物种条款: 每种宝可梦只限一只"],
+            ["player", "p1", "Alice", ""],
+            ["player", "p2", "Bob", ""],
+            ["teamsize", "p1", "1"],
+            ["teamsize", "p2", "1"],
+            ["poke", "p1", "Charizard", ""],
+            ["poke", "p2", "Alakazam", ""],
+            ["start", ""],
+            ["switch", "p1a: Charizard", "Charizard", "100/100"],
+            ["switch", "p2a: Alakazam", "Alakazam", "100/100"],
+        ] + make_winner("Alice")
+
+        replay = ParsedReplay(
+            gameid="test-chinese-sc",
+            format="gen1ou",
+            time_played=datetime.datetime(2020, 1, 1),
+        )
+        forward_fill(replay, log)
+
     # -- Scenario 3: unsupported gen -----------------------------------------
 
     def test_unsupported_gen_raises(self):  # Gen:5(rejected)  Gimmick: error-path — SoftLockedGen.

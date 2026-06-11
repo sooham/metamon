@@ -3,6 +3,7 @@ import os
 from datetime import date
 from typing import Optional
 
+import lz4.frame
 import numpy as np
 
 from metamon.config import SUPPORTED_BATTLE_FORMATS
@@ -319,9 +320,8 @@ def _load_text_observations(filename: str, obs_space_template) -> list[str]:
     Returns a list of space-joined token strings, one per battle state.
     """
     import copy
-    import orjson
-    import lz4.frame
 
+    # Lazy import to avoid circular dependency (metamon.interface imports from metamon.tokenizer)
     from metamon.interface import UniversalState
 
     if filename.endswith(".json.lz4"):
@@ -447,37 +447,76 @@ if __name__ == "__main__":
         return tokenizer.tokenize_text_only(text_str)
 
     if args.num_workers > 1:
-        # ── parallel path: threads load files, main thread tokenizes ──
+        # ── parallel path: bounded sliding window of in-flight futures ──
+        # Using as_completed() on 196k+ futures scales quadratically because
+        # it re-registers waiters on all remaining futures each iteration.
+        # Instead, keep a small pool of futures and refill as they complete.
         obs_space_template = copy.deepcopy(obs_space)
+        MAX_IN_FLIGHT = max(args.num_workers * 8, 256)
+
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=args.num_workers
         ) as executor:
-            future_to_fn = {
-                executor.submit(_load_text_observations, fn, obs_space_template): fn
-                for fn in dset.filenames
-            }
-            for future in tqdm.tqdm(
-                concurrent.futures.as_completed(future_to_fn),
-                total=len(dset),
-                desc="Tokenizing replays",
-            ):
-                added_in_battle = False
-                for text_str in future.result():
-                    total_dataset_size += 1
-                    if _process_text_str(text_str, tokenizer):
-                        added_in_battle = True
-                battles_processed += 1
-                if added_in_battle:
-                    staleness = max(0, staleness - STALENESS_DECAY)
-                else:
-                    staleness += 1
-                    if staleness >= early_stop_battles:
-                        print(
-                            f"\nEarly stopping at battle {battles_processed} "
-                            f"(staleness={staleness}, vocabulary size={len(tokenizer)})"
-                        )
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        break
+            future_to_fn: dict = {}
+            filename_iter = iter(dset.filenames)
+            pbar = tqdm.tqdm(total=len(dset), desc="Tokenizing replays")
+
+            # Fill the initial pool
+            for _ in range(min(MAX_IN_FLIGHT, len(dset))):
+                try:
+                    fn = next(filename_iter)
+                except StopIteration:
+                    break
+                future_to_fn[executor.submit(_load_text_observations, fn, obs_space_template)] = fn
+
+            early_stop = False
+            while future_to_fn:
+                # Wait for at least one future to complete
+                done, _ = concurrent.futures.wait(
+                    future_to_fn, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                for future in done:
+                    fn = future_to_fn.pop(future)
+                    pbar.update(1)
+
+                    added_in_battle = False
+                    try:
+                        for text_str in future.result():
+                            total_dataset_size += 1
+                            if _process_text_str(text_str, tokenizer):
+                                added_in_battle = True
+                    except Exception as e:
+                        # Don't let a single corrupt file crash the whole run
+                        print(f"\nWarning: failed to process {fn}: {e}")
+
+                    battles_processed += 1
+                    if added_in_battle:
+                        staleness = max(0, staleness - STALENESS_DECAY)
+                    else:
+                        staleness += 1
+                        if staleness >= early_stop_battles:
+                            print(
+                                f"\nEarly stopping at battle {battles_processed} "
+                                f"(staleness={staleness}, vocabulary size={len(tokenizer)})"
+                            )
+                            early_stop = True
+                            break
+
+                    # Submit next file to keep the pool full
+                    try:
+                        next_fn = next(filename_iter)
+                    except StopIteration:
+                        pass
+                    else:
+                        future_to_fn[executor.submit(
+                            _load_text_observations, next_fn, obs_space_template
+                        )] = next_fn
+
+                if early_stop:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+
+            pbar.close()
     else:
         # ── sequential path ──
         for obs_seq, *_ in tqdm.tqdm(dset):
