@@ -38,6 +38,7 @@ dependencies = [
   "poke-env @ git+https://github.com/UT-Austin-RPL/poke-env.git",
   "amago @ git+https://github.com/UT-Austin-RPL/amago@v3.4.0",
   "websockets>=12.0",
+  "orjson>=3.11.9",
 ]
 
 [project.urls]
@@ -54,3 +55,9 @@ addopts = "-n auto --dist worksteal"
 [tool.black]
 line-length = 88
 target-version = ["py310"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-xdist",
+]

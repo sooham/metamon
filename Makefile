@@ -1,4 +1,4 @@
-METAMON_CACHE_DIR ?= $(HOME)/Repositories/poke-datasets
+METAMON_CACHE_DIR ?= /workspace/poke-datasets
 RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/raw-replays
 MINI_RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/mini-raw-replays
 FORMAT ?= gen1ou
@@ -50,7 +50,7 @@ parse-no-pred:
 		--team_predictor NoPredictor \
 		--raw_replay_dir $(METAMON_CACHE_DIR)/raw-replays \
 		--output_dir $(METAMON_CACHE_DIR)/parsed-no-pred \
-		--processes 10 --no-compress --pretty
+		--processes 32 --no-compress --pretty
 
 # Parse one format with default NaiveUsagePredictor
 parse:
@@ -58,7 +58,7 @@ parse:
 		--format $(FORMAT) \
 		--raw_replay_dir $(METAMON_CACHE_DIR)/raw-replays \
 		--output_dir $(METAMON_CACHE_DIR)/parsed-replays \
-		--processes 10 --no-compress --pretty
+		--processes 64 --no-compress --pretty
 
 # Parse all supported formats with NoPredictor
 parse-all-no-pred:
@@ -119,8 +119,7 @@ battle-inspect:
 #       TOKENIZER_VERSION=WorldModelObservationSpace-v1
 TOKENIZER_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/tokenizers
 TOKENIZER_VERSION ?= WorldModelObservationSpace-v1
-START_TOKENS ?=
-NUM_WORKERS ?= 8
+NUM_WORKERS ?= 32
 EARLY_STOP ?= 20000
 tokenize-world-model:
 	mkdir -p $(TOKENIZER_OUTPUT_DIR)
@@ -130,7 +129,6 @@ tokenize-world-model:
 		--obs_space WorldModelObservationSpace \
 		--num_workers $(NUM_WORKERS) \
 		--early_stop $(EARLY_STOP) \
-		$(if $(START_TOKENS),--start_tokens $(TOKENIZER_OUTPUT_DIR)/$(START_TOKENS).json,) \
 		--save_tokens $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
 
 # Parse and validate with WorldModelObservationSpace.
@@ -184,9 +182,9 @@ inspect-wm-state:
 #
 # Usage:
 #   make generate-world-model-data FORMATS=gen1ou
-#   make generate-world-model-data FORMATS="gen1ou gen9ou" WM_PROCESSES=8
+#   make generate-world-model-data FORMATS="gen1ou gen9ou"
 WM_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/world-model-samples
-WM_PROCESSES ?= 8
+WM_PROCESSES ?= 32
 TOKENIZER_FILE := $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
 generate-world-model-data:
 	@# ---- 1. Check parsed replays exist for every format ----

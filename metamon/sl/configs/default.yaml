@@ -7,8 +7,15 @@ model:
   # vocabulary size (auto-detected from tokenizer or data if not set)
   vocab_size: null
 
-  # maximum prompt length:  2 × max_state_tokens + 7 delimiters
-  max_seq_len: 680
+  # Safety factor for context window: C = (MAX_STATE_LENGTH + ACTION_OVERHEAD) * safety_factor
+  # MAX_STATE_LENGTH = 312 (maximal WorldModelObservationSpace tokens)
+  # ACTION_OVERHEAD  = 5   (<eos> <boa> A <eoa> <bos> between state_t and state_next)
+  # Default 2.5 → C = ceil(317 * 2.5 / 64) * 64 = 768
+  safety_factor: 2.5
+
+  # Maximum sequence length the RoPE cache supports.
+  # Must be >= MAX_CONTEXT_LENGTH (768).  1024 gives generous headroom.
+  max_seq_len: 1024
 
   # residual stream / embedding dimension
   d_model: 256
@@ -27,6 +34,3 @@ model:
 
   # RoPE base frequency
   theta: 10000.0
-
-  # max tokens per state (must match WorldModelObservationSpace soft max)
-  max_state_tokens: 336

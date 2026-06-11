@@ -187,7 +187,6 @@ def main():
     actions_all = data["actions"]
     won_all = data["won"]
     battle_start = data["battle_start"]
-    dones = data["dones"]
     num_battles = len(battle_start) - 1
 
     # Read battles_per_shard from metadata if available
@@ -216,7 +215,11 @@ def main():
     start = battle_start[battle_idx]
     end = battle_start[battle_idx + 1]
     battle_states = states_all[start:end]       # shape (num_states, state_dim)
-    battle_actions = actions_all[start:end - 1] if end - 1 > start else np.array([], dtype=np.int16)
+    # Actions for this battle: a_start = start - battle_idx (each preceding battle
+    # adds one fewer action than state).
+    a_start = start - battle_idx
+    a_end = end - battle_idx - 1
+    battle_actions = actions_all[a_start:a_end] if a_end > a_start else np.array([], dtype=np.int16)
     won = bool(won_all[battle_idx])
 
     num_states = battle_states.shape[0]
@@ -265,10 +268,11 @@ def main():
         print(f"=== State {idx}/{num_states} ({len(tokens)} tokens) ===")
 
         if args.show_actions and idx < num_states - 1:
-            action_idx = start + idx
+            # Action index in flat actions array = battle start offset + transition index.
+            # (start - battle_idx) is where this battle's actions begin.
+            action_idx = (start - battle_idx) + idx
             if action_idx < len(actions_all):
-                print(f"  action: {int(actions_all[action_idx])} "
-                      f"(done={'T' if action_idx < len(dones) and dones[action_idx] else 'F'})")
+                print(f"  action: {int(actions_all[action_idx])}")
 
         # Show raw token IDs (compact, first 40 + last 5)
         id_list = [int(t) for t in token_ids]
