@@ -285,8 +285,12 @@ class SimProtocol:
         if size != 6:
             warnings.warn(
                 f"[{self.replay.gameid}] Playing with {size} pokemon on a "
-                f"team (expected 6). Parser will continue with {size} slots."
+                f"team (expected 6)."
             )
+            if size > 6:
+                raise UnusualTeamSize(
+                    f"{size} pokemon per team (action space only supports up to 6)"
+                )
 
     def _parse_turn(self, args: List[str]):
         """
@@ -393,12 +397,10 @@ class SimProtocol:
         poke_list = self.curr_turn.get_pokemon_list_from_str(args[0])
         assert isinstance(poke_list, list)
         if None not in poke_list:
-            warnings.warn(
-                f"[{self.replay.gameid}] Tried to add a pokemon to a full team "
-                f"of {len(poke_list)}. This may indicate a parsing error. "
-                f"Appending a new slot."
+            raise CustomRulesException(
+                f"Player {args[0][0:2]} has more than {len(poke_list)} pokemon "
+                f"in team preview (custom maxteamsize rule)."
             )
-            poke_list.append(None)
         poke_name, lvl = Pokemon.identify_from_details(args[1], gen=gen)
         # Skip replays containing MissingNo — it only appears in custom
         # rulesets (+MissingNo) and is not a legal competitive Pokémon.
@@ -1139,7 +1141,10 @@ class SimProtocol:
         """
         |-zpower|... or |-mega|...
         """
-        raise SoftLockedGen(self.replay.gen)
+        raise CustomRulesException(
+            f"Mega Evolution or Z-Power detected in a Gen {self.replay.gen} replay — "
+            f"likely a ROM hack or custom format, skipping."
+        )
 
     def _parse_transform(self, args: List[str]):
         """

@@ -218,12 +218,22 @@ class TeamBuilder:
         else:
             item = weighted_random_choice(items, 1)[0]
 
+        tera_type = weighted_random_choice(tera_types, 1)[0]
+        if not tera_type and self.gen == 9:
+            # Fall back to the Pokémon's primary type when usage stats
+            # have no tera data (e.g. rare low-tier Pokémon in OU).
+            from metamon.backend.showdown_dex.dex import Dex
+
+            dex = Dex.from_gen(self.gen)
+            entry = dex.get_pokedex_entry(pokemon)
+            tera_type = entry.get("types", ["Normal"])[0]
+
         return {
             "name": pokemon,
             "ability": ability,
             "item": item,
             "spread": weighted_random_choice(spreads, 1)[0],
-            "tera_type": weighted_random_choice(tera_types, 1)[0],
+            "tera_type": tera_type,
             "IVs": ivs,
             "moves": selected_moves,
         }
