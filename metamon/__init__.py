@@ -42,10 +42,15 @@ def print_banner():
     print()
 
 
-poke_env_version = version("poke-env")
+try:
+    poke_env_version = version("poke-env")
+except Exception:
+    poke_env_version = None
 
 if not os.environ.get("METAMON_ALLOW_ANY_POKE_ENV"):
-    if poke_env_version != "0.8.3.3":
+    if poke_env_version is None:
+        pass  # poke-env not installed — only needed for online battles
+    elif poke_env_version != "0.8.3.3":
         raise ImportError(
             f"poke-env version {poke_env_version} is not officially supported.\n"
             f"Please install version '0.8.3.3', found here: https://github.com/UT-Austin-RPL/poke-env).\n"

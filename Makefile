@@ -1,7 +1,7 @@
 METAMON_CACHE_DIR ?= /workspace/poke-datasets
 RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/raw-replays
 MINI_RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/mini-raw-replays
-FORMAT ?= gen1ou
+FORMAT ?= gen1ou  gen1uu gen1ubers gen1nu
 FORMATS ?= $(FORMAT)
 
 .PHONY: parse-no-pred parse parse-all-no-pred parse-all battle battle-inspect inspect-replay \
