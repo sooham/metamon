@@ -234,18 +234,16 @@ def detokenize_state(token_ids, tokenizer, strip_padding: bool = True) -> list[s
     Args:
         token_ids: 1-D array-like of token IDs for a single state.
         tokenizer: A PokemonTokenizer instance used to map IDs → strings.
-        strip_padding: If True, strip trailing padding tokens (0 or -1, both
-            used as UNKNOWN_TOKEN in different versions of the data pipeline).
+        strip_padding: If True, strip trailing padding tokens (both the
+            tokenizer's ``pad_token_id`` and legacy 0 / -1 values from
+            older data-generation runs).
 
     Returns:
         List of string tokens.
     """
     ids_list = [int(tid) for tid in token_ids]
     if strip_padding:
-        # Strip trailing padding values.  Both 0 (current UNKNOWN_TOKEN) and
-        # -1 (old UNKNOWN_TOKEN convention) are used as padding in different
-        # data-generation runs.  Keep leading zeros since they are part of
-        # the actual token sequence (e.g. HP digit '0').
-        while ids_list and ids_list[-1] in (0, -1):
+        pad_values = {0, -1, tokenizer.pad_token_id}
+        while ids_list and ids_list[-1] in pad_values:
             ids_list.pop()
     return tokenizer.detokenize(ids_list)

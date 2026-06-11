@@ -2165,7 +2165,7 @@ class WorldModelObservationSpace(ObservationSpace):
     or individual tokens like ``spa-1``, ``atk+2`` for non-zero stages.
     This eliminates redundant identical-token computation during training.
 
-    Text format (~52–336 tokens; all repeated blocks are variable-length):
+    Text format (~52–312 tokens; all repeated blocks are variable-length):
         ``<format> <forcedswitch|anychoice>``
         ``<player> <name> <hp_c0>..<hp_c3> <item> <ability> <type_0> <type_1> <effect> <status> <boosts> <boost...>``
         ``<move> <name> <type> <category>``  ×4
@@ -2215,7 +2215,7 @@ class WorldModelObservationSpace(ObservationSpace):
         # Maximum token count occurs when all 12 Pokémon are fainted / on
         # field with full revealed movesets.
         return {
-            "text": 336,
+            "text": 312,
         }
 
     @staticmethod
@@ -2402,7 +2402,7 @@ class WorldModelObservationSpace(ObservationSpace):
     def state_to_obs(self, state: UniversalState) -> dict[str, np.ndarray]:
         """Convert a UniversalState to the world-model observation format.
 
-        Builds a variable-length text string (~52–336 tokens) with entity blocks
+        Builds a variable-length text string (~52–312 tokens) with entity blocks
         for the player active, 4 moves, player bench (0–5), opponent active,
         opponent bench (0–5), player fainted (0–5), opponent fainted (0–5),
         conditions, previous moves, and a terminal token (``<ongoing>``,

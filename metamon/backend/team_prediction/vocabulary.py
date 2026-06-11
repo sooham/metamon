@@ -18,7 +18,7 @@ from metamon.backend.team_prediction.usage_stats import get_usage_stats
 def create_vocabularies(scan_dataset: bool = False):
     # Initialize tokenizers for each vocabulary type
     team_tokenizer = PokemonTokenizer()
-    team_tokenizer.unfreeze()
+    team_tokenizer._frozen = False
     for gen in [1, 2, 3, 4, 9]:
         for tier in ["ou", "uu", "ubers", "nu"]:
             format = f"Format: gen{gen}{tier}"
@@ -114,7 +114,7 @@ def create_vocabularies(scan_dataset: bool = False):
 
     # Sort all tokenizers
     team_tokenizer.sort_tokens()
-    team_tokenizer.freeze()
+    team_tokenizer._frozen = True
     return team_tokenizer
 
 

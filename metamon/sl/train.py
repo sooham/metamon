@@ -4,6 +4,9 @@ Loads sharded .npz files produced by scripts/generate_world_model_data.py
 and trains an autoregressive transformer to predict state[t+1] tokens
 conditioned on state[t] and action[t].
 
+States are variable-length (unpadded in storage).  Batches are padded to
+the per-batch maximum and the model uses <eos> to find state boundaries.
+
 Prompt structure:
     <bos>  state[t]  <eos>  <boa>  action  <eoa>  <bos>  state[t+1]  <eos>
 
@@ -11,21 +14,21 @@ Loss is computed only on the state[t+1] region (including its <eos>).
 
 Usage:
     # Minimal — only epoch summaries printed
-    uv run python -m metamon.sl.train \
-        --data_root ~/Repositories/poke-datasets/world-model-samples \
-        --formats gen1ou \
-        --tokenizer_path ~/Repositories/poke-datasets/tokenizers/WorldModelObservationSpace-v0.json \
-        --save_dir ~/metamon_sl_checkpoints \
+    uv run python -m metamon.sl.train \\
+        --data_root ~/Repositories/poke-datasets/world-model-samples \\
+        --formats gen1ou \\
+        --tokenizer_path ~/Repositories/poke-datasets/tokenizers/WorldModelObservationSpace-v0.json \\
+        --save_dir ~/metamon_sl_checkpoints \\
         --batch_size 32 --lr 3e-4 --epochs 10
 
     # With wandb + CSV logging, prints every 500 steps
-    uv run python -m metamon.sl.train \
-        --data_root ~/Repositories/poke-datasets/world-model-samples \
-        --formats gen1ou \
-        --tokenizer_path ~/Repositories/poke-datasets/tokenizers/WorldModelObservationSpace-v0.json \
-        --save_dir ~/metamon_sl_checkpoints \
-        --batch_size 32 --lr 3e-4 --epochs 10 \
-        --wandb --wandb_project my-project --wandb_name my-run \
+    uv run python -m metamon.sl.train \\
+        --data_root ~/Repositories/poke-datasets/world-model-samples \\
+        --formats gen1ou \\
+        --tokenizer_path ~/Repositories/poke-datasets/tokenizers/WorldModelObservationSpace-v0.json \\
+        --save_dir ~/metamon_sl_checkpoints \\
+        --batch_size 32 --lr 3e-4 --epochs 10 \\
+        --wandb --wandb_project my-project --wandb_name my-run \\
         --log --print_interval 200
 """
 
@@ -42,8 +45,12 @@ import numpy as np
 import torch
 import yaml
 
-from metamon.sl.model import WorldModelTransformer, compute_loss
-from metamon.tokenizer.tokenizer import PokemonTokenizer
+from metamon.sl.model import (
+    WorldModelTransformer,
+    compute_loss,
+    MAX_CONTEXT_LENGTH,
+    SAFETY_FACTOR,
+)
 
 # Optional wandb import
 _wandb_available = False
@@ -57,21 +64,24 @@ except ImportError:
 # ── Dataset ──────────────────────────────────────────────────────────────
 
 class WorldModelDataset(torch.utils.data.IterableDataset):
-    """Iterable over sharded .npz files, yielding (state_t, state_next, action).
+    """Iterable over sharded .npz files, yielding variable-length transitions.
 
-    Each .npz shard contains concatenated battles.  We stream through all
-    shards, emitting every valid transition as a training example.
+    Each .npz shard contains concatenated battles with ``states`` (flat array),
+    ``state_lengths`` (per-state token count), ``actions``, and
+    ``battle_start`` arrays.  Transitions are yielded **within** battles only
+    — cross-battle boundaries are skipped.
+
+    States are yielded **unpadded**; padding to batch-max happens in the
+    collate function.
     """
 
     def __init__(
         self,
         data_root: str,
         formats: list[str],
-        max_state_tokens: int = 336,
         shuffle_shards: bool = True,
     ):
         super().__init__()
-        self.max_state_tokens = max_state_tokens
         self.shuffle_shards = shuffle_shards
 
         self.shard_paths: list[str] = []
@@ -88,27 +98,53 @@ class WorldModelDataset(torch.utils.data.IterableDataset):
                 f"No .npz shards found under {data_root} for formats {formats}"
             )
 
-    def _pad_or_truncate(self, arr: np.ndarray, length: int) -> np.ndarray:
-        """Pad or truncate a 1-D token array to *length* with 0 (UNKNOWN_TOKEN)."""
-        out = np.full(length, 0, dtype=np.int32)
-        n = min(len(arr), length)
-        out[:n] = arr[:n].astype(np.int32)
-        return out
+    def _iter_shard(
+        self, path: str
+    ) -> Iterator[tuple[int, int, int, np.ndarray, np.ndarray]]:
+        """Yield (state_t_len, state_next_len, action, state_t, state_next) within battles.
 
-    def _iter_shard(self, path: str) -> Iterator[tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Yield (state_t, state_next, action) tuples from one .npz shard."""
+        Uses ``battle_start`` to honour battle boundaries, ensuring transitions
+        never cross between different battles.  States are sliced from a flat
+        1-D token array using ``state_offsets`` and ``state_lengths``.
+        """
         data = np.load(path)
-        states = data["states"]       # (N, S_raw) int16
-        actions = data["actions"]     # (N-1,) int16
-        n_states = states.shape[0]
+        states = data["states"]              # flat 1-D array of all token IDs
+        state_lengths = data["state_lengths"]  # (N,) actual token counts
+        state_offsets = data["state_offsets"]  # (N,) start index of each state in *states*
+        actions = data["actions"]            # (total_actions,) — one per valid transition
+        battle_start = data["battle_start"]  # (num_battles+1,) cumulative state indices
 
-        for t in range(n_states - 1):
-            state_t = self._pad_or_truncate(states[t], self.max_state_tokens)
-            state_next = self._pad_or_truncate(states[t + 1], self.max_state_tokens)
-            action = int(actions[t])
-            yield state_t, state_next, action
+        num_battles = len(battle_start) - 1
 
-    def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        # Iterate battles, then transitions within each battle
+        for b in range(num_battles):
+            s_start = battle_start[b]
+            s_end = battle_start[b + 1]
+            n_states = s_end - s_start  # states in this battle
+
+            for t in range(n_states - 1):
+                idx_t = s_start + t
+                idx_next = idx_t + 1
+
+                # Find action: actions[idx_t - b] connects state_t → state_next.
+                # (idx_t is a state-space index; the actions array has fewer entries
+                #  than states — one fewer per battle — so we subtract the battle offset.)
+                action = int(actions[idx_t - b])
+
+                st_len = int(state_lengths[idx_t])
+                sn_len = int(state_lengths[idx_next])
+
+                st_off = state_offsets[idx_t]
+                sn_off = state_offsets[idx_next]
+
+                state_t = states[st_off : st_off + st_len]
+                state_next = states[sn_off : sn_off + sn_len]
+
+                yield st_len, sn_len, action, state_t, state_next
+
+    def __iter__(
+        self,
+    ) -> Iterator[tuple[int, int, int, np.ndarray, np.ndarray]]:
         paths = self.shard_paths.copy()
         if self.shuffle_shards:
             np.random.shuffle(paths)
@@ -118,22 +154,38 @@ class WorldModelDataset(torch.utils.data.IterableDataset):
             paths = paths[worker_info.id :: worker_info.num_workers]
 
         for path in paths:
-            for st, sn, act in self._iter_shard(path):
-                yield (
-                    torch.from_numpy(st),
-                    torch.from_numpy(sn),
-                    torch.tensor(act, dtype=torch.long),
-                )
+            yield from self._iter_shard(path)
 
 
 def collate_fn(
-    batch: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Stack a list of (state_t, state_next, action) into batched tensors."""
-    states_t = torch.stack([item[0] for item in batch])
-    states_next = torch.stack([item[1] for item in batch])
-    actions = torch.stack([item[2] for item in batch])
-    return states_t, states_next, actions
+    batch: list[tuple[int, int, int, np.ndarray, np.ndarray]],
+    pad_id: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Collate variable-length transitions into padded tensors.
+
+    Input: list of (state_t_len, state_next_len, action, state_t, state_next)
+    Output: (state_t, state_next, actions, state_t_lengths, state_next_lengths)
+      where state_t/state_next are padded to the batch maximum with *pad_id*.
+    """
+    state_t_lengths = torch.tensor([item[0] for item in batch], dtype=torch.long)
+    state_next_lengths = torch.tensor([item[1] for item in batch], dtype=torch.long)
+    actions = torch.tensor([item[2] for item in batch], dtype=torch.long)
+
+    max_st = int(state_t_lengths.max().item())
+    max_sn = int(state_next_lengths.max().item())
+
+    state_t_padded = torch.full((len(batch), max_st), pad_id, dtype=torch.long)
+    state_next_padded = torch.full((len(batch), max_sn), pad_id, dtype=torch.long)
+
+    for i, item in enumerate(batch):
+        st = item[3]
+        sn = item[4]
+        st_len = item[0]
+        sn_len = item[1]
+        state_t_padded[i, :st_len] = torch.from_numpy(st[:st_len].astype(np.int64))
+        state_next_padded[i, :sn_len] = torch.from_numpy(sn[:sn_len].astype(np.int64))
+
+    return state_t_padded, state_next_padded, actions, state_t_lengths, state_next_lengths
 
 
 # ── Vocabulary size helpers ──────────────────────────────────────────────
@@ -150,13 +202,14 @@ def detect_vocab_size_from_data(data_root: str, formats: list[str]) -> int:
             if not f.endswith(".npz"):
                 continue
             data = np.load(os.path.join(fmt_dir, f))
-            max_id = max(max_id, int(data["states"].max()))
+            if "states" in data:
+                max_id = max(max_id, int(data["states"].max()))
             count += 1
             if count >= 3:
                 break
         if count >= 3:
             break
-    return max_id  # UNKNOWN_TOKEN = 0, so max_id = vocab_size
+    return max_id  # tokens are 1-based, 0 is unused → max_id == vocab_size
 
 
 def detect_vocab_size_from_tokenizer(tokenizer_path: str) -> int:
@@ -178,9 +231,10 @@ def train(args):
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
     model_cfg = cfg["model"]
-    max_state_tokens = model_cfg.get("max_state_tokens", 336)
 
     # ---- tokenizer (for vocab size + special token IDs) ----
+    from metamon.tokenizer import PokemonTokenizer
+
     tokenizer = PokemonTokenizer()
     tokenizer.load_tokens_from_disk(args.tokenizer_path)
     vocab_size = model_cfg.get("vocab_size") or len(tokenizer)
@@ -194,17 +248,33 @@ def train(args):
     assert boa_id != 0, "<boa> not found in tokenizer — rebuild the tokenizer"
     assert eoa_id != 0, "<eoa> not found in tokenizer — rebuild the tokenizer"
 
+    # Action-index → token-ID mapping (world model uses action tokens
+    # as regular vocabulary entries instead of a separate embedding table).
+    action_to_token_id = {
+        i: tokenizer.get_action_token_id(i) for i in range(-1, 13)
+    }
+
+    # Build the IGNORE_LOSS_TOKENS set.
+    # <pad> tokens are structural padding — never learn to predict them.
+    # <bos>, <boa>, <eoa> are fixed structural markers — not informative.
+    # <unk> is NOT ignored — if a genuinely unknown token appears mid-sequence,
+    # the model should learn to represent it from context.
+    pad_id = tokenizer.pad_token_id
+    ignore_loss_tokens: set[int] = {pad_id}
+    if args.print_interval > 0:
+        print(f"Ignoring loss for token IDs: {sorted(ignore_loss_tokens)} "
+              f"(<pad>)")
+
     # ---- dataset ----
     dataset = WorldModelDataset(
         data_root=args.data_root,
         formats=args.formats,
-        max_state_tokens=max_state_tokens,
         shuffle_shards=True,
     )
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
-        collate_fn=collate_fn,
+        collate_fn=lambda batch: collate_fn(batch, pad_id=pad_id),
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
     )
@@ -215,10 +285,14 @@ def train(args):
     n_layers = model_cfg["n_layers"]
     d_ff = model_cfg["d_ff"]
     dropout = model_cfg.get("dropout", 0.1)
-    max_seq_len = model_cfg.get("max_seq_len", 680)
+    # RoPE cache must cover at least MAX_CONTEXT_LENGTH
+    max_seq_len = max(model_cfg.get("max_seq_len", 1024), MAX_CONTEXT_LENGTH)
+    safety_factor = model_cfg.get("safety_factor", SAFETY_FACTOR)
 
     model = WorldModelTransformer(
         vocab_size=vocab_size,
+        pad_id=pad_id,
+        action_to_token_id=action_to_token_id,
         max_seq_len=max_seq_len,
         d_model=d_model,
         n_heads=n_heads,
@@ -231,14 +305,9 @@ def train(args):
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     # FLOPs estimate (forward pass, per token, no backward):
-    #   2 × (attention + FFN)  [multiply-add = 2 ops]
-    #   attention ≈ 4 × d_model² + 2 × d_model × seq_len (dot products, rough)
-    #   SwiGLU FFN ≈ 3 × 2 × d_model × d_ff  (w1, w2, out projections)
-    # We report total FLOPs/s including backward (~3× fwd for training).
-    attn_flops_per_token = 4 * d_model * d_model                         # QKV + out projections
-    ffn_flops_per_token = 6 * d_model * d_ff                             # gate, up, out (each 2 ops)
+    attn_flops_per_token = 4 * d_model * d_model
+    ffn_flops_per_token = 6 * d_model * d_ff
     flops_per_token_fwd = n_layers * (attn_flops_per_token + ffn_flops_per_token)
-    # training: forward + backward ≈ 3×
     flops_per_token_total = flops_per_token_fwd * 3
 
     # ---- optimizer & scheduler ----
@@ -272,7 +341,8 @@ def train(args):
                 "n_params": n_params,
                 "flops_per_token_fwd": flops_per_token_fwd,
                 "max_seq_len": max_seq_len,
-                "max_state_tokens": max_state_tokens,
+                "max_context_length": MAX_CONTEXT_LENGTH,
+                "safety_factor": safety_factor,
             },
         )
     elif args.wandb and not _wandb_available:
@@ -288,6 +358,8 @@ def train(args):
     # ---- print header ----
     if args.print_interval > 0:
         print(f"Vocab: {vocab_size}  Params: {n_params:,}  Shards: {len(dataset.shard_paths)}")
+        print(f"MAX_CONTEXT_LENGTH: {MAX_CONTEXT_LENGTH}  "
+              f"SAFETY_FACTOR: {safety_factor}")
         print(f"FLOPs/token (fwd): {flops_per_token_fwd/1e6:.1f}M  "
               f"FLOPs/token (train): {flops_per_token_total/1e6:.1f}M")
 
@@ -304,14 +376,19 @@ def train(args):
         epoch_steps = 0
         t_epoch_start = time.time()
 
-        for state_t, state_next, actions in dataloader:
+        for state_t, state_next, actions, st_lens, sn_lens in dataloader:
             state_t = state_t.to(device)
             state_next = state_next.to(device)
             actions = actions.to(device)
+            st_lens = st_lens.to(device)
+            sn_lens = sn_lens.to(device)
 
             logits, targets, loss_mask = model(
                 state_t, state_next, actions,
+                state_t_lengths=st_lens,
+                state_next_lengths=sn_lens,
                 bos_id=bos_id, eos_id=eos_id, boa_id=boa_id, eoa_id=eoa_id,
+                ignore_loss_tokens=ignore_loss_tokens,
             )
             loss, metrics = compute_loss(logits, targets, loss_mask)
 
@@ -326,7 +403,7 @@ def train(args):
             token_count += tokens_this_step
 
             epoch_loss += metrics["loss"]
-            epoch_nll += metrics["loss"]  # cross-entropy IS negative log-likelihood (natural log)
+            epoch_nll += metrics["loss"]
             epoch_acc += metrics["token_accuracy"]
             epoch_steps += 1
             global_step += 1
@@ -361,10 +438,13 @@ def train(args):
                     })
 
                 if args.print_interval > 0 and global_step % args.print_interval == 0:
+                    avg_st_len = st_lens.float().mean().item()
+                    avg_sn_len = sn_lens.float().mean().item()
                     print(
                         f"  epoch {epoch:3d} | step {global_step:7d} | "
                         f"loss {metrics['loss']:.4f} | nll {metrics['loss']:.4f} | "
                         f"acc {metrics['token_accuracy']:.3f} | "
+                        f"st_len {avg_st_len:.0f} | sn_len {avg_sn_len:.0f} | "
                         f"tok/s {tokens_per_s:,.0f} | "
                         f"MFLOPS {mflops:.0f} | "
                         f"lr {optimizer.param_groups[0]['lr']:.2e}"
