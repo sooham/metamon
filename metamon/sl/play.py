@@ -43,6 +43,7 @@ from metamon.backend.showdown_dex import Dex
 from metamon.data.download import METAMON_CACHE_DIR
 
 from poke_env.environment import AbstractBattle
+from poke_env.ps_client import AccountConfiguration
 from poke_env.player import BattleOrder
 
 
@@ -130,6 +131,7 @@ class WorldModelPlayer(MetamonPlayer):
         dex: Dex,
         max_new_tokens: int = 200,
         temperature: float = 1.0,
+        verbose: bool = False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -139,6 +141,7 @@ class WorldModelPlayer(MetamonPlayer):
         self._dex = dex
         self._max_new_tokens = max_new_tokens
         self._temperature = temperature
+        self._verbose = verbose
         self._bos_id = tokenizer["<bos>"]
         self._eos_id = tokenizer["<eos>"]
         self._boa_id = tokenizer["<boa>"]
@@ -164,7 +167,6 @@ class WorldModelPlayer(MetamonPlayer):
         """Select an action using the world model."""
         legal_actions = self._legal_action_indices(battle)
         if not legal_actions:
-            # Fallback: random legal move via poke-env
             return self.choose_random_move(battle)
         if len(legal_actions) == 1:
             return UniversalAction.action_idx_to_BattleOrder(
@@ -177,18 +179,21 @@ class WorldModelPlayer(MetamonPlayer):
         state_tokens = self._tokenizer.tokenize(obs["text"].tolist())
         state_t = torch.from_numpy(state_tokens.astype(np.int64)).unsqueeze(0)  # (1, L)
 
+        # Resolve action names for logging
+        action_names = self._resolve_action_names(battle, legal_actions)
+
         # Batch all legal actions
         B = len(legal_actions)
         state_t_batch = state_t.repeat(B, 1)  # (B, L)
         actions_batch = torch.tensor(legal_actions, dtype=torch.long)  # (B,)
         state_lens = torch.tensor([state_t.shape[1]] * B, dtype=torch.long)
 
-        # Generate all next states in parallel
         device = next(self._wm.parameters()).device
         state_t_batch = state_t_batch.to(device)
         actions_batch = actions_batch.to(device)
         state_lens = state_lens.to(device)
 
+        t0 = time.time()
         with torch.no_grad():
             generated, gen_lens = self._wm.generate(
                 state_t_batch,
@@ -201,19 +206,50 @@ class WorldModelPlayer(MetamonPlayer):
                 max_new_tokens=self._max_new_tokens,
                 temperature=self._temperature,
             )
+        gen_time = time.time() - t0
 
         # Score each generated next state and pick the best action
+        scores = []
         best_score = float("-inf")
         best_action = legal_actions[0]
+        best_tokens = None
         for i in range(B):
             length = int(gen_lens[i].item())
             if length == 0:
+                scores.append((legal_actions[i], float("-inf"), "<empty>"))
                 continue
             gen_tokens = generated[i, :length]
             score = score_state(gen_tokens.cpu(), self._tokenizer)
+            terminal = _parse_terminal_token(gen_tokens.cpu().tolist(), self._tokenizer)
+            scores.append((legal_actions[i], score, terminal))
             if score > best_score:
                 best_score = score
                 best_action = legal_actions[i]
+                best_tokens = gen_tokens.cpu()
+
+        # Log decision
+        if self._verbose:
+            turn = battle.turn
+            print(f"\n── Turn {turn} ──")
+            print(f"  Active: {battle.active_pokemon.species} (HP: {battle.active_pokemon.current_hp_fraction:.0%})")
+            print(f"  Opponent: {battle.opponent_active_pokemon.species} (HP: {battle.opponent_active_pokemon.current_hp_fraction:.0%})")
+            # Print state_t (the input to the model)
+            st_detok = self._tokenizer.detokenize(state_tokens.tolist())
+            print(f"  Input state_t ({len(state_tokens)} tokens):")
+            print(f"    {' '.join(st_detok)}")
+            # Print action scores
+            print(f"  Legal actions ({B}):")
+            for action_idx, score, terminal in scores:
+                name = action_names.get(action_idx, f"action_{action_idx}")
+                marker = " ← CHOSEN" if action_idx == best_action else ""
+                print(f"    {action_idx:3d} {name:30s} score={score:+.3f}  terminal={terminal}{marker}")
+            print(f"  Generation time: {gen_time:.1f}s")
+            # Print detokenized predicted state for the chosen action
+            if best_tokens is not None:
+                best_len = int(gen_lens[legal_actions.index(best_action)].item())
+                detok = self._tokenizer.detokenize(best_tokens[:best_len].tolist())
+                print(f"  Predicted state_t+1 ({best_len} tokens):")
+                print(f"    {' '.join(detok)}")
 
         # Convert to BattleOrder
         order = UniversalAction.action_idx_to_BattleOrder(
@@ -222,6 +258,74 @@ class WorldModelPlayer(MetamonPlayer):
         if order is None:
             return self.choose_random_move(battle)
         return order
+
+    def _resolve_action_names(
+        self, battle: AbstractBattle, action_indices: list[int]
+    ) -> dict[int, str]:
+        """Map action indices to human-readable names.
+
+        Must match the ordering used by :meth:`UniversalAction.action_idx_to_BattleOrder`
+        exactly — otherwise the logging will claim the wrong action was chosen.
+        """
+        from metamon.interface import consistent_move_order, consistent_pokemon_order
+
+        valid_moves = {m.id for m in battle.available_moves}
+        if valid_moves == {"recharge"}:
+            move_names = ["recharge"] * 4
+        elif valid_moves == {"struggle"}:
+            move_names = ["struggle"] * 4
+        elif "fight" in valid_moves:
+            move_names = ["fight"] * 4
+        else:
+            moves = consistent_move_order(list(battle.active_pokemon.moves.values()))
+            move_names = [m.id for m in moves]
+
+        if not battle.reviving:
+            switches = consistent_pokemon_order(
+                [p for p in battle.team.values() if not p.fainted and not p.active]
+            )
+        else:
+            switches = consistent_pokemon_order(
+                [p for p in battle.team.values() if p.fainted and not p.active]
+            )
+        switch_names = [p.species for p in switches]
+
+        names = {}
+        for idx in action_indices:
+            if idx == -1:
+                names[idx] = "<missing>"
+            elif idx == 0:
+                if valid_moves == {"recharge"}:
+                    names[idx] = "move: recharge"
+                elif valid_moves == {"struggle"}:
+                    names[idx] = "move: struggle"
+                elif "fight" in valid_moves:
+                    names[idx] = "move: fight"
+                elif len(move_names) > 0:
+                    names[idx] = f"move: {move_names[0]}"
+                else:
+                    names[idx] = "<noop>"
+            elif 1 <= idx <= 3:
+                i = idx - 1
+                if i < len(move_names):
+                    names[idx] = f"move: {move_names[i]}"
+                else:
+                    names[idx] = f"move_{idx}"
+            elif 4 <= idx <= 8:
+                i = idx - 4
+                if i < len(switch_names):
+                    names[idx] = f"switch: {switch_names[i]}"
+                else:
+                    names[idx] = f"switch_{idx}"
+            elif 9 <= idx <= 12:
+                i = idx - 9
+                if i < len(move_names):
+                    names[idx] = f"tera+move: {move_names[i]}"
+                else:
+                    names[idx] = f"tera_move_{idx}"
+            else:
+                names[idx] = f"action_{idx}"
+        return names
 
 
 # ── Main ─────────────────────────────────────────────────────────────────
@@ -232,9 +336,8 @@ async def main():
     )
     parser.add_argument("--checkpoint", type=str, required=True,
                         help="Path to world model checkpoint (.pt).")
-    parser.add_argument("--format", type=str, default="gen1ou",
-                        choices=["gen1ou", "gen2ou", "gen3ou", "gen4ou", "gen9ou"],
-                        help="Battle format.")
+    parser.add_argument("--format", type=str, nargs="+", default=["gen1ou"],
+                        help="Battle format(s). Use any Showdown format (gen1ou, gen9randombattle, etc).")
     parser.add_argument("--username", type=str, default="WorldModelBot",
                         help="Username on the local Showdown server.")
     parser.add_argument("--num_battles", type=int, default=5,
@@ -245,6 +348,10 @@ async def main():
                         help="Max tokens to generate per rollout.")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Sampling temperature.")
+    parser.add_argument("--verbose", action="store_true", default=True,
+                        help="Log per-turn action scores and predicted states (default: on).")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Suppress per-turn logging.")
     parser.add_argument("--config", type=str,
                         default=os.path.join(os.path.dirname(__file__), "configs", "default.yaml"),
                         help="Model config YAML.")
@@ -307,43 +414,54 @@ async def main():
     model.eval()
     print(f"Model loaded: {sum(p.numel() for p in model.parameters()):,} params")
 
-    # ---- Dex ----
-    dex = Dex.from_format(args.format)
-
     # ---- Observation space ----
     obs_space = WorldModelObservationSpace()
 
-    # ---- Team set ----
-    team_set = get_metamon_teams(args.format, args.team_set)
+    # ---- Launch one player per format ----
+    players = []
+    for fmt in args.format:
+        dex = Dex.from_format(fmt)
+        team_set = get_metamon_teams(fmt, args.team_set)
+        # Each format gets a short suffix (Showdown caps usernames at 18 chars)
+        fmt_short = fmt.replace("gen", "g").replace("ou", "")
+        fmt_user = f"{args.username}-{fmt_short}" if len(args.format) > 1 else args.username
+        player = WorldModelPlayer(
+            model=model,
+            tokenizer=tokenizer,
+            obs_space=obs_space,
+            dex=dex,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            verbose=not args.quiet,
+            account_configuration=AccountConfiguration(fmt_user, None),
+            battle_format=fmt,
+            team=team_set,
+            start_timer_on_battle_start=False,
+            max_concurrent_battles=1,
+        )
+        players.append((fmt, fmt_user, player))
 
-    # ---- Create player ----
-    player = WorldModelPlayer(
-        model=model,
-        tokenizer=tokenizer,
-        obs_space=obs_space,
-        dex=dex,
-        max_new_tokens=args.max_new_tokens,
-        temperature=args.temperature,
-        battle_format=args.format,
-        team=team_set.sample_team(),
-        start_timer_on_battle_start=True,
-        max_concurrent_battles=1,
-        username=args.username,
-    )
+    # ---- Listen for challenges ----
+    await asyncio.sleep(2)
+    fmt_list = ", ".join(f"{u} ({f})" for f, u, _ in players)
+    print(f"Bots online: {fmt_list}")
+    print(f"  Open http://localhost:8000 (via SSH forward)")
+    print(f"  Challenge with: /challenge <username>")
+    print(f"  Accepting up to {args.num_battles} challenges each...")
 
-    # ---- Battle ----
-    print(f"Starting {args.num_battles} battles as '{args.username}' on the ladder...")
-    print("(Make sure the local Showdown server is running)")
-    await player.ladder(args.num_battles)
+    # Accept challenges on all players concurrently
+    async def accept_for(fmt: str, username: str, p: WorldModelPlayer):
+        await p.accept_challenges(None, args.num_battles)
+        print(f"\nResults for {username} ({fmt}):")
+        print(f"  Wins: {p.n_won_battles}")
+        print(f"  Losses: {p.n_lost_battles}")
+        print(f"  Ties: {p.n_tied_battles}")
+        if p.n_finished_battles > 0:
+            print(f"  Win rate: {p.n_won_battles / p.n_finished_battles * 100:.1f}%")
 
-    # Print results
-    print(f"\nResults for {args.username}:")
-    print(f"  Wins: {player.n_won_battles}")
-    print(f"  Losses: {player.n_lost_battles}")
-    print(f"  Ties: {player.n_tied_battles}")
-    if player.n_finished_battles > 0:
-        win_rate = player.n_won_battles / player.n_finished_battles * 100
-        print(f"  Win rate: {win_rate:.1f}%")
+    await asyncio.gather(*[
+        accept_for(fmt, username, player) for fmt, username, player in players
+    ])
 
 
 if __name__ == "__main__":

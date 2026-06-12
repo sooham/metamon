@@ -9,7 +9,12 @@ FORMATS ?= $(FORMAT)
         generate-world-model-data inspect-wm-npz sample-inspect-wm-npz \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer sample-inspect-wm-state \
-        train-sl play-sl bash-completion
+        train-sl play-sl showdown bash-completion
+
+# Start a local Pokemon Showdown server (no auth, port 8000)
+# Requires the server/pokemon-showdown submodule to be initialized.
+showdown:
+	cd server/pokemon-showdown && node pokemon-showdown start --no-security
 
 # Open a battle replay in browser + parsed output in Cursor
 # Usage: make battle BATTLE_ID=smogtours-gen1ou-694141
@@ -279,11 +284,12 @@ train-sl:
 #   make play-sl FORMAT=gen1ou USERNAME=MyBot TEAM_SET=competitive NUM_BATTLES=10
 #   make play-sl FORMAT=gen9ou CHECKPOINT=/path/to/checkpoint.pt
 SL_PLAY_CHECKPOINT ?= $(SL_SAVE_DIR)/best.pt
-SL_PLAY_FORMAT ?= gen1ou
+SL_PLAY_FORMAT ?= gen1ou gen9ou
 SL_PLAY_USERNAME ?= WorldModelBot
 SL_PLAY_TEAM_SET ?= competitive
 SL_PLAY_BATTLES ?= 5
 SL_PLAY_MAX_TOKENS ?= 200
+SL_PLAY_VERBOSE ?=
 play-sl:
 	@if [ ! -f "$(SL_PLAY_CHECKPOINT)" ]; then \
 		echo "ERROR: Checkpoint not found at $(SL_PLAY_CHECKPOINT)."; \
@@ -296,7 +302,8 @@ play-sl:
 		--username $(SL_PLAY_USERNAME) \
 		--team_set $(SL_PLAY_TEAM_SET) \
 		--num_battles $(SL_PLAY_BATTLES) \
-		--max_new_tokens $(SL_PLAY_MAX_TOKENS)
+		--max_new_tokens $(SL_PLAY_MAX_TOKENS) \
+		$(if $(SL_PLAY_VERBOSE),--verbose)
 
 # Run the full test suite (parallel by default via pytest-xdist)
 test:
