@@ -1,14 +1,15 @@
 METAMON_CACHE_DIR ?= /workspace/poke-datasets
 RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/raw-replays
 MINI_RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/mini-raw-replays
-FORMAT ?= gen1ou  gen1uu gen1ubers gen1nu
+FORMAT ?= gen1ou gen9ou
 FORMATS ?= $(FORMAT)
 
 .PHONY: parse-no-pred parse parse-all-no-pred parse-all battle battle-inspect inspect-replay \
         tokenize-world-model parse-world-model inspect-wm-state \
         generate-world-model-data inspect-wm-npz sample-inspect-wm-npz \
         test test-quick test-forward test-backward test-e2e \
-        clean show-tokenizer clean-tokenizer sample-inspect-wm-state
+        clean show-tokenizer clean-tokenizer sample-inspect-wm-state \
+        train-sl bash-completion
 
 # Open a battle replay in browser + parsed output in Cursor
 # Usage: make battle BATTLE_ID=smogtours-gen1ou-694141
@@ -214,9 +215,59 @@ generate-world-model-data:
 		--formats $(FORMATS) \
 		--processes $(WM_PROCESSES)
 
-# a rough idea for a different type of modelling 
+# ── Supervised-Learning Training ────────────────────────────────────
 
-# ---- Tests ----
+# Train the WorldModelTransformer on next-state prediction using .npz shards.
+# Requires tokenized world-model data (run generate-world-model-data first).
+#
+# Usage:
+#   make train-sl FORMATS="gen1ou gen9ou"
+#   make train-sl FORMATS=gen9ou EPOCHS=20 BATCH_SIZE=64
+#   make train-sl FORMATS="gen1ou gen9ou" WANDB=true WANDB_PROJECT=metamon WANDB_NAME=my-run
+#   make train-sl FORMATS=gen9ou CHECKPOINT=/workspace/checkpoints/model.pt
+SL_DATA_ROOT ?= $(WM_OUTPUT_DIR)
+SL_TOKENIZER ?= $(TOKENIZER_FILE)
+SL_SAVE_DIR ?= $(METAMON_CACHE_DIR)/sl-checkpoints
+SL_BATCH_SIZE ?= 256
+SL_LR ?= 3e-4
+SL_EPOCHS ?= 10
+SL_GRAD_CLIP ?= 1.0
+SL_NUM_WORKERS ?= 4
+SL_PRINT_INTERVAL ?= 1000
+SL_CONFIG ?=
+CHECKPOINT ?=
+WANDB ?= true
+WANDB_PROJECT ?=
+WANDB_NAME ?=
+train-sl:
+	@if [ ! -d "$(SL_DATA_ROOT)" ]; then \
+		echo "ERROR: No .npz data found at $(SL_DATA_ROOT)."; \
+		echo "  Run: make generate-world-model-data FORMATS=\"$(FORMATS)\" first."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(SL_TOKENIZER)" ]; then \
+		echo "ERROR: Tokenizer not found at $(SL_TOKENIZER)."; \
+		echo "  Run: make tokenize-world-model FORMATS=\"$(FORMATS)\" first."; \
+		exit 1; \
+	fi
+	mkdir -p $(SL_SAVE_DIR)
+	uv run python -m metamon.sl.train \
+		--data_root $(SL_DATA_ROOT) \
+		--formats $(FORMATS) \
+		--tokenizer_path $(SL_TOKENIZER) \
+		--save_dir $(SL_SAVE_DIR) \
+		--batch_size $(SL_BATCH_SIZE) \
+		--lr $(SL_LR) \
+		--epochs $(SL_EPOCHS) \
+		--grad_clip $(SL_GRAD_CLIP) \
+		--num_workers $(SL_NUM_WORKERS) \
+		--print_interval $(SL_PRINT_INTERVAL) \
+		$(if $(filter true,$(WANDB)),--wandb) \
+		$(if $(WANDB_PROJECT),--wandb_project $(WANDB_PROJECT)) \
+		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
+		$(if $(CHECKPOINT),--checkpoint $(CHECKPOINT)) \
+		$(if $(SL_CONFIG),--config $(SL_CONFIG)) \
+		--log --log_interval 100
 
 # Run the full test suite (parallel by default via pytest-xdist)
 test:
@@ -294,3 +345,14 @@ inspect-wm-npz:
 #   make sample-inspect-wm-npz WM_FORMAT=gen1ou
 sample-inspect-wm-npz:
 	make inspect-wm-npz WM_FORMAT=$(WM_FORMAT) WM_FLAGS='--pretty --show-all --showdown'
+
+# ── Shell completion ─────────────────────────────────────────────────
+
+# Install:  source <(make bash-completion)
+# Permanent: make bash-completion >> ~/.bashrc
+bash-completion:
+	@echo '_make_completion() {'
+	@echo '  local cur="$${COMP_WORDS[COMP_CWORD]}"'
+	@echo '  COMPREPLY=($$(compgen -W "$(shell $(MAKE) -qp 2>/dev/null | grep -E '^[a-zA-Z_-]+:' | grep -v '^\.' | grep -v '^%' | grep -v '^Makefile' | cut -d: -f1 | sort -u | tr '\n' ' ')" -- "$$cur"))'
+	@echo '}'
+	@echo 'complete -F _make_completion make'
