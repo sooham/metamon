@@ -1,0 +1,47 @@
+# JEPA (Joint Embedding Predictive Architecture) — model hyperparameters.
+#
+# Training hyperparameters (lr, epochs, batch_size, etc.) are passed
+# via CLI flags to train.py and are NOT stored here.
+
+model:
+  # BPE vocabulary size (auto-detected from tokenizer if not set).
+  vocab_size: null
+
+  # Latent space dimensionality.
+  latent_dim: 256
+
+  # ── Encoder (φ and ψ share the same architecture) ──────────────────
+  encoder:
+    d_model: 256
+    n_heads: 8
+    n_layers: 6
+    d_ff: 1024
+    dropout: 0.1
+    max_seq_len: 1024
+    theta: 10000.0
+    ffn_activation: gelu     # "gelu" (memory-efficient) or "swiglu"
+
+  # ── Predictor μ ────────────────────────────────────────────────────
+  predictor:
+    hidden_dim: 512
+    n_hidden: 2
+    dropout: 0.0
+
+  # ── Decoder ─────────────────────────────────────────────────────────
+  decoder:
+    d_model: 256
+    n_heads: 8
+    n_layers: 4
+    d_ff: 1024
+    dropout: 0.1
+    max_seq_len: 1024
+    theta: 10000.0
+    ffn_activation: gelu
+
+  # ── Loss weights ────────────────────────────────────────────────────
+  # β_recon: weight for VAE reconstruction cross-entropy loss.
+  # β_kl:    weight for KL divergence (β-VAE regularisation).
+  #           Higher β_kl encourages smoother/more disentangled latents
+  #           but may hurt reconstruction quality.
+  beta_recon: 1.0
+  beta_kl: 0.001
