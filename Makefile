@@ -9,7 +9,7 @@ FORMATS ?= $(FORMAT)
         generate-world-model-data inspect-wm-npz sample-inspect-wm-npz \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer sample-inspect-wm-state \
-        train-sl bash-completion
+        train-sl play-sl bash-completion
 
 # Open a battle replay in browser + parsed output in Cursor
 # Usage: make battle BATTLE_ID=smogtours-gen1ou-694141
@@ -233,9 +233,9 @@ SL_LR ?= 3e-4
 SL_EPOCHS ?= 10
 SL_GRAD_CLIP ?= 1.0
 SL_NUM_WORKERS ?= 4
-SL_PRINT_INTERVAL ?= 1000
+SL_PRINT_INTERVAL ?= 100
 SL_CONFIG ?=
-CHECKPOINT ?=
+CHECKPOINT ?= $(SL_SAVE_DIR)/best.pt
 WANDB ?= true
 WANDB_PROJECT ?=
 WANDB_NAME ?=
@@ -268,6 +268,35 @@ train-sl:
 		$(if $(CHECKPOINT),--checkpoint $(CHECKPOINT)) \
 		$(if $(SL_CONFIG),--config $(SL_CONFIG)) \
 		--log --log_interval 100
+
+# ── World Model Showdown Play ─────────────────────────────────────────
+
+# Battle with a trained WorldModelTransformer on the local Showdown server.
+# Requires a checkpoint from train-sl and a running Showdown server.
+#
+# Usage:
+#   make play-sl FORMAT=gen1ou
+#   make play-sl FORMAT=gen1ou USERNAME=MyBot TEAM_SET=competitive NUM_BATTLES=10
+#   make play-sl FORMAT=gen9ou CHECKPOINT=/path/to/checkpoint.pt
+SL_PLAY_CHECKPOINT ?= $(SL_SAVE_DIR)/best.pt
+SL_PLAY_FORMAT ?= gen1ou
+SL_PLAY_USERNAME ?= WorldModelBot
+SL_PLAY_TEAM_SET ?= competitive
+SL_PLAY_BATTLES ?= 5
+SL_PLAY_MAX_TOKENS ?= 200
+play-sl:
+	@if [ ! -f "$(SL_PLAY_CHECKPOINT)" ]; then \
+		echo "ERROR: Checkpoint not found at $(SL_PLAY_CHECKPOINT)."; \
+		echo "  Train first: make train-sl FORMATS=$(SL_PLAY_FORMAT)"; \
+		exit 1; \
+	fi
+	uv run python -m metamon.sl.play \
+		--checkpoint $(SL_PLAY_CHECKPOINT) \
+		--format $(SL_PLAY_FORMAT) \
+		--username $(SL_PLAY_USERNAME) \
+		--team_set $(SL_PLAY_TEAM_SET) \
+		--num_battles $(SL_PLAY_BATTLES) \
+		--max_new_tokens $(SL_PLAY_MAX_TOKENS)
 
 # Run the full test suite (parallel by default via pytest-xdist)
 test:
