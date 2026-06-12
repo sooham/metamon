@@ -480,6 +480,12 @@ class SimProtocol:
         # id switch in
         poke = self.get_or_create_pokemon_from_details(args[1], poke_list)
         active_poke_list[switch_slot] = poke
+        # Undetected Zoroark illusion: the pokemon we're switching in was
+        # previously marked as fainted (the disguise died from passive damage
+        # and Showdown never emitted |replace|).  Flag so backward-fill
+        # relaxes action-alignment checks.
+        if poke.status == PEStatus.FNT:
+            self.replay.add_warning(WarningFlags.ZOROARK)
         cur_hp, max_hp = parse_hp_fraction(args[2])
         poke.max_hp = max_hp
         poke.current_hp = cur_hp

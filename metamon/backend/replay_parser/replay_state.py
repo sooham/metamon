@@ -741,7 +741,7 @@ class Pokemon:
         # across turns without deep-copying.
         _subtract_pp(self.moves[move.name], pp_used)
 
-    def backfill_info(self, future_mon: "Pokemon") -> None:
+    def backfill_info(self, future_mon: "Pokemon", gameid: str = "") -> None:
         """
         Update this Pokemon's info based on a version of itself from later in the battle
         (when we've hopefully learned more about it).
@@ -807,8 +807,9 @@ class Pokemon:
             # The forward check now tolerates this; the backward pass
             # should not crash on it either.
             import warnings
+            gameid_tag = f"[{gameid}] " if gameid else ""
             warnings.warn(
-                f"{self.name} backfill produced {len(self.had_moves)} had_moves "
+                f"{gameid_tag}{self.name} backfill produced {len(self.had_moves)} had_moves "
                 f"(capped at 4). Extra moves: "
                 f"{set(self.had_moves.keys()) - set(list(self.had_moves.keys())[:4])}"
             )
