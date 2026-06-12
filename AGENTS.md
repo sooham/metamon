@@ -19,6 +19,56 @@ The metamon repo has pytests tests , they can be run with `make test`. Analyzing
 # Performance
 You should write code which if necessary and at your own discrection and determination of performance and runtime based on input size, should use parallelism such as threading , pooling, multi-process code if necessary, be mindful of shared resources and that functions being called are thread safe.  Other common perfomance optimizations include using caching in memory, writing to files for faster processing and reading from them on the next run are also good practices.
 
+# State-Learning World Model (`metamon/sl/`)
+
+`metamon/sl/` trains an autoregressive transformer that learns to predict the **next battle state** — given the tokenized current state and the player's action, it predicts every token of the resulting state. This is a supervised-learning (SL) world model, distinct from the RL agent.
+
+### Data flow
+
+```
+parsed replays               scripts/generate_world_model_data.py
+  (UniversalState JSON)  ──►  sharded .npz files  ──►  WorldModelDataset  ──►  WorldModelTransformer
+                                  │                         (IterableDataset)       (autoregressive decoder)
+                                  │
+                            states: (total_tokens,) int16   — flat array, all token IDs concatenated
+                            state_lengths: (N,) int32       — token count per state
+                            state_offsets: (N,) int64       — start index per state in states[]
+                            actions: (total_actions,) int16 — action index (-1..12) per transition
+                            battle_start: (B+1,) int64      — cumulative state index per battle
+                            won: (B,) bool                  — whether POV won
+```
+
+### Model architecture (`model.py`)
+
+The `WorldModelTransformer` is a decoder-only RoPE transformer with SwiGLU FFN blocks, weight tying, and a dedicated action token lookup (actions are embedded as regular vocabulary tokens via a precomputed `_action_lookup` buffer). Training uses teacher forcing: the full `state[t+1]` is provided as target and loss is computed only on the state_next region (including its closing `<eos>`).
+
+Prompt layout (variable-length, right-padded to `max_context=832`):
+```
+<bos> state_t[0..L-1] <eos> <boa> <action_X> <eoa> <bos> state_next[0..M-1] <eos> <pad>…
+```
+
+Key constants (derived from `WorldModelObservationSpace`): `MAX_STATE_LENGTH=312`, `ACTION_OVERHEAD=5`, `SAFETY_FACTOR=2.5`, `MAX_CONTEXT_LENGTH=832`.
+
+### Training (`train.py`)
+
+```bash
+uv run python -m metamon.sl.train \
+    --data_root $METAMON_CACHE_DIR/world-model-samples \
+    --formats gen1ou gen9ou \
+    --tokenizer_path $METAMON_CACHE_DIR/tokenizers/WorldModelObservationSpace-v1.json \
+    --save_dir $METAMON_CACHE_DIR/sl-checkpoints \
+    --batch_size 256 --lr 3e-4 --epochs 10 --grad_clip 1.0 \
+    --num_workers 4 --wandb --log --log_interval 100
+```
+
+Training uses bf16, `torch.compile(mode="max-autotune")` with `dynamic=True`, fused AdamW, pinned memory, and persistent DataLoader workers. A `capture_scalar_outputs=True` Dynamo config avoids graph breaks. Checkpoints save every 10 epochs.
+
+### Tokenizer and action tokens
+
+The `WorldModelObservationSpace` tokenizer maps battle state text to integer IDs. Action indices (-1..12) map to **non-consecutive** token IDs (e.g. `<action_0>` → 13, `<action_1>` → 17, `<action_10>` → 14 — lexicographic ordering from the JSON build). The model's `_action_lookup` buffer handles this mapping via `actions + _action_base` (where `_action_base = 1`). The tokenizer used is `WorldModelObservationSpace-v1.json` (v2 files in the tokenizers directory are orphaned — not referenced by any code).
+
+**Further reading:** `metamon/sl/model.py` (transformer, prompt builder, loss mask), `metamon/sl/train.py` (training loop, dataset, collate), `metamon/sl/configs/default.yaml` (model hyperparameters), `scripts/generate_world_model_data.py` (data generation), `metamon/interface.py` → `WorldModelObservationSpace` (state text format, §tokenizable limits), `metamon/tokenizer/wm_detokenizer.py` (token→text decoding for debugging), `docs/world_model_dataset_plan.md` (design notes).
+
 # Showdown Dex — the static Pokémon data layer
 
 The `Dex` class (`metamon/backend/showdown_dex/dex.py`) is the **single source of truth** for canonical Pokémon game data in the codebase. It is adapted from the [poke-env](https://github.com/hsahovic/poke-env) library but Metamon maintains its own static JSON files with corrections for early generations.
