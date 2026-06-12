@@ -494,7 +494,7 @@ def backward_fill(
                     continue
                 if pokemon.unique_id in prev_ids:
                     prev_pokemon = prev_ids[pokemon.unique_id]
-                    prev_pokemon.backfill_info(pokemon)
+                    prev_pokemon.backfill_info(pokemon, gameid=replay.gameid)
                 else:
                     # pokemon discovered in turn_t1 enters turn_t "fresh"
                     if None not in prev_team:

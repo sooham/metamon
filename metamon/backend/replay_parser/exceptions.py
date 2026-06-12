@@ -72,7 +72,7 @@ class CustomRulesException(ForwardException):
 class SoftLockedGen(ForwardException):
     def __init__(self, gen: int):
         super().__init__(
-            f"Triggered a branch that suggests Generation 5+ in a replay with a labeled generation of {gen}. The Replay Parser supports generations 1, 2, 3, and 4"
+            f"Triggered a branch that suggests Generation 5+ in a replay with a labeled generation of {gen}. The Replay Parser supports generations 1, 2, 3, 4, and 9"
         )
 
 

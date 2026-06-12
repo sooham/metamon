@@ -21,7 +21,7 @@ Usage:
         --save_dir ~/metamon_sl_checkpoints \\
         --batch_size 32 --lr 3e-4 --epochs 10
 
-    # With wandb + CSV logging, prints every 500 steps
+    # With wandb + CSV logging, prints every 1000 steps
     uv run python -m metamon.sl.train \\
         --data_root ~/Repositories/poke-datasets/world-model-samples \\
         --formats gen1ou \\
@@ -29,7 +29,7 @@ Usage:
         --save_dir ~/metamon_sl_checkpoints \\
         --batch_size 32 --lr 3e-4 --epochs 10 \\
         --wandb --wandb_project my-project --wandb_name my-run \\
-        --log --print_interval 200
+        --log --print_interval 1000
 """
 
 import argparse
@@ -73,30 +73,50 @@ class WorldModelDataset(torch.utils.data.IterableDataset):
 
     States are yielded **unpadded**; padding to batch-max happens in the
     collate function.
+
+    Parameters
+    ----------
+    shard_paths : list[str]
+        Explicit list of .npz shard paths to iterate over (caller handles
+        train/val partitioning).
+    shuffle_shards : bool
+        Whether to shuffle the shard order each epoch.
     """
 
     def __init__(
         self,
-        data_root: str,
-        formats: list[str],
+        shard_paths: list[str],
         shuffle_shards: bool = True,
     ):
         super().__init__()
+        self.shard_paths = shard_paths
         self.shuffle_shards = shuffle_shards
 
-        self.shard_paths: list[str] = []
+        if not self.shard_paths:
+            raise ValueError("No shard paths provided")
+
+    @classmethod
+    def from_formats(
+        cls,
+        data_root: str,
+        formats: list[str],
+        shuffle_shards: bool = True,
+    ) -> "WorldModelDataset":
+        """Discover all .npz shards under *data_root* for the given *formats*."""
+        shard_paths: list[str] = []
         for fmt in formats:
             fmt_dir = os.path.join(data_root, fmt)
             if not os.path.isdir(fmt_dir):
                 continue
             for f in sorted(os.listdir(fmt_dir)):
                 if f.endswith(".npz"):
-                    self.shard_paths.append(os.path.join(fmt_dir, f))
+                    shard_paths.append(os.path.join(fmt_dir, f))
 
-        if not self.shard_paths:
+        if not shard_paths:
             raise FileNotFoundError(
                 f"No .npz shards found under {data_root} for formats {formats}"
             )
+        return cls(shard_paths, shuffle_shards=shuffle_shards)
 
     def _iter_shard(
         self, path: str
@@ -265,18 +285,44 @@ def train(args):
         print(f"Ignoring loss for token IDs: {sorted(ignore_loss_tokens)} "
               f"(<pad>)")
 
-    # ---- dataset ----
-    dataset = WorldModelDataset(
+    # ---- datasets (train / val split at shard level) ----
+    # Discover all shards, shuffle, then partition by shard index.
+    # This guarantees no battle appears in both splits.
+    all_shards = WorldModelDataset.from_formats(
         data_root=args.data_root,
         formats=args.formats,
-        shuffle_shards=True,
-    )
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
+        shuffle_shards=False,  # we shuffle manually before splitting
+    ).shard_paths
+
+    rng = np.random.default_rng(args.seed)
+    perm = rng.permutation(len(all_shards))
+    all_shards = [all_shards[i] for i in perm]
+
+    n_val = max(1, int(len(all_shards) * args.val_split))
+    n_train = len(all_shards) - n_val
+    train_shards = all_shards[:n_train]
+    val_shards = all_shards[n_train:]
+
+    train_dataset = WorldModelDataset(train_shards, shuffle_shards=True)
+    val_dataset = WorldModelDataset(val_shards, shuffle_shards=False)
+
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
         batch_size=args.batch_size,
         collate_fn=lambda batch: collate_fn(batch, pad_id=pad_id),
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+        pin_memory=True,
+        persistent_workers=args.num_workers > 0,
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        collate_fn=lambda batch: collate_fn(batch, pad_id=pad_id),
+        num_workers=max(1, args.num_workers // 2),
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+        pin_memory=True,
+        persistent_workers=False,
     )
 
     # ---- model ----
@@ -302,6 +348,36 @@ def train(args):
         theta=model_cfg.get("theta", 10000.0),
     ).to(device)
 
+    # Use bfloat16 for model weights — halves memory, enables tensor-core
+    # ops on Ampere+ GPUs.  bf16 does NOT need GradScaler (same exponent
+    # range as fp32).  RoPE cos/sin buffers autoconvert to bf16 at runtime.
+    # Compile AFTER dtype conversion so the graph captures the right dtypes.
+    if device.type == "cuda":
+        model = model.to(dtype=torch.bfloat16)
+        # TF32 matmuls — faster on Ampere+ with negligible precision loss.
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        # Capture .item() calls inside torch.compile regions so that
+        # scalar tensor reads (e.g. max().item()) don't cause graph breaks.
+        torch._dynamo.config.capture_scalar_outputs = True
+
+    # Compile the model for faster training.
+    # dynamic=True handles variable-length sequences (prompt length T varies
+    # per batch because we pad to the batch maximum, not a fixed size).
+    # mode="max-autotune" picks the best CUDA kernels for the given shapes
+    # (takes longer on first compilation but faster thereafter).
+    if device.type == "cuda":
+        try:
+            model = torch.compile(model, dynamic=True, mode="max-autotune")
+        except Exception:
+            if args.print_interval > 0:
+                print("torch.compile max-autotune failed, trying default mode")
+            try:
+                model = torch.compile(model, dynamic=True)
+            except Exception:
+                if args.print_interval > 0:
+                    print("torch.compile failed, falling back to eager mode")
+
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     # FLOPs estimate (forward pass, per token, no backward):
@@ -316,6 +392,7 @@ def train(args):
         lr=args.lr,
         weight_decay=args.weight_decay,
         betas=(0.9, 0.95),
+        fused=True if device.type == "cuda" else False,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=args.lr * 0.1
@@ -328,9 +405,12 @@ def train(args):
     # ---- wandb init ----
     wandb_run: Optional["wandb"] = None
     if args.wandb and _wandb_available:
-        wandb_run = wandb.init(
+        wandb_init_kwargs = dict(
             project=args.wandb_project or "metamon-" + "-".join(args.formats),
-            name=args.wandb_name or save_dir.name,
+        )
+        if args.wandb_name:
+            wandb_init_kwargs["name"] = args.wandb_name
+        wandb_run = wandb.init(**wandb_init_kwargs,
             config={
                 **model_cfg,
                 "vocab_size": vocab_size,
@@ -338,6 +418,8 @@ def train(args):
                 "lr": args.lr,
                 "weight_decay": args.weight_decay,
                 "epochs": args.epochs,
+                "val_split": args.val_split,
+                "seed": args.seed,
                 "n_params": n_params,
                 "flops_per_token_fwd": flops_per_token_fwd,
                 "max_seq_len": max_seq_len,
@@ -353,30 +435,90 @@ def train(args):
     if args.log:
         log_path = save_dir / "metrics.csv"
         log_file = open(log_path, "w")
-        log_file.write("epoch,step,loss,nll,token_accuracy,lr,tokens_per_s,mflops,elapsed_s\n")
+        log_file.write(
+            "epoch,step,loss,token_accuracy,lr,tokens_per_s,mflops,elapsed_s,"
+            "val_loss,val_token_accuracy\n"
+        )
+
+    # ---- count transitions from metadata (approximate, for display) ----
+    total_transitions = 0
+    for fmt in args.formats:
+        fmt_dir = os.path.join(args.data_root, fmt)
+        meta_path = os.path.join(fmt_dir, "metadata.json")
+        if os.path.isfile(meta_path):
+            with open(meta_path) as f:
+                meta = json.load(f)
+            total_transitions += meta.get("total_actions", 0)
+    train_est = int(total_transitions * (1.0 - args.val_split))
+    val_est = total_transitions - train_est
+    batches_per_epoch = math.ceil(train_est / args.batch_size) if train_est > 0 else "?"
 
     # ---- print header ----
     if args.print_interval > 0:
-        print(f"Vocab: {vocab_size}  Params: {n_params:,}  Shards: {len(dataset.shard_paths)}")
+        print(f"Vocab: {vocab_size}  Params: {n_params:,}  "
+              f"Shards: {len(train_shards)} train + {len(val_shards)} val "
+              f"= {len(all_shards)} total")
+        print(f"Batch size: {args.batch_size}  "
+              f"Transitions: ~{train_est:,} train + ~{val_est:,} val  "
+              f"Batches/epoch: {batches_per_epoch}")
         print(f"MAX_CONTEXT_LENGTH: {MAX_CONTEXT_LENGTH}  "
               f"SAFETY_FACTOR: {safety_factor}")
         print(f"FLOPs/token (fwd): {flops_per_token_fwd/1e6:.1f}M  "
               f"FLOPs/token (train): {flops_per_token_total/1e6:.1f}M")
 
+    # ---- validation function ----
+    @torch.no_grad()
+    def run_validation() -> dict[str, float]:
+        """Run one pass over the val loader, return average metrics."""
+        model.eval()
+        total_loss = 0.0
+        total_acc = 0.0
+        total_steps = 0
+        for state_t, state_next, actions, st_lens, sn_lens in val_loader:
+            state_t = state_t.to(device)
+            state_next = state_next.to(device)
+            actions = actions.to(device)
+            st_lens = st_lens.to(device)
+            sn_lens = sn_lens.to(device)
+
+            logits, targets, loss_mask = model(
+                state_t, state_next, actions,
+                state_t_lengths=st_lens,
+                state_next_lengths=sn_lens,
+                bos_id=bos_id, eos_id=eos_id, boa_id=boa_id, eoa_id=eoa_id,
+                ignore_loss_tokens=ignore_loss_tokens,
+            )
+            _, metrics = compute_loss(logits, targets, loss_mask)
+            total_loss += metrics["loss"]
+            total_acc += metrics["token_accuracy"]
+            total_steps += 1
+        return {
+            "val_loss": total_loss / max(total_steps, 1),
+            "val_acc": total_acc / max(total_steps, 1),
+        }
+
     # ---- training ----
     global_step = 0
     t_start = time.time()
     token_count = 0  # total tokens processed (for throughput)
+    best_val_loss = float("inf")
+
+    # Warm-up validation pass to compile the inference graph upfront.
+    # Without this, torch.compile(mode="max-autotune") triggers a fresh
+    # autotuning pass on the first eval() call, causing a ~30s pause at
+    # the end of epoch 0.
+    if args.print_interval > 0:
+        print("Warming up validation graph (one-time compilation) ...")
+    run_validation()
 
     for epoch in range(args.epochs):
         model.train()
         epoch_loss = 0.0
-        epoch_nll = 0.0
         epoch_acc = 0.0
         epoch_steps = 0
         t_epoch_start = time.time()
 
-        for state_t, state_next, actions, st_lens, sn_lens in dataloader:
+        for state_t, state_next, actions, st_lens, sn_lens in train_loader:
             state_t = state_t.to(device)
             state_next = state_next.to(device)
             actions = actions.to(device)
@@ -403,7 +545,6 @@ def train(args):
             token_count += tokens_this_step
 
             epoch_loss += metrics["loss"]
-            epoch_nll += metrics["loss"]
             epoch_acc += metrics["token_accuracy"]
             epoch_steps += 1
             global_step += 1
@@ -418,17 +559,16 @@ def train(args):
                 if log_file:
                     log_file.write(
                         f"{epoch},{global_step},{metrics['loss']:.6f},"
-                        f"{metrics['loss']:.6f},"
                         f"{metrics['token_accuracy']:.4f},"
                         f"{optimizer.param_groups[0]['lr']:.2e},"
-                        f"{tokens_per_s:.0f},{mflops:.1f},{elapsed:.1f}\n"
+                        f"{tokens_per_s:.0f},{mflops:.1f},{elapsed:.1f},"
+                        f",\n"
                     )
                     log_file.flush()
 
                 if wandb_run:
                     wandb_run.log({
                         "train/loss": metrics["loss"],
-                        "train/nll": metrics["loss"],
                         "train/token_accuracy": metrics["token_accuracy"],
                         "train/lr": optimizer.param_groups[0]["lr"],
                         "train/tokens_per_s": tokens_per_s,
@@ -438,23 +578,63 @@ def train(args):
                     })
 
                 if args.print_interval > 0 and global_step % args.print_interval == 0:
-                    avg_st_len = st_lens.float().mean().item()
-                    avg_sn_len = sn_lens.float().mean().item()
                     print(
                         f"  epoch {epoch:3d} | step {global_step:7d} | "
-                        f"loss {metrics['loss']:.4f} | nll {metrics['loss']:.4f} | "
+                        f"loss {metrics['loss']:.4f} | "
                         f"acc {metrics['token_accuracy']:.3f} | "
-                        f"st_len {avg_st_len:.0f} | sn_len {avg_sn_len:.0f} | "
                         f"tok/s {tokens_per_s:,.0f} | "
                         f"MFLOPS {mflops:.0f} | "
                         f"lr {optimizer.param_groups[0]['lr']:.2e}"
                     )
 
+            # ---- mid-epoch validation ----
+            if args.val_interval > 0 and global_step % args.val_interval == 0:
+                mid_val = run_validation()
+                if args.print_interval > 0:
+                    print(
+                        f"  val @ step {global_step:7d} | "
+                        f"val loss {mid_val['val_loss']:.4f} | "
+                        f"val acc {mid_val['val_acc']:.3f}"
+                    )
+                if wandb_run:
+                    wandb_run.log({
+                        "val/loss": mid_val["val_loss"],
+                        "val/token_accuracy": mid_val["val_acc"],
+                        "global_step": global_step,
+                        "epoch": epoch,
+                    })
+                if log_file:
+                    log_file.write(
+                        f"{epoch},{global_step},,,,,,,"
+                        f"{mid_val['val_loss']:.6f},{mid_val['val_acc']:.4f}\n"
+                    )
+                    log_file.flush()
+                # Update best checkpoint if improved
+                if args.checkpoint and mid_val["val_loss"] < best_val_loss:
+                    best_val_loss = mid_val["val_loss"]
+                    model.save_checkpoint(
+                        args.checkpoint,
+                        epoch=epoch,
+                        global_step=global_step,
+                        optimizer_state_dict=optimizer.state_dict(),
+                        scheduler_state_dict=scheduler.state_dict(),
+                        config=model_cfg,
+                        vocab_size=vocab_size,
+                        bos_id=bos_id,
+                        eos_id=eos_id,
+                        boa_id=boa_id,
+                        eoa_id=eoa_id,
+                    )
+                    if args.print_interval > 0:
+                        print(f"  ✓ Best checkpoint (val_loss={best_val_loss:.4f}) → {args.checkpoint}")
+
         scheduler.step()
+
+        # ---- validation ----
+        val_metrics = run_validation()
 
         # ---- epoch-end metrics ----
         avg_loss = epoch_loss / max(epoch_steps, 1)
-        avg_nll = epoch_nll / max(epoch_steps, 1)
         avg_acc = epoch_acc / max(epoch_steps, 1)
         t_epoch = time.time() - t_epoch_start
         elapsed = time.time() - t_start
@@ -464,7 +644,8 @@ def train(args):
 
         print(
             f"=== epoch {epoch:3d} done | "
-            f"loss {avg_loss:.4f} | nll {avg_nll:.4f} | acc {avg_acc:.3f} | "
+            f"train loss {avg_loss:.4f} | acc {avg_acc:.3f} | "
+            f"val loss {val_metrics['val_loss']:.4f} | acc {val_metrics['val_acc']:.3f} | "
             f"time {t_epoch:.0f}s | "
             f"tok/s {tokens_per_s:,.0f} | "
             f"MFLOPS {mflops:.0f} ==="
@@ -472,19 +653,25 @@ def train(args):
 
         if wandb_run:
             wandb_run.log({
-                "epoch/avg_loss": avg_loss,
-                "epoch/avg_nll": avg_nll,
-                "epoch/avg_token_accuracy": avg_acc,
+                "epoch/train_loss": avg_loss,
+                "epoch/train_token_accuracy": avg_acc,
+                "epoch/val_loss": val_metrics["val_loss"],
+                "epoch/val_token_accuracy": val_metrics["val_acc"],
                 "epoch/time_s": t_epoch,
                 "epoch/tokens_per_s": tokens_per_s,
                 "epoch/mflops": mflops,
                 "epoch": epoch,
             })
 
-        # ---- checkpoint (every 10 epochs, overwrite single file) ----
-        if args.checkpoint is not None and (epoch + 1) % 10 == 0:
+        # ---- checkpoint ----
+        if args.checkpoint:
+            # Always save latest
+            latest_path = os.path.join(
+                os.path.dirname(args.checkpoint),
+                f"latest_checkpoint.pt",
+            )
             model.save_checkpoint(
-                args.checkpoint,
+                latest_path,
                 epoch=epoch,
                 global_step=global_step,
                 optimizer_state_dict=optimizer.state_dict(),
@@ -496,8 +683,24 @@ def train(args):
                 boa_id=boa_id,
                 eoa_id=eoa_id,
             )
-            if args.print_interval > 0:
-                print(f"  Saved checkpoint to {args.checkpoint}")
+            # Save best if val loss improved
+            if val_metrics["val_loss"] < best_val_loss:
+                best_val_loss = val_metrics["val_loss"]
+                model.save_checkpoint(
+                    args.checkpoint,
+                    epoch=epoch,
+                    global_step=global_step,
+                    optimizer_state_dict=optimizer.state_dict(),
+                    scheduler_state_dict=scheduler.state_dict(),
+                    config=model_cfg,
+                    vocab_size=vocab_size,
+                    bos_id=bos_id,
+                    eos_id=eos_id,
+                    boa_id=boa_id,
+                    eoa_id=eoa_id,
+                )
+                if args.print_interval > 0:
+                    print(f"  ✓ Best checkpoint (val_loss={best_val_loss:.4f}) → {args.checkpoint}")
 
     if log_file:
         log_file.close()
@@ -527,15 +730,23 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Path to save checkpoint every 10 epochs (overwrites). If absent, no checkpointing.")
+                        help="Path to save best-val-loss checkpoint (overwrites). "
+                             "Also saves latest_checkpoint.pt alongside it every epoch. "
+                             "If absent, no checkpointing.")
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--prefetch_factor", type=int, default=2)
+    parser.add_argument("--val_split", type=float, default=0.1,
+                        help="Fraction of shards to hold out for validation (default: 0.1).")
+    parser.add_argument("--val_interval", type=int, default=5000,
+                        help="Run validation every N training steps (0 = only at epoch end).")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for shard partition (default: 42).")
     # Logging
     parser.add_argument("--log", action="store_true",
                         help="Write per-step metrics to metrics.csv in save_dir.")
     parser.add_argument("--log_interval", type=int, default=100,
                         help="Log every N training steps (CSV + wandb).")
-    parser.add_argument("--print_interval", type=int, default=500,
+    parser.add_argument("--print_interval", type=int, default=1000,
                         help="Print to console every N steps (0 = only epoch summaries).")
     # Wandb
     parser.add_argument("--wandb", action="store_true",

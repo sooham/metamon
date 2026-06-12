@@ -75,8 +75,16 @@ class RotaryPositionalEmbedding(nn.Module):
             offset: starting position (used during autoregressive generation).
         """
         S = x.shape[-2]
-        cos = self.cos_cached[offset : offset + S]           # (S, D//2)
-        sin = self.sin_cached[offset : offset + S]
+        dtype = x.dtype
+        # Cache bf16 copies on first use to avoid dtype cast every forward pass.
+        if not hasattr(self, '_cos_bf16'):
+            self._cos_bf16 = {}
+            self._sin_bf16 = {}
+        if dtype not in self._cos_bf16:
+            self._cos_bf16[dtype] = self.cos_cached.to(dtype=dtype)
+            self._sin_bf16[dtype] = self.sin_cached.to(dtype=dtype)
+        cos = self._cos_bf16[dtype][offset : offset + S]  # (S, D//2)
+        sin = self._sin_bf16[dtype][offset : offset + S]
         # interleave to full head dim
         cos = torch.repeat_interleave(cos, 2, dim=-1)        # (S, D)
         sin = torch.repeat_interleave(sin, 2, dim=-1)
@@ -126,6 +134,51 @@ class CausalSelfAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(B, S, D)
         return self.out_proj(y)
 
+    def forward_with_kv(
+        self, x: torch.Tensor,
+        kv_cache: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        cache_pos: int = 0,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        """Forward pass that returns (output, updated_kv_cache).
+
+        When *kv_cache* is None (prefill), processes the full sequence
+        with causal masking and returns all K,V for the cache.  When
+        *kv_cache* is provided (decode), only the new token's K,V are
+        computed and concatenated with the cached values — the new token
+        attends to all prior tokens (no causal mask).
+
+        Args:
+            x: (B, S, D) — input embeddings (S=1 during decode).
+            kv_cache: None or (k_cached, v_cached), each (B, H, S_cached, D_head).
+            cache_pos: RoPE position offset (0 for prefill, prefix_len + step for decode).
+
+        Returns:
+            output: (B, S, D).
+            new_cache: (k, v) to replace *kv_cache* for the next step.
+        """
+        B, S, D = x.shape
+
+        q = self.q_proj(x).view(B, S, self.n_heads, self.d_head).transpose(1, 2)
+        k = self.k_proj(x).view(B, S, self.n_heads, self.d_head).transpose(1, 2)
+        v = self.v_proj(x).view(B, S, self.n_heads, self.d_head).transpose(1, 2)
+
+        q = self.rope(q, offset=cache_pos)
+        k = self.rope(k, offset=cache_pos)
+
+        if kv_cache is not None:
+            k_cached, v_cached = kv_cache
+            k = torch.cat([k_cached, k], dim=2)   # (B, H, S_cached+S, D_head)
+            v = torch.cat([v_cached, v], dim=2)
+
+        y = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=None,
+            dropout_p=0.0,  # no dropout during generation
+            is_causal=(kv_cache is None),  # causal only during prefill
+        )
+        y = y.transpose(1, 2).contiguous().view(B, S, D)
+        return self.out_proj(y), (k, v)
+
 
 class TransformerBlock(nn.Module):
     """Pre-LN transformer block with RoPE causal attention + SwiGLU FFN."""
@@ -148,6 +201,21 @@ class TransformerBlock(nn.Module):
         up = self.ffn_w2(self.ln2(x))
         x = x + self.dropout(self.ffn_out(gate * up))
         return x
+
+    def forward_with_kv(
+        self, x: torch.Tensor,
+        kv_cache: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        cache_pos: int = 0,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        """Forward pass with KV cache — see ``CausalSelfAttention.forward_with_kv``."""
+        attn_out, new_kv = self.attn.forward_with_kv(
+            self.ln1(x), kv_cache=kv_cache, cache_pos=cache_pos
+        )
+        x = x + attn_out
+        gate = F.silu(self.ffn_w1(self.ln2(x)))
+        up = self.ffn_w2(self.ln2(x))
+        x = x + self.dropout(self.ffn_out(gate * up))
+        return x, new_kv
 
 
 # ── Full model ───────────────────────────────────────────────────────────
@@ -206,6 +274,18 @@ class WorldModelTransformer(nn.Module):
         # zeroing (index 0 + padding_idx) is not undone by the Linear
         # init path overwriting the shared tensor.
         self.lm_head.weight = self.token_embedding.weight
+
+        # Precompute action-index → token-ID lookup table for fast vectorized
+        # access in build_prompt.  Action indices range from -1 to 12.
+        max_action = max(action_to_token_id.keys())
+        min_action = min(action_to_token_id.keys())
+        action_lookup = torch.zeros(max_action - min_action + 1, dtype=torch.long)
+        for idx, tok in action_to_token_id.items():
+            action_lookup[idx - min_action] = tok
+        self.register_buffer("_action_lookup", action_lookup, persistent=False)
+        # actions + _action_base gives the correct lookup index.
+        # For min_action = -1: _action_base = 1, so action 0 → index 1.
+        self._action_base = -min_action
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -269,52 +349,100 @@ class WorldModelTransformer(nn.Module):
         L = state_t_lengths  # (B,)
         M = state_next_lengths  # (B,)
 
-        total_lens = L + M + 7  # (B,) — total prompt length per example
-        # Cap at max_context
-        total_lens = torch.clamp(total_lens, max=max_context)
-        T = int(total_lens.max().item())  # batch max for stacking
+        # Clamp lengths so total fits in max_context.
+        # We need L_i + M_i + 7 ≤ max_context, and both L_i, M_i are fit
+        # within their respective padded tensors.
+        max_L = state_t.shape[1]
+        max_M = state_next.shape[1]
+        L_clamped = torch.clamp(L, max=min(max_L, max_context - 7))
+        M_budget = max_context - 7 - L_clamped
+        M_clamped = torch.clamp(M, max=torch.clamp(M_budget, min=0, max=max_M))
 
-        # We'll build each example's prompt separately, then stack.
-        # This is O(B * T) which is fine for typical batch sizes (≤ 64).
+        total_lens = L_clamped + M_clamped + 7  # (B,)
+        # Always allocate to max_context so the output shape is static.
+        # This avoids .item() (which causes a Dynamo graph break) and
+        # the memory overhead is negligible: (B, max_context) int64 =
+        # 256 × 832 × 8 = 1.7 MB per batch.
+        T = max_context
+
+        # ── Fully vectorized prompt construction ───────────────────
+        # All operations are pure tensor ops — no Python loops, no
+        # .item() calls, no graph breaks for torch.compile.
+        #
+        # Position of each element per row i:
+        #   column     content
+        #    0          <bos>
+        #    1..L_i     state_t[i, 0:L_i-1]
+        #    L_i+1      <eos>
+        #    L_i+2      <boa>
+        #    L_i+3      <action>
+        #    L_i+4      <eoa>
+        #    L_i+5      <bos>
+        #    L_i+6..    state_next[i, 0:M_i-1]
+        #    L_i+6+M_i  <eos>
+        #    rest       <pad>
+
+        pos = torch.arange(T, device=device).unsqueeze(0)  # (1, T)
+
+        # 1) Fill with pad_id.
         token_ids = torch.full((B, T), pad_id, dtype=torch.long, device=device)
-        # sn_start[i] = position in targets where state_next region begins
-        sn_start = torch.empty(B, dtype=torch.long, device=device)
-        sn_end = torch.empty(B, dtype=torch.long, device=device)
 
-        for i in range(B):
-            li = min(L[i].item(), max_context - 7)  # state_t tokens we can fit
-            mi = min(M[i].item(), max_context - 7 - li)  # remaining budget for state_next
+        # 2) <bos> at column 0.
+        token_ids[:, 0] = bos_id
 
-            # Pack prompt (0-indexed):
-            #  0:         <bos>
-            #  1 .. li:   state_t
-            #  li+1:      <eos>
-            #  li+2:      <boa>
-            #  li+3:      <action_X>  — action as a regular token
-            #  li+4:      <eoa>
-            #  li+5:      <bos>
-            #  li+6 .. li+5+mi: state_next
-            #  li+6+mi:   <eos>
-            t = 0
-            token_ids[i, t] = bos_id; t += 1
-            token_ids[i, t:t+li] = state_t[i, :li]; t += li
-            token_ids[i, t] = eos_id; t += 1
-            token_ids[i, t] = boa_id; t += 1
-            action_idx = actions[i].item()
-            token_ids[i, t] = self._action_to_token_id[action_idx]
-            t += 1
-            token_ids[i, t] = eoa_id; t += 1
-            token_ids[i, t] = bos_id; t += 1
-            token_ids[i, t:t+mi] = state_next[i, :mi]; t += mi
-            token_ids[i, t] = eos_id; t += 1
+        # 3) state_t block: columns [1, 1+L_i).
+        #    Gather from state_t using src index = pos - 1, masked to valid range.
+        st_mask = (pos >= 1) & (pos < 1 + L_clamped.unsqueeze(1))  # (B, T)
+        st_src = (pos - 1).clamp(min=0, max=state_t.shape[1] - 1).expand(B, -1)
+        st_tokens = state_t.gather(1, st_src)  # (B, T) — values outside mask are clobbered
+        token_ids = torch.where(st_mask, st_tokens, token_ids)
 
-            # sn_start / sn_end in *targets* (shifted by 1):
-            # targets[t] = token_ids[t+1]
-            # state_next[0]  is at token_ids[li+6] → targets[li+5]
-            # state_next[-1] is at token_ids[li+5+mi] → targets[li+4+mi]
-            # final <eos>    is at token_ids[li+6+mi] → targets[li+5+mi]
-            sn_start[i] = li + 5
-            sn_end[i] = li + 5 + mi  # inclusive index of final <eos> in targets
+        # 4) <eos> at column L_i + 1.
+        eos1_col = (L_clamped + 1).unsqueeze(1)  # (B, 1)
+        eos1_mask = (pos == eos1_col) & (eos1_col < T)
+        token_ids = torch.where(eos1_mask, eos_id, token_ids)
+
+        # 5) <boa> at column L_i + 2.
+        boa_col = (L_clamped + 2).unsqueeze(1)
+        boa_mask = (pos == boa_col) & (boa_col < T)
+        token_ids = torch.where(boa_mask, boa_id, token_ids)
+
+        # 6) Action token at column L_i + 3.
+        #    Look up action→token via precomputed buffer (no Python loop).
+        act_col = (L_clamped + 3).unsqueeze(1)
+        act_mask = (pos == act_col) & (act_col < T)
+        action_indices = actions + self._action_base  # shift to lookup range
+        action_tokens = self._action_lookup[action_indices]  # (B,)
+        token_ids = torch.where(act_mask, action_tokens.unsqueeze(1), token_ids)
+
+        # 7) <eoa> at column L_i + 4.
+        eoa_col = (L_clamped + 4).unsqueeze(1)
+        eoa_mask = (pos == eoa_col) & (eoa_col < T)
+        token_ids = torch.where(eoa_mask, eoa_id, token_ids)
+
+        # 8) <bos> at column L_i + 5.
+        bos2_col = (L_clamped + 5).unsqueeze(1)
+        bos2_mask = (pos == bos2_col) & (bos2_col < T)
+        token_ids = torch.where(bos2_mask, bos_id, token_ids)
+
+        # 9) state_next block: columns [L_i+6, L_i+6+M_i).
+        sn_start_col = (L_clamped + 6).unsqueeze(1)  # (B, 1)
+        sn_mask = (pos >= sn_start_col) & (pos < sn_start_col + M_clamped.unsqueeze(1))
+        sn_src = (pos - sn_start_col).clamp(min=0, max=state_next.shape[1] - 1)
+        sn_tokens = state_next.gather(1, sn_src)
+        token_ids = torch.where(sn_mask, sn_tokens, token_ids)
+
+        # 10) Final <eos> at column L_i + 6 + M_i.
+        eos2_col = (L_clamped + 6 + M_clamped).unsqueeze(1)
+        eos2_mask = (pos == eos2_col) & (eos2_col < T)
+        token_ids = torch.where(eos2_mask, eos_id, token_ids)
+
+        # sn_start / sn_end in *targets* (shifted by 1):
+        # targets[t] = token_ids[t+1]
+        # state_next[0]  is at token_ids[L_i+6] → targets[L_i+5]
+        # final <eos>    is at token_ids[L_i+6+M_i] → targets[L_i+5+M_i]
+        sn_start = (L_clamped + 5).long()
+        sn_end = (L_clamped + 5 + M_clamped).long()
 
         return token_ids, sn_start, sn_end
 
@@ -391,22 +519,53 @@ class WorldModelTransformer(nn.Module):
         logits = logits[:, :-1, :]                             # (B, T-1, V)
         targets = token_ids[:, 1:]                             # (B, T-1)
 
-        # Loss mask: state_next region + final <eos> for each example
-        loss_mask = torch.zeros(B, T - 1, dtype=torch.bool, device=device)
-        for i in range(B):
-            a = sn_start[i].item()
-            b = sn_end[i].item()
-            if a < T - 1:
-                loss_mask[i, a:min(b + 1, T - 1)] = True
+        # Loss mask: state_next region + final <eos> for each example.
+        # Vectorized using column indices.
+        cols = torch.arange(T - 1, device=device).unsqueeze(0)  # (1, T-1)
+        sn_start_col = sn_start.unsqueeze(1)   # (B, 1)
+        sn_end_col = sn_end.unsqueeze(1)       # (B, 1)
+        loss_mask = (cols >= sn_start_col) & (cols <= sn_end_col)
+        # Clamp end to valid range
+        loss_mask = loss_mask & (cols < T - 1)
 
         # Exclude ignore_loss_tokens (pad, delimiter tokens, etc.)
         if ignore_loss_tokens:
-            ignore_mask = torch.zeros(B, T - 1, dtype=torch.bool, device=device)
-            for tid in ignore_loss_tokens:
-                ignore_mask = ignore_mask | (targets == tid)
-            loss_mask = loss_mask & ~ignore_mask
+            ignore_ids = torch.tensor(
+                sorted(ignore_loss_tokens), dtype=torch.long, device=device
+            )
+            loss_mask = loss_mask & ~torch.isin(targets, ignore_ids)
 
         return logits, targets, loss_mask
+
+    # ── KV-cache-aware token forward ────────────────────────────
+
+    def _forward_tokens_with_kv(
+        self,
+        token_ids: torch.Tensor,
+        kv_caches: Optional[list[tuple[torch.Tensor, torch.Tensor]]] = None,
+        cache_pos: int = 0,
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        """Process *token_ids* through the transformer, returning logits and
+        per-layer KV caches.
+
+        Args:
+            token_ids: (B, S) int — input token IDs (S=1 during decode).
+            kv_caches: None (prefill) or list of (k, v) per layer (decode).
+            cache_pos: RoPE position offset.
+
+        Returns:
+            logits:    (B, S, V).
+            new_caches: list of (k, v) per layer (updated).
+        """
+        x = self.token_embedding(token_ids)
+        new_caches: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for i, block in enumerate(self.blocks):
+            kv = kv_caches[i] if kv_caches is not None else None
+            x, new_kv = block.forward_with_kv(x, kv_cache=kv, cache_pos=cache_pos)
+            new_caches.append(new_kv)
+        x = self.ln_final(x)
+        logits = self.lm_head(x)
+        return logits, new_caches
 
     # ── Autoregressive generation ────────────────────────────────────
 
@@ -425,6 +584,9 @@ class WorldModelTransformer(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Autoregressively generate state[t+1] given state[t] and action.
 
+        Uses KV caching: the prompt prefix is processed once (prefill),
+        then each new token costs only one transformer forward pass.
+
         Args:
             state_t:         (B, max_L) int — padded current state.
             actions:         (B,)      int — action indices.
@@ -442,72 +604,74 @@ class WorldModelTransformer(nn.Module):
         device = state_t.device
         L = state_t_lengths  # (B,)
 
-        # Build prefix per example: <bos> st[:L_i] <eos> <boa> <action_X> <eoa> <bos>
-        # Max prefix length = max_L + 6
+        # ── Build prefix ──────────────────────────────────────────
         max_prefix_len = max_L + 6
         prefix_ids = torch.full((B, max_prefix_len), self.pad_id, dtype=torch.long, device=device)
-        prefix_lens = torch.empty(B, dtype=torch.long, device=device)
+        pos = torch.arange(max_prefix_len, device=device).unsqueeze(0)
 
-        for i in range(B):
-            li = L[i].item()
-            action_tok = self._action_to_token_id[actions[i].item()]
-            t = 0
-            prefix_ids[i, t] = bos_id; t += 1
-            prefix_ids[i, t:t+li] = state_t[i, :li]; t += li
-            prefix_ids[i, t] = eos_id; t += 1
-            prefix_ids[i, t] = boa_id; t += 1
-            prefix_ids[i, t] = action_tok
-            t += 1
-            prefix_ids[i, t] = eoa_id; t += 1
-            prefix_ids[i, t] = bos_id; t += 1
-            prefix_lens[i] = t
+        prefix_ids[:, 0] = bos_id
+        st_mask = (pos >= 1) & (pos < 1 + L.unsqueeze(1))
+        st_src = (pos - 1).clamp(min=0, max=max_L - 1).expand(B, -1)
+        prefix_ids = torch.where(st_mask, state_t.gather(1, st_src), prefix_ids)
 
+        eos1_col = (L + 1).unsqueeze(1)
+        prefix_ids = torch.where((pos == eos1_col) & (eos1_col < max_prefix_len), eos_id, prefix_ids)
+        boa_col = (L + 2).unsqueeze(1)
+        prefix_ids = torch.where((pos == boa_col) & (boa_col < max_prefix_len), boa_id, prefix_ids)
+        act_col = (L + 3).unsqueeze(1)
+        action_tokens = self._action_lookup[actions + self._action_base]
+        prefix_ids = torch.where((pos == act_col) & (act_col < max_prefix_len), action_tokens.unsqueeze(1), prefix_ids)
+        eoa_col = (L + 4).unsqueeze(1)
+        prefix_ids = torch.where((pos == eoa_col) & (eoa_col < max_prefix_len), eoa_id, prefix_ids)
+        bos2_col = (L + 5).unsqueeze(1)
+        prefix_ids = torch.where((pos == bos2_col) & (bos2_col < max_prefix_len), bos_id, prefix_ids)
+
+        prefix_lens = L + 6
         max_prefix = int(prefix_lens.max().item())
-        prefix_ids = prefix_ids[:, :max_prefix]  # trim batch to max prefix
+        prefix_ids = prefix_ids[:, :max_prefix]
 
-        # Guard: sliding-window truncation must not drop the action token.
-        # The action sits at position li+3 in the prefix; when total > max_seq_len
-        # the leftmost tokens are cut, potentially removing the action silently.
-        min_safe = max_L + 6 + max_new_tokens
+        # ── Guard ───────────────────────────────────────────────────
+        min_safe = max_prefix + max_new_tokens
         if min_safe > self.max_seq_len:
             raise ValueError(
-                f"max_seq_len ({self.max_seq_len}) too small for generation. "
-                f"The prefix needs up to {max_L + 6} tokens, plus up to "
-                f"{max_new_tokens} generated tokens = {min_safe}. "
+                f"max_seq_len ({self.max_seq_len}) too small.  Prefix up to "
+                f"{max_prefix} + {max_new_tokens} new tokens = {min_safe}.  "
                 f"Increase max_seq_len to at least {min_safe}."
             )
+
+        # ── Prefill: process full prefix, capture KV caches ──────
+        logits, kv_caches = self._forward_tokens_with_kv(
+            prefix_ids, kv_caches=None, cache_pos=0,
+        )
+        # logits shape: (B, max_prefix, V)
 
         generated = torch.full((B, max_new_tokens), self.pad_id, dtype=torch.long, device=device)
         generated_lengths = torch.zeros(B, dtype=torch.long, device=device)
         done = torch.zeros(B, dtype=torch.bool, device=device)
 
-        # KV cache not implemented — re-encode full sequence each step.
         for step in range(max_new_tokens):
-            token_ids = torch.cat([prefix_ids, generated[:, :step]], dim=1)
-            # Cap at max_seq_len (sliding window — keep last max_seq_len tokens)
-            if token_ids.shape[1] > self.max_seq_len:
-                token_ids = token_ids[:, -self.max_seq_len:]
-
-            x = self.token_embedding(token_ids)
-
-            for block in self.blocks:
-                x = block(x)
-            x = self.ln_final(x)
-            logits = self.lm_head(x[:, -1, :])                 # (B, V)
+            # Logits at the last position predict the next token.
+            next_logits = logits[:, -1, :]  # (B, V)
 
             if temperature != 1.0:
-                logits = logits / temperature
-            probs = F.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1).squeeze(-1)  # (B,)
+                next_logits = next_logits / temperature
+            probs = F.softmax(next_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1).squeeze(-1)
             next_token[done] = self.pad_id
 
             generated[:, step] = next_token
-            # Track length for examples not yet done
             not_done = ~done
             generated_lengths[not_done] += 1
             done = done | (next_token == eos_id)
             if done.all():
                 break
+
+            # Decode: process the new token with KV cache.
+            logits, kv_caches = self._forward_tokens_with_kv(
+                next_token.unsqueeze(1),         # (B, 1)
+                kv_caches=kv_caches,
+                cache_pos=max_prefix + step,
+            )
 
         return generated, generated_lengths
 
