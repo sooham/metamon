@@ -49,6 +49,7 @@ from metamon.sl.model import (
     WorldModelTransformer,
     compute_loss,
     MAX_CONTEXT_LENGTH,
+    MAX_STATE_LENGTH,
     SAFETY_FACTOR,
 )
 
@@ -180,19 +181,21 @@ class WorldModelDataset(torch.utils.data.IterableDataset):
 def collate_fn(
     batch: list[tuple[int, int, int, np.ndarray, np.ndarray]],
     pad_id: int = 0,
+    max_state_len: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Collate variable-length transitions into padded tensors.
 
     Input: list of (state_t_len, state_next_len, action, state_t, state_next)
     Output: (state_t, state_next, actions, state_t_lengths, state_next_lengths)
-      where state_t/state_next are padded to the batch maximum with *pad_id*.
+      where state_t/state_next are padded to *max_state_len* if given,
+      otherwise to the batch maximum.
     """
     state_t_lengths = torch.tensor([item[0] for item in batch], dtype=torch.long)
     state_next_lengths = torch.tensor([item[1] for item in batch], dtype=torch.long)
     actions = torch.tensor([item[2] for item in batch], dtype=torch.long)
 
-    max_st = int(state_t_lengths.max().item())
-    max_sn = int(state_next_lengths.max().item())
+    max_st = max_state_len if max_state_len is not None else int(state_t_lengths.max().item())
+    max_sn = max_state_len if max_state_len is not None else int(state_next_lengths.max().item())
 
     state_t_padded = torch.full((len(batch), max_st), pad_id, dtype=torch.long)
     state_next_padded = torch.full((len(batch), max_sn), pad_id, dtype=torch.long)
@@ -309,7 +312,7 @@ def train(args):
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        collate_fn=lambda batch: collate_fn(batch, pad_id=pad_id),
+        collate_fn=lambda batch: collate_fn(batch, pad_id=pad_id, max_state_len=MAX_STATE_LENGTH),
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         pin_memory=True,
@@ -318,7 +321,7 @@ def train(args):
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size,
-        collate_fn=lambda batch: collate_fn(batch, pad_id=pad_id),
+        collate_fn=lambda batch: collate_fn(batch, pad_id=pad_id, max_state_len=MAX_STATE_LENGTH),
         num_workers=max(1, args.num_workers // 2),
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         pin_memory=True,
@@ -502,14 +505,6 @@ def train(args):
     t_start = time.time()
     token_count = 0  # total tokens processed (for throughput)
     best_val_loss = float("inf")
-
-    # Warm-up validation pass to compile the inference graph upfront.
-    # Without this, torch.compile(mode="max-autotune") triggers a fresh
-    # autotuning pass on the first eval() call, causing a ~30s pause at
-    # the end of epoch 0.
-    if args.print_interval > 0:
-        print("Warming up validation graph (one-time compilation) ...")
-    run_validation()
 
     for epoch in range(args.epochs):
         model.train()
@@ -737,7 +732,7 @@ if __name__ == "__main__":
     parser.add_argument("--prefetch_factor", type=int, default=2)
     parser.add_argument("--val_split", type=float, default=0.1,
                         help="Fraction of shards to hold out for validation (default: 0.1).")
-    parser.add_argument("--val_interval", type=int, default=5000,
+    parser.add_argument("--val_interval", type=int, default=1000,
                         help="Run validation every N training steps (0 = only at epoch end).")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for shard partition (default: 42).")
