@@ -485,11 +485,15 @@ class MetamonBackendBattle(pe.AbstractBattle):
         """
         p1 = self.player_role == "p1"
         metamon_team = self._current_turn.get_team_dict(not p1)
-        pe_team = {
-            k: self._convert_pokemon(v)
-            for k, v in metamon_team.items()
-            if v is not None
-        }
+        metamon_active = self._current_turn.get_active_pokemon(not p1)[0]
+        pe_team = {}
+        for k, v in metamon_team.items():
+            pe_p = self._convert_pokemon(v)
+            if metamon_active is not None:
+                pe_p._active = v.unique_id == metamon_active.unique_id
+            else:
+                pe_p._active = False
+            pe_team[k] = pe_p
         return pe_team
 
     @property

@@ -288,6 +288,96 @@ def train(args):
         print(f"Ignoring loss for token IDs: {sorted(ignore_loss_tokens)} "
               f"(<pad>)")
 
+    # ── Diagnostic: print detokenized states for high-loss examples ──
+    _diag_counter = [0]  # mutable counter to rate-limit diagnostic prints
+
+    def diagnose_batch(
+        per_example_loss: list[float],
+        per_example_acc: list[float],
+        prompt_ids: torch.Tensor,
+        st_lens: torch.Tensor,
+        sn_lens: torch.Tensor,
+        actions: torch.Tensor,
+    ) -> None:
+        """When batch loss exceeds threshold, print detokenized states
+        for the worst examples in the batch."""
+        threshold = args.diag_loss_threshold
+        batch_loss = metrics["loss"]
+        if batch_loss <= threshold:
+            return
+
+        _diag_counter[0] += 1
+        # Rate-limit: only print every N spikes to avoid flooding
+        if _diag_counter[0] % args.diag_rate_limit != 1:
+            return
+
+        B = len(per_example_loss)
+        top_k = min(args.diag_top_k, B)
+        # Find top-k worst examples by per-example loss
+        ranked = sorted(
+            range(B), key=lambda i: per_example_loss[i], reverse=True
+        )[:top_k]
+
+        print(f"\n{'='*70}")
+        print(f"⚠  HIGH LOSS BATCH  loss={batch_loss:.4f}  "
+              f"step={global_step}  epoch={epoch}")
+        print(f"{'='*70}")
+
+        for rank, idx in enumerate(ranked):
+            ex_loss = per_example_loss[idx]
+            ex_acc = per_example_acc[idx]
+            st_len = st_lens[idx].item()
+            sn_len = sn_lens[idx].item()
+            action_idx = actions[idx].item()
+            action_str = tokenizer.detokenize(
+                [tokenizer.get_action_token_id(action_idx)]
+            )[0]
+
+            print(f"\n  ── Example {rank+1}/{top_k} (idx={idx}) "
+                  f"loss={ex_loss:.4f} acc={ex_acc:.3f} "
+                  f"|state_t|={st_len} |state_next|={sn_len} "
+                  f"action={action_str} ──")
+
+            # ── state_t ──
+            # state_t starts at column 1 in prompt, length st_len
+            st_ids = prompt_ids[idx, 1 : 1 + st_len].tolist()
+            st_tokens = tokenizer.detokenize(st_ids)
+            print(f"\n  [state_t] ({st_len} tokens)")
+            print(f"    {' '.join(st_tokens)}")
+
+            # ── state_next (target) ──
+            # state_next starts at column st_len + 6 in prompt, length sn_len
+            sn_start_col = st_len + 6
+            sn_ids = prompt_ids[idx, sn_start_col : sn_start_col + sn_len].tolist()
+            sn_tokens = tokenizer.detokenize(sn_ids)
+            print(f"\n  [state_next — TARGET] ({sn_len} tokens)")
+            print(f"    {' '.join(sn_tokens)}")
+
+            # ── Raw token comparison for the state_next region ──
+            # Show a compact diff: predicted vs actual for problematic tokens
+            preds = logits[idx].argmax(dim=-1)  # (T-1,)
+            tgt = targets[idx]  # (T-1,)
+            mask = loss_mask[idx]  # (T-1,)
+            # sn_start/sn_end in targets space is st_len+5 to st_len+5+sn_len
+            t_sn_start = st_len + 5
+            t_sn_end = t_sn_start + sn_len
+            # Find positions where prediction was wrong
+            wrong_positions = []
+            for t in range(t_sn_start, min(t_sn_end, len(mask))):
+                if mask[t] and preds[t].item() != tgt[t].item():
+                    wrong_positions.append(t)
+            if wrong_positions:
+                print(f"\n  [Mis-predicted tokens in state_next] "
+                      f"({len(wrong_positions)}/{sn_len} wrong)")
+                for t in wrong_positions[:20]:  # limit output
+                    pred_tok = tokenizer.detokenize([preds[t].item()])[0]
+                    true_tok = tokenizer.detokenize([tgt[t].item()])[0]
+                    print(f"    pos {t - t_sn_start:3d}: "
+                          f"pred={pred_tok:<20} true={true_tok}")
+            print()
+
+        print(f"{'='*70}\n")
+
     # ---- datasets (train / val split at shard level) ----
     # Discover all shards, shuffle, then partition by shard index.
     # This guarantees no battle appears in both splits.
@@ -337,6 +427,7 @@ def train(args):
     # RoPE cache must cover at least MAX_CONTEXT_LENGTH
     max_seq_len = max(model_cfg.get("max_seq_len", 1024), MAX_CONTEXT_LENGTH)
     safety_factor = model_cfg.get("safety_factor", SAFETY_FACTOR)
+    ffn_activation = model_cfg.get("ffn_activation", "gelu")
 
     model = WorldModelTransformer(
         vocab_size=vocab_size,
@@ -349,6 +440,7 @@ def train(args):
         d_ff=d_ff,
         dropout=dropout,
         theta=model_cfg.get("theta", 10000.0),
+        ffn_activation=ffn_activation,
     ).to(device)
 
     # Use bfloat16 for model weights — halves memory, enables tensor-core
@@ -471,20 +563,29 @@ def train(args):
 
     # ---- validation function ----
     @torch.no_grad()
-    def run_validation() -> dict[str, float]:
-        """Run one pass over the val loader, return average metrics."""
+    def run_validation(max_batches: int | None = None) -> dict[str, float]:
+        """Run a pass over the val loader, return average metrics.
+
+        Parameters
+        ----------
+        max_batches : int | None
+            If set, stop after this many batches (for fast mid-epoch checks).
+            If None, iterate the entire val dataset (for epoch-end evaluation).
+        """
         model.eval()
         total_loss = 0.0
         total_acc = 0.0
         total_steps = 0
-        for state_t, state_next, actions, st_lens, sn_lens in val_loader:
+        for batch_idx, (state_t, state_next, actions, st_lens, sn_lens) in enumerate(val_loader):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
             state_t = state_t.to(device)
             state_next = state_next.to(device)
             actions = actions.to(device)
             st_lens = st_lens.to(device)
             sn_lens = sn_lens.to(device)
 
-            logits, targets, loss_mask = model(
+            logits, targets, loss_mask, _prompt_ids = model(
                 state_t, state_next, actions,
                 state_t_lengths=st_lens,
                 state_next_lengths=sn_lens,
@@ -520,14 +621,31 @@ def train(args):
             st_lens = st_lens.to(device)
             sn_lens = sn_lens.to(device)
 
-            logits, targets, loss_mask = model(
+            logits, targets, loss_mask, prompt_ids = model(
                 state_t, state_next, actions,
                 state_t_lengths=st_lens,
                 state_next_lengths=sn_lens,
                 bos_id=bos_id, eos_id=eos_id, boa_id=boa_id, eoa_id=eoa_id,
                 ignore_loss_tokens=ignore_loss_tokens,
             )
+            # First compute loss without per-example overhead
             loss, metrics = compute_loss(logits, targets, loss_mask)
+
+            # ── Diagnostic: re-compute with per-example detail on spikes ──
+            _diag_enabled = args.diag_loss_threshold is not None
+            if _diag_enabled and metrics["loss"] > args.diag_loss_threshold:
+                _, metrics_diag = compute_loss(
+                    logits, targets, loss_mask,
+                    return_per_example=True,
+                )
+                diagnose_batch(
+                    per_example_loss=metrics_diag["per_example_loss"],
+                    per_example_acc=metrics_diag["per_example_acc"],
+                    prompt_ids=prompt_ids,
+                    st_lens=st_lens,
+                    sn_lens=sn_lens,
+                    actions=actions,
+                )
 
             optimizer.zero_grad()
             loss.backward()
@@ -543,6 +661,38 @@ def train(args):
             epoch_acc += metrics["token_accuracy"]
             epoch_steps += 1
             global_step += 1
+
+            # ── Track per-batch stats & overflow check ────────────
+            _max_st = int(st_lens.max().item())
+            _max_sn = int(sn_lens.max().item())
+            # Warn if any state exceeds MAX_STATE_LENGTH (the raw limit
+            # before the safety factor).  Such states will eat into the
+            # safety margin and may cause truncation at MAX_CONTEXT_LENGTH.
+            _max_prompt = _max_st + _max_sn + 7
+            if _max_st > MAX_STATE_LENGTH or _max_sn > MAX_STATE_LENGTH:
+                overflow_idx = int((st_lens + sn_lens).argmax().item())
+                print(
+                    f"\n⚠  STATE OVERFLOW  step={global_step}  "
+                    f"max|st|={_max_st}  max|sn|={_max_sn}  "
+                    f"(MAX_STATE_LENGTH={MAX_STATE_LENGTH})\n"
+                    f"   example {overflow_idx}: "
+                    f"|state_t|={st_lens[overflow_idx].item()}  "
+                    f"|state_next|={sn_lens[overflow_idx].item()}  "
+                    f"prompt_total={_max_prompt}"
+                )
+                # Show the overflowing state
+                if st_lens[overflow_idx].item() > MAX_STATE_LENGTH:
+                    which = "state_t"
+                    st_overflow = prompt_ids[
+                        overflow_idx, 1 : 1 + st_lens[overflow_idx].item()
+                    ].tolist()
+                else:
+                    which = "state_next"
+                    st_overflow = prompt_ids[
+                        overflow_idx,
+                        st_lens[overflow_idx].item() + 6 : st_lens[overflow_idx].item() + 6 + sn_lens[overflow_idx].item()
+                    ].tolist()
+                print(f"   {which}: {' '.join(tokenizer.detokenize(st_overflow))}")
 
             # ---- per-step logging ----
             if global_step % args.log_interval == 0:
@@ -568,6 +718,8 @@ def train(args):
                         "train/lr": optimizer.param_groups[0]["lr"],
                         "train/tokens_per_s": tokens_per_s,
                         "train/mflops": mflops,
+                        "train/max_st_len": _max_st,
+                        "train/max_sn_len": _max_sn,
                         "epoch": epoch,
                         "global_step": global_step,
                     })
@@ -579,12 +731,14 @@ def train(args):
                         f"acc {metrics['token_accuracy']:.3f} | "
                         f"tok/s {tokens_per_s:,.0f} | "
                         f"MFLOPS {mflops:.0f} | "
-                        f"lr {optimizer.param_groups[0]['lr']:.2e}"
+                        f"lr {optimizer.param_groups[0]['lr']:.2e} | "
+                        f"max|st|={_max_st} max|sn|={_max_sn}"
                     )
 
-            # ---- mid-epoch validation ----
+            # ---- mid-epoch validation (fast: limited batches) ----
             if args.val_interval > 0 and global_step % args.val_interval == 0:
-                mid_val = run_validation()
+                _mb = args.val_max_batches if args.val_max_batches > 0 else None
+                mid_val = run_validation(max_batches=_mb)
                 if args.print_interval > 0:
                     print(
                         f"  val @ step {global_step:7d} | "
@@ -625,8 +779,8 @@ def train(args):
 
         scheduler.step()
 
-        # ---- validation ----
-        val_metrics = run_validation()
+        # ---- epoch-end validation (full pass) ----
+        val_metrics = run_validation(max_batches=None)
 
         # ---- epoch-end metrics ----
         avg_loss = epoch_loss / max(epoch_steps, 1)
@@ -715,7 +869,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_root", type=str, required=True)
     parser.add_argument("--formats", type=str, nargs="+", required=True)
     parser.add_argument("--config", type=str,
-                        default=os.path.join(os.path.dirname(__file__), "configs", "default.yaml"))
+                        default=os.path.join(os.path.dirname(__file__), "configs", "conservative.yaml"))
     parser.add_argument("--tokenizer_path", type=str, required=True,
                         help="Path to WorldModel tokenizer JSON (must contain <bos>/<eos>/<boa>/<eoa>).")
     parser.add_argument("--save_dir", type=str, required=True)
@@ -730,10 +884,14 @@ if __name__ == "__main__":
                              "If absent, no checkpointing.")
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--prefetch_factor", type=int, default=2)
-    parser.add_argument("--val_split", type=float, default=0.1,
+    parser.add_argument("--val_split", type=float, default=0.05,
                         help="Fraction of shards to hold out for validation (default: 0.1).")
-    parser.add_argument("--val_interval", type=int, default=1000,
+    parser.add_argument("--val_interval", type=int, default=100,
                         help="Run validation every N training steps (0 = only at epoch end).")
+    parser.add_argument("--val_max_batches", type=int, default=100,
+                        help="Limit mid-epoch validation to this many batches (default: 200). "
+                             "Set to 0 or a very large number to do a full pass every time. "
+                             "Epoch-end validation always does a full pass.")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for shard partition (default: 42).")
     # Logging
@@ -743,6 +901,14 @@ if __name__ == "__main__":
                         help="Log every N training steps (CSV + wandb).")
     parser.add_argument("--print_interval", type=int, default=1000,
                         help="Print to console every N steps (0 = only epoch summaries).")
+    # Diagnostics
+    parser.add_argument("--diag_loss_threshold", type=float, default=0.8,
+                        help="When batch loss exceeds this, print detokenized states "
+                             "for the worst examples (e.g. 1.5). None = disabled.")
+    parser.add_argument("--diag_top_k", type=int, default=5,
+                        help="Number of worst examples to show per spike (default: 2).")
+    parser.add_argument("--diag_rate_limit", type=int, default=10,
+                        help="Only print diagnostics every N spikes (default: 10).")
     # Wandb
     parser.add_argument("--wandb", action="store_true",
                         help="Enable Weights & Biases logging.")

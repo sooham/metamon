@@ -235,10 +235,10 @@ SL_TOKENIZER ?= $(TOKENIZER_FILE)
 SL_SAVE_DIR ?= $(METAMON_CACHE_DIR)/sl-checkpoints
 SL_BATCH_SIZE ?= 256
 SL_LR ?= 3e-4
-SL_EPOCHS ?= 10
+SL_EPOCHS ?= 100
 SL_GRAD_CLIP ?= 1.0
 SL_NUM_WORKERS ?= 4
-SL_PRINT_INTERVAL ?= 100
+SL_PRINT_INTERVAL ?= 50
 SL_CONFIG ?=
 CHECKPOINT ?= $(SL_SAVE_DIR)/best.pt
 WANDB ?= true
@@ -272,7 +272,7 @@ train-sl:
 		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
 		$(if $(CHECKPOINT),--checkpoint $(CHECKPOINT)) \
 		$(if $(SL_CONFIG),--config $(SL_CONFIG)) \
-		--log --log_interval 100
+		--log --log_interval 10
 
 # ── World Model Showdown Play ─────────────────────────────────────────
 

@@ -8,13 +8,14 @@ model:
   vocab_size: null
 
   # Safety factor for context window: C = (MAX_STATE_LENGTH + ACTION_OVERHEAD) * safety_factor
-  # MAX_STATE_LENGTH = 312 (maximal WorldModelObservationSpace tokens)
+  # MAX_STATE_LENGTH = 260 (max WorldModelObservationSpace tokens)
   # ACTION_OVERHEAD  = 5   (<eos> <boa> A <eoa> <bos> between state_t and state_next)
-  # Default 2.5 → C = ceil(317 * 2.5 / 64) * 64 = 768
-  safety_factor: 2.5
+  # Default 2.0 → C = ceil(265 * 2.0 / 64) * 64 = 576
+  safety_factor: 2.0
 
   # Maximum sequence length the RoPE cache supports.
-  # Must be >= MAX_CONTEXT_LENGTH (768).  1024 gives generous headroom.
+  # Must be >= max prefix + max_new_tokens (≈ 527 + 340 = 867 for generation).
+  # 1024 gives generous headroom.
   max_seq_len: 1024
 
   # residual stream / embedding dimension
@@ -26,8 +27,14 @@ model:
   # number of transformer layers
   n_layers: 6
 
-  # feed-forward hidden dimension (SwiGLU, applied to both gate & up projections)
+  # feed-forward hidden dimension (applied to both gate & up in SwiGLU,
+  # or single projection in GELU)
   d_ff: 1024
+
+  # FFN activation type: "swiglu" or "gelu"
+  # swiglu: gate = SiLU(W1(x)), up = W2(x), out = W_out(gate * up)  (3× activation memory)
+  # gelu:   out = W_out(GELU(W(x)))                                   (1× activation memory)
+  ffn_activation: gelu
 
   # dropout rate
   dropout: 0.1

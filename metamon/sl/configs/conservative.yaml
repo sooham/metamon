@@ -1,0 +1,22 @@
+# WorldModel State-Learning Transformer — "conservative bump" hyperparams.
+#
+# d_head = d_model / n_heads = 384 / 6 = 64  (standard head dim).
+# Uses GELU FFN (1/3 the activation memory of SwiGLU).
+#
+# Training hyperparameters (lr, epochs, batch_size, etc.) are passed
+# via CLI flags to train.py and are NOT stored here.
+
+model:
+  vocab_size: null          # auto-detected from tokenizer or data
+
+  safety_factor: 2.0        # context window = ceil((260 + 5) * 2.0 / 64) * 64 = 576
+  max_seq_len: 1024         # RoPE cache size (must be >= MAX_CONTEXT_LENGTH)
+
+  d_model: 384              # residual stream / embedding dimension
+  n_heads: 6                # attention heads (d_head = 384 / 6 = 64)
+  n_layers: 6               # transformer layers
+  d_ff: 1536                # feed-forward hidden dimension
+  dropout: 0.1              # dropout rate
+
+  ffn_activation: gelu      # "gelu" or "swiglu"
+  theta: 10000.0            # RoPE base frequency

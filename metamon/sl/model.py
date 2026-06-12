@@ -20,7 +20,7 @@ Constants (derived from WorldModelObservationSpace):
     MAX_STATE_LENGTH  = 312   # maximal token count for a fully-revealed state
     ACTION_OVERHEAD   = 5     # <eos><boa>A<eoa><bos> between state_t and state_next
     SAFETY_FACTOR     = 2.5   # configurable margin for context window
-    MAX_CONTEXT_LENGTH = 832  # ceil((MAX_STATE_LENGTH + ACTION_OVERHEAD) * SAFETY_FACTOR / 64) * 64
+    MAX_CONTEXT_LENGTH = 576  # ceil((MAX_STATE_LENGTH + ACTION_OVERHEAD) * SAFETY_FACTOR / 64) * 64
 """
 
 import math
@@ -33,21 +33,25 @@ import torch.nn.functional as F
 # ── Layout constants (derived from WorldModelObservationSpace) ──────────
 
 # Maximum token count for a single state when all Pokémon, moves, boosts,
-# conditions, and effects are fully revealed.
-MAX_STATE_LENGTH: int = 312
+# conditions, and effects are fully revealed.  Boosts only appear on active
+# Pokémon (they reset on switch-out in every generation).  HP is omitted
+# from fainted Pokémon (always 0.0).
+MAX_STATE_LENGTH: int = 260
 
 # Number of structural tokens separating state_t from state_next:
 #   <eos> (1) + <boa> (1) + action (1) + <eoa> (1) + <bos> (1)
 ACTION_OVERHEAD: int = 5
 
 # Safety factor applied to the context window (configurable).
-SAFETY_FACTOR: float = 2.5
+SAFETY_FACTOR: float = 2.0
 
-# Maximum context length the model will ever process.
+# Maximum context length the model will ever process during training.
+# Two full states = 2 * MAX_STATE_LENGTH + ACTION_OVERHEAD + 2 = 527 tokens.
+# With SAFETY_FACTOR=2.0: ceil((260+5)*2.0/64)*64 = ceil(530/64)*64 = 576.
 # Rounded to a multiple of 64 for GPU efficiency.
 MAX_CONTEXT_LENGTH: int = (
     math.ceil((MAX_STATE_LENGTH + ACTION_OVERHEAD) * SAFETY_FACTOR / 64) * 64
-)  # = 768
+)  # = 576
 
 
 # ── RoPE ─────────────────────────────────────────────────────────────────
@@ -181,26 +185,45 @@ class CausalSelfAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """Pre-LN transformer block with RoPE causal attention + SwiGLU FFN."""
+    """Pre-LN transformer block with RoPE causal attention + configurable FFN.
 
-    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float, max_seq_len: int):
+    Supports two FFN types selected at construction time:
+      - ``"swiglu"`` (default): gate = SiLU(W1(x)), up = W2(x), out = W_out(gate * up).
+        Better representational capacity but 3× the activation memory.
+      - ``"gelu"``: out = W_out(GELU(W(x))).
+        Fewer parameters, 1/3 the activation memory of SwiGLU.
+    """
+
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float,
+                 max_seq_len: int, ffn_activation: str = "gelu"):
         super().__init__()
+        self.ffn_activation = ffn_activation
         self.ln1 = nn.LayerNorm(d_model)
         self.attn = CausalSelfAttention(d_model, n_heads, dropout, max_seq_len)
         self.ln2 = nn.LayerNorm(d_model)
-        # SwiGLU FFN
-        self.ffn_w1 = nn.Linear(d_model, d_ff, bias=False)
-        self.ffn_w2 = nn.Linear(d_model, d_ff, bias=False)
-        self.ffn_out = nn.Linear(d_ff, d_model, bias=False)
+        if ffn_activation == "swiglu":
+            self.ffn_w1 = nn.Linear(d_model, d_ff, bias=False)
+            self.ffn_w2 = nn.Linear(d_model, d_ff, bias=False)
+            self.ffn_out = nn.Linear(d_ff, d_model, bias=False)
+        elif ffn_activation == "gelu":
+            self.ffn = nn.Linear(d_model, d_ff, bias=False)
+            self.ffn_out = nn.Linear(d_ff, d_model, bias=False)
+        else:
+            raise ValueError(f"Unknown ffn_activation: {ffn_activation}")
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln1(x))
-        # SwiGLU
-        gate = F.silu(self.ffn_w1(self.ln2(x)))
-        up = self.ffn_w2(self.ln2(x))
-        x = x + self.dropout(self.ffn_out(gate * up))
+        x = x + self.dropout(self._ffn(self.ln2(x)))
         return x
+
+    def _ffn(self, x: torch.Tensor) -> torch.Tensor:
+        if self.ffn_activation == "swiglu":
+            gate = F.silu(self.ffn_w1(x))
+            up = self.ffn_w2(x)
+            return self.ffn_out(gate * up)
+        else:
+            return self.ffn_out(F.gelu(self.ffn(x)))
 
     def forward_with_kv(
         self, x: torch.Tensor,
@@ -212,9 +235,7 @@ class TransformerBlock(nn.Module):
             self.ln1(x), kv_cache=kv_cache, cache_pos=cache_pos
         )
         x = x + attn_out
-        gate = F.silu(self.ffn_w1(self.ln2(x)))
-        up = self.ffn_w2(self.ln2(x))
-        x = x + self.dropout(self.ffn_out(gate * up))
+        x = x + self.dropout(self._ffn(self.ln2(x)))
         return x, new_kv
 
 
@@ -248,6 +269,7 @@ class WorldModelTransformer(nn.Module):
         d_ff: int = 1024,
         dropout: float = 0.1,
         theta: float = 10000.0,
+        ffn_activation: str = "gelu",
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -261,7 +283,8 @@ class WorldModelTransformer(nn.Module):
         )  # +1 for unused index 0
 
         self.blocks = nn.ModuleList([
-            TransformerBlock(d_model, n_heads, d_ff, dropout, max_seq_len)
+            TransformerBlock(d_model, n_heads, d_ff, dropout, max_seq_len,
+                             ffn_activation=ffn_activation)
             for _ in range(n_layers)
         ])
         self.ln_final = nn.LayerNorm(d_model)
@@ -362,7 +385,7 @@ class WorldModelTransformer(nn.Module):
         # Always allocate to max_context so the output shape is static.
         # This avoids .item() (which causes a Dynamo graph break) and
         # the memory overhead is negligible: (B, max_context) int64 =
-        # 256 × 832 × 8 = 1.7 MB per batch.
+        # 256 × 576 × 8 = 1.2 MB per batch.
         T = max_context
 
         # ── Fully vectorized prompt construction ───────────────────
@@ -490,6 +513,10 @@ class WorldModelTransformer(nn.Module):
             ignore_loss_tokens = set()
 
         # Build variable-length prompts
+        # Use MAX_CONTEXT_LENGTH for training (smaller = less memory).
+        # self.max_seq_len (1024) is reserved for inference/generation
+        # where the model may produce up to max_new_tokens=340 on top of
+        # a full prefix.
         token_ids, sn_start, sn_end = self.build_prompt(
             state_t=state_t,
             state_next=state_next,
@@ -501,7 +528,7 @@ class WorldModelTransformer(nn.Module):
             boa_id=boa_id,
             eoa_id=eoa_id,
             pad_id=self.pad_id,
-            max_context=self.max_seq_len,
+            max_context=MAX_CONTEXT_LENGTH,
         )
         T = token_ids.shape[1]
 
@@ -535,7 +562,7 @@ class WorldModelTransformer(nn.Module):
             )
             loss_mask = loss_mask & ~torch.isin(targets, ignore_ids)
 
-        return logits, targets, loss_mask
+        return logits, targets, loss_mask, token_ids
 
     # ── KV-cache-aware token forward ────────────────────────────
 
@@ -716,6 +743,7 @@ def compute_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
     loss_mask: torch.Tensor,
+    return_per_example: bool = False,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Masked cross-entropy loss.
 
@@ -723,17 +751,24 @@ def compute_loss(
         logits:    (B, T, V) — model logits.
         targets:   (B, T)   — target token IDs.
         loss_mask: (B, T)   — True where loss should be computed.
+        return_per_example: if True, also return per-example loss & acc.
 
     Returns:
         loss: scalar tensor.
-        metrics: dict with 'loss', 'token_accuracy'.
+        metrics: dict with 'loss', 'token_accuracy' (and optionally
+                 'per_example_loss', 'per_example_acc' lists).
     """
     n_active = loss_mask.sum()
     if n_active == 0:
-        return torch.tensor(0.0, device=logits.device, requires_grad=True), {
+        result = (torch.tensor(0.0, device=logits.device, requires_grad=True), {
             "loss": 0.0,
             "token_accuracy": 0.0,
-        }
+        })
+        if return_per_example:
+            B = loss_mask.shape[0]
+            result[1]["per_example_loss"] = [0.0] * B
+            result[1]["per_example_acc"] = [0.0] * B
+        return result
 
     loss = F.cross_entropy(
         logits[loss_mask],
@@ -746,4 +781,29 @@ def compute_loss(
         correct = (preds[loss_mask] == targets[loss_mask]).sum().item()
         acc = correct / n_active.item()
 
-    return loss, {"loss": loss.item(), "token_accuracy": acc}
+    metrics: dict = {"loss": loss.item(), "token_accuracy": acc}
+
+    if return_per_example:
+        B = loss_mask.shape[0]
+        per_example_loss = []
+        per_example_acc = []
+        with torch.no_grad():
+            for i in range(B):
+                mask_i = loss_mask[i]
+                n_i = mask_i.sum().item()
+                if n_i == 0:
+                    per_example_loss.append(0.0)
+                    per_example_acc.append(0.0)
+                else:
+                    loss_i = F.cross_entropy(
+                        logits[i][mask_i], targets[i][mask_i], reduction="mean"
+                    ).item()
+                    preds_i = preds[i][mask_i]
+                    targets_i = targets[i][mask_i]
+                    acc_i = (preds_i == targets_i).float().mean().item()
+                    per_example_loss.append(loss_i)
+                    per_example_acc.append(acc_i)
+        metrics["per_example_loss"] = per_example_loss
+        metrics["per_example_acc"] = per_example_acc
+
+    return loss, metrics
