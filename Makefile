@@ -4,6 +4,10 @@ MINI_RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/mini-raw-replays
 FORMAT ?= gen1ou gen9ou
 FORMATS ?= $(FORMAT)
 
+# Detect OS and number of CPU cores
+OS := $(shell uname -s)
+N_THREADS := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+
 .PHONY: parse-no-pred parse parse-all-no-pred parse-all battle battle-inspect inspect-replay \
         tokenize-world-model parse-world-model inspect-wm-state \
         generate-world-model-data inspect-wm-npz sample-inspect-wm-npz \
@@ -56,7 +60,7 @@ parse-no-pred:
 		--team_predictor NoPredictor \
 		--raw_replay_dir $(METAMON_CACHE_DIR)/raw-replays \
 		--output_dir $(METAMON_CACHE_DIR)/parsed-no-pred \
-		--processes 32 --no-compress --pretty
+		--processes $(N_THREADS) --no-compress --pretty
 
 # Parse one format with default NaiveUsagePredictor
 parse:
@@ -64,7 +68,7 @@ parse:
 		--format $(FORMAT) \
 		--raw_replay_dir $(METAMON_CACHE_DIR)/raw-replays \
 		--output_dir $(METAMON_CACHE_DIR)/parsed-replays \
-		--processes 64 --no-compress --pretty
+		--processes $(N_THREADS) --no-compress --pretty
 
 # Parse all supported formats with NoPredictor
 parse-all-no-pred:
@@ -125,7 +129,7 @@ battle-inspect:
 #       TOKENIZER_VERSION=WorldModelObservationSpace-v1
 TOKENIZER_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/tokenizers
 TOKENIZER_VERSION ?= WorldModelObservationSpace-v1
-NUM_WORKERS ?= 32
+NUM_WORKERS ?= $(N_THREADS)
 EARLY_STOP ?= 0
 tokenize-world-model:
 	mkdir -p $(TOKENIZER_OUTPUT_DIR)
@@ -190,7 +194,7 @@ inspect-wm-state:
 #   make generate-world-model-data FORMATS=gen1ou
 #   make generate-world-model-data FORMATS="gen1ou gen9ou"
 WM_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/world-model-samples
-WM_PROCESSES ?= 32
+WM_PROCESSES ?= $(N_THREADS)
 TOKENIZER_FILE := $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
 generate-world-model-data:
 	@# ---- 1. Check parsed replays exist for every format ----
@@ -237,7 +241,7 @@ SL_BATCH_SIZE ?= 256
 SL_LR ?= 3e-4
 SL_EPOCHS ?= 100
 SL_GRAD_CLIP ?= 1.0
-SL_NUM_WORKERS ?= 4
+SL_NUM_WORKERS ?= $(N_THREADS)
 SL_PRINT_INTERVAL ?= 50
 SL_CONFIG ?=
 CHECKPOINT ?= $(SL_SAVE_DIR)/best.pt
