@@ -1,12 +1,15 @@
-METAMON_CACHE_DIR ?= /workspace/poke-datasets
-RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/raw-replays
-MINI_RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/mini-raw-replays
-FORMAT ?= gen1ou gen9ou
-FORMATS ?= $(FORMAT)
-
 # Detect OS and number of CPU cores
 OS := $(shell uname -s)
 N_THREADS := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+
+ifeq ($(OS),Darwin)
+METAMON_CACHE_DIR ?= /Users/srafiz/Repositories/poke-datasets
+else
+METAMON_CACHE_DIR ?= /workspace/poke-datasets
+endif
+RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/raw-replays
+FORMAT ?= gen1ou
+FORMATS ?= $(FORMAT)
 
 .PHONY: parse-no-pred parse parse-all-no-pred parse-all battle battle-inspect inspect-replay \
         tokenize-world-model parse-world-model inspect-wm-state \
