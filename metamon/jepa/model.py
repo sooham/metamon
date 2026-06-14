@@ -1,36 +1,87 @@
-"""JEPA (Joint Embedding Predictive Architecture) model for raw replay learning.
+f"""JEPA (Joint Embedding Predictive Architecture) model for raw replay learning.
 
 Architecture overview
 ---------------------
 
-Given a raw replay string R tokenized via BPE into a sequence of token IDs
-``x = (x_0, ..., x_{T-1})``, three modules operate on it:
+- Your team encoding + Opponent team encoding
+- battle encoding
 
-1. **Encoder φ** — ``ENC_phi(x) → v_replay``
-   A transformer encoder (bidirectional attention) that reads the full
-   (unmasked) replay and produces a latent vector ``v_replay``.  For the
+- do contrastive learning between your team and opponent team
+if a battle A uses team A, its embedding should be closer to  
+the team A , than team B , which is not used in the battle A 
+
+Partially Observable Markov Decision Process
+- (true state i) -- action p1, p2 -> (probabilty distribution over true state i+1)
+       |                                      |
+       v                                      v
+- (observed state_i ) --- action ---> probability distribution over state_{i+1}
+
+- we see the observed state i at any time
+
+- in a JEPA architecture
+- encoding of a mutated observation and and the unmutated observation should be close together 
+- encoding of the ground truth observation (state with all hidden pokemon opposing player policy)
+-   we don't know this 100% though
+-   can an encoding we predict from the T'th state have maximum similarity to
+-   all the following states the replay?  
+
+-   if we take the current state at timestep T (with same pokemon) and play the opponent policy randomly
+-   the encoding for state T will average out all opponent and player policies, will focus only on modelling 
+-   the pokemon in play
+-   if we average out over unseen pokemon but keep the same player it will model only the opposing player policy
+
+-  probability distribution over pokemon teams | current and all previous states 
+
+--------------------
+Current state (aggregation of all knowns over play): 
+pokemon field in play (current pokemon in the field, opponent pokemon in play, weather, field effects ) , opponent pokemon team, 
+your pokemon team
+
+Ground truth state:
+current state + unknown pokemon in opposing team  
+
+- as the battle progresses , the future state contains more information about the ground truth
+
+- so the encoding between a state currently known  
+and it's prior states leading to the current state should be close 
+
+- this should pick up variation in revealed future moves, status effects, HP drop etc.
+
+Encoder_state( state at time step T-1)           Encoder_state(state at time step T)
+     |                                                     |
+     v                                                     v
+   encoding_state_{t-1} --->  predictor_{action} ---->  encoding_{t}
+     |                                                     |
+     v                                                     v
+Decoder_state(state at time step T-1)                  Decoder state for time step T
+    should match exactly
+
+--------------------
+
+
+Given a parsed replay string R from one POV of a battle state into a sequence of token IDs
+``s = (t_0, ..., t_{T-1})``, three modules operate on it:
+
+1. **Encoder φ** — ``ENC_phi(s) → s_enc`
+   A transformer encoder (bidirectional attention) that reads the observed state
+   replay and produces a latent vector `s_enc`.  For the
    VAE regularisation, the encoder actually outputs ``(mu, logvar)`` and
-   ``v_replay`` is sampled via reparameterisation::
+   ``s_enc`` is sampled via reparameterisation::
 
-       v_replay = mu + std * ε,   ε ~ N(0, I)
+       s_enc = mu + std * ε,   ε ~ N(0, I)
 
-   This ``v_replay`` serves two purposes:
-   - **JEPA target** — the predictor tries to estimate it from a masked view.
-   - **VAE latent** — the decoder reconstructs the replay from it and the KL
+   This ``s_enc`` serves two purposes:
+   - **JEPA target** — the predictor tries to estimate it from an earlier state in the battle.
+   - **VAE latent** — the decoder reconstructs the original state from it and the KL
      loss pushes ``(mu, std)`` toward an isotropic Gaussian N(0, I).
 
-2. **Encoder ψ** — ``ENC_psi(x_masked) → v_masked``
-   A second transformer encoder with **different weights** that processes
-   a masked version of the replay (random spans replaced with ``<mask>``
-   tokens).  Its output is a deterministic latent vector.
+3. **Predictor μ** — ``PRED(s_source) → s_dest``
+   A small MLP based model that maps the s_source latent to an estimate ``s_dest``
+   where s_dest is the state derived immediately from s_source
 
-3. **Predictor μ** — ``PRED_mu(v_masked) → e_replay``
-   A small MLP that maps the masked-view latent to an estimate ``e_replay``
-   of the unmasked-view latent ``v_replay``.
-
-4. **Decoder** — ``DEC(x, v_replay) → reconstructed x``
+4. **Decoder** — ``DEC(s_enc) → reconstructed state``
    An autoregressive transformer decoder that reconstructs the original
-   replay tokens from the latent ``v_replay``.  Uses teacher forcing during
+   replay tokens from the latent ``s``.  Uses teacher forcing during
    training and autoregressive sampling at inference.
 
 Losses
@@ -39,26 +90,25 @@ Losses
 *JEPA (contrastive prediction) loss* — MSE between the target representation
 and the predictor's estimate::
 
-    L_jepa = || v_replay - PRED_mu(v_masked) ||²
+    L_jepa = || s_dest - PRED_psi(s_dest) ||²
 
 *Reconstruction loss* — standard cross-entropy over the token vocabulary
 (teacher-forced autoregressive decoding)::
 
-    L_recon = -Σ_t log p(x_t | x_{<t}, v_replay)
+    L_recon = -Σ_t log p(s_t | s_{<t}, s_source)
 
 *KL divergence* — regularises the latent distribution toward an isotropic
 Gaussian prior (β-VAE style)::
 
-    L_kl = D_KL( N(mu, σ²) || N(0, I) )
+    L_kl = D_KL( N(mu, σ²) || N(0, I))
 
 Total loss::
 
-    L = L_jepa + β_recon * L_recon + β_kl * L_kl
+    L = L_jepa + β_recon * (L_recon for previous state and next state) + β_kl * (L_kl for previous state and next state)
 
 File layout
 -----------
-- ``JEPAEncoder``       — transformer encoder (φ / ψ share the same class,
-                          instantiated with separate weights).
+- ``JEPAEncoder``       — transformer encoder (phi)
 - ``JEPAPredictor``     — MLP mapping latent → latent.
 - ``JEPADecoder``       — autoregressive transformer decoder for VAE
                           reconstruction.
@@ -73,20 +123,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# TODO: calculate and find out
+MAX_STATE_LENGTH: int = 5000
 
-# ═════════════════════════════════════════════════════════════════════════
-# Layout constants (derived from expected BPE token lengths for a full
-# replay — these are rough upper bounds; actual sequences will be padded
-# or truncated to these limits).
-# ═════════════════════════════════════════════════════════════════════════
-
-# Maximum number of BPE tokens in a single raw-replay string.
-# Replays in early generations are shorter; Gen 9 replays can be ~15–30 kB
-# of text, which at ~4 chars/token (BPE) yields ~4k–8k tokens.
-# We allocate 8192 to be safe and will truncate if exceeded.
-MAX_SEQ_LENGTH: int = 8192
-
-# Latent dimension (size of v_replay / v_masked / e_replay).
+# Latent dimension (size of s_enc).
 LATENT_DIM: int = 256
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -231,36 +271,31 @@ class TransformerBlock(nn.Module):
 # ═════════════════════════════════════════════════════════════════════════
 
 class JEPAEncoder(nn.Module):
-    """Transformer encoder that maps a BPE token sequence to a latent vector.
-
-    Two instances of this class are created with **separate weights**:
-    - ``ENC_phi`` (target encoder) — processes the full, unmasked replay.
-      Outputs ``(mu, logvar)`` for VAE regularisation; ``v_replay`` is
+    """Transformer encoder that maps a state token sequence to a latent vector.
+    - ``ENC_phi`` (target encoder) — processes the full state
+      Outputs ``(mu, logvar)`` for VAE regularisation; ``s_enc`` is
       sampled via reparameterisation.
-    - ``ENC_psi`` (context encoder) — processes the masked replay.
-      Outputs a deterministic ``v_masked`` (mean-pooled representation,
-      no reparameterisation).
 
     Architecture
     ------------
-    ``token_ids`` → token embedding + positional → N × transformer blocks
-    (bidirectional attention) → mean pool over non-pad positions → linear
-    projection(s) → latent vector(s).
+    ``token_ids`` → 
+    token embedding + positional → 
+    N × transformer blocks (bidirectional attention) → 
+    mean pool over non-pad positions → 
+    linear projection(s) → 
+    latent vector(s).
 
     Parameters
     ----------
     vocab_size : int
-        BPE vocabulary size (includes <mask>, <pad>, <bos>, <eos>, etc.).
+        state vocabulary size (includes <pad>, <bos>, <eos>, etc.).
     pad_id : int
         Token ID for padding.
     latent_dim : int
         Dimensionality of the output latent vector.
-    d_model, n_heads, n_layers, d_ff, dropout, max_seq_len, theta,
-    ffn_activation :
+    d_model, n_heads, n_layers, d_ff, dropout, max_seq_len, theta, ffn_activation :
         Standard transformer hyperparameters.
-    vae_mode : bool
-        If True, outputs ``(mu, logvar)`` for VAE reparameterisation.
-        If False, outputs a single deterministic vector.
+    outputs ``(mu, logvar)`` for VAE reparameterisation.
     """
 
     def __init__(
@@ -268,7 +303,7 @@ class JEPAEncoder(nn.Module):
         vocab_size: int,
         pad_id: int,
         latent_dim: int = LATENT_DIM,
-        d_model: int = 256,
+        d_model: int = 256, # TODO: the embedding dimension might be too small
         n_heads: int = 8,
         n_layers: int = 6,
         d_ff: int = 1024,
@@ -276,14 +311,12 @@ class JEPAEncoder(nn.Module):
         max_seq_len: int = 1024,
         theta: float = 10000.0,
         ffn_activation: str = "gelu",
-        vae_mode: bool = False,
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.pad_id = pad_id
         self.latent_dim = latent_dim
         self.d_model = d_model
-        self.vae_mode = vae_mode
 
         self.token_embedding = nn.Embedding(
             vocab_size, d_model, padding_idx=pad_id
@@ -301,11 +334,8 @@ class JEPAEncoder(nn.Module):
 
         # Projection head: pooled representation → latent
         # For VAE mode we need two projections (mu and logvar).
-        if vae_mode:
-            self.proj_mu = nn.Linear(d_model, latent_dim, bias=False)
-            self.proj_logvar = nn.Linear(d_model, latent_dim, bias=False)
-        else:
-            self.proj = nn.Linear(d_model, latent_dim, bias=False)
+        self.proj_mu = nn.Linear(d_model, latent_dim, bias=False)
+        self.proj_logvar = nn.Linear(d_model, latent_dim, bias=False)
 
         self.apply(self._init_weights)
 
@@ -326,11 +356,10 @@ class JEPAEncoder(nn.Module):
         """Encode a token sequence into a latent vector.
 
         Args:
-            token_ids: (B, S) int — BPE token IDs (padded with ``pad_id``).
+            token_ids: (B, S) int — state token IDs (padded with ``pad_id``).
 
         Returns:
-            If ``vae_mode=False``: ``v`` — (B, latent_dim) deterministic vector.
-            If ``vae_mode=True``:  ``(mu, logvar)`` — both (B, latent_dim).
+            ``(mu, logvar)`` — both (B, latent_dim).
         """
         B, S = token_ids.shape
         device = token_ids.device
@@ -339,22 +368,19 @@ class JEPAEncoder(nn.Module):
         x = self.token_embedding(token_ids)  # (B, S, d_model)
 
         # Transformer blocks (bidirectional)
+        # there is residual connection  inside block
         for block in self.blocks:
             x = block(x)
         x = self.ln_final(x)  # (B, S, d_model)
 
         # Mean pool over non-pad positions
-        pad_mask = (token_ids != self.pad_id).unsqueeze(-1).float()  # (B, S, 1)
-        x_sum = (x * pad_mask).sum(dim=1)          # (B, d_model)
-        x_count = pad_mask.sum(dim=1).clamp(min=1) # (B, 1)
-        pooled = x_sum / x_count                   # (B, d_model)
-
-        if self.vae_mode:
-            mu = self.proj_mu(pooled)
-            logvar = self.proj_logvar(pooled)
-            return mu, logvar
-        else:
-            return self.proj(pooled)
+        # pad_mask = (token_ids != self.pad_id).unsqueeze(-1).float()  # (B, S, 1)
+        # x_sum = (x * pad_mask).sum(dim=1)          # (B, d_model)
+        # x_count = pad_mask.sum(dim=1).clamp(min=1) # (B, 1)
+        # pooled = x_sum / x_count                   # (B, d_model)
+        mu = self.proj_mu(x)
+        logvar = self.proj_logvar(x)
+        return mu, logvar
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -362,12 +388,12 @@ class JEPAEncoder(nn.Module):
 # ═════════════════════════════════════════════════════════════════════════
 
 class JEPAPredictor(nn.Module):
-    """Small MLP that predicts the unmasked-view latent from the masked-view
+    """Small MLP that predicts the next state's latent from the previous states 
     latent.
 
-    ``e_replay = PRED_mu(v_masked)`` where ``v_masked`` comes from
-    ``ENC_psi`` (deterministic context encoder) and the target is
-    ``v_replay`` sampled from ``ENC_phi`` (stochastic target encoder).
+    ``s_next = PRED_psi(s_prev)`` where ``s_prev`` comes from
+    ``s_prev`` (deterministic context encoder) and the target is
+    ``s_next`` . Both are sampled from ``ENC_phi`` (stochastic target encoder).
 
     Architecture: a few linear layers with GELU activation and LayerNorm.
     """
@@ -376,10 +402,11 @@ class JEPAPredictor(nn.Module):
         self,
         latent_dim: int = LATENT_DIM,
         hidden_dim: int = 512,
-        n_hidden: int = 2,
+        n_hidden: int = 6,
         dropout: float = 0.0,
     ):
         super().__init__()
+        assert latent_dim <= hidden_dim
         self.latent_dim = latent_dim
 
         layers = []
@@ -402,16 +429,16 @@ class JEPAPredictor(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def forward(self, v_masked: torch.Tensor) -> torch.Tensor:
-        """Predict unmasked-view latent from masked-view latent.
+    def forward(self, s_prev: torch.Tensor) -> torch.Tensor:
+        """Predict next state latent from previous state latent
 
         Args:
-            v_masked: (B, latent_dim) — context encoding from ENC_psi.
+            s_prev: (B, latent_dim) — context encoding from ENC.
 
         Returns:
-            e_replay: (B, latent_dim) — estimate of v_replay.
+            s_next: (B, latent_dim) — estimate of s_next.
         """
-        return self.net(v_masked)
+        return self.net(s_prev)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -420,7 +447,7 @@ class JEPAPredictor(nn.Module):
 
 class JEPADecoder(nn.Module):
     """Autoregressive decoder that reconstructs the replay token sequence
-    from the latent vector ``v_replay``.
+    from the latent vector ``s_enc``.
 
     During training, teacher forcing is used (the full target sequence is
     fed in).  During inference, tokens are generated one-by-one until
@@ -446,6 +473,7 @@ class JEPADecoder(nn.Module):
         theta: float = 10000.0,
         ffn_activation: str = "gelu",
     ):
+        # TODO: double check the embedding dimension
         super().__init__()
         self.vocab_size = vocab_size
         self.latent_dim = latent_dim
@@ -473,7 +501,7 @@ class JEPADecoder(nn.Module):
         self.apply(self._init_weights)
 
         # Weight tying: output projection shares weights with token embedding.
-        self.lm_head.weight = self.token_embedding.weight
+        # self.lm_head.weight = self.token_embedding.weight
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -488,72 +516,68 @@ class JEPADecoder(nn.Module):
 
     def forward(
         self,
-        v_replay: torch.Tensor,
+        s_enc: torch.Tensor,
         target_ids: torch.Tensor,
         bos_id: int,
         eos_id: int,
     ) -> torch.Tensor:
-        """Training forward pass with teacher forcing.
+        f"""Training forward pass with teacher forcing.
 
         Prepends the latent vector as a prefix "pseudo-token" before the
         target sequence, then predicts each token autoregressively.
 
         Sequence layout:
-            [latent_proj(v)]  <bos>  t_0  t_1  ...  t_{M-1}  <eos>
+            [latent_proj(v)]  t_0  t_1  ...  t_{M-1} 
+            t_0 is <bos> and t_{M-1} is <eos>
 
-        The loss is computed on positions t_0 … <eos> (standard next-token
+        The loss is computed on positions t_0 … t_{M-1} (standard next-token
         prediction, shifted by one).
 
         Args:
-            v_replay:   (B, latent_dim) — latent from ENC_phi.
-            target_ids: (B, M) int       — target token IDs (full replay).
+            s_enc:   (B, latent_dim)     — latent sampled from JEPAEncoder 
+            target_ids: (B, M) int       — target token IDs of the original state that produced s_enc
             bos_id:     int              — <bos> token ID.
             eos_id:     int              — <eos> token ID.
 
         Returns:
             logits: (B, M+1, vocab_size) — next-token logits.
-                logits[:, t, :] predicts target_ids[:, t] for t=0..M-1,
-                and logits[:, M, :] predicts the <eos>.
+                logits[:, 0, :] predicts target_id for <bos>
+                logits[:, t, :] predicts target_ids[:, t-1] for t=1..M,
+                and logits[:, M+1, :] predicts the <eos>.
         """
-        B, M = target_ids.shape
         device = target_ids.device
 
-        # Build decoder input: [latent_prefix, <bos>, target_ids]
-        latent_emb = self.latent_proj(v_replay).unsqueeze(1)  # (B, 1, d_model)
+        # Build decoder input: [latent_prefix, target_ids]
+        latent_emb = self.latent_proj(s_enc).unsqueeze(1)  # (B, 1, d_model)
 
-        bos_emb = self.token_embedding(
-            torch.full((B, 1), bos_id, dtype=torch.long, device=device)
-        )  # (B, 1, d_model)
+        target_emb = self.token_embedding(target_ids)  # (B, M+1, d_model)
 
-        target_emb = self.token_embedding(target_ids)  # (B, M, d_model)
-
-        # Concatenate: [latent | bos | target]
-        x = torch.cat([latent_emb, bos_emb, target_emb], dim=1)  # (B, 1+1+M, d_model)
+        # Concatenate: [latent target]
+        x = torch.cat([latent_emb, target_emb], dim=1)  # (B, M+1, d_model)
 
         for block in self.blocks:
             x = block(x)
         x = self.ln_final(x)
-        logits = self.lm_head(x)  # (B, 2+M, vocab_size)
+        logits = self.lm_head(x)  # (B, 1+M, vocab_size)
 
-        # Return logits for positions after <bos>:
-        # logits[:, 2:] corresponds to predicting target_ids (and <eos> after
-        # the last target token).  We return everything so the caller can
-        # decide the loss mask.
-        return logits[:, 1:, :]  # (B, 1+M, vocab_size), shifted by 1
+        # Return logits for positions after s_enc 
+        # logits[:, 1:] corresponds to predicting target_ids 
+        # We return everything so the caller can decide the loss mask.
+        return logits[:, 1:, :]  # (B, M+1, vocab_size)
 
     @torch.no_grad()
     def generate(
         self,
-        v_replay: torch.Tensor,
+        s_enc: torch.Tensor,
         bos_id: int,
         eos_id: int,
-        max_new_tokens: int = 8192,
+        max_new_tokens: int = MAX_STATE_LENGTH,
         temperature: float = 1.0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Autoregressively generate tokens from the latent vector.
 
         Args:
-            v_replay:       (B, latent_dim).
+            s_enc:       (B, latent_dim).
             bos_id, eos_id: special token IDs.
             max_new_tokens: maximum tokens to generate.
             temperature:    softmax temperature.
@@ -562,15 +586,12 @@ class JEPADecoder(nn.Module):
             generated: (B, max_new_tokens) int — token IDs (0-padded).
             lengths:   (B,) int               — actual generated lengths.
         """
-        B = v_replay.shape[0]
-        device = v_replay.device
+        B = s_enc.shape[0]
+        device = s_enc.device
 
-        # Start with latent prefix + <bos>
-        latent_emb = self.latent_proj(v_replay).unsqueeze(1)  # (B, 1, d_model)
-        bos_emb = self.token_embedding(
-            torch.full((B, 1), bos_id, dtype=torch.long, device=device)
-        )
-        x = torch.cat([latent_emb, bos_emb], dim=1)  # (B, 2, d_model)
+        # Start with latent prefix
+        latent_emb = self.latent_proj(s_enc).unsqueeze(1)  # (B, 1, d_model)
+        x = latent_emb
 
         # Process the prefix through all blocks
         for block in self.blocks:
@@ -604,6 +625,7 @@ class JEPADecoder(nn.Module):
             if step < max_new_tokens - 1:
                 next_emb = self.token_embedding(next_token).unsqueeze(1)  # (B, 1, d_model)
                 x = torch.cat([x, next_emb], dim=1)
+                # TODO: KV caching
                 # Re-run transformer on the full sequence (simple but slow;
                 # KV caching can be added later).
                 for block in self.blocks:
@@ -624,11 +646,11 @@ class JEPAModel(nn.Module):
     Parameters
     ----------
     vocab_size : int
-        BPE vocabulary size.
+        vocabulary size.
     pad_id, mask_id, bos_id, eos_id : int
         Special token IDs.
     latent_dim : int
-        Dimensionality of the latent space (v_replay, v_masked, e_replay).
+        Dimensionality of the latent space (s_enc).
     encoder_cfg, predictor_cfg, decoder_cfg : dict
         Sub-module configuration dicts (see individual classes).
     """
@@ -662,16 +684,6 @@ class JEPAModel(nn.Module):
             vocab_size=vocab_size,
             pad_id=pad_id,
             latent_dim=latent_dim,
-            vae_mode=True,  # outputs (mu, logvar) for VAE + JEPA target
-            **enc_cfg,
-        )
-
-        # Context encoder ψ — deterministic, processes masked replays.
-        self.enc_psi = JEPAEncoder(
-            vocab_size=vocab_size,
-            pad_id=pad_id,
-            latent_dim=latent_dim,
-            vae_mode=False,  # deterministic output
             **enc_cfg,
         )
 
@@ -681,7 +693,7 @@ class JEPAModel(nn.Module):
             **pred_cfg,
         )
 
-        # Decoder — reconstructs replay tokens from v_replay
+        # Decoder — reconstructs replay tokens from s_enc
         self.decoder = JEPADecoder(
             vocab_size=vocab_size,
             latent_dim=latent_dim,
@@ -692,7 +704,7 @@ class JEPAModel(nn.Module):
     def reparameterize(
         self, mu: torch.Tensor, logvar: torch.Tensor
     ) -> torch.Tensor:
-        """Sample v_replay ~ N(mu, σ²) via reparameterisation.
+        """Sample s_enc ~ N(mu, σ²) via reparameterisation.
 
         Args:
             mu:     (B, latent_dim).
@@ -707,47 +719,52 @@ class JEPAModel(nn.Module):
 
     def forward(
         self,
-        token_ids: torch.Tensor,       # (B, S) — full unmasked replay tokens
-        masked_token_ids: torch.Tensor, # (B, S) — randomly masked version
-        target_ids: torch.Tensor,       # (B, M) — full replay for decoder (may equal token_ids)
-        mask: Optional[torch.Tensor] = None,  # (B,) bool — which examples to mask (unused for now)
+        prev_state_tokens: torch.Tensor, # (B, S) — prev state tokens
+        next_state_tokens: torch.Tensor, # (B, S) — next state tokens  
     ) -> dict[str, torch.Tensor]:
         """Full forward pass returning all intermediate latents and logits.
 
         Args:
             token_ids:         Full (unmasked) replay token IDs.
-            masked_token_ids:  Masked replay token IDs.
-            target_ids:        Target sequence for reconstruction (typically = token_ids).
-            mask:              Optional sample mask (not used currently).
-
+ß
         Returns:
             Dict with keys:
-                mu, logvar     — (B, latent_dim) from ENC_phi.
-                v_replay       — (B, latent_dim) sampled latent.
-                v_masked       — (B, latent_dim) from ENC_psi.
-                e_replay       — (B, latent_dim) predictor output.
-                recon_logits   — (B, 1+M, vocab_size) decoder output.
+                mu_prev, logvar_prev   — (B, latent_dim) from Encoder.
+                mu_next, logvar_next   — (B, latent_dim) from Encoder.
+                enc_prev, enc_next     — (B, latent_dim) sampled latent.
+                predicted_next         — (B, latent_dim) predictor output.
+                recon_logits           — (B, 1+M, vocab_size) decoder output.
         """
-        # ── Target encoder φ: encode full replay → (mu, logvar) ──
-        mu, logvar = self.enc_phi(token_ids)
-        v_replay = self.reparameterize(mu, logvar)
+        # ── previous state encoder : encode previous state → (mu, logvar) ──
+        mu_prev, logvar_prev = self.enc_phi(prev_state_tokens)
+        prev_state_encoded = self.reparameterize(mu_prev, logvar_prev)
 
-        # ── Context encoder ψ: encode masked replay → v_masked ──
-        v_masked = self.enc_psi(masked_token_ids)
+        # ── Predictor μ: s_prev → s_next ──
+        predicted_next = self.predictor(prev_state_encoded)
 
-        # ── Predictor μ: v_masked → e_replay ──
-        e_replay = self.predictor(v_masked)
+        # ── next state encoder : encode next state → (mu, logvar) ──
+        mu_next, logvar_next = self.enc_phi(next_state_tokens)
+        next_state_encoded = self.reparameterize(mu_next, logvar_next)
 
-        # ── Decoder: reconstruct replay from v_replay ──
-        recon_logits = self.decoder(v_replay, target_ids, self.bos_id, self.eos_id)
+        # ── Predictor μ: s_prev → s_next ──
+        predicted_next = self.predictor(prev_state_encoded)
+
+        # ── Decoder: reconstruct state from encoding, predict the logits from generation 
+        recon_logits_prev = self.decoder(prev_state_encoded, prev_state_tokens,  self.bos_id, self.eos_id)
+        recon_logits_next = self.decoder(next_state_encoded, next_state_tokens,  self.bos_id, self.eos_id)
 
         return {
-            "mu": mu,
-            "logvar": logvar,
-            "v_replay": v_replay,
-            "v_masked": v_masked,
-            "e_replay": e_replay,
-            "recon_logits": recon_logits,
+            "mu_prev": mu_prev,
+            "logvar_prev": logvar_prev,
+            "enc_prev": prev_state_encoded,
+
+            "mu_next": mu_next,
+            "logvar_next": logvar_next,
+            "enc_next": next_state_encoded,
+
+            "predicted_next": predicted_next,
+            "recon_logits_prev": recon_logits_prev,
+            "recon_logits_next": recon_logits_next,
         }
 
     def save_checkpoint(self, path: str, **extra) -> None:
@@ -759,102 +776,95 @@ class JEPAModel(nn.Module):
         self.load_state_dict(ckpt["model_state_dict"])
         return ckpt
 
-
 # ═════════════════════════════════════════════════════════════════════════
 # Loss computation
 # ═════════════════════════════════════════════════════════════════════════
+def compute_normal_prior_loss(mu, logvar):
+    # KL = -0.5 * Σ (1 + logvar - mu² - exp(logvar)) (rao-blackwell)
+    return -0.5 * torch.mean(
+        1 + logvar - mu.pow(2) - logvar.exp()
+    )
+
+def compute_recon_loss(recon_logits, actual_state_tokens, ignore_loss_tokens):
+    # recon_logits[:, t, :] predicts actual_state_tokens[:, t] for t=0..M-1
+    # and recon_logits[:, M, :] predicts <eos>.
+    # We'll compute loss only on non-pad positions.
+    # Target shape: (B, 1+M) 
+
+    # Build loss mask: ignore pad, and any user-specified tokens.
+    loss_mask = torch.ones_like(recon_logits, dtype=torch.bool)
+    for tok_id in ignore_loss_tokens:
+        loss_mask = loss_mask & (recon_logits != tok_id)
+
+    n_active = loss_mask.sum()
+    if n_active == 0:
+        recon_loss = torch.tensor(0.0, device=recon_logits.device, requires_grad=True)
+    else:
+        recon_loss = F.cross_entropy(
+            recon_logits[loss_mask],
+            actual_state_tokens[loss_mask],
+            reduction="mean",
+        )
+        # TODO: this is not useful
+        # with torch.no_grad():
+        #     preds = recon_logits_prev.argmax(dim=-1)
+        #     correct = (preds[loss_mask] == recon_logits_prev[loss_mask]).sum().item()
+        #     recon_acc = correct / n_active.item()
+    
+    return recon_loss
 
 def compute_losses(
     outputs: dict[str, torch.Tensor],
-    target_ids: torch.Tensor,
-    mask_id: int,
+    prev_state_tokens: torch.Tensor,
+    next_state_tokens: torch.Tensor,
     pad_id: int,
     beta_recon: float = 1.0,
     beta_kl: float = 0.001,
-    ignore_loss_tokens: Optional[set[int]] = None,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """Compute the combined JEPA + VAE loss.
 
     Args:
         outputs: Dict from ``JEPAModel.forward()`` containing:
-            - v_replay, e_replay: (B, latent_dim) — JEPA target & estimate.
-            - mu, logvar:         (B, latent_dim) — VAE parameters.
-            - recon_logits:       (B, 1+M, vocab_size) — decoder output.
+            - enc_next, predicted_next: (B, latent_dim) — JEPA target & estimate.
+            - mu_prev, logvar_prev, mu_next, logvar_next:         (B, latent_dim) — VAE parameters for the states
+            - recon_logits_prev, recon_logits_next:       (B, 1+M, vocab_size) — decoder output.
         target_ids:     (B, M) int — ground-truth token IDs for reconstruction.
-        mask_id:        Token ID for <mask> (ignored in reconstruction loss).
         pad_id:         Token ID for <pad> (ignored in reconstruction loss).
         beta_recon:     Weight for reconstruction loss.
         beta_kl:        Weight for KL divergence (β-VAE).
-        ignore_loss_tokens: Additional token IDs to exclude from recon loss.
 
     Returns:
         total_loss: scalar tensor.
         metrics: dict with per-loss-component values.
     """
-    if ignore_loss_tokens is None:
-        ignore_loss_tokens = set()
-
-    # ── 1. JEPA loss: MSE(v_replay, e_replay) ─────────────────────────
-    # Detach v_replay so gradients only flow through the predictor branch.
-    # This is standard in JEPA: the target branch (φ) is updated via EMA
-    # or stop-gradient; here we stop-gradient φ w.r.t. the JEPA loss and
+    # ── 1. JEPA loss: MSE(enc_next predicted_next) ─────────────────────────
+    # Detach the enc_next so gradients only flow through the predictor branch.
+    # This is standard in JEPA: the target branch (the branch which predicts enc_next) is updated via EMA
+    # or stop-gradient; here we stop-gradient  w.r.t. the JEPA loss and
     # let it only receive gradients from the VAE loss.
-    jepa_loss = F.mse_loss(outputs["e_replay"], outputs["v_replay"].detach())
+    # TODO: right now, both branches for previous and next prediction are using the same weights, I am not sure if this
+    # is completely correct
+    jepa_loss = F.mse_loss(outputs["enc_next"].detach(), outputs["predicted_next"])
 
     # ── 2. VAE reconstruction loss ────────────────────────────────────
-    recon_logits = outputs["recon_logits"]  # (B, 1+M, V)
-    # recon_logits[:, t, :] predicts target_ids[:, t] for t=0..M-1
-    # and recon_logits[:, M, :] predicts <eos>.
-    M = target_ids.shape[1]
+    recon_loss_prev = compute_recon_loss(outputs["recon_logits_prev"], prev_state_tokens, { pad_id }),  # (B, 1+M, V)
+    recon_loss_next = compute_recon_loss(outputs["recon_logits_next"], next_state_tokens, { pad_id })
 
-    # Build targets including a final <eos> placeholder.
-    # We'll compute loss only on non-pad, non-mask positions.
-    # Target shape: (B, 1+M) — first position after <bos>, <eos> is appended.
-    eos_id_tensor = torch.full(
-        (target_ids.shape[0], 1),
-        mask_id,  # placeholder — we'll mask it out if mask_id is in ignore set
-        dtype=target_ids.dtype,
-        device=target_ids.device,
-    )
-    full_targets = torch.cat([target_ids, eos_id_tensor], dim=1)  # (B, M+1)
 
-    # Build loss mask: ignore pad, mask, and any user-specified tokens.
-    loss_mask = torch.ones_like(full_targets, dtype=torch.bool)
-    for tok_id in ignore_loss_tokens | {pad_id, mask_id}:
-        loss_mask = loss_mask & (full_targets != tok_id)
-
-    n_active = loss_mask.sum()
-    if n_active == 0:
-        recon_loss = torch.tensor(0.0, device=recon_logits.device, requires_grad=True)
-        recon_acc = 0.0
-    else:
-        recon_loss = F.cross_entropy(
-            recon_logits[loss_mask],
-            full_targets[loss_mask],
-            reduction="mean",
-        )
-        with torch.no_grad():
-            preds = recon_logits.argmax(dim=-1)
-            correct = (preds[loss_mask] == full_targets[loss_mask]).sum().item()
-            recon_acc = correct / n_active.item()
-
-    # ── 3. KL divergence: D_KL(N(mu, σ²) || N(0, I)) ─────────────────
-    mu = outputs["mu"]
-    logvar = outputs["logvar"]
-    # KL = -0.5 * Σ (1 + logvar - mu² - exp(logvar))
-    kl_loss = -0.5 * torch.mean(
-        1 + logvar - mu.pow(2) - logvar.exp()
-    )
+    # ── 3. KL divergence: D_KL(N(mu_prev, σ²) || N(0, I)) ─────────────────
+    kl_loss_prev = compute_normal_prior_loss(outputs["mu_prev"], outputs["logvar_prev"])
+    kl_loss_next = compute_normal_prior_loss(outputs["mu_next"], outputs["logvar_next"])
 
     # ── Total loss ────────────────────────────────────────────────────
-    total_loss = jepa_loss + beta_recon * recon_loss + beta_kl * kl_loss
+    total_loss = jepa_loss + beta_recon * (recon_loss_next + recon_loss_prev) + beta_kl * (kl_loss_prev + kl_loss_next)
 
     metrics = {
         "loss": total_loss.item(),
         "jepa_loss": jepa_loss.item(),
-        "recon_loss": recon_loss.item() if n_active > 0 else 0.0,
-        "recon_accuracy": recon_acc,
-        "kl_loss": kl_loss.item(),
+        "recon_loss_next": recon_loss_next.item(), 
+        "recon_loss_prev": recon_loss_prev.item(), 
+        "kl_loss_next": kl_loss_next.item(),
+        "kl_loss_prev": kl_loss_prev.item(),
         "beta_recon": beta_recon,
         "beta_kl": beta_kl,
     }
