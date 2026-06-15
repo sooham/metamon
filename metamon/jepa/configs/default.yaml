@@ -1,16 +1,16 @@
-# JEPA (Joint Embedding Predictive Architecture) — model hyperparameters.
+# LeJEPA (Latent-Euclidean JEPA) — model hyperparameters.
 #
 # Training hyperparameters (lr, epochs, batch_size, etc.) are passed
 # via CLI flags to train.py and are NOT stored here.
 
 model:
-  # BPE vocabulary size (auto-detected from tokenizer if not set).
+  # Vocabulary size (auto-detected from tokenizer if null).
   vocab_size: null
 
-  # Latent space dimensionality.
+  # Latent space dimensionality (deterministic embedding e).
   latent_dim: 256
 
-  # ── Encoder (φ and ψ share the same architecture) ──────────────────
+  # ── Encoder — bidirectional transformer → e ───────────────────────
   encoder:
     d_model: 256
     n_heads: 8
@@ -19,29 +19,27 @@ model:
     dropout: 0.1
     max_seq_len: 1024
     theta: 10000.0
-    ffn_activation: gelu     # "gelu" (memory-efficient) or "swiglu"
+    ffn_activation: gelu     # "gelu" or "swiglu"
 
-  # ── Predictor μ ────────────────────────────────────────────────────
+  # ── Predictor — causal transformer: (e_prev, action) → e_next ─────
   predictor:
-    hidden_dim: 512
-    n_hidden: 2
+    d_model: 128
+    n_heads: 4
+    n_layers: 2
+    d_ff: 512
     dropout: 0.0
+    max_seq_len: 64          # only needs 2 positions (prev_enc + action)
 
-  # ── Decoder ─────────────────────────────────────────────────────────
-  decoder:
-    d_model: 256
-    n_heads: 8
-    n_layers: 4
-    d_ff: 1024
-    dropout: 0.1
-    max_seq_len: 1024
-    theta: 10000.0
-    ffn_activation: gelu
+  # ── LeJEPA loss — single hyperparameter λ ─────────────────────────
+  # λ balances JEPA prediction loss vs. SIGReg regularization.
+  # λ = 0: pure JEPA (may collapse).  λ = 1: pure SIGReg (no prediction).
+  # Recommended default: 0.05 (Balestriero & LeCun 2025).
+  lambda_sigreg: 0.05
 
-  # ── Loss weights ────────────────────────────────────────────────────
-  # β_recon: weight for VAE reconstruction cross-entropy loss.
-  # β_kl:    weight for KL divergence (β-VAE regularisation).
-  #           Higher β_kl encourages smoother/more disentangled latents
-  #           but may hurt reconstruction quality.
-  beta_recon: 1.0
-  beta_kl: 0.001
+  # ── SIGReg hyperparameters ────────────────────────────────────────
+  # Number of random projection directions (resampled each step).
+  sigreg_num_slices: 256
+  # Number of trapezoidal quadrature points for Epps-Pulley integration.
+  sigreg_num_points: 17
+  # Integration domain for the characteristic function: [-domain, domain].
+  sigreg_domain: 5.0
