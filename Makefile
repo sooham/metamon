@@ -16,7 +16,7 @@ FORMATS ?= $(FORMAT)
         generate-world-model-data inspect-wm-npz sample-inspect-wm-npz \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer sample-inspect-wm-state \
-        train-sl train-jepa play-sl showdown bash-completion
+        train-sl train-jepa train-jepa-mps play-sl showdown bash-completion
 
 # Start a local Pokemon Showdown server (no auth, port 8000)
 # Requires the server/pokemon-showdown submodule to be initialized.
@@ -293,12 +293,14 @@ train-sl:
 JEPA_DATA_ROOT ?= $(WM_OUTPUT_DIR)
 JEPA_TOKENIZER ?= $(TOKENIZER_FILE)
 JEPA_SAVE_DIR ?= $(METAMON_CACHE_DIR)/jepa-checkpoints
-JEPA_BATCH_SIZE ?= 256
+JEPA_BATCH_SIZE ?= 64
 JEPA_LR ?= 3e-4
 JEPA_EPOCHS ?= 100
 JEPA_GRAD_CLIP ?= 1.0
 JEPA_NUM_WORKERS ?= $(N_THREADS)
-JEPA_PRINT_INTERVAL ?= 50
+JEPA_PRINT_INTERVAL ?= 10
+JEPA_VAL_INTERVAL ?= 100
+JEPA_VAL_MAX_BATCHES ?= 100
 JEPA_CONFIG ?=
 JEPA_CHECKPOINT ?= $(JEPA_SAVE_DIR)/best.pt
 train-jepa:
@@ -329,6 +331,53 @@ train-jepa:
 		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
 		$(if $(JEPA_CHECKPOINT),--checkpoint $(JEPA_CHECKPOINT)) \
 		$(if $(JEPA_CONFIG),--config $(JEPA_CONFIG)) \
+		--val_interval $(JEPA_VAL_INTERVAL) \
+		--val_max_batches $(JEPA_VAL_MAX_BATCHES) \
+		--log --log_interval 10
+
+# Train the JEPA model with MPS-optimized settings for Apple Silicon (24 GB unified memory).
+# Uses the smaller mps.yaml config, conservatively lower batch size, and single-worker
+# data loading (MPS does not support multiprocessing on macOS).
+#
+# Usage:
+#   make train-jepa-mps FORMATS="gen1ou gen9ou"
+#   make train-jepa-mps FORMATS=gen9ou EPOCHS=50
+#   make train-jepa-mps FORMATS="gen1ou gen9ou" WANDB=true WANDB_PROJECT=metamon WANDB_NAME=mps-run
+JEPA_MPS_BATCH_SIZE ?= 128
+JEPA_MPS_NUM_WORKERS ?= 0
+JEPA_MPS_CONFIG ?= metamon/jepa/configs/mps.yaml
+JEPA_MPS_VAL_INTERVAL ?= 200
+JEPA_MPS_VAL_MAX_BATCHES ?= 50
+train-jepa-mps:
+	@if [ ! -d "$(JEPA_DATA_ROOT)" ]; then \
+		echo "ERROR: No .npz data found at $(JEPA_DATA_ROOT)."; \
+		echo "  Run: make generate-world-model-data FORMATS=\"$(FORMATS)\" first."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(JEPA_TOKENIZER)" ]; then \
+		echo "ERROR: Tokenizer not found at $(JEPA_TOKENIZER)."; \
+		echo "  Run: make tokenize-world-model FORMATS=\"$(FORMATS)\" first."; \
+		exit 1; \
+	fi
+	mkdir -p $(JEPA_SAVE_DIR)
+	uv run python -m metamon.jepa.train \
+		--config $(JEPA_MPS_CONFIG) \
+		--data_root $(JEPA_DATA_ROOT) \
+		--formats $(FORMATS) \
+		--tokenizer_path $(JEPA_TOKENIZER) \
+		--save_dir $(JEPA_SAVE_DIR) \
+		--batch_size $(JEPA_MPS_BATCH_SIZE) \
+		--lr $(JEPA_LR) \
+		--epochs $(JEPA_EPOCHS) \
+		--grad_clip $(JEPA_GRAD_CLIP) \
+		--num_workers $(JEPA_MPS_NUM_WORKERS) \
+		--print_interval $(JEPA_PRINT_INTERVAL) \
+		--val_interval $(JEPA_MPS_VAL_INTERVAL) \
+		--val_max_batches $(JEPA_MPS_VAL_MAX_BATCHES) \
+		$(if $(filter true,$(WANDB)),--wandb) \
+		$(if $(WANDB_PROJECT),--wandb_project $(WANDB_PROJECT)) \
+		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
+		$(if $(JEPA_CHECKPOINT),--checkpoint $(JEPA_CHECKPOINT)) \
 		--log --log_interval 10
 
 # ── World Model Showdown Play ─────────────────────────────────────────

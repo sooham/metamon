@@ -105,6 +105,20 @@ class JEPADataset(torch.utils.data.IterableDataset):
         if not self.shard_paths:
             raise ValueError("No shard paths provided")
 
+    @staticmethod
+    def count_transitions(shard_paths: list[str]) -> int:
+        """Quickly count total transition pairs across shards (reads metadata only)."""
+        total = 0
+        for path in shard_paths:
+            data = np.load(path)
+            battle_start = data["battle_start"]
+            num_battles = len(battle_start) - 1
+            for b in range(num_battles):
+                n_states = int(battle_start[b + 1]) - int(battle_start[b])
+                if n_states >= 2:
+                    total += n_states - 1
+        return total
+
     @classmethod
     def from_formats(
         cls,
@@ -410,19 +424,35 @@ def train(args):
 
     # ---- print header ----
     if args.print_interval > 0:
+        train_transitions = JEPADataset.count_transitions(train_shards)
+        train_batches = math.ceil(train_transitions / args.batch_size)
+        val_transitions = JEPADataset.count_transitions(val_shards)
+        val_batches = math.ceil(val_transitions / args.batch_size)
         print(f"Params: {n_params:,}  "
               f"Shards: {len(train_shards)} train + {len(val_shards)} val "
               f"= {len(all_shards)} total")
+        print(f"Transitions: {train_transitions:,} train  {val_transitions:,} val  "
+              f"→ {train_batches:,} train batches/epoch  {val_batches:,} val batches")
         print(f"Batch size: {args.batch_size}  "
               f"MAX_STATE_LENGTH: {MAX_STATE_LENGTH}")
 
     # ---- validation function ----
     @torch.no_grad()
-    def run_validation() -> dict[str, float]:
+    def run_validation(max_batches: int | None = None) -> dict[str, float]:
+        """Run a pass over the val loader, return average metrics.
+
+        Parameters
+        ----------
+        max_batches : int | None
+            If set, stop after this many batches (for fast mid-epoch checks).
+            If None, iterate the entire val dataset (for epoch-end evaluation).
+        """
         model.eval()
         total_metrics: dict[str, float] = {}
         total_steps = 0
-        for prev, next_, prev_lens, next_lens, actions in val_loader:
+        for batch_idx, (prev, next_, prev_lens, next_lens, actions) in enumerate(val_loader):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
             prev = prev.to(device)
             next_ = next_.to(device)
             actions = actions.to(device)
@@ -478,6 +508,52 @@ def train(args):
             epoch_steps += 1
             global_step += 1
 
+            # ---- mid-epoch validation (fast: limited batches) ----
+            if args.val_interval > 0 and global_step % args.val_interval == 0:
+                _mb = args.val_max_batches if args.val_max_batches > 0 else None
+                mid_val = run_validation(max_batches=_mb)
+                if args.print_interval > 0:
+                    print(
+                        f"  val @ step {global_step:7d} | "
+                        f"val loss {mid_val['val_loss']:.4f} | "
+                        f"val jepa {mid_val['val_jepa_loss']:.4f} | "
+                        f"val sigreg {mid_val['val_sigreg_loss']:.4f}"
+                    )
+                if wandb_run:
+                    wandb_run.log({
+                        "val/loss": mid_val["val_loss"],
+                        "val/jepa_loss": mid_val["val_jepa_loss"],
+                        "val/sigreg_prev": mid_val["val_sigreg_prev"],
+                        "val/sigreg_next": mid_val["val_sigreg_next"],
+                        "val/sigreg_loss": mid_val["val_sigreg_loss"],
+                        "global_step": global_step,
+                        "epoch": epoch,
+                    })
+                if log_file:
+                    log_file.write(
+                        f"{epoch},{global_step},,,,,,"
+                        f"{mid_val['val_loss']:.6f},"
+                        f"{mid_val['val_jepa_loss']:.6f},"
+                        f"{mid_val['val_sigreg_prev']:.6f},"
+                        f"{mid_val['val_sigreg_next']:.6f},"
+                        f"{mid_val['val_sigreg_loss']:.6f}\n"
+                    )
+                    log_file.flush()
+                # Update best checkpoint if improved
+                if args.checkpoint and mid_val["val_loss"] < best_val_loss:
+                    best_val_loss = mid_val["val_loss"]
+                    model.save_checkpoint(
+                        args.checkpoint,
+                        epoch=epoch,
+                        global_step=global_step,
+                        optimizer_state_dict=optimizer.state_dict(),
+                        scheduler_state_dict=scheduler.state_dict(),
+                        config=model_cfg,
+                        vocab_size=vocab_size,
+                    )
+                    if args.print_interval > 0:
+                        print(f"  ✓ Best checkpoint (val_loss={best_val_loss:.4f}) → {args.checkpoint}")
+
             # ---- per-step logging ----
             if global_step % args.log_interval == 0:
                 if log_file:
@@ -517,7 +593,7 @@ def train(args):
         scheduler.step()
 
         # ---- validation ----
-        val_metrics = run_validation()
+        val_metrics = run_validation(max_batches=None)
 
         # ---- epoch-end metrics ----
         avg_metrics = {k: v / max(epoch_steps, 1) for k, v in epoch_metrics.items()}
@@ -614,6 +690,12 @@ if __name__ == "__main__":
     parser.add_argument("--prefetch_factor", type=int, default=2)
     parser.add_argument("--val_split", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
+    # Validation
+    parser.add_argument("--val_interval", type=int, default=100,
+                        help="Run validation every N training steps (0 = only at epoch end).")
+    parser.add_argument("--val_max_batches", type=int, default=100,
+                        help="Limit mid-epoch validation to this many batches. "
+                             "Epoch-end validation always does a full pass.")
     # Logging
     parser.add_argument("--log", action="store_true",
                         help="Write per-step metrics to metrics.csv in save_dir.")
