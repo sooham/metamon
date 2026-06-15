@@ -1,0 +1,61 @@
+# LeJEPA — MPS-optimized config for Apple Silicon (24 GB unified memory)
+#
+# Design rationale vs. default.yaml (CUDA):
+#   - MPS does not support torch.compile → no kernel fusion → many small
+#     ops launch individually.  Smaller model = fewer kernel launches =
+#     faster wall-clock time despite less capacity.
+#   - MPS recommended_max_memory() reports 17 GB usable out of 24 GB.
+#     This config keeps peak memory well under 10 GB even at batch_size=256.
+#   - bfloat16 works on MPS 2.12 but float32 is safer and not a bottleneck
+#     for a model this small.  The training script already defaults to fp32
+#     on MPS (bf16 + compile are CUDA-only codepaths).
+#   - SIGReg complex exponentials have higher overhead on MPS; halving
+#     num_slices cuts that cost in half with negligible regularization loss.
+#
+# CLI invocation (from repo root):
+#   uv run python -m metamon.jepa.train \
+#       --config metamon/jepa/configs/mps.yaml \
+#       --data_root $METAMON_CACHE_DIR/world-model-samples \
+#       --formats gen1ou gen9ou \
+#       --tokenizer_path $METAMON_CACHE_DIR/tokenizers/WorldModelObservationSpace-v1.json \
+#       --save_dir $METAMON_CACHE_DIR/jepa-checkpoints \
+#       --batch_size 128 --lr 3e-4 --epochs 100 \
+#       --num_workers 0          # MPS + multiprocessing is unsupported on macOS
+#
+# If you want faster iteration, try batch_size=64.
+
+model:
+  # Vocabulary size (auto-detected from tokenizer if null).
+  vocab_size: null
+
+  # Reduced from 256: still expressive enough for JEPA representation learning;
+  # cuts encoder+projection FLOPs and predictor I/O by 2×.
+  latent_dim: 128
+
+  # ── Encoder — bidirectional transformer → e ───────────────────────
+  encoder:
+    d_model: 192           # 256 → 192  (≈25 % fewer FLOPs per layer)
+    n_heads: 6             # 8 → 6      (d_model must be divisible; 192/6 = 32)
+    n_layers: 4            # 6 → 4      (biggest speed win — 33 % fewer layers)
+    d_ff: 768              # 1024 → 768 (4× d_model)
+    dropout: 0.1
+    max_seq_len: 1024
+    theta: 10000.0
+    ffn_activation: gelu   # gelu: simpler than swiglu, less memory, MPS-friendly
+
+  # ── Predictor — unchanged (already tiny: 0.5 M params) ────────────
+  predictor:
+    d_model: 128
+    n_heads: 4
+    n_layers: 2
+    d_ff: 512
+    dropout: 0.0
+    max_seq_len: 64
+
+  # ── LeJEPA loss ───────────────────────────────────────────────────
+  lambda_sigreg: 0.05
+
+  # ── SIGReg ────────────────────────────────────────────────────────
+  sigreg_num_slices: 128   # 256 → 128  (complex exp on MPS is slow; 128 is plenty)
+  sigreg_num_points: 17
+  sigreg_domain: 5.0
