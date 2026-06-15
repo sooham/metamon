@@ -235,7 +235,12 @@ def collate_fn(
 
 def train(args):
     # ---- device ----
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     if args.print_interval > 0:
         print(f"Using device: {device}")
 
@@ -331,7 +336,7 @@ def train(args):
         torch.backends.cudnn.allow_tf32 = True
         torch._dynamo.config.capture_scalar_outputs = True
 
-    # Compile
+    # Compile (CUDA only — MPS does not support torch.compile)
     if device.type == "cuda":
         try:
             model = torch.compile(model, dynamic=True, mode="max-autotune")

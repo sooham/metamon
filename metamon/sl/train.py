@@ -246,7 +246,12 @@ def detect_vocab_size_from_tokenizer(tokenizer_path: str) -> int:
 
 def train(args):
     # ---- device ----
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     if args.print_interval > 0:
         print(f"Using device: {device}")
 
@@ -456,7 +461,7 @@ def train(args):
         # scalar tensor reads (e.g. max().item()) don't cause graph breaks.
         torch._dynamo.config.capture_scalar_outputs = True
 
-    # Compile the model for faster training.
+    # Compile the model for faster training (CUDA only — MPS does not support torch.compile).
     # dynamic=True handles variable-length sequences (prompt length T varies
     # per batch because we pad to the batch maximum, not a fixed size).
     # mode="max-autotune" picks the best CUDA kernels for the given shapes
