@@ -16,7 +16,7 @@ FORMATS ?= $(FORMAT)
         generate-world-model-data inspect-wm-npz sample-inspect-wm-npz \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer sample-inspect-wm-state \
-        train-sl play-sl showdown bash-completion
+        train-sl train-jepa play-sl showdown bash-completion
 
 # Start a local Pokemon Showdown server (no auth, port 8000)
 # Requires the server/pokemon-showdown submodule to be initialized.
@@ -279,6 +279,56 @@ train-sl:
 		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
 		$(if $(CHECKPOINT),--checkpoint $(CHECKPOINT)) \
 		$(if $(SL_CONFIG),--config $(SL_CONFIG)) \
+		--log --log_interval 10
+
+# ── JEPA Training ────────────────────────────────────────────────────
+
+# Train the JEPA model on state transitions using .npz shards.
+# Requires tokenized world-model data (run generate-world-model-data first).
+#
+# Usage:
+#   make train-jepa FORMATS="gen1ou gen9ou"
+#   make train-jepa FORMATS=gen9ou EPOCHS=20 BATCH_SIZE=64
+#   make train-jepa FORMATS="gen1ou gen9ou" WANDB=true WANDB_PROJECT=metamon WANDB_NAME=my-run
+JEPA_DATA_ROOT ?= $(WM_OUTPUT_DIR)
+JEPA_TOKENIZER ?= $(TOKENIZER_FILE)
+JEPA_SAVE_DIR ?= $(METAMON_CACHE_DIR)/jepa-checkpoints
+JEPA_BATCH_SIZE ?= 256
+JEPA_LR ?= 3e-4
+JEPA_EPOCHS ?= 100
+JEPA_GRAD_CLIP ?= 1.0
+JEPA_NUM_WORKERS ?= $(N_THREADS)
+JEPA_PRINT_INTERVAL ?= 50
+JEPA_CONFIG ?=
+JEPA_CHECKPOINT ?= $(JEPA_SAVE_DIR)/best.pt
+train-jepa:
+	@if [ ! -d "$(JEPA_DATA_ROOT)" ]; then \
+		echo "ERROR: No .npz data found at $(JEPA_DATA_ROOT)."; \
+		echo "  Run: make generate-world-model-data FORMATS=\"$(FORMATS)\" first."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(JEPA_TOKENIZER)" ]; then \
+		echo "ERROR: Tokenizer not found at $(JEPA_TOKENIZER)."; \
+		echo "  Run: make tokenize-world-model FORMATS=\"$(FORMATS)\" first."; \
+		exit 1; \
+	fi
+	mkdir -p $(JEPA_SAVE_DIR)
+	uv run python -m metamon.jepa.train \
+		--data_root $(JEPA_DATA_ROOT) \
+		--formats $(FORMATS) \
+		--tokenizer_path $(JEPA_TOKENIZER) \
+		--save_dir $(JEPA_SAVE_DIR) \
+		--batch_size $(JEPA_BATCH_SIZE) \
+		--lr $(JEPA_LR) \
+		--epochs $(JEPA_EPOCHS) \
+		--grad_clip $(JEPA_GRAD_CLIP) \
+		--num_workers $(JEPA_NUM_WORKERS) \
+		--print_interval $(JEPA_PRINT_INTERVAL) \
+		$(if $(filter true,$(WANDB)),--wandb) \
+		$(if $(WANDB_PROJECT),--wandb_project $(WANDB_PROJECT)) \
+		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
+		$(if $(JEPA_CHECKPOINT),--checkpoint $(JEPA_CHECKPOINT)) \
+		$(if $(JEPA_CONFIG),--config $(JEPA_CONFIG)) \
 		--log --log_interval 10
 
 # ── World Model Showdown Play ─────────────────────────────────────────

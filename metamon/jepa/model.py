@@ -1,119 +1,46 @@
-f"""JEPA (Joint Embedding Predictive Architecture) model for raw replay learning.
+"""LeJEPA (Latent-Euclidean JEPA) model for world-model state learning.
 
-Architecture overview
----------------------
+Architecture overview (LeJEPA — Balestriero & LeCun 2025)
+--------------------------------------------------------
 
-- Your team encoding + Opponent team encoding
-- battle encoding
+Encoder(state at time T-1)              Encoder(state at time T)
+     |                                        |
+     v                                        v
+   e_{t-1} (deterministic)  --->  predictor(action) --->  e_{t} (deterministic)
+                                                              |
+                                                     SIGReg → push e toward N(0, I)
 
-- do contrastive learning between your team and opponent team
-if a battle A uses team A, its embedding should be closer to  
-the team A , than team B , which is not used in the battle A 
+The encoder produces a single deterministic embedding *e* used by the JEPA
+predictor.  SIGReg (Sketched Isotropic Gaussian Regularization) constrains
+the embeddings to follow an isotropic Gaussian distribution, which is
+provably optimal for minimizing downstream prediction risk.
 
-Partially Observable Markov Decision Process
-- (true state i) -- action p1, p2 -> (probabilty distribution over true state i+1)
-       |                                      |
-       v                                      v
-- (observed state_i ) --- action ---> probability distribution over state_{i+1}
+No VAE decoder, no stop-gradient, no teacher-student, no KL divergence.
+A single hyperparameter λ balances prediction loss vs. SIGReg.
 
-- we see the observed state i at any time
+Two modules:
 
-- in a JEPA architecture
-- encoding of a mutated observation and and the unmutated observation should be close together 
-- encoding of the ground truth observation (state with all hidden pokemon opposing player policy)
--   we don't know this 100% though
--   can an encoding we predict from the T'th state have maximum similarity to
--   all the following states the replay?  
+1. **Encoder φ** — bidirectional transformer → mean pool over non-pad tokens
+   → ``e`` (deterministic embedding used for JEPA prediction and SIGReg).
 
--   if we take the current state at timestep T (with same pokemon) and play the opponent policy randomly
--   the encoding for state T will average out all opponent and player policies, will focus only on modelling 
--   the pokemon in play
--   if we average out over unseen pokemon but keep the same player it will model only the opposing player policy
-
--  probability distribution over pokemon teams | current and all previous states 
-
---------------------
-Current state (aggregation of all knowns over play): 
-pokemon field in play (current pokemon in the field, opponent pokemon in play, weather, field effects ) , opponent pokemon team, 
-your pokemon team
-
-Ground truth state:
-current state + unknown pokemon in opposing team  
-
-- as the battle progresses , the future state contains more information about the ground truth
-
-- so the encoding between a state currently known  
-and it's prior states leading to the current state should be close 
-
-- this should pick up variation in revealed future moves, status effects, HP drop etc.
-
-Encoder_state( state at time step T-1)           Encoder_state(state at time step T)
-     |                                                     |
-     v                                                     v
-   encoding_state_{t-1} --->  predictor_{action} ---->  encoding_{t}
-     |                                                     |
-     v                                                     v
-Decoder_state(state at time step T-1)                  Decoder state for time step T
-    should match exactly
-
---------------------
-
-
-Given a parsed replay string R from one POV of a battle state into a sequence of token IDs
-``s = (t_0, ..., t_{T-1})``, three modules operate on it:
-
-1. **Encoder φ** — ``ENC_phi(s) → s_enc`
-   A transformer encoder (bidirectional attention) that reads the observed state
-   replay and produces a latent vector `s_enc`.  For the
-   VAE regularisation, the encoder actually outputs ``(mu, logvar)`` and
-   ``s_enc`` is sampled via reparameterisation::
-
-       s_enc = mu + std * ε,   ε ~ N(0, I)
-
-   This ``s_enc`` serves two purposes:
-   - **JEPA target** — the predictor tries to estimate it from an earlier state in the battle.
-   - **VAE latent** — the decoder reconstructs the original state from it and the KL
-     loss pushes ``(mu, std)`` toward an isotropic Gaussian N(0, I).
-
-3. **Predictor μ** — ``PRED(s_source) → s_dest``
-   A small MLP based model that maps the s_source latent to an estimate ``s_dest``
-   where s_dest is the state derived immediately from s_source
-
-4. **Decoder** — ``DEC(s_enc) → reconstructed state``
-   An autoregressive transformer decoder that reconstructs the original
-   replay tokens from the latent ``s``.  Uses teacher forcing during
-   training and autoregressive sampling at inference.
+2. **Predictor μ** — A small causal transformer that maps ``(e_prev, action)``
+   → ``predicted_next``.  Action is a compact index 0..13.
 
 Losses
 ------
 
-*JEPA (contrastive prediction) loss* — MSE between the target representation
-and the predictor's estimate::
+*JEPA loss* — MSE between target embedding and predictor estimate
+(no stop-gradient — SIGReg prevents collapse without asymmetry)::
 
-    L_jepa = || s_dest - PRED_psi(s_dest) ||²
+    L_jepa = || e_next - predictor(e_prev, action) ||²
 
-*Reconstruction loss* — standard cross-entropy over the token vocabulary
-(teacher-forced autoregressive decoding)::
+*SIGReg loss* — Epps-Pulley characteristic function test sketched over
+random projection directions, pushing the embedding distribution toward
+N(0, I).  Applied to both e_prev and e_next.
 
-    L_recon = -Σ_t log p(s_t | s_{<t}, s_source)
+Total::
 
-*KL divergence* — regularises the latent distribution toward an isotropic
-Gaussian prior (β-VAE style)::
-
-    L_kl = D_KL( N(mu, σ²) || N(0, I))
-
-Total loss::
-
-    L = L_jepa + β_recon * (L_recon for previous state and next state) + β_kl * (L_kl for previous state and next state)
-
-File layout
------------
-- ``JEPAEncoder``       — transformer encoder (phi)
-- ``JEPAPredictor``     — MLP mapping latent → latent.
-- ``JEPADecoder``       — autoregressive transformer decoder for VAE
-                          reconstruction.
-- ``JEPAModel``         — top-level container, forward pass, loss computation.
-- ``compute_losses``    — standalone loss-aggregation function.
+    L = (1 - λ) · L_jepa + λ · (SIGReg(e_prev) + SIGReg(e_next)) / 2
 """
 
 import math
@@ -123,11 +50,23 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# TODO: calculate and find out
-MAX_STATE_LENGTH: int = 5000
+# TODO: calculate and find out (gen1ou is 199)
+MAX_STATE_LENGTH: int = 200
 
-# Latent dimension (size of s_enc).
-LATENT_DIM: int = 256
+# Latent dimension (size of the deterministic embedding e).
+LATENT_DIM: int = 32
+
+# Number of possible actions (-1..12 → 0..13 after +1 shift).
+NUM_ACTIONS: int = 14
+
+# ── SIGReg defaults ──────────────────────────────────────────────────────
+# Number of random projection directions for sketching (resampled each step).
+SIGREG_NUM_SLICES: int = 256
+# Number of trapezoidal quadrature points for Epps-Pulley integration.
+SIGREG_NUM_POINTS: int = 17
+# Integration domain for the characteristic function: [-5, 5].
+SIGREG_DOMAIN: float = 5.0
+
 
 # ═════════════════════════════════════════════════════════════════════════
 # Building blocks (shared with metamon/sl/model.py structure)
@@ -135,11 +74,7 @@ LATENT_DIM: int = 256
 
 
 class RotaryPositionalEmbedding(nn.Module):
-    """Rotary Position Embedding (Su et al. 2021) applied per-head to Q and K.
-
-    Identical to the RoPE in ``metamon/sl/model.py``, kept here so the
-    JEPA module is self-contained.
-    """
+    """Rotary Position Embedding (Su et al. 2021) applied per-head to Q and K."""
 
     def __init__(self, dim: int, max_seq_len: int = 2048, theta: float = 10000.0):
         super().__init__()
@@ -152,8 +87,7 @@ class RotaryPositionalEmbedding(nn.Module):
         self.register_buffer("sin_cached", freqs.sin())
 
     def forward(self, x: torch.Tensor, offset: int = 0) -> torch.Tensor:
-        # x is shape (batch, n_heads, sequence_length, attn_dim)
-        S = x.shape[-2]  
+        S = x.shape[-2]
         dtype = x.dtype
         if not hasattr(self, "_cos_bf16"):
             self._cos_bf16 = {}
@@ -203,7 +137,6 @@ class SelfAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # batch, sequence length, embed dimension
         B, S, D = x.shape
 
         q = self.q_proj(x).view(B, S, self.n_heads, self.d_head).transpose(1, 2)
@@ -213,7 +146,6 @@ class SelfAttention(nn.Module):
         q = self.rope(q)
         k = self.rope(k)
 
-        # TODO: ablation study with XSA - exlusive self attention
         y = F.scaled_dot_product_attention(
             q, k, v,
             attn_mask=None,
@@ -270,35 +202,34 @@ class TransformerBlock(nn.Module):
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# Encoder φ / ψ — bidirectional transformer → pooled latent vector
+# Encoder — bidirectional transformer → deterministic embedding e
 # ═════════════════════════════════════════════════════════════════════════
 
 class JEPAEncoder(nn.Module):
-    """Transformer encoder that maps a state token sequence to a latent vector.
-    - ``ENC_phi`` (target encoder) — processes the full state
-      Outputs ``(mu, logvar)`` for VAE regularisation; ``s_enc`` is
-      sampled via reparameterisation.
+    """Transformer encoder that maps a state token sequence to a single
+    deterministic embedding.
+
+    Returns:
+      - ``e``: (B, latent_dim) — deterministic embedding, used as input /
+               target for the JEPA predictor and regularised via SIGReg.
 
     Architecture
     ------------
-    ``token_ids`` → 
-    token embedding + positional → 
-    N × transformer blocks (bidirectional attention) → 
-    mean pool over non-pad positions → 
-    linear projection(s) → 
-    latent vector(s).
+    ``token_ids`` → token embedding →
+    N × transformer blocks (bidirectional) →
+    mean pool over non-pad positions →
+    linear projection → e.
 
     Parameters
     ----------
     vocab_size : int
-        state vocabulary size (includes <pad>, <bos>, <eos>, etc.).
+        State vocabulary size.
     pad_id : int
-        Token ID for padding.
+        Token ID for padding (embedding vector is zeroed).
     latent_dim : int
-        Dimensionality of the output latent vector.
+        Dimensionality of the output embedding.
     d_model, n_heads, n_layers, d_ff, dropout, max_seq_len, theta, ffn_activation :
         Standard transformer hyperparameters.
-    outputs ``(mu, logvar)`` for VAE reparameterisation.
     """
 
     def __init__(
@@ -306,7 +237,7 @@ class JEPAEncoder(nn.Module):
         vocab_size: int,
         pad_id: int,
         latent_dim: int = LATENT_DIM,
-        d_model: int = 256, # TODO: the embedding dimension might be too small
+        d_model: int = 256,
         n_heads: int = 8,
         n_layers: int = 6,
         d_ff: int = 1024,
@@ -335,10 +266,8 @@ class JEPAEncoder(nn.Module):
         ])
         self.ln_final = nn.LayerNorm(d_model)
 
-        # Projection head: pooled representation → latent
-        # For VAE mode we need two projections (mu and logvar).
-        self.proj_mu = nn.Linear(d_model, latent_dim, bias=False)
-        self.proj_logvar = nn.Linear(d_model, latent_dim, bias=False)
+        # Single projection: pooled representation → deterministic embedding.
+        self.proj_e = nn.Linear(d_model, latent_dim, bias=False)
 
         self.apply(self._init_weights)
 
@@ -355,156 +284,97 @@ class JEPAEncoder(nn.Module):
 
     def forward(
         self, token_ids: torch.Tensor
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        """Encode a token sequence into a latent vector.
+    ) -> torch.Tensor:
+        """Encode a token sequence.
 
         Args:
             token_ids: (B, S) int — state token IDs (padded with ``pad_id``).
 
         Returns:
-            ``(mu, logvar)`` — both (B, latent_dim).
+            e: (B, latent_dim) — deterministic embedding.
         """
-        B, S = token_ids.shape
-        device = token_ids.device
-
         # Token embeddings
         x = self.token_embedding(token_ids)  # (B, S, d_model)
 
         # Transformer blocks (bidirectional)
-        # there is residual connection  inside block
         for block in self.blocks:
             x = block(x)
         x = self.ln_final(x)  # (B, S, d_model)
 
         # Mean pool over non-pad positions
-        # pad_mask = (token_ids != self.pad_id).unsqueeze(-1).float()  # (B, S, 1)
-        # x_sum = (x * pad_mask).sum(dim=1)          # (B, d_model)
-        # x_count = pad_mask.sum(dim=1).clamp(min=1) # (B, 1)
-        # pooled = x_sum / x_count                   # (B, d_model)
-        mu = self.proj_mu(x)
-        logvar = self.proj_logvar(x)
-        return mu, logvar
+        pad_mask = (token_ids != self.pad_id).unsqueeze(-1).float()  # (B, S, 1)
+        x_sum = (x * pad_mask).sum(dim=1)          # (B, d_model)
+        x_count = pad_mask.sum(dim=1).clamp(min=1) # (B, 1)
+        pooled = x_sum / x_count                   # (B, d_model)
+
+        return self.proj_e(pooled)  # (B, latent_dim)
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# Predictor μ — MLP mapping masked latent → estimate of unmasked latent
+# Predictor — action-conditioned transformer: e_prev + action → e_next
 # ═════════════════════════════════════════════════════════════════════════
 
 class JEPAPredictor(nn.Module):
-    """Small MLP that predicts the next state's latent from the previous states 
-    latent.
+    """Action-conditioned predictor transformer.
 
-    ``s_next = PRED_psi(s_prev)`` where ``s_prev`` comes from
-    ``s_prev`` (deterministic context encoder) and the target is
-    ``s_next`` . Both are sampled from ``ENC_phi`` (stochastic target encoder).
+    Maps the deterministic previous-state embedding and the action to an
+    estimate of the next-state deterministic embedding::
 
-    Architecture: a few linear layers with GELU activation and LayerNorm.
+        predicted_next = PRED(e_prev, action_compact_idx)
+
+    Architecture
+    ------------
+    1. Project ``e_prev`` from ``latent_dim`` to ``d_model``.
+    2. Look up action embedding from a dedicated 14-entry table.
+    3. Stack as a 2-token causal sequence: ``[prev_proj, action_emb]``.
+    4. Run through N causal transformer blocks.
+    5. Pool from the action position (position -1).
+    6. Linear projection back to ``latent_dim``.
+
+    The action position has full causal context over the prev-state
+    embedding, allowing the transformer to combine "what state are we in"
+    with "what action was taken."
+
+    Parameters
+    ----------
+    latent_dim : int
+        Dimensionality of the input/output latent vectors.
+    d_model, n_heads, n_layers, d_ff, dropout, max_seq_len :
+        Transformer hyperparameters for the predictor.
     """
 
     def __init__(
         self,
         latent_dim: int = LATENT_DIM,
-        hidden_dim: int = 512,
-        n_hidden: int = 6,
+        d_model: int = 128,
+        n_heads: int = 4,
+        n_layers: int = 2,
+        d_ff: int = 512,
         dropout: float = 0.0,
+        max_seq_len: int = 64,
     ):
         super().__init__()
-        assert latent_dim <= hidden_dim
         self.latent_dim = latent_dim
 
-        layers = []
-        in_dim = latent_dim
-        for i in range(n_hidden):
-            layers.append(nn.Linear(in_dim, hidden_dim, bias=False))
-            layers.append(nn.LayerNorm(hidden_dim))
-            layers.append(nn.GELU())
-            if dropout > 0:
-                layers.append(nn.Dropout(dropout))
-            in_dim = hidden_dim
-        layers.append(nn.Linear(in_dim, latent_dim, bias=False))
-        self.net = nn.Sequential(*layers)
+        # Project deterministic embedding into predictor space.
+        self.prev_proj = nn.Linear(latent_dim, d_model, bias=False)
 
-        self.apply(self._init_weights)
+        # Dedicated action embedding: 14 entries (compact indices 0..13).
+        self.action_embedding = nn.Embedding(NUM_ACTIONS, d_model)
 
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
-
-    def forward(self, s_prev: torch.Tensor) -> torch.Tensor:
-        """Predict next state latent from previous state latent
-
-        Args:
-            s_prev: (B, latent_dim) — context encoding from ENC.
-
-        Returns:
-            s_next: (B, latent_dim) — estimate of s_next.
-        """
-        return self.net(s_prev)
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# Decoder — autoregressive transformer that reconstructs tokens from latent
-# ═════════════════════════════════════════════════════════════════════════
-
-class JEPADecoder(nn.Module):
-    """Autoregressive decoder that reconstructs the replay token sequence
-    from the latent vector ``s_enc``.
-
-    During training, teacher forcing is used (the full target sequence is
-    fed in).  During inference, tokens are generated one-by-one until
-    ``<eos>`` or ``max_new_tokens`` is reached.
-
-    The latent vector is projected and prepended as the first "token"
-    embedding, followed by a ``<bos>`` token and then the target sequence.
-    Causal attention ensures tokens only attend to preceding tokens
-    (including the latent prefix).
-    """
-
-    def __init__(
-        self,
-        vocab_size: int,
-        latent_dim: int = LATENT_DIM,
-        pad_id: int = 0,
-        d_model: int = 256,
-        n_heads: int = 8,
-        n_layers: int = 4,
-        d_ff: int = 1024,
-        dropout: float = 0.1,
-        max_seq_len: int = 1024,
-        theta: float = 10000.0,
-        ffn_activation: str = "gelu",
-    ):
-        # TODO: double check the embedding dimension
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.latent_dim = latent_dim
-        self.pad_id = pad_id
-        self.d_model = d_model
-
-        # Project latent to d_model so it can be prepended as a "token embedding".
-        self.latent_proj = nn.Linear(latent_dim, d_model, bias=False)
-
-        self.token_embedding = nn.Embedding(
-            vocab_size, d_model, padding_idx=pad_id
-        )
-
+        # Causal transformer blocks.
         self.blocks = nn.ModuleList([
             TransformerBlock(
                 d_model, n_heads, d_ff, dropout, max_seq_len,
-                causal=True,  # autoregressive
-                ffn_activation=ffn_activation,
+                causal=True,
+                ffn_activation="gelu",
             )
             for _ in range(n_layers)
         ])
         self.ln_final = nn.LayerNorm(d_model)
-        self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+        self.out_proj = nn.Linear(d_model, latent_dim, bias=False)
 
         self.apply(self._init_weights)
-
-        # Weight tying: output projection shares weights with token embedding.
-        # self.lm_head.weight = self.token_embedding.weight
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -513,261 +383,124 @@ class JEPADecoder(nn.Module):
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.padding_idx is not None:
-                with torch.no_grad():
-                    module.weight[module.padding_idx] = 0.0
 
     def forward(
-        self,
-        s_enc: torch.Tensor,
-        target_ids: torch.Tensor,
-        bos_id: int,
-        eos_id: int,
+        self, e_prev: torch.Tensor, action_compact_idx: torch.Tensor
     ) -> torch.Tensor:
-        f"""Training forward pass with teacher forcing.
-
-        Prepends the latent vector as a prefix "pseudo-token" before the
-        target sequence, then predicts each token autoregressively.
-
-        Sequence layout:
-            [latent_proj(v)]  t_0  t_1  ...  t_{M-1} 
-            t_0 is <bos> and t_{M-1} is <eos>
-
-        The loss is computed on positions t_0 … t_{M-1} (standard next-token
-        prediction, shifted by one).
+        """Predict next-state deterministic embedding.
 
         Args:
-            s_enc:   (B, latent_dim)     — latent sampled from JEPAEncoder 
-            target_ids: (B, M) int       — target token IDs of the original state that produced s_enc
-            bos_id:     int              — <bos> token ID.
-            eos_id:     int              — <eos> token ID.
+            e_prev:             (B, latent_dim) — deterministic prev-state embedding.
+            action_compact_idx: (B,) int 0..13  — compact action index.
 
         Returns:
-            logits: (B, M+1, vocab_size) — next-token logits.
-                logits[:, 0, :] predicts target_id for <bos>
-                logits[:, t, :] predicts target_ids[:, t-1] for t=1..M,
-                and logits[:, M+1, :] predicts the <eos>.
+            predicted_next: (B, latent_dim).
         """
-        device = target_ids.device
+        # Project prev-state embedding.
+        prev_emb = self.prev_proj(e_prev).unsqueeze(1)  # (B, 1, d_model)
 
-        # Build decoder input: [latent_prefix, target_ids]
-        latent_emb = self.latent_proj(s_enc).unsqueeze(1)  # (B, 1, d_model)
+        # Look up action embedding.
+        action_emb = self.action_embedding(action_compact_idx).unsqueeze(1)  # (B, 1, d_model)
 
-        target_emb = self.token_embedding(target_ids)  # (B, M+1, d_model)
-
-        # Concatenate: [latent target]
-        x = torch.cat([latent_emb, target_emb], dim=1)  # (B, M+1, d_model)
+        # 2-token causal sequence: [prev, action]
+        x = torch.cat([prev_emb, action_emb], dim=1)  # (B, 2, d_model)
 
         for block in self.blocks:
             x = block(x)
         x = self.ln_final(x)
-        logits = self.lm_head(x)  # (B, 1+M, vocab_size)
 
-        # Return logits for positions after s_enc 
-        # logits[:, 1:] corresponds to predicting target_ids 
-        # We return everything so the caller can decide the loss mask.
-        return logits[:, 1:, :]  # (B, M+1, vocab_size)
+        # Pool from the action position (has causal context over prev_emb).
+        pooled = x[:, -1, :]  # (B, d_model)
 
-    @torch.no_grad()
-    def generate(
-        self,
-        s_enc: torch.Tensor,
-        bos_id: int,
-        eos_id: int,
-        max_new_tokens: int = MAX_STATE_LENGTH,
-        temperature: float = 1.0,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Autoregressively generate tokens from the latent vector.
-
-        Args:
-            s_enc:       (B, latent_dim).
-            bos_id, eos_id: special token IDs.
-            max_new_tokens: maximum tokens to generate.
-            temperature:    softmax temperature.
-
-        Returns:
-            generated: (B, max_new_tokens) int — token IDs (0-padded).
-            lengths:   (B,) int               — actual generated lengths.
-        """
-        B = s_enc.shape[0]
-        device = s_enc.device
-
-        # Start with latent prefix
-        latent_emb = self.latent_proj(s_enc).unsqueeze(1)  # (B, 1, d_model)
-        x = latent_emb
-
-        # Process the prefix through all blocks
-        for block in self.blocks:
-            x = block(x)
-        x = self.ln_final(x)
-
-        generated = torch.full(
-            (B, max_new_tokens), self.pad_id, dtype=torch.long, device=device
-        )
-        lengths = torch.zeros(B, dtype=torch.long, device=device)
-        done = torch.zeros(B, dtype=torch.bool, device=device)
-
-        # First token prediction from the <bos> position
-        logits = self.lm_head(x[:, -1:, :])  # (B, 1, vocab_size)
-
-        for step in range(max_new_tokens):
-            if temperature != 1.0:
-                logits = logits / temperature
-            probs = F.softmax(logits[:, -1, :], dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1).squeeze(-1)
-            next_token[done] = self.pad_id
-
-            generated[:, step] = next_token
-            lengths[~done] += 1
-            done = done | (next_token == eos_id)
-
-            if done.all():
-                break
-
-            # Embed the new token and run through blocks
-            if step < max_new_tokens - 1:
-                next_emb = self.token_embedding(next_token).unsqueeze(1)  # (B, 1, d_model)
-                x = torch.cat([x, next_emb], dim=1)
-                # TODO: KV caching
-                # Re-run transformer on the full sequence (simple but slow;
-                # KV caching can be added later).
-                for block in self.blocks:
-                    x = block(x)
-                x = self.ln_final(x)
-                logits = self.lm_head(x[:, -1:, :])
-
-        return generated, lengths
+        return self.out_proj(pooled)  # (B, latent_dim)
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# Full JEPA model — combines encoders, predictor, decoder, and losses
+# Full LeJEPA model — encoder + predictor
 # ═════════════════════════════════════════════════════════════════════════
 
 class JEPAModel(nn.Module):
-    """Top-level JEPA model for learning representations from raw replays.
+    """Top-level LeJEPA model for learning representations from world-model states.
 
     Parameters
     ----------
     vocab_size : int
-        vocabulary size.
-    pad_id, mask_id, bos_id, eos_id : int
-        Special token IDs.
+        Vocabulary size.
+    pad_id, bos_id, eos_id : int
+        Special token IDs (bos_id, eos_id kept for compatibility).
     latent_dim : int
-        Dimensionality of the latent space (s_enc).
-    encoder_cfg, predictor_cfg, decoder_cfg : dict
-        Sub-module configuration dicts (see individual classes).
+        Dimensionality of the latent space.
+    encoder_cfg, predictor_cfg : dict
+        Sub-module configuration dicts.
     """
 
     def __init__(
         self,
         vocab_size: int,
         pad_id: int,
-        mask_id: int,
         bos_id: int,
         eos_id: int,
         latent_dim: int = LATENT_DIM,
         encoder_cfg: Optional[dict] = None,
         predictor_cfg: Optional[dict] = None,
-        decoder_cfg: Optional[dict] = None,
+        **kwargs,  # absorb legacy keys (decoder_cfg) silently
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.pad_id = pad_id
-        self.mask_id = mask_id
         self.bos_id = bos_id
         self.eos_id = eos_id
         self.latent_dim = latent_dim
 
         enc_cfg = encoder_cfg or {}
         pred_cfg = predictor_cfg or {}
-        dec_cfg = decoder_cfg or {}
 
-        # Target encoder φ — stochastic (VAE mode), produces (mu, logvar).
-        self.enc_phi = JEPAEncoder(
+        # Encoder φ — produces deterministic embedding e.
+        self.encoder = JEPAEncoder(
             vocab_size=vocab_size,
             pad_id=pad_id,
             latent_dim=latent_dim,
             **enc_cfg,
         )
 
-        # Predictor μ — maps v_masked → e_replay
+        # Predictor μ — maps (e_prev, action) → predicted e_next.
         self.predictor = JEPAPredictor(
             latent_dim=latent_dim,
             **pred_cfg,
         )
 
-        # Decoder — reconstructs replay tokens from s_enc
-        self.decoder = JEPADecoder(
-            vocab_size=vocab_size,
-            latent_dim=latent_dim,
-            pad_id=pad_id,
-            **dec_cfg,
-        )
-
-    def reparameterize(
-        self, mu: torch.Tensor, logvar: torch.Tensor
-    ) -> torch.Tensor:
-        """Sample s_enc ~ N(mu, σ²) via reparameterisation.
-
-        Args:
-            mu:     (B, latent_dim).
-            logvar: (B, latent_dim).
-
-        Returns:
-            v_replay: (B, latent_dim) — sampled latent.
-        """
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + std * eps
-
     def forward(
         self,
-        prev_state_tokens: torch.Tensor, # (B, S) — prev state tokens
-        next_state_tokens: torch.Tensor, # (B, S) — next state tokens  
+        prev_state_tokens: torch.Tensor,
+        next_state_tokens: torch.Tensor,
+        actions: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        """Full forward pass returning all intermediate latents and logits.
+        """Full forward pass.
 
         Args:
-            token_ids:         Full (unmasked) replay token IDs.
-ß
+            prev_state_tokens: (B, S_prev) int — previous state tokens (with <eos>).
+            next_state_tokens: (B, S_next) int — next state tokens (with <eos>).
+            actions:           (B,) int       — action indices (-1 .. 12).
+
         Returns:
             Dict with keys:
-                mu_prev, logvar_prev   — (B, latent_dim) from Encoder.
-                mu_next, logvar_next   — (B, latent_dim) from Encoder.
-                enc_prev, enc_next     — (B, latent_dim) sampled latent.
-                predicted_next         — (B, latent_dim) predictor output.
-                recon_logits           — (B, 1+M, vocab_size) decoder output.
+                e_prev, e_next     — (B, latent_dim) deterministic embeddings.
+                predicted_next     — (B, latent_dim) predictor output.
         """
-        # ── previous state encoder : encode previous state → (mu, logvar) ──
-        mu_prev, logvar_prev = self.enc_phi(prev_state_tokens)
-        prev_state_encoded = self.reparameterize(mu_prev, logvar_prev)
+        # ── Encode previous state ──
+        e_prev = self.encoder(prev_state_tokens)
 
-        # ── Predictor μ: s_prev → s_next ──
-        predicted_next = self.predictor(prev_state_encoded)
+        # ── Encode next state ──
+        e_next = self.encoder(next_state_tokens)
 
-        # ── next state encoder : encode next state → (mu, logvar) ──
-        mu_next, logvar_next = self.enc_phi(next_state_tokens)
-        next_state_encoded = self.reparameterize(mu_next, logvar_next)
-
-        # ── Predictor μ: s_prev → s_next ──
-        predicted_next = self.predictor(prev_state_encoded)
-
-        # ── Decoder: reconstruct state from encoding, predict the logits from generation 
-        recon_logits_prev = self.decoder(prev_state_encoded, prev_state_tokens,  self.bos_id, self.eos_id)
-        recon_logits_next = self.decoder(next_state_encoded, next_state_tokens,  self.bos_id, self.eos_id)
+        # ── Predict next from prev + action ──
+        compact_idx = actions + 1  # -1..12 → 0..13
+        predicted_next = self.predictor(e_prev, compact_idx)
 
         return {
-            "mu_prev": mu_prev,
-            "logvar_prev": logvar_prev,
-            "enc_prev": prev_state_encoded,
-
-            "mu_next": mu_next,
-            "logvar_next": logvar_next,
-            "enc_next": next_state_encoded,
-
+            "e_prev": e_prev,
+            "e_next": e_next,
             "predicted_next": predicted_next,
-            "recon_logits_prev": recon_logits_prev,
-            "recon_logits_next": recon_logits_next,
         }
 
     def save_checkpoint(self, path: str, **extra) -> None:
@@ -779,97 +512,121 @@ class JEPAModel(nn.Module):
         self.load_state_dict(ckpt["model_state_dict"])
         return ckpt
 
+
+# ═════════════════════════════════════════════════════════════════════════
+# SIGReg — Sketched Isotropic Gaussian Regularization (Epps-Pulley test)
+# ═════════════════════════════════════════════════════════════════════════
+
+def sigreg(
+    embeddings: torch.Tensor,
+    num_slices: int = SIGREG_NUM_SLICES,
+    num_points: int = SIGREG_NUM_POINTS,
+    domain: float = SIGREG_DOMAIN,
+) -> torch.Tensor:
+    """Sketched Isotropic Gaussian Regularization via the Epps-Pulley test.
+
+    Projects embeddings along random directions and compares the empirical
+    characteristic function of each 1-D projection to that of N(0, 1).
+
+    Per LeJEPA (Balestriero & LeCun 2025), SIGReg provides:
+      - Bounded gradients and curvature (unlike moment-based tests)
+      - Full identifiability of the Gaussian (unlike VICReg-style moment matching)
+      - Linear O(N) complexity in batch size
+      - DDP-friendly via simple averaging
+
+    Args:
+        embeddings: (B, D) — batch of D-dimensional embeddings.
+        num_slices: number of random projection directions (resampled each call).
+        num_points: number of quadrature points for integration.
+        domain:     integration domain [-domain, domain] for the CF.
+
+    Returns:
+        Scalar SIGReg loss (averaged over slices, scaled by batch size).
+    """
+    B, D = embeddings.shape
+    device = embeddings.device
+    dtype = embeddings.dtype
+
+    # Sample random projection directions (unit norm).
+    A = torch.randn(D, num_slices, device=device, dtype=dtype)
+    A = A / A.norm(p=2, dim=0, keepdim=True)
+
+    # Project embeddings onto random directions: (B, num_slices).
+    proj = embeddings @ A  # (B, num_slices)
+
+    # Integration points for the characteristic function.
+    t = torch.linspace(-domain, domain, num_points, device=device, dtype=dtype)
+
+    # Target CF: φ(t) = exp(-t²/2) for N(0, 1).
+    # Gaussian weighting window w(t) = exp(-t²/2) (from Epps-Pulley).
+    target_cf = torch.exp(-0.5 * t ** 2)         # (T,)
+    window = target_cf.clone()                    # w(t) = exp(-t²/2)
+
+    # Empirical CF: (1/B) Σ exp(i · t · proj_n).
+    # proj: (B, S) → unsqueeze → (B, S, 1) * t → (B, S, T).
+    # exp(i·x) = cos(x) + i·sin(x); |·|² works on complex.
+    proj_expanded = proj.unsqueeze(-1) * t  # (B, num_slices, T)
+    ecf = torch.exp(1j * proj_expanded.to(torch.complex64)).mean(dim=0)  # (num_slices, T)
+
+    # Weighted L² distance: |ecf - target_cf|² · w(t).
+    err = (ecf - target_cf.to(torch.complex64)).abs().square()
+    err = err.to(dtype) * window  # (num_slices, T)
+
+    # Trapezoidal integration over t, average over slices, scale by batch size.
+    integrated = torch.trapz(err, t, dim=1)  # (num_slices,)
+    return integrated.mean() * B
+
+
 # ═════════════════════════════════════════════════════════════════════════
 # Loss computation
 # ═════════════════════════════════════════════════════════════════════════
-def compute_normal_prior_loss(mu, logvar):
-    # KL = -0.5 * Σ (1 + logvar - mu² - exp(logvar)) (rao-blackwell)
-    return -0.5 * torch.mean(
-        1 + logvar - mu.pow(2) - logvar.exp()
-    )
-
-def compute_recon_loss(recon_logits, actual_state_tokens, ignore_loss_tokens):
-    # recon_logits[:, t, :] predicts actual_state_tokens[:, t] for t=0..M-1
-    # and recon_logits[:, M, :] predicts <eos>.
-    # We'll compute loss only on non-pad positions.
-    # Target shape: (B, 1+M) 
-
-    # Build loss mask: ignore pad, and any user-specified tokens.
-    loss_mask = torch.ones_like(recon_logits, dtype=torch.bool)
-    for tok_id in ignore_loss_tokens:
-        loss_mask = loss_mask & (recon_logits != tok_id)
-
-    n_active = loss_mask.sum()
-    if n_active == 0:
-        recon_loss = torch.tensor(0.0, device=recon_logits.device, requires_grad=True)
-    else:
-        recon_loss = F.cross_entropy(
-            recon_logits[loss_mask],
-            actual_state_tokens[loss_mask],
-            reduction="mean",
-        )
-        # TODO: this is not useful
-        # with torch.no_grad():
-        #     preds = recon_logits_prev.argmax(dim=-1)
-        #     correct = (preds[loss_mask] == recon_logits_prev[loss_mask]).sum().item()
-        #     recon_acc = correct / n_active.item()
-    
-    return recon_loss
 
 def compute_losses(
     outputs: dict[str, torch.Tensor],
-    prev_state_tokens: torch.Tensor,
-    next_state_tokens: torch.Tensor,
-    pad_id: int,
-    beta_recon: float = 1.0,
-    beta_kl: float = 0.001,
+    lambda_sigreg: float = 0.05,
+    sigreg_num_slices: int = SIGREG_NUM_SLICES,
+    sigreg_num_points: int = SIGREG_NUM_POINTS,
+    sigreg_domain: float = SIGREG_DOMAIN,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Compute the combined JEPA + VAE loss.
+    """Compute the LeJEPA loss: JEPA prediction + SIGReg.
+
+    No stop-gradient — SIGReg prevents representational collapse without
+    asymmetric architecture tricks.
 
     Args:
-        outputs: Dict from ``JEPAModel.forward()`` containing:
-            - enc_next, predicted_next: (B, latent_dim) — JEPA target & estimate.
-            - mu_prev, logvar_prev, mu_next, logvar_next:         (B, latent_dim) — VAE parameters for the states
-            - recon_logits_prev, recon_logits_next:       (B, 1+M, vocab_size) — decoder output.
-        target_ids:     (B, M) int — ground-truth token IDs for reconstruction.
-        pad_id:         Token ID for <pad> (ignored in reconstruction loss).
-        beta_recon:     Weight for reconstruction loss.
-        beta_kl:        Weight for KL divergence (β-VAE).
+        outputs: Dict from ``JEPAModel.forward()`` with keys
+                 "e_prev", "e_next", "predicted_next".
+        lambda_sigreg: Weight for SIGReg (0..1).  Default 0.05.
+        sigreg_num_slices, sigreg_num_points, sigreg_domain:
+            SIGReg hyperparameters.
 
     Returns:
         total_loss: scalar tensor.
         metrics: dict with per-loss-component values.
     """
-    # ── 1. JEPA loss: MSE(enc_next predicted_next) ─────────────────────────
-    # Detach the enc_next so gradients only flow through the predictor branch.
-    # This is standard in JEPA: the target branch (the branch which predicts enc_next) is updated via EMA
-    # or stop-gradient; here we stop-gradient  w.r.t. the JEPA loss and
-    # let it only receive gradients from the VAE loss.
-    # TODO: right now, both branches for previous and next prediction are using the same weights, I am not sure if this
-    # is completely correct
-    jepa_loss = F.mse_loss(outputs["enc_next"].detach(), outputs["predicted_next"])
+    e_prev = outputs["e_prev"]
+    e_next = outputs["e_next"]
+    predicted_next = outputs["predicted_next"]
 
-    # ── 2. VAE reconstruction loss ────────────────────────────────────
-    recon_loss_prev = compute_recon_loss(outputs["recon_logits_prev"], prev_state_tokens, { pad_id }),  # (B, 1+M, V)
-    recon_loss_next = compute_recon_loss(outputs["recon_logits_next"], next_state_tokens, { pad_id })
+    # ── 1. JEPA loss: MSE between target and prediction ──────────────
+    # No stop-gradient — both encoders get gradient signal.
+    # SIGReg prevents collapse; asymmetry is unnecessary.
+    jepa_loss = F.mse_loss(e_next, predicted_next)
 
+    # ── 2. SIGReg on both embeddings ─────────────────────────────────
+    sigreg_prev = sigreg(e_prev, sigreg_num_slices, sigreg_num_points, sigreg_domain)
+    sigreg_next = sigreg(e_next, sigreg_num_slices, sigreg_num_points, sigreg_domain)
+    sigreg_loss = (sigreg_prev + sigreg_next) / 2.0
 
-    # ── 3. KL divergence: D_KL(N(mu_prev, σ²) || N(0, I)) ─────────────────
-    kl_loss_prev = compute_normal_prior_loss(outputs["mu_prev"], outputs["logvar_prev"])
-    kl_loss_next = compute_normal_prior_loss(outputs["mu_next"], outputs["logvar_next"])
-
-    # ── Total loss ────────────────────────────────────────────────────
-    total_loss = jepa_loss + beta_recon * (recon_loss_next + recon_loss_prev) + beta_kl * (kl_loss_prev + kl_loss_next)
+    # ── Total loss ──────────────────────────────────────────────────
+    total_loss = (1.0 - lambda_sigreg) * jepa_loss + lambda_sigreg * sigreg_loss
 
     metrics = {
         "loss": total_loss.item(),
         "jepa_loss": jepa_loss.item(),
-        "recon_loss_next": recon_loss_next.item(), 
-        "recon_loss_prev": recon_loss_prev.item(), 
-        "kl_loss_next": kl_loss_next.item(),
-        "kl_loss_prev": kl_loss_prev.item(),
-        "beta_recon": beta_recon,
-        "beta_kl": beta_kl,
+        "sigreg_prev": sigreg_prev.item(),
+        "sigreg_next": sigreg_next.item(),
+        "sigreg_loss": sigreg_loss.item(),
     }
 
     return total_loss, metrics
