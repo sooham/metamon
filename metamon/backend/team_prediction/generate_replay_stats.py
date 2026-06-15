@@ -33,7 +33,7 @@ def load_replay_teams(
         batch_size=16,
         num_workers=num_workers,
         prefetch_factor=2 if num_workers > 0 else None,
-        collate_fn=lambda x: x,
+        collate_fn=list,
     )
 
     for batch in tqdm.tqdm(dataloader, desc="Loading Team Files", colour="blue"):

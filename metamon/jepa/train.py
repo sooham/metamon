@@ -36,6 +36,7 @@ Usage:
 """
 
 import argparse
+import functools
 import json
 import math
 import os
@@ -302,7 +303,7 @@ def train(args):
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        collate_fn=lambda batch: collate_fn(batch, pad_id=pad_id, max_state_len=MAX_STATE_LENGTH),
+        collate_fn=functools.partial(collate_fn, pad_id=pad_id, max_state_len=MAX_STATE_LENGTH),
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         pin_memory=True,
@@ -311,7 +312,7 @@ def train(args):
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size,
-        collate_fn=lambda batch: collate_fn(batch, pad_id=pad_id, max_state_len=MAX_STATE_LENGTH),
+        collate_fn=functools.partial(collate_fn, pad_id=pad_id, max_state_len=MAX_STATE_LENGTH),
         num_workers=max(1, args.num_workers // 2),
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         pin_memory=True,
