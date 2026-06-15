@@ -58,7 +58,6 @@ class TeamTransformer(nn.Module):
         self.output_layer = nn.Linear(d_model, vocab_size)
         self.dropout = nn.Dropout(dropout)
 
-    @torch.compile
     def forward(
         self,
         x_tokens: torch.LongTensor,
@@ -186,7 +185,6 @@ class LocalGlobalTeamTransformer(nn.Module):
         )
         return pokemon_emb
 
-    @torch.compile
     def forward(
         self,
         x_tokens: torch.LongTensor,
@@ -256,9 +254,14 @@ class TeamPredictionModel:
         self.oneshot_decoder_kwargs = oneshot_decoder_kwargs or {}
         self.include_stats = include_stats
 
-        # Determine device
+        # Determine device (autodetect MPS / CUDA / CPU)
         if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda")
+            elif torch.backends.mps.is_available():
+                self.device = torch.device("mps")
+            else:
+                self.device = torch.device("cpu")
         else:
             self.device = torch.device(device)
 
@@ -269,6 +272,13 @@ class TeamPredictionModel:
         # Create model (pass include_stats for seq length calculation)
         model_kwargs_with_stats = {"include_stats": include_stats, **self.model_kwargs}
         self._model = self.model_class(**model_kwargs_with_stats).to(self.device)
+
+        # Compile on CUDA only — MPS does not support torch.compile
+        if self.device.type == "cuda":
+            try:
+                self._model = torch.compile(self._model, dynamic=False)
+            except Exception:
+                pass  # fall back to eager mode on compile failure
 
         # Create decoders (lazy - only when needed)
         self._iterative_decoder: Optional[IterativeTeamDecoder] = None
