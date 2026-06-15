@@ -152,7 +152,8 @@ class RotaryPositionalEmbedding(nn.Module):
         self.register_buffer("sin_cached", freqs.sin())
 
     def forward(self, x: torch.Tensor, offset: int = 0) -> torch.Tensor:
-        S = x.shape[-2]
+        # x is shape (batch, n_heads, sequence_length, attn_dim)
+        S = x.shape[-2]  
         dtype = x.dtype
         if not hasattr(self, "_cos_bf16"):
             self._cos_bf16 = {}
@@ -202,6 +203,7 @@ class SelfAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # batch, sequence length, embed dimension
         B, S, D = x.shape
 
         q = self.q_proj(x).view(B, S, self.n_heads, self.d_head).transpose(1, 2)
@@ -211,6 +213,7 @@ class SelfAttention(nn.Module):
         q = self.rope(q)
         k = self.rope(k)
 
+        # TODO: ablation study with XSA - exlusive self attention
         y = F.scaled_dot_product_attention(
             q, k, v,
             attn_mask=None,

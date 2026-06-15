@@ -43,9 +43,11 @@ from metamon.tokenizer.tokenizer import PokemonTokenizer
 
 
 def tokenize_battle(args: tuple) -> tuple:
-    """Tokenize one battle → (token_ids_list, actions_arr, won, ok).
+    """Tokenize one battle → (token_ids_list, actions_arr, won, max_state_len).
 
     Returns variable-length token lists — no padding applied here.
+    ``max_state_len`` is the longest tokenized state length in this battle,
+    including ``<bos>`` and ``<eos>`` (but excluding action tokens).
     """
     filepath, tokenizer = args
     try:
@@ -61,19 +63,26 @@ def tokenize_battle(args: tuple) -> tuple:
     actions_raw = data["actions"]
 
     token_ids_list = []  # list of 1-D numpy arrays (variable length each)
+    max_state_len = 0
     for state_dict in all_states:
         us = UniversalState.from_dict(copy.deepcopy(state_dict))
         obs = obs_space.state_to_obs(us)
         ids_raw = tokenizer.tokenize(obs["text"].tolist())
         # Store unpadded — variable length
-        token_ids_list.append(ids_raw.astype(np.int16))
+        ids = ids_raw.astype(np.int16)
+        token_ids_list.append(ids)
+        # Track the longest tokenized state including <bos> and <eos>
+        # (action tokens <boa>, <eoa>, <action_X> are NOT included here).
+        state_len = len(ids) + 2  # +2 for <bos> and <eos>
+        if state_len > max_state_len:
+            max_state_len = state_len
 
     actions_arr = np.array(actions_raw[: len(token_ids_list) - 1], dtype=np.int16)
 
     final_us = UniversalState.from_dict(copy.deepcopy(all_states[-1]))
     won = bool(final_us.battle_won)
 
-    return token_ids_list, actions_arr, won
+    return token_ids_list, actions_arr, won, max_state_len
 
 
 def main():
@@ -92,6 +101,8 @@ def main():
     tokenizer = PokemonTokenizer()
     tokenizer.load_tokens_from_disk(args.tokenizer_path)
     print(f"Loaded tokenizer with {len(tokenizer)} tokens")
+
+    max_state_len_overall = 0
 
     for fmt in args.formats:
         fmt_dir = os.path.join(args.parsed_replay_root, fmt)
@@ -135,6 +146,13 @@ def main():
         if n_failed:
             print(f"  {n_failed} battles failed to tokenize, skipping")
 
+        # Track max state length across this format
+        fmt_max_state_len = max(r[3] for r in battles) if battles else 0
+        if fmt_max_state_len > 0:
+            print(f"  Max tokenized state length (incl. <bos>+<eos>): {fmt_max_state_len}")
+        if fmt_max_state_len > max_state_len_overall:
+            max_state_len_overall = fmt_max_state_len
+
         out_dir = os.path.join(args.output_dir, fmt)
         os.makedirs(out_dir, exist_ok=True)
 
@@ -158,7 +176,7 @@ def main():
             won_list = []
             battle_start = [0]       # cumulative state index per battle
 
-            for token_ids_list, actions_arr, won in shard_battles:
+            for token_ids_list, actions_arr, won, _max_state_len in shard_battles:
                 for tok_arr in token_ids_list:
                     all_states_flat.append(tok_arr)
                     all_state_lengths.append(len(tok_arr))
@@ -221,6 +239,13 @@ def main():
         print(f"  Total: {len(battles)} battles, {total_states} states, {total_actions} actions")
 
     print("\nAll formats complete.")
+    # Print the overall maximum tokenized state length seen across all formats.
+    # This includes <bos> and <eos> but excludes action tokens (<boa>/<eoa>/<action_X>).
+    if max_state_len_overall > 0:
+        print(
+            f"Maximum tokenized state length (incl. <bos>+<eos>) "
+            f"across all formats: {max_state_len_overall}"
+        )
 
 
 if __name__ == "__main__":
