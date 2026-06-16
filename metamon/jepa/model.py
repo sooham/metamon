@@ -67,8 +67,8 @@ NUM_ACTIONS: int = 14
 SIGREG_NUM_SLICES: int = 384
 # Number of trapezoidal quadrature points for Epps-Pulley integration.
 SIGREG_NUM_POINTS: int = 17
-# Integration domain for the characteristic function: [-5, 5].
-SIGREG_DOMAIN: float = 5.0
+# Integration domain for the characteristic function: [0, domain].
+SIGREG_DOMAIN: float = 3.0
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -193,6 +193,85 @@ class TransformerBlock(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln1(x))
         x = x + self.dropout(self._ffn(self.ln2(x)))
+        return x
+
+    def _ffn(self, x: torch.Tensor) -> torch.Tensor:
+        if self.ffn_activation == "swiglu":
+            gate = F.silu(self.ffn_w1(x))
+            up = self.ffn_w2(x)
+            return self.ffn_out(gate * up)
+        else:
+            return self.ffn_out(F.gelu(self.ffn(x)))
+
+
+def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    """AdaLN-zero modulation: apply per-dimension shift and scale."""
+    return x * (1 + scale) + shift
+
+
+class ConditionalBlock(nn.Module):
+    """Transformer block with AdaLN-zero conditioning.
+
+    A conditioning vector ``c`` modulates the layer-norm statistics and
+    gates the attention and FFN sublayers.  Zero-initialization of the
+    modulation parameters means the block starts as an identity (the
+    residual path passes the input through unchanged), letting the model
+    gradually learn to use the conditioning signal.
+
+    Based on the LeJEPA / DiT design (Balestriero & LeCun 2025, Peebles
+    & Xie 2023).
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        d_ff: int,
+        dropout: float,
+        max_seq_len: int,
+        ffn_activation: str = "gelu",
+    ):
+        super().__init__()
+        self.ffn_activation = ffn_activation
+        # No elementwise_affine — AdaLN replaces the learned affine params.
+        self.norm1 = nn.LayerNorm(d_model, elementwise_affine=False, eps=1e-6)
+        self.norm2 = nn.LayerNorm(d_model, elementwise_affine=False, eps=1e-6)
+        self.attn = SelfAttention(
+            d_model, n_heads, dropout, max_seq_len, causal=True
+        )
+        if ffn_activation == "swiglu":
+            self.ffn_w1 = nn.Linear(d_model, d_ff, bias=False)
+            self.ffn_w2 = nn.Linear(d_model, d_ff, bias=False)
+            self.ffn_out = nn.Linear(d_ff, d_model, bias=False)
+        elif ffn_activation == "gelu":
+            self.ffn = nn.Linear(d_model, d_ff, bias=False)
+            self.ffn_out = nn.Linear(d_ff, d_model, bias=False)
+        else:
+            raise ValueError(f"Unknown ffn_activation: {ffn_activation}")
+        self.dropout = nn.Dropout(dropout)
+
+        # AdaLN-zero modulation: SiLU → Linear(dim → 6×dim).
+        # Outputs: shift_attn, scale_attn, gate_attn, shift_ffn, scale_ffn, gate_ffn.
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(), nn.Linear(d_model, 6 * d_model, bias=True)
+        )
+        # Zero-initialise the final layer so the block is an identity at init.
+        nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
+
+    def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        (
+            shift_attn, scale_attn, gate_attn,
+            shift_ffn, scale_ffn, gate_ffn,
+        ) = self.adaLN_modulation(c).chunk(6, dim=-1)
+        # Attention sublayer with AdaLN + gating.
+        x = x + gate_attn * self.attn(
+            modulate(self.norm1(x), shift_attn, scale_attn)
+        )
+        # FFN sublayer with AdaLN + gating.
+        x = x + gate_ffn * self.dropout(
+            modulate(self._ffn(self.norm2(x)), shift_ffn, scale_ffn)
+        )
         return x
 
     def _ffn(self, x: torch.Tensor) -> torch.Tensor:
@@ -332,32 +411,30 @@ class JEPAEncoder(nn.Module):
 # ═════════════════════════════════════════════════════════════════════════
 
 class JEPAPredictor(nn.Module):
-    """Action-conditioned predictor transformer.
+    """Action-conditioned predictor with AdaLN-zero.
 
     Maps the deterministic previous-state embedding and the action to an
     estimate of the next-state deterministic embedding::
 
         predicted_next = PRED(e_prev, action_compact_idx)
 
-    Architecture
-    ------------
+    Architecture (AdaLN-zero, based on LeJEPA / DiT)
+    --------------------------------------------------
     1. Project ``e_prev`` from ``latent_dim`` to ``d_model``.
-    2. Look up action embedding from a dedicated 14-entry table.
-    3. Stack as a 2-token causal sequence: ``[prev_proj, action_emb]``.
-    4. Run through N causal transformer blocks.
-    5. Pool from the action position (position -1).
-    6. Linear projection back to ``latent_dim``.
-
-    The action position has full causal context over the prev-state
-    embedding, allowing the transformer to combine "what state are we in"
-    with "what action was taken."
+    2. Add learned positional embedding (single token).
+    3. Look up action embedding, project to ``d_model`` conditioning vector.
+    4. Run through N ConditionalBlocks — each block's layer-norm statistics
+       and sublayer gates are modulated by the action embedding via an
+       AdaLN-zero MLP.  Zero-init means the predictor starts as an identity
+       function and gradually learns to use the conditioning.
+    5. LayerNorm → pool → linear projection back to ``latent_dim``.
 
     Parameters
     ----------
     latent_dim : int
         Dimensionality of the input/output latent vectors.
     gradient_checkpointing : bool
-        If True, wrap each transformer block with
+        If True, wrap each ConditionalBlock with
         ``torch.utils.checkpoint.checkpoint``.
     d_model, n_heads, n_layers, d_ff, dropout, max_seq_len :
         Transformer hyperparameters for the predictor.
@@ -378,17 +455,19 @@ class JEPAPredictor(nn.Module):
         self.latent_dim = latent_dim
         self.gradient_checkpointing = gradient_checkpointing
 
-        # Project deterministic embedding into predictor space.
-        self.prev_proj = nn.Linear(latent_dim, d_model, bias=False)
+        # Project state embedding into predictor space.
+        self.state_proj = nn.Linear(latent_dim, d_model, bias=False)
 
-        # Dedicated action embedding: 14 entries (compact indices 0..13).
+        # Learned positional embedding for a single token.
+        self.pos_embedding = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
+
+        # Action embedding → conditioning vector.
         self.action_embedding = nn.Embedding(NUM_ACTIONS, d_model)
 
-        # Causal transformer blocks.
+        # AdaLN-zero conditional blocks.
         self.blocks = nn.ModuleList([
-            TransformerBlock(
+            ConditionalBlock(
                 d_model, n_heads, d_ff, dropout, max_seq_len,
-                causal=True,
                 ffn_activation="gelu",
             )
             for _ in range(n_layers)
@@ -397,6 +476,12 @@ class JEPAPredictor(nn.Module):
         self.out_proj = nn.Linear(d_model, latent_dim, bias=False)
 
         self.apply(self._init_weights)
+
+        # Re-apply zero-init to AdaLN modulation layers — they were
+        # overwritten by _init_weights (which normal-inits all Linears).
+        for block in self.blocks:
+            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -418,25 +503,24 @@ class JEPAPredictor(nn.Module):
         Returns:
             predicted_next: (B, latent_dim).
         """
-        # Project prev-state embedding.
-        prev_emb = self.prev_proj(e_prev).unsqueeze(1)  # (B, 1, d_model)
+        # State token: project + add positional embedding.
+        x = self.state_proj(e_prev).unsqueeze(1)        # (B, 1, d_model)
+        x = x + self.pos_embedding                       # (B, 1, d_model)
 
-        # Look up action embedding.
-        action_emb = self.action_embedding(action_compact_idx).unsqueeze(1)  # (B, 1, d_model)
+        # Action conditioning vector.
+        c = self.action_embedding(action_compact_idx)    # (B, d_model)
 
-        # 2-token causal sequence: [prev, action]
-        x = torch.cat([prev_emb, action_emb], dim=1)  # (B, 2, d_model)
-
+        # AdaLN-zero conditional blocks.
         for block in self.blocks:
             if self.gradient_checkpointing and self.training:
                 x = torch.utils.checkpoint.checkpoint(
-                    block, x, use_reentrant=False
+                    block, x, c, use_reentrant=False
                 )
             else:
-                x = block(x)
+                x = block(x, c)
         x = self.ln_final(x)
 
-        # Pool from the action position (has causal context over prev_emb).
+        # Pool from the (only) token position.
         pooled = x[:, -1, :]  # (B, d_model)
 
         return self.out_proj(pooled)  # (B, latent_dim)
@@ -565,7 +649,7 @@ def sigreg(
         embeddings: (B, D) — batch of D-dimensional embeddings.
         num_slices: number of random projection directions (resampled each call).
         num_points: number of quadrature points for integration.
-        domain:     integration domain [-domain, domain] for the CF.
+        domain:     integration domain [0, domain] for the CF.
 
     Returns:
         Scalar SIGReg loss (averaged over slices, scaled by batch size).
@@ -578,30 +662,34 @@ def sigreg(
     A = torch.randn(D, num_slices, device=device, dtype=dtype)
     A = A / A.norm(p=2, dim=0, keepdim=True)
 
-    # Project embeddings onto random directions: (B, num_slices).
+    # Project embeddings onto random directions.
     proj = embeddings @ A  # (B, num_slices)
 
-    # Integration points for the characteristic function.
-    t = torch.linspace(-domain, domain, num_points, device=device, dtype=dtype)
+    # Integration points for the characteristic function: t ∈ [0, domain].
+    # The CF of N(0,1) is even, so [0, domain] captures the full information
+    # at twice the resolution of a symmetric [-domain, domain].
+    t = torch.linspace(0, domain, num_points, device=device, dtype=dtype)
+    dt = domain / (num_points - 1)
 
-    # Target CF: φ(t) = exp(-t²/2) for N(0, 1).
-    # Gaussian weighting window w(t) = exp(-t²/2) (from Epps-Pulley).
-    target_cf = torch.exp(-0.5 * t ** 2)         # (T,)
-    window = target_cf.clone()                    # w(t) = exp(-t²/2)
+    # Trapezoidal-rule weights (endpoints get half-weight).
+    weights = torch.full((num_points,), 2 * dt, device=device, dtype=dtype)
+    weights[0] = dt
+    weights[-1] = dt
 
-    # Empirical CF: (1/B) Σ exp(i · t · proj_n).
-    # proj: (B, S) → unsqueeze → (B, S, 1) * t → (B, S, T).
-    # exp(i·x) = cos(x) + i·sin(x); |·|² works on complex.
-    proj_expanded = proj.unsqueeze(-1) * t  # (B, num_slices, T)
-    ecf = torch.exp(1j * proj_expanded.to(torch.complex64)).mean(dim=0)  # (num_slices, T)
+    # Target CF and Gaussian window: φ(t) = w(t) = exp(-t²/2) for N(0, 1).
+    phi = torch.exp(-0.5 * t ** 2)  # (T,)
+    weights = weights * phi          # pre-multiply window into quadrature weights
 
-    # Weighted L² distance: |ecf - target_cf|² · w(t).
-    err = (ecf - target_cf.to(torch.complex64)).abs().square()
-    err = err.to(dtype) * window  # (num_slices, T)
+    # Empirical CF via separate cos / sin — avoids complex64 precision loss.
+    # e^(i·t·proj) = cos(t·proj) + i·sin(t·proj)
+    # |ecf - φ|² = (mean(cos) - φ)² + mean(sin)²   (since φ is real)
+    x_t = proj.unsqueeze(-1) * t             # (B, num_slices, T)
+    err = (x_t.cos().mean(dim=0) - phi).square() + x_t.sin().mean(dim=0).square()
+    # err: (num_slices, T)
 
-    # Trapezoidal integration over t, average over slices, scale by batch size.
-    integrated = torch.trapz(err, t, dim=1)  # (num_slices,)
-    return integrated.mean() * B
+    # Trapezoidal integration over t, average over slices, scale by batch.
+    statistic = (err @ weights) * B          # (num_slices,)
+    return statistic.mean()
 
 
 # ═════════════════════════════════════════════════════════════════════════
