@@ -1,6 +1,6 @@
 # Detect OS and number of CPU cores
 OS := $(shell uname -s)
-N_THREADS := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+N_THREADS := $(shell expr \( $$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4) + 1 \) / 2)
 
 ifeq ($(OS),Darwin)
 METAMON_CACHE_DIR ?= /Users/srafiz/Repositories/poke-datasets
@@ -293,14 +293,14 @@ train-sl:
 JEPA_DATA_ROOT ?= $(WM_OUTPUT_DIR)
 JEPA_TOKENIZER ?= $(TOKENIZER_FILE)
 JEPA_SAVE_DIR ?= $(METAMON_CACHE_DIR)/jepa-checkpoints
-JEPA_BATCH_SIZE ?= 64
+JEPA_BATCH_SIZE ?= 256
 JEPA_LR ?= 3e-4
 JEPA_EPOCHS ?= 100
 JEPA_GRAD_CLIP ?= 1.0
 JEPA_NUM_WORKERS ?= $(N_THREADS)
 JEPA_PRINT_INTERVAL ?= 10
-JEPA_VAL_INTERVAL ?= 100
-JEPA_VAL_MAX_BATCHES ?= 100
+JEPA_VAL_INTERVAL ?= 1000
+JEPA_VAL_MAX_BATCHES ?= 50
 JEPA_CONFIG ?=
 JEPA_CHECKPOINT ?= $(JEPA_SAVE_DIR)/best.pt
 train-jepa:
@@ -315,6 +315,7 @@ train-jepa:
 		exit 1; \
 	fi
 	mkdir -p $(JEPA_SAVE_DIR)
+	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 	uv run python -m metamon.jepa.train \
 		--data_root $(JEPA_DATA_ROOT) \
 		--formats $(FORMATS) \

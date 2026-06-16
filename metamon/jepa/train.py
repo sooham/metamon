@@ -44,6 +44,16 @@ import time
 from pathlib import Path
 from typing import Iterator, Optional
 
+# Mitigate CUDA memory fragmentation — the allocator can expand existing
+# segments instead of creating new ones, which helps when the compiled
+# encoder/predictor create many CUDA graphs for different input shapes.
+# Must be set before any CUDA API call (i.e. before importing torch).
+if "expandable_segments" not in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""):
+    existing = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
+        f"{existing + ',' if existing else ''}expandable_segments:True"
+    )
+
 import numpy as np
 import torch
 import yaml
@@ -215,7 +225,8 @@ def collate_fn(
     Args:
         batch: list of (prev_tokens, next_tokens, action_idx) — unpadded.
         pad_id: token ID for padding.
-        max_state_len: if set, cap state lengths to this value.
+        max_state_len: if set, ALWAYS pad to this fixed length (eliminates
+            dynamic shape variants in CUDA graphs, preventing OOMs).
 
     Returns:
         prev_padded:  (B, max_prev) int64
@@ -228,11 +239,14 @@ def collate_fn(
     next_lengths = torch.tensor([len(item[1]) for item in batch], dtype=torch.long)
     actions = torch.tensor([item[2] for item in batch], dtype=torch.long)
 
-    max_prev = int(prev_lengths.max().item())
-    max_next = int(next_lengths.max().item())
     if max_state_len is not None:
-        max_prev = min(max_prev, max_state_len)
-        max_next = min(max_next, max_state_len)
+        # Always pad to the fixed max_state_len to eliminate dynamic
+        # sequence-length shapes that cause CUDA graph proliferation.
+        max_prev = max_state_len
+        max_next = max_state_len
+    else:
+        max_prev = int(prev_lengths.max().item())
+        max_next = int(next_lengths.max().item())
 
     prev_padded = torch.full((len(batch), max_prev), pad_id, dtype=torch.long)
     next_padded = torch.full((len(batch), max_next), pad_id, dtype=torch.long)
@@ -351,18 +365,24 @@ def train(args):
         torch.backends.cudnn.allow_tf32 = True
         torch._dynamo.config.capture_scalar_outputs = True
 
-    # Compile (CUDA only — MPS does not support torch.compile)
+    # Compile (CUDA only — MPS does not support torch.compile).
+    #
+    # Only compile the predictor — it's tiny (<1M params, 2-token
+    # sequence) and doesn't use gradient checkpointing, so torch.compile
+    # is safe and beneficial.
+    #
+    # The encoder is NOT compiled.  torch.compile + gradient checkpointing
+    # (torch.utils.checkpoint) are fundamentally incompatible in PyTorch
+    # 2.12: compiling the whole encoder inlines through the checkpoint
+    # boundary (OOM from 18-layer workspace), and compiling per-block hits
+    # buffer-aliasing assertion failures in the inductor runtime.
     if device.type == "cuda":
         try:
-            model = torch.compile(model, dynamic=True, mode="max-autotune")
+            model.predictor = torch.compile(
+                model.predictor, dynamic=True, mode="max-autotune"
+            )
         except Exception:
-            if args.print_interval > 0:
-                print("torch.compile max-autotune failed, trying default mode")
-            try:
-                model = torch.compile(model, dynamic=True)
-            except Exception:
-                if args.print_interval > 0:
-                    print("torch.compile failed, falling back to eager mode")
+            pass
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -419,6 +439,7 @@ def train(args):
         log_file = open(log_path, "w")
         log_file.write(
             "epoch,step,loss,jepa_loss,sigreg_prev,sigreg_next,sigreg_loss,lr,"
+            "enc_tok_s,pred_tok_s,"
             "val_loss,val_jepa_loss,val_sigreg_prev,val_sigreg_next,val_sigreg_loss\n"
         )
 
@@ -441,33 +462,42 @@ def train(args):
     def run_validation(max_batches: int | None = None) -> dict[str, float]:
         """Run a pass over the val loader, return average metrics.
 
-        Parameters
-        ----------
-        max_batches : int | None
-            If set, stop after this many batches (for fast mid-epoch checks).
-            If None, iterate the entire val dataset (for epoch-end evaluation).
+        Validation runs in eager mode so the compiled training workspace
+        is never polluted by eval-mode allocations.  Without this the
+        eval forward pass (no gradient checkpointing, self.training=False)
+        triggers a separate compilation whose workspace is sized for all
+        layers' intermediates at once, pushing the GPU over the edge when
+        training resumes.
         """
         model.eval()
         total_metrics: dict[str, float] = {}
         total_steps = 0
-        for batch_idx, (prev, next_, prev_lens, next_lens, actions) in enumerate(val_loader):
-            if max_batches is not None and batch_idx >= max_batches:
-                break
-            prev = prev.to(device)
-            next_ = next_.to(device)
-            actions = actions.to(device)
+        # Temporarily disable dynamo so compiled wrappers run their
+        # original (eager) code.  This avoids allocating eval-mode
+        # workspace that competes with training memory.
+        old_disable = torch._dynamo.config.disable
+        torch._dynamo.config.disable = True
+        try:
+            for batch_idx, (prev, next_, prev_lens, next_lens, actions) in enumerate(val_loader):
+                if max_batches is not None and batch_idx >= max_batches:
+                    break
+                prev = prev.to(device)
+                next_ = next_.to(device)
+                actions = actions.to(device)
 
-            outputs = model(prev, next_, actions)
-            _, metrics = compute_losses(
-                outputs,
-                lambda_sigreg=lambda_sigreg,
-                sigreg_num_slices=sigreg_num_slices,
-                sigreg_num_points=sigreg_num_points,
-                sigreg_domain=sigreg_domain,
-            )
-            for k, v in metrics.items():
-                total_metrics[k] = total_metrics.get(k, 0.0) + v
-            total_steps += 1
+                outputs = model(prev, next_, actions)
+                _, metrics = compute_losses(
+                    outputs,
+                    lambda_sigreg=lambda_sigreg,
+                    sigreg_num_slices=sigreg_num_slices,
+                    sigreg_num_points=sigreg_num_points,
+                    sigreg_domain=sigreg_domain,
+                )
+                for k, v in metrics.items():
+                    total_metrics[k] = total_metrics.get(k, 0.0) + v
+                total_steps += 1
+        finally:
+            torch._dynamo.config.disable = old_disable
         return {
             f"val_{k}": total_metrics[k] / max(total_steps, 1)
             for k in total_metrics
@@ -477,6 +507,13 @@ def train(args):
     global_step = 0
     t_start = time.time()
     best_val_loss = float("inf")
+
+    # ── throughput tracking (CUDA events for accurate GPU timing) ──
+    enc_tokens_total = 0       # cumulative non-pad tokens through encoder
+    pred_tokens_total = 0      # cumulative tokens through predictor (2 per transition)
+    enc_time_total = 0.0       # cumulative encoder wall time (seconds)
+    pred_time_total = 0.0      # cumulative predictor wall time (seconds)
+    has_cuda = (device.type == "cuda")
 
     for epoch in range(args.epochs):
         model.train()
@@ -489,7 +526,30 @@ def train(args):
             next_ = next_.to(device)
             actions = actions.to(device)
 
-            outputs = model(prev, next_, actions)
+            # ── Encoder forward (prev + next states) ──
+            enc_tokens = int((prev_lens + next_lens).sum().item())
+            if has_cuda:
+                enc_start = torch.cuda.Event(enable_timing=True)
+                enc_end = torch.cuda.Event(enable_timing=True)
+                enc_start.record()
+            e_prev = model.encoder(prev)
+            e_next = model.encoder(next_)
+            if has_cuda:
+                enc_end.record()
+
+            # ── Predictor forward ──
+            compact_idx = actions + 1  # -1..12 → 0..13
+            if has_cuda:
+                pred_start = torch.cuda.Event(enable_timing=True)
+                pred_end = torch.cuda.Event(enable_timing=True)
+                pred_start.record()
+            predicted_next = model.predictor(e_prev, compact_idx)
+            if has_cuda:
+                pred_end.record()
+
+            # ── Assemble outputs ──
+            outputs = {"e_prev": e_prev, "e_next": e_next, "predicted_next": predicted_next}
+
             loss, metrics = compute_losses(
                 outputs,
                 lambda_sigreg=lambda_sigreg,
@@ -497,6 +557,13 @@ def train(args):
                 sigreg_num_points=sigreg_num_points,
                 sigreg_domain=sigreg_domain,
             )
+
+            # ── Accumulate throughput (events ready after compute_losses .item() syncs GPU) ──
+            if has_cuda:
+                enc_time_total += enc_start.elapsed_time(enc_end) / 1000.0
+                pred_time_total += pred_start.elapsed_time(pred_end) / 1000.0
+            enc_tokens_total += enc_tokens
+            pred_tokens_total += actions.size(0) * 2  # 2 causal tokens per transition
 
             optimizer.zero_grad()
             loss.backward()
@@ -512,6 +579,7 @@ def train(args):
             if args.val_interval > 0 and global_step % args.val_interval == 0:
                 _mb = args.val_max_batches if args.val_max_batches > 0 else None
                 mid_val = run_validation(max_batches=_mb)
+                model.train()  # restore training mode (gradient checkpointing)
                 if args.print_interval > 0:
                     print(
                         f"  val @ step {global_step:7d} | "
@@ -531,7 +599,7 @@ def train(args):
                     })
                 if log_file:
                     log_file.write(
-                        f"{epoch},{global_step},,,,,,"
+                        f"{epoch},{global_step},,,,,,,"
                         f"{mid_val['val_loss']:.6f},"
                         f"{mid_val['val_jepa_loss']:.6f},"
                         f"{mid_val['val_sigreg_prev']:.6f},"
@@ -556,6 +624,10 @@ def train(args):
 
             # ---- per-step logging ----
             if global_step % args.log_interval == 0:
+                # ── Compute throughput over the last log_interval steps ──
+                enc_tok_s = enc_tokens_total / enc_time_total if enc_time_total > 0 else 0.0
+                pred_tok_s = pred_tokens_total / pred_time_total if pred_time_total > 0 else 0.0
+
                 if log_file:
                     log_file.write(
                         f"{epoch},{global_step},{metrics['loss']:.6f},"
@@ -564,7 +636,8 @@ def train(args):
                         f"{metrics['sigreg_next']:.6f},"
                         f"{metrics['sigreg_loss']:.6f},"
                         f"{optimizer.param_groups[0]['lr']:.2e},"
-                        f",,,,,,,\n"
+                        f"{enc_tok_s:.1f},{pred_tok_s:.1f},"
+                        f",,,,\n"
                     )
                     log_file.flush()
 
@@ -576,6 +649,8 @@ def train(args):
                         "train/sigreg_next": metrics["sigreg_next"],
                         "train/sigreg_loss": metrics["sigreg_loss"],
                         "train/lr": optimizer.param_groups[0]["lr"],
+                        "train/enc_tok_s": enc_tok_s,
+                        "train/pred_tok_s": pred_tok_s,
                         "epoch": epoch,
                         "global_step": global_step,
                     })
@@ -587,8 +662,16 @@ def train(args):
                         f"jepa {metrics['jepa_loss']:.4f} | "
                         f"sigreg_prev {metrics['sigreg_prev']:.4f} | "
                         f"sigreg_next {metrics['sigreg_next']:.4f} | "
+                        f"enc {enc_tok_s:,.0f} tok/s | "
+                        f"pred {pred_tok_s:,.0f} tok/s | "
                         f"lr {optimizer.param_groups[0]['lr']:.2e}"
                     )
+
+                # ── Reset throughput accumulators for next interval ──
+                enc_tokens_total = 0
+                pred_tokens_total = 0
+                enc_time_total = 0.0
+                pred_time_total = 0.0
 
         scheduler.step()
 

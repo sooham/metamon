@@ -42,6 +42,7 @@ model:
     max_seq_len: 1024
     theta: 10000.0
     ffn_activation: gelu   # gelu: simpler than swiglu, less memory, MPS-friendly
+    gradient_checkpointing: false  # tiny model, not needed
 
   # ── Predictor — unchanged (already tiny: 0.5 M params) ────────────
   predictor:
@@ -51,6 +52,7 @@ model:
     d_ff: 512
     dropout: 0.0
     max_seq_len: 64
+    gradient_checkpointing: false  # tiny model, not needed
 
   # ── LeJEPA loss ───────────────────────────────────────────────────
   lambda_sigreg: 0.05

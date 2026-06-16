@@ -10,8 +10,7 @@ readme = { file = "README.md", content-type = "text/markdown" }
 authors = [
   { name = "Jake Grigsby", email = "grigsby@cs.utexas.edu" }
 ]
-license = "MIT"
-license-files = ["LICENSE"]
+license = { text = "MIT" }
 requires-python = ">=3.10"
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -47,6 +46,18 @@ Repository = "https://github.com/UT-Austin-RPL/metamon"
 
 [tool.setuptools.packages.find]
 include = ["metamon*"]
+
+[tool.uv]
+# Force torch + CUDA deps from the cu126 index to match the system's CUDA 12.6 driver
+# (default PyPI ships cu130 wheels which are incompatible with CUDA 12.6 systems)
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
 
 
 [tool.pytest.ini_options]

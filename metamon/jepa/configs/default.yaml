@@ -2,33 +2,39 @@
 #
 # Training hyperparameters (lr, epochs, batch_size, etc.) are passed
 # via CLI flags to train.py and are NOT stored here.
+#
+# This is the DEFAULT config — scaled to fill a ~24 GB GPU at batch_size=256.
+# For smaller GPUs (≤16 GB) reduce batch_size or use --config mps.yaml as a
+# starting point (that config also trades capacity for MPS compatibility).
 
 model:
   # Vocabulary size (auto-detected from tokenizer if null).
   vocab_size: null
 
   # Latent space dimensionality (deterministic embedding e).
-  latent_dim: 256
+  latent_dim: 768
 
   # ── Encoder — bidirectional transformer → e ───────────────────────
   encoder:
-    d_model: 256
-    n_heads: 8
-    n_layers: 6
-    d_ff: 1024
+    d_model: 1024
+    n_heads: 16
+    n_layers: 20
+    d_ff: 4096           # 4× d_model (SwiGLU doubles effective width)
     dropout: 0.1
     max_seq_len: 1024
     theta: 10000.0
-    ffn_activation: gelu     # "gelu" or "swiglu"
+    ffn_activation: swiglu   # SwiGLU: better representations, 3× act memory vs gelu
+    gradient_checkpointing: true  # trade ~30% compute for O(1) activation memory
 
   # ── Predictor — causal transformer: (e_prev, action) → e_next ─────
   predictor:
-    d_model: 128
-    n_heads: 4
-    n_layers: 2
-    d_ff: 512
+    d_model: 768
+    n_heads: 12
+    n_layers: 8
+    d_ff: 3072           # 4× d_model (gelu — predictor stays gelu for simplicity)
     dropout: 0.0
-    max_seq_len: 64          # only needs 2 positions (prev_enc + action)
+    max_seq_len: 64           # only needs 2 positions (prev_enc + action)
+    gradient_checkpointing: false  # predictor is small (2-token seq), checkpointing not needed
 
   # ── LeJEPA loss — single hyperparameter λ ─────────────────────────
   # λ balances JEPA prediction loss vs. SIGReg regularization.
@@ -38,7 +44,7 @@ model:
 
   # ── SIGReg hyperparameters ────────────────────────────────────────
   # Number of random projection directions (resampled each step).
-  sigreg_num_slices: 256
+  sigreg_num_slices: 256  # 384 → 256: cuts SIGReg memory ~33% with negligible quality loss
   # Number of trapezoidal quadrature points for Epps-Pulley integration.
   sigreg_num_points: 17
   # Integration domain for the characteristic function: [-domain, domain].
