@@ -763,7 +763,7 @@ if __name__ == "__main__":
     # Training
     parser.add_argument("--save_dir", type=str, required=True)
     parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--grad_clip", type=float, default=1.0)

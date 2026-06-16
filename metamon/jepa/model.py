@@ -287,6 +287,22 @@ class ConditionalBlock(nn.Module):
 # Encoder — bidirectional transformer → deterministic embedding e
 # ═════════════════════════════════════════════════════════════════════════
 
+class MLP(nn.Module):
+    """Two-layer MLP with LayerNorm + GELU, used as projector / pred_proj."""
+
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, output_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
 class JEPAEncoder(nn.Module):
     """Transformer encoder that maps a state token sequence to a single
     deterministic embedding.
@@ -300,7 +316,7 @@ class JEPAEncoder(nn.Module):
     ``token_ids`` → token embedding →
     N × transformer blocks (bidirectional) →
     mean pool over non-pad positions →
-    linear projection → e.
+    MLP projector → e.
 
     Parameters
     ----------
@@ -315,6 +331,8 @@ class JEPAEncoder(nn.Module):
         ``torch.utils.checkpoint.checkpoint`` to trade compute for memory.
     d_model, n_heads, n_layers, d_ff, dropout, max_seq_len, theta, ffn_activation :
         Standard transformer hyperparameters.
+    proj_hidden_dim : int or None
+        Hidden dimension for the projector MLP.  Defaults to 4× d_model.
     """
 
     def __init__(
@@ -331,6 +349,7 @@ class JEPAEncoder(nn.Module):
         max_seq_len: int = 1024,
         theta: float = 10000.0,
         ffn_activation: str = "gelu",
+        proj_hidden_dim: int | None = None,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -353,8 +372,9 @@ class JEPAEncoder(nn.Module):
         ])
         self.ln_final = nn.LayerNorm(d_model)
 
-        # Single projection: pooled representation → deterministic embedding.
-        self.proj_e = nn.Linear(d_model, latent_dim, bias=False)
+        # MLP projector: pooled representation → deterministic embedding.
+        proj_hidden = proj_hidden_dim or (4 * d_model)
+        self.proj_e = MLP(d_model, proj_hidden, latent_dim)
 
         self.apply(self._init_weights)
 
@@ -427,7 +447,7 @@ class JEPAPredictor(nn.Module):
        and sublayer gates are modulated by the action embedding via an
        AdaLN-zero MLP.  Zero-init means the predictor starts as an identity
        function and gradually learns to use the conditioning.
-    5. LayerNorm → pool → linear projection back to ``latent_dim``.
+    5. LayerNorm → pool → MLP projection back to ``latent_dim``.
 
     Parameters
     ----------
@@ -438,6 +458,8 @@ class JEPAPredictor(nn.Module):
         ``torch.utils.checkpoint.checkpoint``.
     d_model, n_heads, n_layers, d_ff, dropout, max_seq_len :
         Transformer hyperparameters for the predictor.
+    proj_hidden_dim : int or None
+        Hidden dimension for the output projector MLP.  Defaults to 4× d_model.
     """
 
     def __init__(
@@ -450,6 +472,7 @@ class JEPAPredictor(nn.Module):
         d_ff: int = 512,
         dropout: float = 0.0,
         max_seq_len: int = 64,
+        proj_hidden_dim: int | None = None,
     ):
         super().__init__()
         self.latent_dim = latent_dim
@@ -473,7 +496,9 @@ class JEPAPredictor(nn.Module):
             for _ in range(n_layers)
         ])
         self.ln_final = nn.LayerNorm(d_model)
-        self.out_proj = nn.Linear(d_model, latent_dim, bias=False)
+        # MLP projector: pooled predictor output → embedding.
+        pred_hidden = proj_hidden_dim or (4 * d_model)
+        self.out_proj = MLP(d_model, pred_hidden, latent_dim)
 
         self.apply(self._init_weights)
 
