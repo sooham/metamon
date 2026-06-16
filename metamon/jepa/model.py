@@ -269,12 +269,12 @@ class ConditionalBlock(nn.Module):
             shift_ffn, scale_ffn, gate_ffn,
         ) = self.adaLN_modulation(c).chunk(6, dim=-1)
         # Attention sublayer with AdaLN + gating.
-        x = x + gate_attn * self.attn(
-            modulate(self.norm1(x), shift_attn, scale_attn)
+        x = x + gate_attn * self.dropout(
+            self.attn(modulate(self.norm1(x), shift_attn, scale_attn))
         )
-        # FFN sublayer with AdaLN + gating.
-        x = x + gate_ffn * self.dropout(
-            modulate(self._ffn(self.norm2(x)), shift_ffn, scale_ffn)
+        # FFN sublayer with AdaLN + gating — modulate before FFN.
+        x = x + gate_ffn * self._ffn(
+            modulate(self.norm2(x), shift_ffn, scale_ffn)
         )
         return x
 
@@ -282,9 +282,14 @@ class ConditionalBlock(nn.Module):
         if self.ffn_activation == "swiglu":
             gate = F.silu(self.ffn_w1(x))
             up = self.ffn_w2(x)
-            return self.ffn_out(gate * up)
+            x = self.ffn_out(gate * up)
         else:
-            return self.ffn_out(F.gelu(self.ffn(x)))
+            x = self.ffn(x)
+            x = F.gelu(x)
+            x = self.dropout(x)
+            x = self.ffn_out(x)
+            x = self.dropout(x)
+        return x
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -727,7 +732,7 @@ def sigreg(
 
 def compute_losses(
     outputs: dict[str, torch.Tensor],
-    lambda_sigreg: float = 0.05,
+    lambda_sigreg: float = 0.1,
     sigreg_num_slices: int = SIGREG_NUM_SLICES,
     sigreg_num_points: int = SIGREG_NUM_POINTS,
     sigreg_domain: float = SIGREG_DOMAIN,
@@ -763,7 +768,7 @@ def compute_losses(
     sigreg_loss = (sigreg_prev + sigreg_next) / 2.0
 
     # ── Total loss ──────────────────────────────────────────────────
-    total_loss = (1.0 - lambda_sigreg) * jepa_loss + lambda_sigreg * sigreg_loss
+    total_loss = jepa_loss + lambda_sigreg * sigreg_loss
 
     metrics = {
         "loss": total_loss.item(),

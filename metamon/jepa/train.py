@@ -296,6 +296,8 @@ def train(args):
     # ---- model hyperparameters ----
     latent_dim = model_cfg.get("latent_dim", LATENT_DIM)
     lambda_sigreg = model_cfg.get("lambda_sigreg", 0.05)
+    if args.lambda_sigreg is not None:
+        lambda_sigreg = args.lambda_sigreg
     sigreg_num_slices = model_cfg.get("sigreg_num_slices", SIGREG_NUM_SLICES)
     sigreg_num_points = model_cfg.get("sigreg_num_points", SIGREG_NUM_POINTS)
     sigreg_domain = model_cfg.get("sigreg_domain", SIGREG_DOMAIN)
@@ -779,6 +781,10 @@ if __name__ == "__main__":
     parser.add_argument("--val_max_batches", type=int, default=100,
                         help="Limit mid-epoch validation to this many batches. "
                              "Epoch-end validation always does a full pass.")
+    # Loss
+    parser.add_argument("--lambda_sigreg", type=float, default=None,
+                        help="SIGReg weight λ. L = L_jepa + λ · L_sigreg. "
+                             "Default: from model config (0.1).")
     # Logging
     parser.add_argument("--log", action="store_true",
                         help="Write per-step metrics to metrics.csv in save_dir.")
