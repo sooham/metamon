@@ -57,7 +57,7 @@ import torch.nn.functional as F
 MAX_STATE_LENGTH: int = 200
 
 # Latent dimension (size of the deterministic embedding e).
-LATENT_DIM: int = 768
+LATENT_DIM: int = 192
 
 # Number of possible actions (-1..12 → 0..13 after +1 shift).
 NUM_ACTIONS: int = 14
