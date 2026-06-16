@@ -50,18 +50,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# TODO: calculate and find out (gen1ou is 199)
+# Maximum token count for a single state (with <eos>).  Capped at 200
+# to match the gen1ou empirical max; longer states are truncated in the
+# collate function.  gen9ou states can be larger but are also capped here
+# for consistent batch shapes.
 MAX_STATE_LENGTH: int = 200
 
 # Latent dimension (size of the deterministic embedding e).
-LATENT_DIM: int = 32
+LATENT_DIM: int = 768
 
 # Number of possible actions (-1..12 → 0..13 after +1 shift).
 NUM_ACTIONS: int = 14
 
 # ── SIGReg defaults ──────────────────────────────────────────────────────
 # Number of random projection directions for sketching (resampled each step).
-SIGREG_NUM_SLICES: int = 256
+SIGREG_NUM_SLICES: int = 384
 # Number of trapezoidal quadrature points for Epps-Pulley integration.
 SIGREG_NUM_POINTS: int = 17
 # Integration domain for the characteristic function: [-5, 5].
@@ -228,6 +231,9 @@ class JEPAEncoder(nn.Module):
         Token ID for padding (embedding vector is zeroed).
     latent_dim : int
         Dimensionality of the output embedding.
+    gradient_checkpointing : bool
+        If True, wrap each transformer block with
+        ``torch.utils.checkpoint.checkpoint`` to trade compute for memory.
     d_model, n_heads, n_layers, d_ff, dropout, max_seq_len, theta, ffn_activation :
         Standard transformer hyperparameters.
     """
@@ -237,6 +243,7 @@ class JEPAEncoder(nn.Module):
         vocab_size: int,
         pad_id: int,
         latent_dim: int = LATENT_DIM,
+        gradient_checkpointing: bool = False,
         d_model: int = 256,
         n_heads: int = 8,
         n_layers: int = 6,
@@ -251,10 +258,11 @@ class JEPAEncoder(nn.Module):
         self.pad_id = pad_id
         self.latent_dim = latent_dim
         self.d_model = d_model
+        self.gradient_checkpointing = gradient_checkpointing
 
         self.token_embedding = nn.Embedding(
-            vocab_size, d_model, padding_idx=pad_id
-        )
+            vocab_size + 1, d_model, padding_idx=pad_id
+        )  # +1 for unused index 0 (token IDs are 1-based)
 
         self.blocks = nn.ModuleList([
             TransformerBlock(
@@ -296,13 +304,22 @@ class JEPAEncoder(nn.Module):
         # Token embeddings
         x = self.token_embedding(token_ids)  # (B, S, d_model)
 
-        # Transformer blocks (bidirectional)
+        # Transformer blocks (bidirectional).
+        # When gradient_checkpointing is enabled, each block's intermediate
+        # activations are discarded and recomputed during backward — this
+        # reduces peak memory from O(n_layers) to O(1) at the cost of ~30%
+        # extra compute on the backward pass.
         for block in self.blocks:
-            x = block(x)
+            if self.gradient_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(
+                    block, x, use_reentrant=False
+                )
+            else:
+                x = block(x)
         x = self.ln_final(x)  # (B, S, d_model)
 
         # Mean pool over non-pad positions
-        pad_mask = (token_ids != self.pad_id).unsqueeze(-1).float()  # (B, S, 1)
+        pad_mask = (token_ids != self.pad_id).unsqueeze(-1).to(dtype=x.dtype)  # (B, S, 1)
         x_sum = (x * pad_mask).sum(dim=1)          # (B, d_model)
         x_count = pad_mask.sum(dim=1).clamp(min=1) # (B, 1)
         pooled = x_sum / x_count                   # (B, d_model)
@@ -339,6 +356,9 @@ class JEPAPredictor(nn.Module):
     ----------
     latent_dim : int
         Dimensionality of the input/output latent vectors.
+    gradient_checkpointing : bool
+        If True, wrap each transformer block with
+        ``torch.utils.checkpoint.checkpoint``.
     d_model, n_heads, n_layers, d_ff, dropout, max_seq_len :
         Transformer hyperparameters for the predictor.
     """
@@ -346,6 +366,7 @@ class JEPAPredictor(nn.Module):
     def __init__(
         self,
         latent_dim: int = LATENT_DIM,
+        gradient_checkpointing: bool = False,
         d_model: int = 128,
         n_heads: int = 4,
         n_layers: int = 2,
@@ -355,6 +376,7 @@ class JEPAPredictor(nn.Module):
     ):
         super().__init__()
         self.latent_dim = latent_dim
+        self.gradient_checkpointing = gradient_checkpointing
 
         # Project deterministic embedding into predictor space.
         self.prev_proj = nn.Linear(latent_dim, d_model, bias=False)
@@ -406,7 +428,12 @@ class JEPAPredictor(nn.Module):
         x = torch.cat([prev_emb, action_emb], dim=1)  # (B, 2, d_model)
 
         for block in self.blocks:
-            x = block(x)
+            if self.gradient_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(
+                    block, x, use_reentrant=False
+                )
+            else:
+                x = block(x)
         x = self.ln_final(x)
 
         # Pool from the action position (has causal context over prev_emb).
