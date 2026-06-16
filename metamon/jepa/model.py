@@ -124,19 +124,21 @@ class SelfAttention(nn.Module):
         dropout: float,
         max_seq_len: int,
         causal: bool = True,
+        use_rope: bool = True,
     ):
         super().__init__()
         assert d_model % n_heads == 0
         self.n_heads = n_heads
         self.d_head = d_model // n_heads
         self.causal = causal
+        self.use_rope = use_rope
 
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
-        self.rope = RotaryPositionalEmbedding(self.d_head, max_seq_len=max_seq_len)
+        self.rope = RotaryPositionalEmbedding(self.d_head, max_seq_len=max_seq_len) if use_rope else None
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -146,8 +148,9 @@ class SelfAttention(nn.Module):
         k = self.k_proj(x).view(B, S, self.n_heads, self.d_head).transpose(1, 2)
         v = self.v_proj(x).view(B, S, self.n_heads, self.d_head).transpose(1, 2)
 
-        q = self.rope(q)
-        k = self.rope(k)
+        if self.use_rope:
+            q = self.rope(q)
+            k = self.rope(k)
 
         y = F.scaled_dot_product_attention(
             q, k, v,
@@ -237,7 +240,8 @@ class ConditionalBlock(nn.Module):
         self.norm1 = nn.LayerNorm(d_model, elementwise_affine=False, eps=1e-6)
         self.norm2 = nn.LayerNorm(d_model, elementwise_affine=False, eps=1e-6)
         self.attn = SelfAttention(
-            d_model, n_heads, dropout, max_seq_len, causal=True
+            d_model, n_heads, dropout, max_seq_len, causal=True,
+            use_rope=False,  # predictor uses learned positional embeddings
         )
         if ffn_activation == "swiglu":
             self.ffn_w1 = nn.Linear(d_model, d_ff, bias=False)
