@@ -30,7 +30,7 @@ model:
   predictor:
     d_model: 256
     n_heads: 8
-    n_layers: 4
+    n_layers: 6
     d_ff: 1024           # 4× d_model
     dropout: 0.0
     max_seq_len: 64           # only needs 2 positions (prev_enc + action)
@@ -47,5 +47,5 @@ model:
   sigreg_num_slices: 256  # 384 → 256: cuts SIGReg memory ~33% with negligible quality loss
   # Number of trapezoidal quadrature points for Epps-Pulley integration.
   sigreg_num_points: 17
-  # Integration domain for the characteristic function: [-domain, domain].
-  sigreg_domain: 5.0
+  # Integration domain for the characteristic function: [0, domain].
+  sigreg_domain: 3.0
