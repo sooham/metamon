@@ -977,8 +977,8 @@ class UniversalAction:
         Index         Meaning
         ============  ========================================================
         -1            Missing / unrevealed action
-        0             No-op: Recharge, Struggle, or Fight (Gen 1 attack button)
-        1–3           Move (alphabetically sorted among active's 4 moves)
+        0–3           Move (alphabetically sorted among active's moves;
+                      0 also used for Recharge/Struggle/Fight)
         4–8           Switch (alphabetically sorted among ≤5 available switches)
         9–12          Tera + move (index = 9 + move_index, Gen 9 only)
         ============  ========================================================
