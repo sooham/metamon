@@ -591,22 +591,24 @@ def train(args):
     def run_validation(max_batches: int | None = None) -> tuple[dict[str, float], dict[str, np.ndarray]]:
         """Run a pass over the val loader, return average metrics.
 
-        Validation runs in eager mode so the compiled training workspace
-        is never polluted by eval-mode allocations.  Without this the
-        eval forward pass (no gradient checkpointing, self.training=False)
-        triggers a separate compilation whose workspace is sized for all
-        layers' intermediates at once, pushing the GPU over the edge when
-        training resumes.
+        Validation temporarily swaps the compiled predictor with its
+        original eager module so that eval-mode allocations never
+        pollute the compiled wrapper or invalidate its training CUDA
+        graph.  The compiled predictor stays intact and training can
+        resume without a costly recompilation.
         """
         model.eval()
         total_metrics: dict[str, float] = {}
         total_steps = 0
         embedding_stats = _new_embedding_stats(device, latent_dim)
-        # Temporarily disable dynamo so compiled wrappers run their
-        # original (eager) code.  This avoids allocating eval-mode
-        # workspace that competes with training memory.
-        old_disable = torch._dynamo.config.disable
-        torch._dynamo.config.disable = True
+
+        # Temporarily unwrap the compiled predictor to its original eager
+        # module.  This sidesteps the compiled wrapper entirely during
+        # validation: no eval-mode CUDA-graph workspace is allocated and
+        # the training graph is never invalidated.
+        compiled_predictor = model.predictor
+        if hasattr(compiled_predictor, "_orig_mod"):
+            model.predictor = compiled_predictor._orig_mod
         try:
             for batch_idx, (prev, next_, prev_lens, next_lens, actions) in enumerate(val_loader):
                 if max_batches is not None and batch_idx >= max_batches:
@@ -631,7 +633,15 @@ def train(args):
                     total_metrics[k] = total_metrics.get(k, 0.0) + v
                 total_steps += 1
         finally:
-            torch._dynamo.config.disable = old_disable
+            model.predictor = compiled_predictor
+            # Defragment CUDA memory after validation — the eager eval
+            # tensors have been freed but the allocator may hold
+            # fragmented segments that would prevent the training CUDA
+            # graph from reusing its workspace.
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+                torch.cuda.empty_cache()
+
         val_metrics = {
             f"val_{k}": total_metrics[k] / max(total_steps, 1)
             for k in total_metrics
