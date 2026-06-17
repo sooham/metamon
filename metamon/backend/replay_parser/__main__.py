@@ -103,12 +103,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-compress",
         action="store_true",
-        help="Save parsed replays as plain JSON instead of lz4-compressed.",
+        help="(no-op for text format) Previously: save as plain JSON instead of lz4-compressed.",
     )
     parser.add_argument(
         "--pretty",
         action="store_true",
-        help="Pretty-print output JSON with indentation (larger files).",
+        help="(no-op for text format) Previously: pretty-print output JSON with indentation.",
     )
     args = parser.parse_args()
 

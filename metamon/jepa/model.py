@@ -1,46 +1,72 @@
 """LeJEPA (Latent-Euclidean JEPA) model for world-model state learning.
 
-Architecture overview (LeJEPA — Balestriero & LeCun 2025)
---------------------------------------------------------
+Architecture overview (v3 — block encoding + temporal action prediction)
+-------------------------------------------------------------------------
 
-Encoder(state at time T-1)              Encoder(state at time T)
-     |                                        |
-     v                                        v
-   e_{t-1} (deterministic)  --->  predictor(action) --->  e_{t} (deterministic)
-                                                              |
-                                                     SIGReg → push e toward N(0, I)
+    Header/state blocks₀..N ──► JEPAEncoder per block ─┐
+    Historical player actions ─► JEPAActionEncoder ────┤
+    Historical opponent actions ─► JEPAActionEncoder ──┤
+                                                       ▼
+    [team, state₀, p_action₀, o_action₀, state₁, ...]
+                                                       │
+                                                       ▼
+                                             JEPATemporalEncoder ──► enc_N
+                                                       │
+                                                       ▼
+                                      JEPAActionPredictor ──► pred_o
+                                      (MLP, no conditioning)
 
-The encoder produces a single deterministic embedding *e* used by the JEPA
-predictor.  SIGReg (Sketched Isotropic Gaussian Regularization) constrains
-the embeddings to follow an isotropic Gaussian distribution, which is
-provably optimal for minimizing downstream prediction risk.
+    Current player action ─► JEPAActionEncoder ─► actual_p_emb
+    Current opponent action ─► JEPAActionEncoder ─► actual_o_emb
 
-No VAE decoder, no stop-gradient, no teacher-student, no KL divergence.
-A single hyperparameter λ balances prediction loss vs. SIGReg.
+    enc_N + actual_p_emb + pred_o ─► JEPAPredictor ─► pred_enc_{N+1}
 
-Two modules:
+    Blocks₀..N+1 through the same block+temporal encoders ─► enc_{N+1} target
 
-1. **Encoder φ** — bidirectional transformer → mean pool over non-pad tokens
-   → ``e`` (deterministic embedding used for JEPA prediction and SIGReg).
+    ┌──────────────────────────────────────────────────────────────┐
+    │ LOSSES:                                                       │
+    │   MSE(pred_o_emb, actual_o_emb)   — opponent action           │
+    │   MSE(pred_enc_{N+1}, enc_{N+1})  — state prediction          │
+    │   SIGReg(enc_N, enc_{N+1}, pred_enc_{N+1})  — state space     │
+    │   SIGReg(actual_p_emb, actual_o_emb) — action encoder outputs │
+    └──────────────────────────────────────────────────────────────┘
 
-2. **Predictor μ** — A small causal transformer that maps ``(e_prev, action)``
-   → ``predicted_next``.  Action is a compact index 0..13.
+Modules:
+
+1. **JEPAEncoder φ** — bidirectional transformer over one team-header or state
+   block. Attention pools over non-pad tokens → state/header block embedding.
+
+2. **JEPAActionEncoder ψ** — smaller bidirectional transformer over action text
+   (e.g. "<chosen_move>blizzard<end_chosen_move>").  Shares the token embedding
+   matrix with JEPAEncoder.  Attention pool → MLP → action_latent_dim.
+
+3. **JEPATemporalEncoder τ** — transformer over interleaved block embeddings:
+   [team, state_0, player_action_0, opponent_action_0, state_1, ...] → enc_N.
+
+4. **JEPAActionPredictor α** — small MLP: enc_N → pred_o_emb.
+
+5. **JEPAPredictor μ** — AdaLN-zero conditional transformer:
+   (enc_N, actual_p_emb, pred_o_emb) → pred_enc_{N+1}.  Conditioning uses the
+   chosen player action plus the predicted opponent action.
 
 Losses
 ------
 
-*JEPA loss* — MSE between target embedding and predictor estimate
-(no stop-gradient — SIGReg prevents collapse without asymmetry)::
+*State MSE* — MSE between target prefix embedding and predictor estimate::
 
-    L_jepa = || e_next - predictor(e_prev, action) ||²
+    L_state = || enc_{N+1} - predictor(enc_N, actual_p_emb, pred_o_emb) ||²
 
-*SIGReg loss* — Epps-Pulley characteristic function test sketched over
-random projection directions, pushing the embedding distribution toward
-N(0, I).  Applied to both e_prev and e_next.
+*Action MSE* — MSE for opponent action prediction::
+
+    L_oa = || actual_o_emb - pred_o_emb ||²
+
+*SIGReg* — on encoder outputs (enc_N, enc_{N+1}, pred_enc_{N+1}) and
+action encoder outputs (actual_p_emb, actual_o_emb).  NOT on
+JEPAActionPredictor outputs.
 
 Total::
 
-    L = (1 - λ) · L_jepa + λ · (SIGReg(e_prev) + SIGReg(e_next)) / 2
+    L = L_state + L_oa + λ · L_sigreg
 """
 
 import math
@@ -50,17 +76,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Maximum token count for a single state (with <eos>).  Capped at 200
-# to match the gen1ou empirical max; longer states are truncated in the
-# collate function.  gen9ou states can be larger but are also capped here
-# for consistent batch shapes.
-MAX_STATE_LENGTH: int = 175 # its actually 175 now
+# ── Context length constants ──────────────────────────────────────────────
+# Maximum token count for an individual header/state block when no config
+# overrides the encoder. Full battle length is handled by the temporal encoder
+# over block embeddings, not token-level attention over a flat prefix.
+CONTEXT_LENGTH: int = 2048
 
-# Latent dimension (size of the deterministic embedding e).
+# Latent dimension for the main encoder (size of the deterministic embedding e).
 LATENT_DIM: int = 192
 
-# Number of possible actions (-1..12 → 0..13 after +1 shift).
-NUM_ACTIONS: int = 14
+# Latent dimension for action embeddings (output of JEPAActionEncoder).
+ACTION_LATENT_DIM: int = 32
 
 # ── SIGReg defaults ──────────────────────────────────────────────────────
 # Number of random projection directions for sketching (resampled each step).
@@ -186,12 +212,13 @@ class TransformerBlock(nn.Module):
         max_seq_len: int,
         causal: bool = True,
         ffn_activation: str = "gelu",
+        use_rope: bool = True,
     ):
         super().__init__()
         self.ffn_activation = ffn_activation
         self.ln1 = nn.LayerNorm(d_model)
         self.attn = SelfAttention(
-            d_model, n_heads, dropout, max_seq_len, causal=causal
+            d_model, n_heads, dropout, max_seq_len, causal=causal, use_rope=use_rope,
         )
         self.ln2 = nn.LayerNorm(d_model)
         if ffn_activation == "swiglu":
@@ -309,7 +336,7 @@ class ConditionalBlock(nn.Module):
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# Encoder — bidirectional transformer → deterministic embedding e
+# Shared modules
 # ═════════════════════════════════════════════════════════════════════════
 
 class MLP(nn.Module):
@@ -346,9 +373,12 @@ class AttentionPool(nn.Module):
         return (x * weights).sum(dim=1)
 
 
+# ═════════════════════════════════════════════════════════════════════════
+# JEPAEncoder — bidirectional transformer over one header/state block
+# ═════════════════════════════════════════════════════════════════════════
+
 class JEPAEncoder(nn.Module):
-    """Transformer encoder that maps a state token sequence to a single
-    deterministic embedding.
+    """Transformer encoder that maps one state/header token block to an embedding.
 
     Returns:
       - ``e``: (B, latent_dim) — deterministic embedding, used as input /
@@ -356,7 +386,7 @@ class JEPAEncoder(nn.Module):
 
     Architecture
     ------------
-    ``token_ids`` → token embedding →
+    ``token_ids`` → shared token embedding →
     N × transformer blocks (bidirectional) →
     attention pool over non-pad positions →
     MLP projector → e.
@@ -439,7 +469,7 @@ class JEPAEncoder(nn.Module):
         """Encode a token sequence.
 
         Args:
-            token_ids: (B, S) int — state token IDs (padded with ``pad_id``).
+            token_ids: (B, S) int — state/header block token IDs.
 
         Returns:
             e: (B, latent_dim) — deterministic embedding.
@@ -450,10 +480,6 @@ class JEPAEncoder(nn.Module):
         x = self.token_embedding(token_ids)  # (B, S, d_model)
 
         # Transformer blocks (bidirectional).
-        # When gradient_checkpointing is enabled, each block's intermediate
-        # activations are discarded and recomputed during backward — this
-        # reduces peak memory from O(n_layers) to O(1) at the cost of ~30%
-        # extra compute on the backward pass.
         for block in self.blocks:
             if self.gradient_checkpointing and self.training:
                 x = torch.utils.checkpoint.checkpoint(
@@ -470,35 +496,354 @@ class JEPAEncoder(nn.Module):
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# Predictor — action-conditioned transformer: e_prev + action → e_next
+# JEPAActionEncoder — smaller bidirectional transformer → action embedding
+# ═════════════════════════════════════════════════════════════════════════
+
+class JEPAActionEncoder(nn.Module):
+    """Small bidirectional transformer that encodes action text to a fixed-size
+    action embedding.
+
+    Action text includes structural delimiters:
+      - Player:   ``<chosen_move> blizzard <end_chosen_move>``
+      - Opponent: ``<opponent_chosen_move> lovelykiss <end_opponent_chosen_move>``
+
+    Shares the token embedding matrix with ``JEPAEncoder`` via an input
+    projection from the main encoder's ``d_model`` to a (typically smaller)
+    internal dimension.
+
+    Uses **learned positional embeddings** (not RoPE) since action sequences
+    are very short (2–4 tokens).
+
+    Architecture
+    ------------
+    ``token_ids`` → shared token embedding → Linear(d_model_enc → d_model) →
+    + learned positional embedding →
+    N × transformer blocks (bidirectional, no RoPE) →
+    attention pool over non-pad positions →
+    MLP projector → action_latent_dim.
+
+    Parameters
+    ----------
+    token_embedding : nn.Embedding
+        Shared token embedding from the main JEPAEncoder.
+    pad_id : int
+        Token ID for padding.
+    action_latent_dim : int
+        Dimensionality of the output action embedding.
+    gradient_checkpointing : bool
+        If True, wrap each transformer block with checkpoint.
+    d_model, n_heads, n_layers, d_ff, dropout, max_seq_len, theta, ffn_activation :
+        Transformer hyperparameters for this smaller encoder.
+    encoder_d_model : int
+        Dimensionality of the shared token embedding (from JEPAEncoder).
+    """
+
+    def __init__(
+        self,
+        token_embedding: nn.Embedding,
+        pad_id: int,
+        action_latent_dim: int = ACTION_LATENT_DIM,
+        encoder_d_model: int = 512,
+        gradient_checkpointing: bool = False,
+        d_model: int = 128,
+        n_heads: int = 4,
+        n_layers: int = 3,
+        d_ff: int = 512,
+        dropout: float = 0.1,
+        max_seq_len: int = 64,
+        theta: float = 10000.0,
+        ffn_activation: str = "gelu",
+    ):
+        super().__init__()
+        self.pad_id = pad_id
+        self.action_latent_dim = action_latent_dim
+        self.d_model = d_model
+        self.gradient_checkpointing = gradient_checkpointing
+
+        # Share the token embedding and project down to our internal dim.
+        self.token_embedding = token_embedding
+        self.input_proj = nn.Linear(encoder_d_model, d_model, bias=False)
+
+        # Learned positional embedding (not RoPE — actions are too short to benefit).
+        self.pos_embedding = nn.Parameter(torch.randn(1, max_seq_len, d_model) * 0.02)
+
+        self.blocks = nn.ModuleList([
+            TransformerBlock(
+                d_model, n_heads, d_ff, dropout, max_seq_len,
+                causal=False,  # bidirectional
+                ffn_activation=ffn_activation,
+                use_rope=False,
+            )
+            for _ in range(n_layers)
+        ])
+        self.ln_final = nn.LayerNorm(d_model)
+        self.pool = AttentionPool(d_model)
+
+        # MLP projector: pooled → action_latent_dim.
+        proj_hidden = 4 * d_model
+        self.proj = MLP(d_model, proj_hidden, action_latent_dim)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.padding_idx is not None:
+                with torch.no_grad():
+                    module.weight[module.padding_idx] = 0.0
+
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """Encode action text.
+
+        Args:
+            token_ids: (B, S) int — action token IDs with delimiters,
+                       padded with ``pad_id``.
+
+        Returns:
+            emb: (B, action_latent_dim) — action embedding.
+        """
+        valid_mask = token_ids != self.pad_id  # (B, S)
+        S = token_ids.shape[1]
+
+        # Shared token embedding → project down to our d_model.
+        x = self.token_embedding(token_ids)        # (B, S, encoder_d_model)
+        x = self.input_proj(x)                      # (B, S, d_model)
+
+        # Add learned positional embedding.
+        x = x + self.pos_embedding[:, :S, :]
+
+        for block in self.blocks:
+            if self.gradient_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(
+                    block, x, valid_mask, use_reentrant=False
+                )
+            else:
+                x = block(x, key_padding_mask=valid_mask)
+        x = self.ln_final(x)
+
+        pooled = self.pool(x, valid_mask)  # (B, d_model)
+        return self.proj(pooled)            # (B, action_latent_dim)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# JEPATemporalEncoder — interleaved block embeddings → prefix embedding
+# ═════════════════════════════════════════════════════════════════════════
+
+class JEPATemporalEncoder(nn.Module):
+    """Transformer over state/header and side-specific action block embeddings."""
+
+    def __init__(
+        self,
+        latent_dim: int = LATENT_DIM,
+        action_latent_dim: int = ACTION_LATENT_DIM,
+        gradient_checkpointing: bool = False,
+        n_heads: int = 6,
+        n_layers: int = 4,
+        d_ff: int = 768,
+        dropout: float = 0.1,
+        max_seq_len: int = 4096,
+        ffn_activation: str = "gelu",
+        proj_hidden_dim: int | None = None,
+    ):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.gradient_checkpointing = gradient_checkpointing
+
+        self.action_proj = nn.Linear(action_latent_dim, latent_dim, bias=False)
+        self.type_embedding = nn.Embedding(3, latent_dim)  # state, player action, opponent action
+        self.pos_embedding = nn.Parameter(torch.randn(1, max_seq_len, latent_dim) * 0.02)
+
+        self.blocks = nn.ModuleList([
+            TransformerBlock(
+                latent_dim, n_heads, d_ff, dropout, max_seq_len,
+                causal=False,
+                ffn_activation=ffn_activation,
+                use_rope=False,
+            )
+            for _ in range(n_layers)
+        ])
+        self.ln_final = nn.LayerNorm(latent_dim)
+        self.pool = AttentionPool(latent_dim)
+        proj_hidden = proj_hidden_dim or (4 * latent_dim)
+        self.proj_e = MLP(latent_dim, proj_hidden, latent_dim)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward(
+        self,
+        state_embs: torch.Tensor,
+        state_valid: torch.Tensor,
+        player_action_embs: torch.Tensor,
+        player_action_valid: torch.Tensor,
+        opponent_action_embs: torch.Tensor,
+        opponent_action_valid: torch.Tensor,
+    ) -> torch.Tensor:
+        """Encode an interleaved block history.
+
+        Args:
+            state_embs: (B, S, latent_dim), including team header at index 0.
+            state_valid: (B, S)
+            player_action_embs: (B, A, action_latent_dim)
+            player_action_valid: (B, A)
+            opponent_action_embs: (B, A, action_latent_dim)
+            opponent_action_valid: (B, A)
+        """
+        B, S, D = state_embs.shape
+        A = player_action_embs.shape[1]
+        max_seq = max(1 + 3 * max(S - 1, A), 1)
+        if max_seq > self.pos_embedding.shape[1]:
+            raise ValueError(
+                f"Temporal sequence length {max_seq} exceeds max_seq_len "
+                f"{self.pos_embedding.shape[1]}"
+            )
+
+        x = state_embs.new_zeros((B, max_seq, D))
+        valid = torch.zeros((B, max_seq), device=state_embs.device, dtype=torch.bool)
+        type_ids = torch.zeros((B, max_seq), device=state_embs.device, dtype=torch.long)
+
+        for i in range(S):
+            # state_embs layout is [team_header, state_0, state_1, ...].
+            # Temporal layout is:
+            #   header, state_0, p_action_0, o_action_0, state_1, ...
+            pos = 0 if i == 0 else 1 + 3 * (i - 1)
+            x[:, pos, :] = state_embs[:, i, :]
+            valid[:, pos] = state_valid[:, i]
+            type_ids[:, pos] = 0
+
+            action_idx = i - 1
+            if i >= 1 and action_idx < A:
+                pa_pos = pos + 1
+                oa_pos = pos + 2
+                x[:, pa_pos, :] = self.action_proj(player_action_embs[:, action_idx, :])
+                x[:, oa_pos, :] = self.action_proj(opponent_action_embs[:, action_idx, :])
+                valid[:, pa_pos] = player_action_valid[:, action_idx]
+                valid[:, oa_pos] = opponent_action_valid[:, action_idx]
+                type_ids[:, pa_pos] = 1
+                type_ids[:, oa_pos] = 2
+
+        x = x + self.type_embedding(type_ids) + self.pos_embedding[:, :max_seq, :]
+
+        for block in self.blocks:
+            if self.gradient_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(
+                    block, x, valid, use_reentrant=False
+                )
+            else:
+                x = block(x, key_padding_mask=valid)
+        x = self.ln_final(x)
+        pooled = self.pool(x, valid)
+        return self.proj_e(pooled)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# JEPAActionPredictor — enc_N → predicted opponent action embedding
+# ═════════════════════════════════════════════════════════════════════════
+
+class JEPAActionPredictor(nn.Module):
+    """Simple MLP that predicts the next opponent action embedding.
+
+    Input:  enc_N  (B, latent_dim) — prefix embedding up to state N.
+    Output: (B, action_latent_dim) — predicted opponent action embedding.
+
+    No conditioning, no transformer — a straightforward MLP.
+    """
+
+    def __init__(
+        self,
+        latent_dim: int = LATENT_DIM,
+        action_latent_dim: int = ACTION_LATENT_DIM,
+        hidden_dim: int | None = None,
+        n_layers: int = 3,
+    ):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.action_latent_dim = action_latent_dim
+
+        if hidden_dim is None:
+            hidden_dim = 4 * latent_dim
+
+        layers: list[nn.Module] = []
+        in_dim = latent_dim
+        for i in range(n_layers):
+            if i < n_layers - 1:
+                layers.extend([
+                    nn.Linear(in_dim, hidden_dim),
+                    nn.LayerNorm(hidden_dim),
+                    nn.GELU(),
+                ])
+                in_dim = hidden_dim
+            else:
+                layers.append(nn.Linear(in_dim, action_latent_dim))
+        self.net = nn.Sequential(*layers)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    def forward(self, enc_N: torch.Tensor) -> torch.Tensor:
+        """Predict opponent action embedding.
+
+        Args:
+            enc_N: (B, latent_dim) — prefix embedding up to state N.
+
+        Returns:
+            pred_o_emb: (B, action_latent_dim).
+        """
+        return self.net(enc_N)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# JEPAPredictor — (enc_N, player_action, opponent_action) → pred_enc_{N+1}
 # ═════════════════════════════════════════════════════════════════════════
 
 class JEPAPredictor(nn.Module):
     """Action-conditioned predictor with AdaLN-zero.
 
-    Maps the deterministic previous-state embedding and the action to an
-    estimate of the next-state deterministic embedding::
+    Maps the deterministic previous-prefix embedding, chosen player action,
+    and predicted opponent action to an estimate of the next-prefix embedding::
 
-        predicted_next = PRED(e_prev, action_compact_idx)
+        predicted_next = PRED(enc_N, player_action_emb, pred_o_emb)
+
+    The player and opponent action embeddings are concatenated, projected into
+    the predictor's ``d_model`` space, and used as the AdaLN-zero conditioning
+    signal.
 
     Architecture (AdaLN-zero, based on LeJEPA / DiT)
     --------------------------------------------------
-    1. Project ``e_prev`` from ``latent_dim`` to ``d_model``.
+    1. Project ``enc_N`` from ``latent_dim`` to ``d_model``.
     2. Add learned positional embedding (single token).
-    3. Look up action embedding, project to ``d_model`` conditioning vector.
+    3. Project ``[player_action_emb, pred_o_emb]`` from
+       2×action_latent_dim to ``d_model`` conditioning vector.
     4. Run through N ConditionalBlocks — each block's layer-norm statistics
-       and sublayer gates are modulated by the action embedding via an
-       AdaLN-zero MLP.  Zero-init means the predictor starts as an identity
-       function and gradually learns to use the conditioning.
+       and sublayer gates are modulated by the action conditioning via an
+       AdaLN-zero MLP.
     5. LayerNorm → pool → MLP projection back to ``latent_dim``.
 
     Parameters
     ----------
     latent_dim : int
         Dimensionality of the input/output latent vectors.
+    action_latent_dim : int
+        Dimensionality of a single action embedding (player or opponent).
+        The conditioning input is 2× this (player + opponent).
     gradient_checkpointing : bool
-        If True, wrap each ConditionalBlock with
-        ``torch.utils.checkpoint.checkpoint``.
+        If True, wrap each ConditionalBlock with checkpoint.
     d_model, n_heads, n_layers, d_ff, dropout, max_seq_len :
         Transformer hyperparameters for the predictor.
     proj_hidden_dim : int or None
@@ -508,6 +853,7 @@ class JEPAPredictor(nn.Module):
     def __init__(
         self,
         latent_dim: int = LATENT_DIM,
+        action_latent_dim: int = ACTION_LATENT_DIM,
         gradient_checkpointing: bool = False,
         d_model: int = 128,
         n_heads: int = 4,
@@ -527,8 +873,8 @@ class JEPAPredictor(nn.Module):
         # Learned positional embedding for a single token.
         self.pos_embedding = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
 
-        # Action embedding → conditioning vector.
-        self.action_embedding = nn.Embedding(NUM_ACTIONS, d_model)
+        # Action conditioning: project player + predicted opponent action embeds.
+        self.action_cond_proj = nn.Linear(2 * action_latent_dim, d_model, bias=False)
 
         # AdaLN-zero conditional blocks.
         self.blocks = nn.ModuleList([
@@ -560,23 +906,28 @@ class JEPAPredictor(nn.Module):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(
-        self, e_prev: torch.Tensor, action_compact_idx: torch.Tensor
+        self,
+        enc_N: torch.Tensor,
+        player_action_emb: torch.Tensor,
+        pred_o_emb: torch.Tensor,
     ) -> torch.Tensor:
-        """Predict next-state deterministic embedding.
+        """Predict next-prefix deterministic embedding.
 
         Args:
-            e_prev:             (B, latent_dim) — deterministic prev-state embedding.
-            action_compact_idx: (B,) int 0..13  — compact action index.
+            enc_N:             (B, latent_dim) — prefix embedding up to state N.
+            player_action_emb: (B, action_latent_dim) — chosen player action.
+            pred_o_emb:        (B, action_latent_dim) — predicted opponent action.
 
         Returns:
             predicted_next: (B, latent_dim).
         """
         # State token: project + add positional embedding.
-        x = self.state_proj(e_prev).unsqueeze(1)        # (B, 1, d_model)
+        x = self.state_proj(enc_N).unsqueeze(1)        # (B, 1, d_model)
         x = x + self.pos_embedding                       # (B, 1, d_model)
 
         # Action conditioning vector.
-        c = self.action_embedding(action_compact_idx)    # (B, d_model)
+        action_cond = torch.cat([player_action_emb, pred_o_emb], dim=-1)
+        c = self.action_cond_proj(action_cond)           # (B, d_model)
 
         # AdaLN-zero conditional blocks.
         for block in self.blocks:
@@ -595,21 +946,23 @@ class JEPAPredictor(nn.Module):
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# Full LeJEPA model — encoder + predictor
+# Full JEPA model — encoder + action encoder + action predictor + predictor
 # ═════════════════════════════════════════════════════════════════════════
 
 class JEPAModel(nn.Module):
-    """Top-level LeJEPA model for learning representations from world-model states.
+    """Top-level JEPA model for learning representations from battle histories.
 
     Parameters
     ----------
     vocab_size : int
         Vocabulary size.
     pad_id, bos_id, eos_id : int
-        Special token IDs (bos_id, eos_id kept for compatibility).
+        Special token IDs.
     latent_dim : int
-        Dimensionality of the latent space.
-    encoder_cfg, predictor_cfg : dict
+        Dimensionality of the latent space (state embeddings).
+    action_latent_dim : int
+        Dimensionality of action embeddings.
+    encoder_cfg, action_encoder_cfg, action_predictor_cfg, predictor_cfg : dict
         Sub-module configuration dicts.
     """
 
@@ -620,9 +973,13 @@ class JEPAModel(nn.Module):
         bos_id: int,
         eos_id: int,
         latent_dim: int = LATENT_DIM,
+        action_latent_dim: int = ACTION_LATENT_DIM,
         encoder_cfg: Optional[dict] = None,
+        temporal_encoder_cfg: Optional[dict] = None,
+        action_encoder_cfg: Optional[dict] = None,
+        action_predictor_cfg: Optional[dict] = None,
         predictor_cfg: Optional[dict] = None,
-        **kwargs,  # absorb legacy keys (decoder_cfg) silently
+        **kwargs,  # absorb legacy keys silently
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -630,11 +987,15 @@ class JEPAModel(nn.Module):
         self.bos_id = bos_id
         self.eos_id = eos_id
         self.latent_dim = latent_dim
+        self.action_latent_dim = action_latent_dim
 
         enc_cfg = encoder_cfg or {}
+        temp_cfg = temporal_encoder_cfg or {}
+        act_enc_cfg = action_encoder_cfg or {}
+        act_pred_cfg = action_predictor_cfg or {}
         pred_cfg = predictor_cfg or {}
 
-        # Encoder φ — produces deterministic embedding e.
+        # Block encoder φ — encodes one team-header or state block.
         self.encoder = JEPAEncoder(
             vocab_size=vocab_size,
             pad_id=pad_id,
@@ -642,44 +1003,125 @@ class JEPAModel(nn.Module):
             **enc_cfg,
         )
 
-        # Predictor μ — maps (e_prev, action) → predicted e_next.
+        # Action encoder ψ — produces action embeddings from action text.
+        self.action_encoder = JEPAActionEncoder(
+            token_embedding=self.encoder.token_embedding,
+            pad_id=pad_id,
+            action_latent_dim=action_latent_dim,
+            encoder_d_model=enc_cfg.get("d_model", 512),
+            **act_enc_cfg,
+        )
+
+        # Temporal encoder τ — consumes interleaved state/action block embeddings.
+        self.temporal_encoder = JEPATemporalEncoder(
+            latent_dim=latent_dim,
+            action_latent_dim=action_latent_dim,
+            **temp_cfg,
+        )
+
+        # Action predictor α — predicts the opponent action embedding from enc_N.
+        self.action_predictor = JEPAActionPredictor(
+            latent_dim=latent_dim,
+            action_latent_dim=action_latent_dim,
+            **act_pred_cfg,
+        )
+
+        # State predictor μ — predicts enc_{N+1} from
+        # (enc_N, player action, predicted opponent action).
         self.predictor = JEPAPredictor(
             latent_dim=latent_dim,
+            action_latent_dim=action_latent_dim,
             **pred_cfg,
         )
 
     def forward(
         self,
-        prev_state_tokens: torch.Tensor,
-        next_state_tokens: torch.Tensor,
-        actions: torch.Tensor,
+        state_N_tokens: torch.Tensor,
+        state_N_valid: torch.Tensor,
+        state_N1_tokens: torch.Tensor,
+        state_N1_valid: torch.Tensor,
+        player_hist_N_tokens: torch.Tensor,
+        player_hist_N_valid: torch.Tensor,
+        opponent_hist_N_tokens: torch.Tensor,
+        opponent_hist_N_valid: torch.Tensor,
+        player_hist_N1_tokens: torch.Tensor,
+        player_hist_N1_valid: torch.Tensor,
+        opponent_hist_N1_tokens: torch.Tensor,
+        opponent_hist_N1_valid: torch.Tensor,
+        player_action_tokens: torch.Tensor,
+        opponent_action_tokens: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """Full forward pass.
 
         Args:
-            prev_state_tokens: (B, S_prev) int — previous state tokens (with <eos>).
-            next_state_tokens: (B, S_next) int — next state tokens (with <eos>).
-            actions:           (B,) int       — action indices (-1 .. 12).
+            state_N_tokens:   (B, S_N, T) int — header/states through state N.
+            state_N1_tokens:  (B, S_N1, T) int — header/states through state N+1.
+            player_action_tokens:   (B, A_p) int — player action text tokens (with delimiters).
+            opponent_action_tokens: (B, A_o) int — opponent action text tokens (with delimiters).
 
         Returns:
             Dict with keys:
-                e_prev, e_next     — (B, latent_dim) deterministic embeddings.
-                predicted_next     — (B, latent_dim) predictor output.
+                enc_N, enc_N1              — (B, latent_dim) encoder outputs.
+                pred_enc_N1                — (B, latent_dim) predicted next state embedding.
+                pred_o_emb                 — (B, action_latent_dim) predicted opponent action.
+                actual_p_emb, actual_o_emb — (B, action_latent_dim) actual action embeddings.
         """
-        # ── Encode previous state ──
-        e_prev = self.encoder(prev_state_tokens)
+        def encode_state_blocks(tokens: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+            B, S, T = tokens.shape
+            out = self.encoder.token_embedding.weight.new_zeros((B, S, self.latent_dim))
+            if S == 0 or not valid.any():
+                return out
+            flat_valid = valid.reshape(B * S)
+            encoded = self.encoder(tokens.reshape(B * S, T)[flat_valid])
+            out.reshape(B * S, self.latent_dim)[flat_valid] = encoded
+            return out
 
-        # ── Encode next state ──
-        e_next = self.encoder(next_state_tokens)
+        def encode_action_blocks(tokens: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+            B, S, T = tokens.shape
+            out = self.encoder.token_embedding.weight.new_zeros((B, S, self.action_latent_dim))
+            if S == 0 or not valid.any():
+                return out
+            flat_valid = valid.reshape(B * S)
+            encoded = self.action_encoder(tokens.reshape(B * S, T)[flat_valid])
+            out.reshape(B * S, self.action_latent_dim)[flat_valid] = encoded
+            return out
 
-        # ── Predict next from prev + action ──
-        compact_idx = actions + 1  # -1..12 → 0..13
-        predicted_next = self.predictor(e_prev, compact_idx)
+        # ── Encode prefix blocks ──
+        state_N_embs = encode_state_blocks(state_N_tokens, state_N_valid)
+        state_N1_embs = encode_state_blocks(state_N1_tokens, state_N1_valid)
+        player_hist_N_embs = encode_action_blocks(player_hist_N_tokens, player_hist_N_valid)
+        opponent_hist_N_embs = encode_action_blocks(opponent_hist_N_tokens, opponent_hist_N_valid)
+        player_hist_N1_embs = encode_action_blocks(player_hist_N1_tokens, player_hist_N1_valid)
+        opponent_hist_N1_embs = encode_action_blocks(opponent_hist_N1_tokens, opponent_hist_N1_valid)
+
+        enc_N = self.temporal_encoder(
+            state_N_embs, state_N_valid,
+            player_hist_N_embs, player_hist_N_valid,
+            opponent_hist_N_embs, opponent_hist_N_valid,
+        )
+        enc_N1 = self.temporal_encoder(
+            state_N1_embs, state_N1_valid,
+            player_hist_N1_embs, player_hist_N1_valid,
+            opponent_hist_N1_embs, opponent_hist_N1_valid,
+        )
+
+        # ── Encode ground-truth action texts ──
+        actual_p_emb = self.action_encoder(player_action_tokens)     # (B, action_latent_dim)
+        actual_o_emb = self.action_encoder(opponent_action_tokens)   # (B, action_latent_dim)
+
+        # ── Predict opponent action ──
+        pred_o_emb = self.action_predictor(enc_N)       # (B, action_latent_dim)
+
+        # ── Predict next state ──
+        pred_enc_N1 = self.predictor(enc_N, actual_p_emb, pred_o_emb)  # (B, latent_dim)
 
         return {
-            "e_prev": e_prev,
-            "e_next": e_next,
-            "predicted_next": predicted_next,
+            "enc_N": enc_N,
+            "enc_N1": enc_N1,
+            "pred_enc_N1": pred_enc_N1,
+            "pred_o_emb": pred_o_emb,
+            "actual_p_emb": actual_p_emb,
+            "actual_o_emb": actual_o_emb,
         }
 
     def save_checkpoint(self, path: str, **extra) -> None:
@@ -764,8 +1206,6 @@ def sigreg(
     t, phi, weights = _sigreg_grid(device, num_points, domain)
 
     # Empirical CF via separate cos / sin — avoids complex64 precision loss.
-    # e^(i·t·proj) = cos(t·proj) + i·sin(t·proj)
-    # |ecf - φ|² = (mean(cos) - φ)² + mean(sin)²   (since φ is real)
     x_t = proj.unsqueeze(-1) * t             # (B, num_slices, T)
     err = (x_t.cos().mean(dim=0) - phi).square() + x_t.sin().mean(dim=0).square()
     # err: (num_slices, T)
@@ -786,15 +1226,24 @@ def compute_losses(
     sigreg_num_points: int = SIGREG_NUM_POINTS,
     sigreg_domain: float = SIGREG_DOMAIN,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Compute the LeJEPA loss: JEPA prediction + SIGReg.
+    """Compute the JEPA loss: state prediction + opponent-action prediction + SIGReg.
 
     No stop-gradient — SIGReg prevents representational collapse without
     asymmetric architecture tricks.
 
+    Losses:
+      - state_loss:   MSE(enc_{N+1}, pred_enc_{N+1})
+      - opponent_action_loss: MSE(actual_o_emb, pred_o_emb)
+      - sigreg_enc:    SIGReg on encoder outputs (enc_N, enc_{N+1}, pred_enc_{N+1})
+      - sigreg_act:    SIGReg on action encoder outputs (actual_p_emb, actual_o_emb)
+
+    SIGReg is NOT applied to JEPAActionPredictor outputs.
+
     Args:
         outputs: Dict from ``JEPAModel.forward()`` with keys
-                 "e_prev", "e_next", "predicted_next".
-        lambda_sigreg: Weight for SIGReg (0..1).  Default 0.05.
+                 "enc_N", "enc_N1", "pred_enc_N1", "pred_o_emb",
+                 "actual_p_emb", "actual_o_emb".
+        lambda_sigreg: Weight for SIGReg.
         sigreg_num_slices, sigreg_num_points, sigreg_domain:
             SIGReg hyperparameters.
 
@@ -802,35 +1251,48 @@ def compute_losses(
         total_loss: scalar tensor.
         metrics: dict with per-loss-component values.
     """
-    e_prev = outputs["e_prev"]
-    e_next = outputs["e_next"]
-    predicted_next = outputs["predicted_next"]
+    enc_N = outputs["enc_N"]
+    enc_N1 = outputs["enc_N1"]
+    pred_enc_N1 = outputs["pred_enc_N1"]
+    pred_o_emb = outputs["pred_o_emb"]
+    actual_p_emb = outputs["actual_p_emb"]
+    actual_o_emb = outputs["actual_o_emb"]
 
-    # ── 1. JEPA loss: MSE between target and prediction ──────────────
-    # No stop-gradient — both encoders get gradient signal.
-    # SIGReg prevents collapse; asymmetry is unnecessary.
-    jepa_loss = F.mse_loss(e_next, predicted_next)
+    # ── 1. State prediction loss ────────────────────────────────────
+    state_loss = F.mse_loss(enc_N1, pred_enc_N1)
 
-    # ── 2. SIGReg on the transition embedding distribution ───────────
-    # Concatenating prev/next embeddings doubles the effective sample count
-    # and avoids two independent random projection passes per batch.
-    sigreg_loss = sigreg(
-        torch.cat([e_prev, e_next], dim=0),
+    # ── 2. Opponent action prediction loss ──────────────────────────
+    oa_loss = F.mse_loss(actual_o_emb, pred_o_emb)
+
+    # ── 3. SIGReg on encoder outputs (state space) ──────────────────
+    sigreg_enc = sigreg(
+        torch.cat([enc_N, enc_N1, pred_enc_N1], dim=0),
+        sigreg_num_slices,
+        sigreg_num_points,
+        sigreg_domain,
+    )
+
+    # ── 4. SIGReg on action encoder outputs (action space) ──────────
+    sigreg_act = sigreg(
+        torch.cat([actual_p_emb, actual_o_emb], dim=0),
         sigreg_num_slices,
         sigreg_num_points,
         sigreg_domain,
     )
 
     # ── Total loss ──────────────────────────────────────────────────
-    total_loss = jepa_loss + lambda_sigreg * sigreg_loss
+    pred_loss = state_loss + oa_loss
+    sigreg_loss = sigreg_enc + sigreg_act
+    total_loss = pred_loss + lambda_sigreg * sigreg_loss
 
     metrics = {
         "loss": total_loss.item(),
-        "jepa_loss": jepa_loss.item(),
-        # Legacy metric keys kept for existing CSV/W&B dashboards; both now
-        # report the combined transition-distribution SIGReg value.
-        "sigreg_prev": sigreg_loss.item(),
-        "sigreg_next": sigreg_loss.item(),
+        "state_loss": state_loss.item(),
+        "player_action_loss": 0.0,
+        "opponent_action_loss": oa_loss.item(),
+        "pred_loss": pred_loss.item(),
+        "sigreg_enc": sigreg_enc.item(),
+        "sigreg_act": sigreg_act.item(),
         "sigreg_loss": sigreg_loss.item(),
     }
 

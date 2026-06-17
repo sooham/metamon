@@ -245,6 +245,7 @@ class POVReplay:
 
         self._povturnlist: list[Turn] = []
         self._actionlist: list[list[Optional[Action]]] = []
+        self._opponent_actionlist: list[Optional[Action]] = []
         self._fill_one_side(replay, filled_replay)
         self._resolve_transforms()
         self._resolve_zoroark()
@@ -257,6 +258,10 @@ class POVReplay:
     @property
     def actionlist(self) -> list[list[Optional[Action]]]:
         return self._actionlist
+
+    @property
+    def opponent_actionlist(self) -> list[Optional[Action]]:
+        return self._opponent_actionlist
 
     def _flatten_turnlist_from_pov(self, start_from_turn: int = 0) -> list[Turn]:
         flat = []
@@ -390,15 +395,50 @@ class POVReplay:
             replay.flattened_turnlist, filled_replay.flattened_turnlist
         ):
             if self.from_p1_pov:
+                # Preserve transient runtime state (cant_reason, type) before
+                # overwriting active Pokémon with backward-filled copies.
+                saved_cant = [
+                    p.cant_reason if p else None for p in turn.active_pokemon_1
+                ]
+                saved_types = [
+                    (p.type.copy() if p and p.type else None,
+                     p.had_type.copy() if p and p.had_type else None)
+                    for p in turn.active_pokemon_1
+                ]
                 turn.pokemon_1 = filled_turn.pokemon_1
                 turn.active_pokemon_1 = filled_turn.active_pokemon_1
+                for i, p in enumerate(turn.active_pokemon_1):
+                    if p is not None:
+                        if saved_cant[i] is not None:
+                            p.cant_reason = saved_cant[i]
+                        if saved_types[i][0] is not None:
+                            p.type = saved_types[i][0]
+                        if saved_types[i][1] is not None:
+                            p.had_type = saved_types[i][1]
             else:
+                saved_cant = [
+                    p.cant_reason if p else None for p in turn.active_pokemon_2
+                ]
+                saved_types = [
+                    (p.type.copy() if p and p.type else None,
+                     p.had_type.copy() if p and p.had_type else None)
+                    for p in turn.active_pokemon_2
+                ]
                 turn.pokemon_2 = filled_turn.pokemon_2
                 turn.active_pokemon_2 = filled_turn.active_pokemon_2
+                for i, p in enumerate(turn.active_pokemon_2):
+                    if p is not None:
+                        if saved_cant[i] is not None:
+                            p.cant_reason = saved_cant[i]
+                        if saved_types[i][0] is not None:
+                            p.type = saved_types[i][0]
+                        if saved_types[i][1] is not None:
+                            p.had_type = saved_types[i][1]
 
     def _align_states_actions(self, replay: ParsedReplay):
         self._povturnlist = []
         self._actionlist = []
+        self._opponent_actionlist = []
         for idx, (turn_t, turn_t1) in enumerate(
             zip(replay.turnlist, replay.turnlist[1:])
         ):
@@ -412,6 +452,8 @@ class POVReplay:
                     action[subturn.slot] = subturn.action
                     self._povturnlist.append(subturn.turn)
                     self._actionlist.append(action)
+                    # opponent already acted this turn; subturn has no opponent action
+                    self._opponent_actionlist.append(None)
 
             self._povturnlist.append(
                 turn_t
@@ -419,6 +461,7 @@ class POVReplay:
             # and the action we clicked between turns is held in the next turn
             moves = turn_t1.moves_1 if self.from_p1_pov else turn_t1.moves_2
             choices = turn_t1.choices_1 if self.from_p1_pov else turn_t1.choices_2
+            opponent_moves = turn_t1.moves_2 if self.from_p1_pov else turn_t1.moves_1
             actionlist = [None, None]
             for move_idx, (move, choice) in enumerate(zip(moves, choices)):
                 if move is not None:
@@ -481,10 +524,12 @@ class POVReplay:
                                 )
 
             self._actionlist.append(actionlist)
+            self._opponent_actionlist.append(opponent_moves[0])
 
         # add final state
         self._povturnlist.append(turn_t1)
         self._actionlist.append([None, None])
+        self._opponent_actionlist.append(None)
 
 
 def add_filled_final_turn(
@@ -573,6 +618,142 @@ def backward_fill(
     )
     checks.check_action_alignment(from_p1)
     from_p2 = POVReplay(
+        copy.deepcopy(replay),
+        replay_filled,
+        from_p1_pov=False,
+        revealed_team=revealed_team_2,
+    )
+    checks.check_action_alignment(from_p2)
+    return from_p1, from_p2
+
+
+class POVReplayDoubles(POVReplay):
+    """POVReplay variant for doubles formats (two active Pokémon per side).
+
+    Overrides ``_align_states_actions`` to handle both active slots (0 and 1)
+    for cant substitution and opponent-action tracking.  The singles
+    ``POVReplay`` is unchanged — this subclass only applies to doubles.
+    """
+
+    def _align_states_actions(self, replay: ParsedReplay):
+        self._povturnlist = []
+        self._actionlist = []
+        self._opponent_actionlist = []
+        for idx, (turn_t, turn_t1) in enumerate(
+            zip(replay.turnlist, replay.turnlist[1:])
+        ):
+            # subturns — same as singles
+            for subturn in turn_t.subturns:
+                if subturn.turn is not None and subturn.team == (
+                    1 if self.from_p1_pov else 2
+                ):
+                    action = [None, None]
+                    action[subturn.slot] = subturn.action
+                    self._povturnlist.append(subturn.turn)
+                    self._actionlist.append(action)
+                    # opponent already acted this turn; subturn has no opponent action
+                    self._opponent_actionlist.append([None, None])
+
+            self._povturnlist.append(turn_t)
+
+            moves = turn_t1.moves_1 if self.from_p1_pov else turn_t1.moves_2
+            choices = turn_t1.choices_1 if self.from_p1_pov else turn_t1.choices_2
+            opponent_moves = turn_t1.moves_2 if self.from_p1_pov else turn_t1.moves_1
+
+            actionlist = [None, None]
+            for move_idx, (move, choice) in enumerate(zip(moves, choices)):
+                if move is not None:
+                    actionlist[move_idx] = move
+                elif choice is not None:
+                    actionlist[move_idx] = choice
+
+            # ── cant substitution for BOTH slots ──────────────────────
+            for pov_slot in (0, 1):
+                if actionlist[pov_slot] is None:
+                    active = (
+                        turn_t1.active_pokemon_1[pov_slot]
+                        if self.from_p1_pov
+                        else turn_t1.active_pokemon_2[pov_slot]
+                    )
+                    if active is not None:
+                        reason = getattr(active, "cant_reason", None)
+                        if reason is not None:
+                            if reason in ("recharge", "ability: Truant"):
+                                actionlist[pov_slot] = Action(
+                                    name="Recharge",
+                                    is_noop=True,
+                                    user=active,
+                                    target=None,
+                                )
+                            else:
+                                move_objs = [
+                                    m for m in active.moves.values() if m is not None
+                                ]
+                                if move_objs:
+                                    chosen = random.choice(move_objs)
+                                    actionlist[pov_slot] = Action(
+                                        name=chosen.name,
+                                        user=active,
+                                        target=None,
+                                    )
+                                else:
+                                    actionlist[pov_slot] = Action(
+                                        name="Recharge",
+                                        is_noop=True,
+                                        user=active,
+                                        target=None,
+                                    )
+
+            self._actionlist.append(actionlist)
+            self._opponent_actionlist.append(
+                [opponent_moves[0], opponent_moves[1]]
+            )
+
+        # add final state
+        self._povturnlist.append(turn_t1)
+        self._actionlist.append([None, None])
+        self._opponent_actionlist.append([None, None])
+
+
+def backward_fill_doubles(
+    replay: ParsedReplay, team_predictor: TeamPredictor
+) -> tuple[POVReplayDoubles, POVReplayDoubles]:
+    """Same as :func:`backward_fill` but returns :class:`POVReplayDoubles`."""
+    replay_filled, (revealed_team_1, revealed_team_2) = add_filled_final_turn(
+        copy.deepcopy(replay), team_predictor=team_predictor
+    )
+
+    flat_turnlist = replay_filled.flattened_turnlist
+    for turn_t, turn_t1 in zip(flat_turnlist[-2::-1], flat_turnlist[::-1]):
+        prev_ids = turn_t.id2pokemon
+        for prev_team, team in (
+            (turn_t.pokemon_1, turn_t1.pokemon_1),
+            (turn_t.pokemon_2, turn_t1.pokemon_2),
+        ):
+            for pokemon in team:
+                if pokemon is None:
+                    continue
+                if pokemon.unique_id in prev_ids:
+                    prev_pokemon = prev_ids[pokemon.unique_id]
+                    prev_pokemon.backfill_info(pokemon, gameid=replay.gameid)
+                else:
+                    if None not in prev_team:
+                        prev_team.append(pokemon.fresh_like())
+                    else:
+                        prev_team[prev_team.index(None)] = pokemon.fresh_like()
+
+    replay_filled.turnlist = replay_filled.turnlist[:-1]
+    if team_predictor.fills_missing_info:
+        checks.check_info_filled(replay_filled)
+
+    from_p1 = POVReplayDoubles(
+        copy.deepcopy(replay),
+        replay_filled,
+        from_p1_pov=True,
+        revealed_team=revealed_team_1,
+    )
+    checks.check_action_alignment(from_p1)
+    from_p2 = POVReplayDoubles(
         copy.deepcopy(replay),
         replay_filled,
         from_p1_pov=False,

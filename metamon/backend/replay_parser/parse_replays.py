@@ -13,6 +13,7 @@ import lz4.frame
 
 from metamon import interface
 from metamon.backend.replay_parser import backward, forward, checks
+from metamon.backend.replay_parser.backward import POVReplayDoubles
 from metamon.backend.replay_parser.exceptions import (
     BackwardException,
     CustomRulesException,
@@ -26,6 +27,10 @@ from metamon.backend.replay_parser.replay_state import (
 )
 from metamon.backend.replay_parser.pe_datatypes import (
     PEStatus,
+)
+from metamon.backend.replay_parser.text_serializer import (
+    serialize_pov_replay,
+    serialize_pov_replay_doubles,
 )
 from metamon.backend.team_prediction.predictor import TeamPredictor, NaiveUsagePredictor
 
@@ -190,26 +195,17 @@ class ReplayParser:
         player_username: str,
         opponenent_username: str,
     ):
-        universal_states, action_idxs = self.povreplay_to_seq(replay)
         won = "WIN" if replay.winner else "LOSS"
         filename = f"{replay.gameid}_{replay.rating}_{player_username}_vs_{opponenent_username}_{time_played.strftime('%m-%d-%Y')}_{won}"
         if self.output_dir is not None:
             path = self.output_dir
             os.makedirs(path, exist_ok=True)
-            output_json = {
-                "states": [state.to_dict() for state in universal_states],
-                "actions": action_idxs,
-            }
-            if self.pretty:
-                payload = json.dumps(output_json, indent=2, ensure_ascii=False).encode("utf-8")
+            if isinstance(replay, POVReplayDoubles):
+                text_output = serialize_pov_replay_doubles(replay)
             else:
-                payload = orjson.dumps(output_json)
-            if self.compress:
-                with lz4.frame.open(os.path.join(path, f"{filename}.json.lz4"), "wb") as f:
-                    f.write(payload)
-            else:
-                with open(os.path.join(path, f"{filename}.json"), "wb") as f:
-                    f.write(payload)
+                text_output = serialize_pov_replay(replay)
+            with open(os.path.join(path, f"{filename}.txt"), "w", encoding="utf-8") as f:
+                f.write(text_output)
 
         if self.team_output_dir is not None:
             path = self.team_output_dir
@@ -287,11 +283,21 @@ class ReplayParser:
             # forward fill
             replay = forward.forward_fill(replay, log, verbose=self.verbose)
 
-            # backward fill
-            replay_from_p1, replay_from_p2 = backward.backward_fill(
-                replay,
-                team_predictor=self.team_predictor,
+            # backward fill — use doubles variant when gametype is doubles
+            is_doubles = any(
+                msg and msg[0] == "gametype" and len(msg) > 1 and msg[1] == "doubles"
+                for msg in log
             )
+            if is_doubles:
+                replay_from_p1, replay_from_p2 = backward.backward_fill_doubles(
+                    replay,
+                    team_predictor=self.team_predictor,
+                )
+            else:
+                replay_from_p1, replay_from_p2 = backward.backward_fill(
+                    replay,
+                    team_predictor=self.team_predictor,
+                )
             # save
             self.save_to_disk(
                 replay_from_p1,

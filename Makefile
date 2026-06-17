@@ -12,11 +12,11 @@ FORMAT ?= gen1ou
 FORMATS ?= $(FORMAT)
 
 .PHONY: parse-no-pred parse parse-all-no-pred parse-all battle battle-inspect inspect-replay \
-        tokenize-world-model parse-world-model inspect-wm-state \
-        generate-world-model-data inspect-wm-npz sample-inspect-wm-npz \
+        wm-tokenizer parse-world-model inspect-wm-state \
+        wm-dataset inspect-wm-npz sample-inspect-wm-npz \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer sample-inspect-wm-state \
-        train-sl train-jepa train-jepa-mps play-sl showdown bash-completion
+        train-sl train-jepa train-jepa-mps play-sl play-jepa showdown bash-completion
 
 # Start a local Pokemon Showdown server (no auth, port 8000)
 # Requires the server/pokemon-showdown submodule to be initialized.
@@ -103,15 +103,15 @@ battle-inspect:
 		echo "No parsed directory for format $(FORMAT): $$dir"; \
 		exit 1; \
 	fi; \
-	count=$$(find "$$dir" -name '*.json' -type f | wc -l | tr -d ' '); \
+	count=$$(find "$$dir" -name '*.txt' -type f | wc -l | tr -d ' '); \
 	if [ "$$count" -eq 0 ]; then \
-		echo "No JSON files found in $$dir"; \
+		echo "No parsed files found in $$dir"; \
 		exit 1; \
 	fi; \
 	echo "=== Sampling 5 of $$count battles from $(FORMAT) ==="; \
-	find "$$dir" -name '*.json' -type f | sort -R | head -5 | while IFS= read -r f; do \
+	find "$$dir" -name '*.txt' -type f | sort -R | head -5 | while IFS= read -r f; do \
 		echo "--- $$(basename "$$f") ---"; \
-		battle_id=$$(basename "$$f" .json | cut -d_ -f1); \
+		battle_id=$$(basename "$$f" .txt | cut -d_ -f1); \
 		open "https://replay.pokemonshowdown.com/$$battle_id"; \
 		cursor "$$f"; \
 	done
@@ -134,12 +134,11 @@ TOKENIZER_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/tokenizers
 TOKENIZER_VERSION ?= WorldModelObservationSpace-v1
 NUM_WORKERS ?= $(N_THREADS)
 EARLY_STOP ?= 0
-tokenize-world-model:
+wm-tokenizer:
 	mkdir -p $(TOKENIZER_OUTPUT_DIR)
 	uv run python -m metamon.tokenizer.tokenizer \
 		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed-replays \
 		--formats $(FORMATS) \
-		--obs_space WorldModelObservationSpace \
 		--num_workers $(NUM_WORKERS) \
 		--early_stop $(EARLY_STOP) \
 		--save_tokens $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
@@ -157,7 +156,7 @@ parse-world-model:
 	@for fmt in $(FORMATS); do \
 		echo "=== Validating world-model format on 5 random $$fmt replays ==="; \
 		dir="$(METAMON_CACHE_DIR)/parsed-replays/$$fmt"; \
-		files=$$(find "$$dir" -name '*.json' -type f 2>/dev/null | sort -R | head -5); \
+		files=$$(find "$$dir" -name '*.txt' -type f 2>/dev/null | sort -R | head -5); \
 		if [ -n "$$files" ]; then \
 			uv run python scripts/validate_world_model.py $$files; \
 			echo "=== All $$fmt spot-checks passed ==="; \
@@ -169,16 +168,16 @@ parse-world-model:
 # Inspect a single parsed replay through the WorldModelObservationSpace.
 # Prints the tokenized text for states 0 and -1 (or specified indices).
 # Usage:
-#   make inspect-wm-state FILE=/path/to/replay.json
-#   make inspect-wm-state FILE=/path/to/replay.json INDICES='0 5 10'
-#   make inspect-wm-state FILE=/path/to/replay.json FLAGS='--pretty'
-#   make inspect-wm-state FILE=/path/to/replay.json FLAGS='--pretty --show-all'
+#   make inspect-wm-state FILE=/path/to/replay.txt
+#   make inspect-wm-state FILE=/path/to/replay.txt INDICES='0 5 10'
+#   make inspect-wm-state FILE=/path/to/replay.txt FLAGS='--pretty'
+#   make inspect-wm-state FILE=/path/to/replay.txt FLAGS='--pretty --show-all'
 FILE ?=
 INDICES ?= 0 -1
 FLAGS ?=
 inspect-wm-state:
 	@if [ -z "$(FILE)" ]; then \
-		echo "Usage: make inspect-wm-state FILE=/path/to/replay.json [INDICES='0 5 10'] [FLAGS='--pretty --show-all']"; \
+		echo "Usage: make inspect-wm-state FILE=/path/to/replay.txt [INDICES='0 5 10'] [FLAGS='--pretty --show-all']"; \
 		exit 1; \
 	fi
 	uv run python scripts/inspect_world_model_state.py $(FILE) $(INDICES) $(FLAGS)
@@ -194,14 +193,14 @@ inspect-wm-state:
 # Training pairs are sampled from transition rows.
 #
 # Usage:
-#   make generate-world-model-data FORMATS=gen1ou
-#   make generate-world-model-data FORMATS="gen1ou gen9ou"
+#   make wm-dataset FORMATS=gen1ou
+#   make wm-dataset FORMATS="gen1ou gen9ou"
 WM_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/world-model-samples
 WM_PROCESSES ?= $(N_THREADS)
 WM_VAL_SPLIT ?= 0.05
 WM_SEED ?= 42
 TOKENIZER_FILE := $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
-generate-world-model-data:
+wm-dataset:
 	@# ---- 1. Check parsed replays exist for every format ----
 	@missing=""; \
 	for fmt in $(FORMATS); do \
@@ -218,7 +217,7 @@ generate-world-model-data:
 	@# ---- 2. Build tokenizer if missing ----
 	@if [ ! -f "$(TOKENIZER_FILE)" ]; then \
 		echo "Tokenizer $(TOKENIZER_FILE) not found — building it now..."; \
-		$(MAKE) tokenize-world-model FORMATS="$(FORMATS)"; \
+		$(MAKE) wm-tokenizer FORMATS="$(FORMATS)"; \
 	fi
 	@# ---- 3. Generate sharded .npz files ----
 	mkdir -p $(WM_OUTPUT_DIR)
@@ -234,7 +233,7 @@ generate-world-model-data:
 # ── Supervised-Learning Training ────────────────────────────────────
 
 # Train the WorldModelTransformer on next-state prediction using .npz shards.
-# Requires tokenized world-model data (run generate-world-model-data first).
+# Requires tokenized world-model data (run wm-dataset first).
 #
 # Usage:
 #   make train-sl FORMATS="gen1ou gen9ou"
@@ -258,12 +257,12 @@ WANDB_NAME ?=
 train-sl:
 	@if [ ! -d "$(SL_DATA_ROOT)" ]; then \
 		echo "ERROR: No .npz data found at $(SL_DATA_ROOT)."; \
-		echo "  Run: make generate-world-model-data FORMATS=\"$(FORMATS)\" first."; \
+		echo "  Run: make wm-dataset FORMATS=\"$(FORMATS)\" first."; \
 		exit 1; \
 	fi
 	@if [ ! -f "$(SL_TOKENIZER)" ]; then \
 		echo "ERROR: Tokenizer not found at $(SL_TOKENIZER)."; \
-		echo "  Run: make tokenize-world-model FORMATS=\"$(FORMATS)\" first."; \
+		echo "  Run: make wm-tokenizer FORMATS=\"$(FORMATS)\" first."; \
 		exit 1; \
 	fi
 	mkdir -p $(SL_SAVE_DIR)
@@ -288,7 +287,7 @@ train-sl:
 # ── JEPA Training ────────────────────────────────────────────────────
 
 # Train the JEPA model on state transitions using .npz shards.
-# Requires tokenized world-model data (run generate-world-model-data first).
+# Requires tokenized world-model data (run wm-dataset first).
 #
 # Usage:
 #   make train-jepa FORMATS="gen1ou gen9ou"
@@ -297,11 +296,13 @@ train-sl:
 JEPA_DATA_ROOT ?= $(WM_OUTPUT_DIR)
 JEPA_TOKENIZER ?= $(TOKENIZER_FILE)
 JEPA_SAVE_DIR ?= $(METAMON_CACHE_DIR)/jepa-checkpoints
-JEPA_BATCH_SIZE ?= 256
+JEPA_BATCH_SIZE ?= 16
+JEPA_GRAD_ACCUM_STEPS ?= 16
 JEPA_LR ?= 5e-5
 JEPA_EPOCHS ?= 100
 JEPA_GRAD_CLIP ?= 1.0
-JEPA_NUM_WORKERS ?= $(N_THREADS)
+JEPA_NUM_WORKERS ?= 8
+JEPA_PREFETCH_FACTOR ?= 2
 JEPA_PRINT_INTERVAL ?= 10
 JEPA_VAL_INTERVAL ?= 1000
 JEPA_VAL_MAX_BATCHES ?= 50
@@ -310,12 +311,12 @@ JEPA_CHECKPOINT ?= $(JEPA_SAVE_DIR)/best.pt
 train-jepa:
 	@if [ ! -d "$(JEPA_DATA_ROOT)" ]; then \
 		echo "ERROR: No .npz data found at $(JEPA_DATA_ROOT)."; \
-		echo "  Run: make generate-world-model-data FORMATS=\"$(FORMATS)\" first."; \
+		echo "  Run: make wm-dataset FORMATS=\"$(FORMATS)\" first."; \
 		exit 1; \
 	fi
 	@if [ ! -f "$(JEPA_TOKENIZER)" ]; then \
 		echo "ERROR: Tokenizer not found at $(JEPA_TOKENIZER)."; \
-		echo "  Run: make tokenize-world-model FORMATS=\"$(FORMATS)\" first."; \
+		echo "  Run: make wm-tokenizer FORMATS=\"$(FORMATS)\" first."; \
 		exit 1; \
 	fi
 	mkdir -p $(JEPA_SAVE_DIR)
@@ -326,10 +327,12 @@ train-jepa:
 		--tokenizer_path $(JEPA_TOKENIZER) \
 		--save_dir $(JEPA_SAVE_DIR) \
 		--batch_size $(JEPA_BATCH_SIZE) \
+		--grad_accum_steps $(JEPA_GRAD_ACCUM_STEPS) \
 		--lr $(JEPA_LR) \
 		--epochs $(JEPA_EPOCHS) \
 		--grad_clip $(JEPA_GRAD_CLIP) \
 		--num_workers $(JEPA_NUM_WORKERS) \
+		--prefetch_factor $(JEPA_PREFETCH_FACTOR) \
 		--print_interval $(JEPA_PRINT_INTERVAL) \
 		$(if $(filter true,$(WANDB)),--wandb) \
 		$(if $(WANDB_PROJECT),--wandb_project $(WANDB_PROJECT)) \
@@ -351,17 +354,17 @@ train-jepa:
 JEPA_MPS_BATCH_SIZE ?= 128
 JEPA_MPS_NUM_WORKERS ?= 0
 JEPA_MPS_CONFIG ?= metamon/jepa/configs/mps.yaml
-JEPA_MPS_VAL_INTERVAL ?= 200
+JEPA_MPS_VAL_INTERVAL ?= 400
 JEPA_MPS_VAL_MAX_BATCHES ?= 50
 train-jepa-mps:
 	@if [ ! -d "$(JEPA_DATA_ROOT)" ]; then \
 		echo "ERROR: No .npz data found at $(JEPA_DATA_ROOT)."; \
-		echo "  Run: make generate-world-model-data FORMATS=\"$(FORMATS)\" first."; \
+		echo "  Run: make wm-dataset FORMATS=\"$(FORMATS)\" first."; \
 		exit 1; \
 	fi
 	@if [ ! -f "$(JEPA_TOKENIZER)" ]; then \
 		echo "ERROR: Tokenizer not found at $(JEPA_TOKENIZER)."; \
-		echo "  Run: make tokenize-world-model FORMATS=\"$(FORMATS)\" first."; \
+		echo "  Run: make wm-tokenizer FORMATS=\"$(FORMATS)\" first."; \
 		exit 1; \
 	fi
 	mkdir -p $(JEPA_SAVE_DIR)
@@ -383,7 +386,7 @@ train-jepa-mps:
 		$(if $(WANDB_PROJECT),--wandb_project $(WANDB_PROJECT)) \
 		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
 		$(if $(JEPA_CHECKPOINT),--checkpoint $(JEPA_CHECKPOINT)) \
-		--log --log_interval 10
+		--log --log_interval 20
 
 # ── World Model Showdown Play ─────────────────────────────────────────
 
@@ -415,6 +418,36 @@ play-sl:
 		--num_battles $(SL_PLAY_BATTLES) \
 		--max_new_tokens $(SL_PLAY_MAX_TOKENS) \
 		$(if $(SL_PLAY_VERBOSE),--verbose)
+
+# Battle with a trained JEPA world model on the local Showdown server.
+# Requires a checkpoint from train-jepa and a running Showdown server.
+#
+# Usage:
+#   make play-jepa
+#   make play-jepa JEPA_PLAY_FORMAT=gen1ou JEPA_PLAY_USERNAME=JEPABot
+#   make play-jepa JEPA_PLAY_CHECKPOINT=/path/to/best.pt
+JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/best.pt
+JEPA_PLAY_TOKENIZER ?= $(JEPA_TOKENIZER)
+JEPA_PLAY_FORMAT ?= gen1ou
+JEPA_PLAY_USERNAME ?= JEPABot
+JEPA_PLAY_TEAM_SET ?= competitive
+play-jepa:
+	@if [ ! -f "$(JEPA_PLAY_CHECKPOINT)" ]; then \
+		echo "ERROR: Checkpoint not found at $(JEPA_PLAY_CHECKPOINT)."; \
+		echo "  Train first: make train-jepa FORMATS=$(JEPA_PLAY_FORMAT)"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(JEPA_PLAY_TOKENIZER)" ]; then \
+		echo "ERROR: Tokenizer not found at $(JEPA_PLAY_TOKENIZER)."; \
+		echo "  Run: make wm-tokenizer FORMATS=\"$(JEPA_PLAY_FORMAT)\" first."; \
+		exit 1; \
+	fi
+	uv run python -m metamon.jepa.play \
+		--checkpoint $(JEPA_PLAY_CHECKPOINT) \
+		--tokenizer_path $(JEPA_PLAY_TOKENIZER) \
+		--format $(JEPA_PLAY_FORMAT) \
+		--username $(JEPA_PLAY_USERNAME) \
+		--team_set $(JEPA_PLAY_TEAM_SET)
 
 # Run the full test suite (parallel by default via pytest-xdist)
 test:
@@ -463,7 +496,7 @@ clean-tokenizer:
 	rm -rf $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
 
 sample-inspect-wm-state:
-	make inspect-wm-state FILE=$(METAMON_CACHE_DIR)/parsed-replays/gen1ou/smogtours-gen1ou-749168_Unrated_encore90411_vs_mindplate96156_02-23-2024_WIN.json FORMAT=gen1ou FLAGS="--show-all"
+	make inspect-wm-state FILE=$(METAMON_CACHE_DIR)/parsed-replays/gen1ou/smogtours-gen1ou-749168_Unrated_encore90411_vs_mindplate96156_02-23-2024_WIN.txt FORMAT=gen1ou FLAGS="--show-all"
 
 # ── World Model NPZ Inspection ─────────────────────────────────────
 

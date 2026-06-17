@@ -408,6 +408,7 @@ class SimProtocol:
             raise CustomRulesException("MissingNo. in team preview")
         insert_at = poke_list.index(None)
         new_pokemon = Pokemon(name=poke_name, lvl=lvl, gen=gen)
+        new_pokemon.gender = Pokemon.extract_gender(args[1])
         # Reject cross-generation Pokémon early (custom/challenge matches
         # mislabeled with a lower-gen format).
         if new_pokemon.dex_gen > gen:
@@ -445,6 +446,7 @@ class SimProtocol:
                 return p
         # if we get here, it's a newly introduced pokemon.
         poke = Pokemon(name=poke_name, lvl=lvl, gen=self.replay.gen)
+        poke.gender = Pokemon.extract_gender(details)
         if None not in poke_list:
             raise CantIDSwitchIn(details, poke_list)
         insert_at = poke_list.index(None)
@@ -1053,15 +1055,37 @@ class SimProtocol:
             and pokemon.last_target.pokemon is not None
         ):
             target = pokemon.last_target.pokemon
-            target_ability = target.active_ability
-            pokemon_ability = pokemon.active_ability
-            if (
-                target_ability in SimProtocol.SKILL_SWAP_FAILS
-                or pokemon_ability in SimProtocol.SKILL_SWAP_FAILS
-            ):
-                raise ForwardException("Detected Skill Swap failure with patch TODO")
-            target.active_ability = pokemon_ability
-            pokemon.active_ability = target_ability
+            # The |-activate| message includes both ability names:
+            #   |-activate|USER|move: Skill Swap|TARGET_ABILITY|USER_ABILITY|[of] TARGET
+            # Parse them explicitly rather than swapping active_ability (which
+            # may be None for unrevealed abilities).
+            if len(args) >= 4:
+                target_natural_ability = parse_ability(args[2])  # target's permanent ability
+                user_natural_ability = parse_ability(args[3])    # user's permanent ability
+                if (
+                    target_natural_ability in SimProtocol.SKILL_SWAP_FAILS
+                    or user_natural_ability in SimProtocol.SKILL_SWAP_FAILS
+                ):
+                    raise ForwardException("Detected Skill Swap failure with patch TODO")
+                # Swap current abilities.
+                pokemon.active_ability = target_natural_ability
+                target.active_ability = user_natural_ability
+                # Reveal permanent abilities (without overwriting if already known).
+                if pokemon.had_ability is None:
+                    pokemon.had_ability = user_natural_ability
+                if target.had_ability is None:
+                    target.had_ability = target_natural_ability
+            else:
+                # Fallback for older replays without explicit ability names.
+                target_ability = target.active_ability
+                pokemon_ability = pokemon.active_ability
+                if (
+                    target_ability in SimProtocol.SKILL_SWAP_FAILS
+                    or pokemon_ability in SimProtocol.SKILL_SWAP_FAILS
+                ):
+                    raise ForwardException("Detected Skill Swap failure with patch TODO")
+                target.active_ability = pokemon_ability
+                pokemon.active_ability = target_ability
         pokemon.start_effect(effect)
 
     def _parse_item_enditem(self, args: List[str], name: str):
@@ -1210,6 +1234,18 @@ class SimProtocol:
             # (depending on gen or replay date it's hard to tell)
             pokemon.mimic(move_name=args[2])
             self.replay.add_warning(WarningFlags.MIMIC)
+        # Handle type-change effects (Protean, Libero, Soak, Reflect Type,
+        # Burn Up, Double Shock, Magic Powder, Conversion, Camouflage, etc.)
+        # Protocol: |-start|POKEMON|typechange|NEW_TYPE|[from] ...
+        elif args[1] == "typechange" and len(args) >= 3:
+            new_type = args[2]
+            # The new type is a single type name (e.g. "Dark", "Water").
+            # Some effects add a type (Trick-or-Treat → Ghost + original)
+            # but most replace the type entirely.
+            # For now, replace with the single new type.  Dual-type
+            # additions (Trick-or-Treat, Forest's Curse) emit a different
+            # message format and will need a separate handler.
+            pokemon.type = [new_type] if new_type else pokemon.type
         found_item, found_ability, found_move, found_mon = parse_from_effect_of(
             args[2:]
         )
@@ -1530,6 +1566,11 @@ class SimProtocol:
     def _parse_block(self, args: List[str]):
         """
         |-block|POKEMON|EFFECT|MOVE|ATTACKER
+
+        Indicates that an effect was blocked (e.g. an ability blocks a move,
+        an item prevents an ability change).  We use it to reveal the
+        blocking ability or item, and to cancel Parting Shot's forced switch
+        when it's blocked by an ability.
         """
         *_, from_mon = parse_from_effect_of(args)
         if from_mon:
@@ -1537,15 +1578,20 @@ class SimProtocol:
         else:
             pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         if from_mon and "ability" in args[1]:
+            # Ability blocked something — reveal the ability and cancel
+            # Parting Shot's forced switch on the blocker.
             ability = parse_ability(args[1])
             pokemon.reveal_ability(ability)
             self._cancel_opponent_parting_shot(
                 user_pokemon=pokemon, extra_condition=True
             )
-        else:
-            raise ForwardException(
-                "Detected `block` message with unimplemented behavior"
-            )
+        elif "item" in args[1] if len(args) > 1 else False:
+            # Item blocked something (e.g. Ability Shield) — reveal the item.
+            item = args[1].replace("item: ", "").strip()
+            if pokemon:
+                pokemon.reveal_item(item)
+        # else: other block types are harmless to skip — they indicate
+        # something was blocked but don't change observable battle state.
 
     def interpret_message(self, message: List[str]):
         """Interpret and process a single Showdown battle protocol message.
