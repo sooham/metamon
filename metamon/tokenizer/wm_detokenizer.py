@@ -1,264 +1,273 @@
 """World Model detokenizer: convert token IDs → human-readable text.
 
-Provides functions to turn a flat list of WorldModelObservationSpace token
-IDs (or string tokens) into a structured, indented, human-readable tree.
-
-Text blocks are variable-length:
-  - <switch>, <opponent_bench>, <fainted>, <opponent_fainted> only emit
-    blocks for Pokémon that actually exist (no <blank> slot padding).
-  - <opponent_moveset> only emits revealed moves (no unknownmove fillers).
+Parses the new stateful text format (v2) specified in
+``docs/new_parser_format_spec.md`` and renders it as an indented tree.
 """
 
-# ── token block sizes (WorldModelObservationSpace) ──────────────────
-# Active pokemon: name(1) + hp(4) + item(1) + ability(1) + types(2) + effect(1) + status(1) = 11
-# Inactive pokemon (player): name(1) + hp(4) + item(1) + ability(1) + moveset_tag(1) + 4×move(4) = 12
-# Inactive pokemon (opponent): + status(1) + effect(1) = 14
-# Move (active): name(1) + type(1) + category(1) = 3  (+ <move> tag = 4)
-# Move (inactive/pad): name(1) = 1
-HP_TOKENS = 4
+import re
+from typing import Optional
 
-# Structural tokens that begin a new top-level block
-_STRUCTURAL_TOKENS = frozenset({
-    "<player>", "<move>", "<switch>", "<opponent>", "<opponent_bench>",
-    "<fainted>", "<opponent_fainted>", "<conditions>", "<player_prev>",
-    "<opp_prev>", "<ongoing>", "<won>", "<lost>",
-    "<boosts>", "<moveset>", "<opponent_moveset>",
+
+# ── Structural tokens that begin a new top-level block ──────────────────
+_BLOCK_STARTERS = frozenset({
+    "<begin_team>", "<end_team>",
+    "<begin_opponent_team>", "<end_opponent_team>",
+    "<bos>", "<eos>", "<boa>", "<eoa>",
+    "<format>", "<turn>",
+    "<arena>", "<end_arena>",
+    "<active>", "<end_active>",
+    "<opponent>", "<end_opponent>",
+    "<begin_moves>", "<end_moves>", "<move>", "<end_move>",
+    "<bench>", "<end_bench>",
+    "<conditions>", "<end_conditions>",
+    "<you>", "<end_you>",
+    "<boosts>", "<end_boosts>",
+    "<chosen_move>", "<end_chosen_move>",
+    "<opponent_chosen_move>", "<end_opponent_chosen_move>",
+    "<terminal>", "<end_terminal>",
 })
 
 
 def format_pretty(tokens: list[str]) -> str:
-    """Re-parse the flat token list into an indented, human-readable tree.
+    """Parse a flat list of tokens from the new text format into an indented tree.
 
-    Handles variable-length opponent movesets, variable-count fainted blocks,
-    generation-aware item/ability fields, ``<noboosts>``, ``<unknown_item_ability>``,
-    ``<opponent_teampreview>``, and optional ``battle_field``.
+    The new format is stateful and block-structured.  This function walks
+    through the token list and reconstructs the hierarchical display.
+
+    Handles: team header, opponent team preview, arena (active/opponent),
+    available moves, bench, conditions, action blocks, terminal states.
     """
-    lines = []
+    lines: list[str] = []
     i = 0
+    n = len(tokens)
 
-    def take(n):
+    def take(k=1):
         nonlocal i
-        chunk = tokens[i : i + n]
-        i += n
-        return chunk
+        chunk = tokens[i : i + k]
+        i += k
+        return chunk if k > 1 else (chunk[0] if chunk else None)
 
-    def peek(n=1):
-        return tokens[i : i + n]
+    def peek(k=1):
+        return tokens[i : i + k]
 
-    def _tokens_until_structural() -> list[str]:
-        """Read tokens until the next structural token (or end of list)."""
+    def expect(tag):
+        t = take()
+        if t != tag:
+            lines.append(f"  !! expected {tag}, got {t}")
+
+    def read_until(end_tags):
+        """Read tokens until we hit one of *end_tags*. Returns the accumulated list."""
         nonlocal i
         result = []
-        while i < len(tokens) and tokens[i] not in _STRUCTURAL_TOKENS:
+        while i < n and tokens[i] not in end_tags:
             result.append(tokens[i])
             i += 1
         return result
 
-    # ── header ──
-    fmt = take(1)[0]
-    choice = take(1)[0]
-    lines.append(f"  format : {fmt}")
-    lines.append(f"  choice : {choice}")
+    def parse_boosts():
+        """Parse ``noboosts`` or ``<boosts> tok1 tok2 ... <end_boosts>``."""
+        if peek(1) and peek(1)[0] == "noboosts":
+            take()
+            return []
+        if peek(1) and peek(1)[0] == "<boosts>":
+            take()  # <boosts>
+            boosts = []
+            while peek(1) and peek(1)[0] != "<end_boosts>":
+                boosts.append(take())
+            if peek(1):
+                take()  # <end_boosts>
+            return boosts
+        return []
 
-    # Infer generation from format token for item/ability awareness
-    import re
-    gen_match = re.match(r'<(gen)?(\d+)', fmt)
-    gen = int(gen_match.group(2)) if gen_match else 9
-    has_items = gen >= 2
-    has_abilities = gen >= 3
+    # ── Team header ──
+    if peek(1) and peek(1)[0] == "<begin_team>":
+        lines.append("┌─ TEAM ──────────────────────────────────────────────")
+        take()  # <begin_team>
+        while peek(1) and peek(1)[0].startswith("<poke") and peek(1)[0] != "<end_team>":
+            poke_tag = take()
+            species_info = read_until({"<begin_moves>"})
+            species_str = " ".join(species_info) if species_info else "?"
+            lines.append(f"│ {poke_tag}: {species_str}")
+            if peek(1) and peek(1)[0] == "<begin_moves>":
+                take()
+                moves = []
+                while peek(1) and peek(1)[0] == "<move>":
+                    take()
+                    move_name = take() or "?"
+                    if peek(1) and peek(1)[0] == "<end_move>":
+                        take()
+                    moves.append(move_name)
+                if peek(1) and peek(1)[0] == "<end_moves>":
+                    take()
+                lines.append(f"│   moves: {' | '.join(moves)}")
+            end_tag = take()  # <end_pokeN>
+        if peek(1) and peek(1)[0] == "<end_team>":
+            take()
+        lines.append("")
 
-    # ── opponent teampreview (Gen 5+, optional) ──
-    if peek(1) == ["<opponent_teampreview>"]:
-        take(1)
-        tp_mons = _tokens_until_structural()
-        lines.append("  ┌─ Opponent Teampreview ────────────────────────────")
-        lines.append(f"  │   {', '.join(tp_mons)}")
+    # ── Opponent team preview ──
+    if peek(1) and peek(1)[0] == "<begin_opponent_team>":
+        lines.append("┌─ OPPONENT TEAM PREVIEW ────────────────────────────")
+        take()
+        while peek(1) and peek(1)[0].startswith("<poke"):
+            poke_tag = take()
+            species = take() or "?"
+            lines.append(f"│ {poke_tag}: {species}")
+            end_tag = take()  # <end_pokeN>
+        if peek(1) and peek(1)[0] == "<end_opponent_team>":
+            take()
+        lines.append("")
 
-    # ── helper: parse a pokemon block ──
-    def parse_pokemon(is_active, has_status_effect=False, has_hp=True):
-        nonlocal i
-        name = take(1)[0]
-        hp = " ".join(take(HP_TOKENS)) if has_hp else "0.00"
+    # ── State / Action blocks ──
+    state_num = 0
+    while i < n:
+        tok = peek(1)
+        if not tok:
+            break
 
-        # Item / ability — generation-aware.
-        item = "<none>"
-        ability = "<none>"
-        if has_items and has_abilities and peek(1) == ["<unknown_item_ability>"]:
-            take(1)
-            item = "<?>"
-            ability = "<?>"
+        if tok[0] == "<bos>":
+            take()
+            state_num += 1
+            lines.append(f"┌─ STATE {state_num} ─" + "─" * 42)
+
+            # format
+            if peek(1) and peek(1)[0] == "<format>":
+                take()
+                fmt_name = take() or "?"
+                if peek(1) and peek(1)[0] == "<end_format>":
+                    take()
+                lines.append(f"│ format: {fmt_name}")
+
+            # turn
+            if peek(1) and peek(1)[0] == "<turn>":
+                take()
+                turn_num = take() or "?"
+                if peek(1) and peek(1)[0] == "<end_turn>":
+                    take()
+                lines.append(f"│ turn: {turn_num}")
+
+            # arena
+            if peek(1) and peek(1)[0] == "<arena>":
+                take()
+                while peek(1) and peek(1)[0] in ("<active>", "<active1>", "<active2>",
+                                                   "<opponent>", "<opponent1>", "<opponent2>"):
+                    slot_tag = take()
+                    info = read_until({"<end_active>", "<end_active1>", "<end_active2>",
+                                       "<end_opponent>", "<end_opponent1>", "<end_opponent2>"})
+                    end_tag = take()
+                    info_str = " ".join(info)
+                    label = slot_tag.strip("<>")
+                    lines.append(f"│ {label}: {info_str}")
+                if peek(1) and peek(1)[0] == "<end_arena>":
+                    take()
+
+            # available moves
+            if peek(1) and peek(1)[0] == "<begin_moves>":
+                take()
+                move_idx = 0
+                while peek(1) and peek(1)[0] == "<move>":
+                    take()
+                    move_info = read_until({"<end_move>"})
+                    if peek(1) and peek(1)[0] == "<end_move>":
+                        take()
+                    move_idx += 1
+                    lines.append(f"│   move {move_idx}: {' '.join(move_info)}")
+                if peek(1) and peek(1)[0] == "<end_moves>":
+                    take()
+
+            # bench
+            if peek(1) and peek(1)[0] == "<bench>":
+                take()
+                lines.append("│ bench:")
+                while peek(1) and peek(1)[0].startswith("<poke"):
+                    poke_tag = take()
+                    info = read_until({f"<end_{poke_tag.strip('<>')}>"})
+                    end_poke = take()  # <end_pokeN>
+                    info_str = " ".join(info)
+                    lines.append(f"│   {poke_tag}: {info_str}")
+                if peek(1) and peek(1)[0] == "<end_bench>":
+                    take()
+
+            # conditions
+            if peek(1) and peek(1)[0] == "<conditions>":
+                take()
+                weather = take() or "?"
+                lines.append(f"│ conditions:")
+                lines.append(f"│   weather: {weather}")
+
+                # optional battle field
+                if peek(1) and peek(1)[0] not in ("<you>",):
+                    bf = take()
+                    lines.append(f"│   field: {bf}")
+
+                # you
+                if peek(1) and peek(1)[0] == "<you>":
+                    take()
+                    you_parts = read_until({"<end_you>"})
+                    if peek(1) and peek(1)[0] == "<end_you>":
+                        take()
+                    if you_parts:
+                        lines.append(f"│   you: {' '.join(you_parts)}")
+
+                # opponent
+                if peek(1) and peek(1)[0] == "<opponent>":
+                    take()
+                    opp_parts = read_until({"<end_opponent>"})
+                    if peek(1) and peek(1)[0] == "<end_opponent>":
+                        take()
+                    if opp_parts:
+                        lines.append(f"│   opponent: {' '.join(opp_parts)}")
+
+                if peek(1) and peek(1)[0] == "<end_conditions>":
+                    take()
+
+            # terminal
+            if peek(1) and peek(1)[0] == "<terminal>":
+                take()
+                outcome = take() or "?"
+                if peek(1) and peek(1)[0] == "<end_terminal>":
+                    take()
+                lines.append(f"│ TERMINAL: {outcome}")
+
+            if peek(1) and peek(1)[0] == "<eos>":
+                take()
+
+        elif tok[0] == "<boa>":
+            take()
+            lines.append("├─ ACTION ─" + "─" * 42)
+
+            if peek(1) and peek(1)[0] == "<turn>":
+                take()
+                turn_num = take() or "?"
+                if peek(1) and peek(1)[0] == "<end_turn>":
+                    take()
+                lines.append(f"│ turn: {turn_num}")
+
+            # chosen_move (multi-word value until <end_chosen_move>)
+            if peek(1) and peek(1)[0] == "<chosen_move>":
+                take()  # <chosen_move>
+                move_parts = read_until({"<end_chosen_move>"})
+                if peek(1) and peek(1)[0] == "<end_chosen_move>":
+                    take()
+                move_str = " ".join(move_parts) if move_parts else "?"
+                lines.append(f"│ chosen: {move_str}")
+
+            # opponent_chosen_move (multi-word value)
+            if peek(1) and peek(1)[0] == "<opponent_chosen_move>":
+                take()
+                opp_parts = read_until({"<end_opponent_chosen_move>"})
+                if peek(1) and peek(1)[0] == "<end_opponent_chosen_move>":
+                    take()
+                opp_str = " ".join(opp_parts) if opp_parts else "?"
+                lines.append(f"│ opponent: {opp_str}")
+
+            if peek(1) and peek(1)[0] == "<eoa>":
+                take()
+
         else:
-            if has_items:
-                item = take(1)[0]
-            if has_abilities:
-                ability = take(1)[0]
+            # Skip unknown / non-structural tokens between blocks
+            i += 1
 
-        boosts = []
-        if is_active:
-            types_ = " ".join(take(2))
-            effect = take(1)[0]
-            status = take(1)[0]
-            # consume <noboosts> or <boosts> block
-            if peek(1) == ["<noboosts>"]:
-                take(1)
-            elif peek(1) == ["<boosts>"]:
-                take(1)
-                boosts = _tokens_until_structural()
-            return {
-                "name": name, "hp": hp, "item": item, "ability": ability,
-                "types": types_, "effect": effect, "status": status,
-                "boosts": boosts,
-            }
-        else:
-            if has_status_effect:
-                status = take(1)[0]
-                effect = take(1)[0]
-            moveset_tag = take(1)[0]  # <moveset> or <opponent_moveset>
-            moves = _tokens_until_structural()
-            result = {
-                "name": name, "hp": hp, "item": item, "ability": ability,
-                "tag": moveset_tag, "moves": moves, "boosts": boosts,
-            }
-            if has_status_effect:
-                result["status"] = status
-                result["effect"] = effect
-            return result
-
-    def pokemon_line(p, indent="  │   "):
-        """Render a single pokemon dict to a compact line."""
-        hp_str = p["hp"].replace(" ", "")
-        boost_str = ""
-        if p.get("boosts"):
-            boost_str = f"  [{' '.join(p['boosts'])}]"
-        if "types" in p:
-            # active pokemon
-            return (
-                f"{indent}{p['name']:<14} HP={hp_str:>5}  {p['item']:<12} {p['ability']:<14}"
-                f"  [{p['types']}]  {p['effect']}  {p['status']}{boost_str}"
-            )
-        else:
-            # inactive / bench / fainted
-            moves = " | ".join(p["moves"]) if p["moves"] else "(none)"
-            extras = ""
-            if "status" in p:
-                extras = f"  {p['status']}  {p['effect']}"
-            return (
-                f"{indent}{p['name']:<14} HP={hp_str:>5}  {p['item']:<12} {p['ability']:<14}"
-                f"{extras}  moves: {moves}{boost_str}"
-            )
-
-    # ── Player ──
-    if peek(1) == ["<player>"]:
-        take(1)  # <player>
-        player_active = parse_pokemon(is_active=True)
-        lines.append("  ┌─ Player ──────────────────────────────────────────")
-        lines.append(pokemon_line(player_active, "  │ ▶ "))
-
-        # moves (4 × <move> name type category) — always 4, padded with <blank>
-        lines.append("  │   Moves:")
-        for m in range(4):
-            if peek(1) == ["<move>"]:
-                take(1)
-                move_name = take(1)[0]
-                move_type = take(1)[0]
-                move_cat = take(1)[0]
-                if move_name != "<blank>":
-                    lines.append(f"  │     {m+1}. {move_name:<16} {move_type:<10} {move_cat}")
-                else:
-                    lines.append(f"  │     {m+1}. (empty)")
-            else:
-                break
-
-        # switches (0–5 blocks, no text padding)
-        if peek(1) == ["<switch>"]:
-            lines.append("  │   Bench:")
-        while peek(1) == ["<switch>"]:
-            take(1)  # <switch>
-            sw = parse_pokemon(is_active=False)
-            lines.append(pokemon_line(sw, "  │     "))
-
-    # ── Opponent ──
-    if peek(1) == ["<opponent>"]:
-        take(1)
-        opp_active = parse_pokemon(is_active=True)
-        lines.append("  ┌─ Opponent ────────────────────────────────────────")
-        lines.append(pokemon_line(opp_active, "  │ ▶ "))
-        # opponent active moves (<opponent_moveset> + variable count of revealed moves)
-        if peek(1) == ["<opponent_moveset>"]:
-            take(1)
-            opp_moves = _tokens_until_structural()
-            if opp_moves:
-                lines.append(f"  │     moves: {' | '.join(opp_moves)}")
-            else:
-                lines.append(f"  │     moves: (none revealed)")
-
-        # opponent bench (0–5 blocks, no text padding, variable moves per mon)
-        if peek(1) == ["<opponent_bench>"]:
-            lines.append("  │   Bench:")
-        while peek(1) == ["<opponent_bench>"]:
-            take(1)
-            ob = parse_pokemon(is_active=False, has_status_effect=True)
-            lines.append(pokemon_line(ob, "  │     "))
-
-    # ── Player Fainted ──
-    if peek(1) == ["<fainted>"]:
-        lines.append("  ┌─ Player Fainted ──────────────────────────────────")
-        while peek(1) == ["<fainted>"]:
-            take(1)
-            pf = parse_pokemon(is_active=False, has_hp=False)
-            lines.append(pokemon_line(pf, "  │     "))
-
-    # ── Opponent Fainted ──
-    if peek(1) == ["<opponent_fainted>"]:
-        lines.append("  ┌─ Opponent Fainted ────────────────────────────────")
-        while peek(1) == ["<opponent_fainted>"]:
-            take(1)
-            of = parse_pokemon(is_active=False, has_status_effect=True, has_hp=False)
-            lines.append(pokemon_line(of, "  │     "))
-
-    # ── Conditions (weather, optional battle_field, side conditions) ──
-    if peek(1) == ["<conditions>"]:
-        take(1)
-        weather = take(1)[0]
-        # battle_field is optional — only present when non-"nofield"
-        battle_field = "<none>"
-        if peek(1) and peek(1)[0] not in ("noconditions", "nofield") and not peek(1)[0].startswith("no"):
-            # Heuristic: if the next token looks like a field effect (not a side condition)
-            # Known field effects: trickroom, magicroom, wonderroom, electricterrain, etc.
-            maybe_field = peek(1)[0]
-            if maybe_field not in ("noconditions",):
-                battle_field = take(1)[0]
-        player_cond = take(1)[0]
-        opp_cond = take(1)[0]
-        lines.append("  ┌─ Conditions ──────────────────────────────────────")
-        lines.append(f"  │   weather = {weather}")
-        if battle_field != "<none>":
-            lines.append(f"  │   field   = {battle_field}")
-        lines.append(f"  │   player  = {player_cond}")
-        lines.append(f"  │   opponent = {opp_cond}")
-
-    # ── Previous Moves ──
-    if peek(1) == ["<player_prev>"]:
-        take(1)  # <player_prev>
-        player_prev = take(1)[0]
-        if peek(1) == ["<opp_prev>"]:
-            take(1)  # <opp_prev>
-            opp_prev = take(1)[0]
-        else:
-            opp_prev = "?"
-        lines.append("  ┌─ Previous ────────────────────────────────────────")
-        lines.append(f"  │   player   = {player_prev}")
-        lines.append(f"  │   opponent = {opp_prev}")
-
-    # ── Terminal ──
-    if i < len(tokens) and tokens[i] in ("<ongoing>", "<won>", "<lost>"):
-        terminal = tokens[i]
-        take(1)
-        label = {"<ongoing>": "ongoing", "<won>": "POV won", "<lost>": "POV lost"}[terminal]
-        lines.append(f"  ┌─ Terminal ────────────────────────────────────────")
-        lines.append(f"  │   {label}")
-
-    lines.append("  └───────────────────────────────────────────────────")
     return "\n".join(lines)
 
 
@@ -266,11 +275,9 @@ def detokenize_state(token_ids, tokenizer, strip_padding: bool = True) -> list[s
     """Convert integer token IDs for one state into a list of string tokens.
 
     Args:
-        token_ids: 1-D array-like of token IDs for a single state.
-        tokenizer: A PokemonTokenizer instance used to map IDs → strings.
-        strip_padding: If True, strip trailing padding tokens (both the
-            tokenizer's ``pad_token_id`` and legacy 0 / -1 values from
-            older data-generation runs).
+        token_ids: 1-D array-like of token IDs.
+        tokenizer: A PokemonTokenizer instance.
+        strip_padding: If True, strip trailing padding tokens.
 
     Returns:
         List of string tokens.

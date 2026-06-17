@@ -2,13 +2,13 @@
 End-to-end smoke tests using the full ReplayParser pipeline.
 
 These tests run ``ReplayParser.parse_replay()`` with ``NaiveUsagePredictor`` on
-real raw replay files and verify that output files are produced correctly.
+real raw replay files and verify that text output files are produced correctly
+in the new stateful text format.
 """
 
 import os
 import glob
 import pytest
-import orjson
 
 from metamon.backend.replay_parser.parse_replays import ReplayParser
 from metamon.backend.replay_parser.exceptions import ForwardException, BackwardException
@@ -24,7 +24,7 @@ class TestE2ESmoke:
     def test_full_pipeline_on_3_replays(self, fmt, tmp_path):
         """Run ReplayParser.parse_replay() on up to 3 replays per format.
 
-        Verifies that output JSON files are created and are valid.
+        Verifies that text output files are created and contain valid structure.
         """
         paths = find_random_replay_files(fmt, 3)
         assert paths, f"No raw replays for {fmt}"
@@ -50,22 +50,38 @@ class TestE2ESmoke:
 
         assert ok > 0, f"All replays for {fmt} failed the full pipeline"
 
-        # Check output files exist
-        out_files = glob.glob(os.path.join(output_dir, "*.json"))
-        assert len(out_files) >= ok, (
-            f"Expected >= {ok} output files, found {len(out_files)}"
+        # Check output files exist (.txt extension for new format)
+        out_files = glob.glob(os.path.join(output_dir, "*.txt"))
+        assert len(out_files) >= ok * 2, (
+            f"Expected >= {ok * 2} output files (2 POV per replay), found {len(out_files)}"
         )
 
         # Verify each output file has the expected structure
         for f in out_files:
-            with open(f, "r") as fh:
-                data = orjson.loads(fh.read())
-            assert "states" in data, f"Missing 'states' in {f}"
-            assert "actions" in data, f"Missing 'actions' in {f}"
-            assert len(data["states"]) == len(data["actions"]), (
-                f"states ({len(data['states'])}) != actions ({len(data['actions'])}) in {f}"
+            with open(f, "r", encoding="utf-8") as fh:
+                text = fh.read()
+
+            assert "<begin_team>" in text, f"Missing <begin_team> in {f}"
+            assert "<end_team>" in text, f"Missing <end_team> in {f}"
+            assert "<bos>" in text, f"Missing <bos> in {f}"
+            assert "<eos>" in text, f"Missing <eos> in {f}"
+            assert "<boa>" in text, f"Missing <boa> in {f}"
+            assert "<eoa>" in text, f"Missing <eoa> in {f}"
+            assert "<terminal>" in text, f"Missing <terminal> in {f}"
+
+            # Count state-action pairs: bos count should equal eos count,
+            # and boa count should equal eoa count
+            bos_count = text.count("<bos>")
+            eos_count = text.count("<eos>")
+            boa_count = text.count("<boa>")
+            eoa_count = text.count("<eoa>")
+            assert bos_count == eos_count, f"<bos> ({bos_count}) != <eos> ({eos_count})"
+            assert boa_count == eoa_count, f"<boa> ({boa_count}) != <eoa> ({eoa_count})"
+            # Actions = states - 1 (no action after terminal state)
+            assert bos_count == boa_count + 1, (
+                f"states ({bos_count}) != actions + 1 ({boa_count + 1})"
             )
-            assert len(data["states"]) > 0, f"Empty states in {f}"
+            assert bos_count > 0, f"Empty states in {f}"
 
     def test_full_pipeline_single_replay(self, tmp_path):
         """Parse one replay end-to-end and do detailed validation."""
@@ -84,49 +100,51 @@ class TestE2ESmoke:
         )
         parser.parse_replay(paths[0])
 
-        out_files = glob.glob(os.path.join(output_dir, "*.json"))
+        out_files = glob.glob(os.path.join(output_dir, "*.txt"))
         assert len(out_files) == 2, (
             f"Expected 2 POV files, got {len(out_files)}"
         )
 
         for f in out_files:
-            with open(f, "r") as fh:
-                data = orjson.loads(fh.read())
+            with open(f, "r", encoding="utf-8") as fh:
+                text = fh.read()
 
-            # States must be a list of dicts
-            assert isinstance(data["states"], list)
-            assert all(isinstance(s, dict) for s in data["states"])
+            # Must start with team header
+            assert text.startswith("<begin_team>"), f"File {f} doesn't start with team header"
 
-            # Actions must be a list of ints
-            assert isinstance(data["actions"], list)
-            assert all(isinstance(a, int) for a in data["actions"])
+            # Must contain format tag
+            assert "<format>" in text, f"Missing <format> in {f}"
 
-            # Action indices in valid range
-            for a in data["actions"]:
-                assert -1 <= a <= 13, f"Action index {a} out of range"
+            # Must contain arena with active and opponent
+            assert "<active>" in text, f"Missing <active> in {f}"
+            assert "<opponent>" in text, f"Missing <opponent> in {f}"
 
-            # Validate required state keys on first and last state
-            required_keys = {
-                "format",
-                "player_active_pokemon",
-                "opponent_active_pokemon",
-                "available_switches",
-                "opponent_bench",
-                "fainted_pokemon",
-                "opponent_fainted",
-                "player_prev_move",
-                "opponent_prev_move",
-                "opponents_remaining",
-                "player_conditions",
-                "opponent_conditions",
-                "weather",
-                "battle_field",
-                "forced_switch",
-                "battle_won",
-                "battle_lost",
-                "can_tera",
-                "opponent_teampreview",
-            }
-            for state in data["states"]:
-                for key in required_keys:
-                    assert key in state, f"Missing key '{key}' in state"
+            # Must have bench section
+            assert "<bench>" in text, f"Missing <bench> in {f}"
+
+            # Must have conditions
+            assert "<conditions>" in text, f"Missing <conditions> in {f}"
+
+            # Must have a terminal marker
+            assert "<terminal>" in text, f"Missing <terminal> in {f}"
+            assert "<end_terminal>" in text, f"Missing <end_terminal> in {f}"
+
+            # Validate terminal content
+            import re
+            terminal_options = ["won", "lost", "tie", "forfeit"]
+            found_terminal = False
+            for opt in terminal_options:
+                # Terminal is now on separate lines: <terminal>\nwon\n<end_terminal>
+                if re.search(rf'<terminal>\s*{opt}\s*<end_terminal>', text, re.DOTALL):
+                    found_terminal = True
+                    break
+            assert found_terminal, f"No valid terminal found in {f}"
+
+            # HP values should be in fixed-point format (X.XX)
+            import re
+            hp_pattern = re.compile(r'\b\d\.\d{2}\b')
+            hp_matches = hp_pattern.findall(text)
+            assert len(hp_matches) > 0, f"No HP values found in {f}"
+
+            # Check that noboosts token is bracketless
+            assert "noboosts" in text, f"Missing noboosts in {f}"

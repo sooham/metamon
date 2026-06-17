@@ -153,6 +153,6 @@ def run_e2e_parse(
         compress=False,
     )
     parser.parse_replay(path)
-    out_files = glob.glob(os.path.join(output_dir, "*.json"))
+    out_files = glob.glob(os.path.join(output_dir, "*.txt"))
     assert out_files, f"No output produced for {path}"
     return out_files[0]

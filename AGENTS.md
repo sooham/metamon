@@ -7,7 +7,7 @@ Before running any commands which will generate a lot of files, check if the com
 # Surveying the pokemon datasets directory
 The pokemon datasets is in $METAMON_CACHE_DIR . when you look at subfolders in that be mindful because
 the folders contain millions of files, using common bash commands like `ls`, `find` etc. will time out.
-if the user has given you the exact battle id or filename , use that smogtours-gen1ou-749168_Unrated_encore90411_vs_mindplate96156_02-23-2024_WIN.json 
+if the user has given you the exact battle id or filename , use that smogtours-gen1ou-749168_Unrated_encore90411_vs_mindplate96156_02-23-2024_WIN.txt 
 if you want to pick random battles or replay files , use `ls -f` in combination with tools like `head` or `tail` and others which are only going to read so many inodes in the folder.
 
 # Asking the user for help
@@ -27,7 +27,7 @@ You should write code which if necessary and at your own discrection and determi
 
 ```
 parsed replays               scripts/generate_world_model_data.py
-  (UniversalState JSON)  ──►  sharded .npz files  ──►  WorldModelDataset  ──►  WorldModelTransformer
+  (.txt text format)    ──►  sharded .npz files  ──►  WorldModelDataset  ──►  WorldModelTransformer
                                   │                         (IterableDataset)       (autoregressive decoder)
                                   │
                             states: (total_tokens,) int16      — flat array, all token IDs concatenated
@@ -208,33 +208,35 @@ After the forward pass, a "final turn" is appended with both full teams filled i
 - Resolves Zoroark Illusion (`_resolve_zoroark`) — fixes action targets and movesets that were misattributed to the disguise Pokémon
 - Aligns states and actions (`_align_states_actions`) — flattens turns+subturns into a timeline of `(state, action)` pairs for one player, with the action being what the player clicked at that state (from `moves_1`/`moves_2`, falling back to `choices_1`/`choices_2`)
 
-The result is saved as two JSON files per raw replay — e.g. `gen1ou-370249571_Unrated_uturn10423_vs_tintedlens67414_02-23-2024_WIN.json` and the corresponding LOSS file. Each contains `{"states": [...], "actions": [...]}` in the Universal format.
+The result is serialized to a **stateful text format** and saved as two `.txt` files per raw replay — e.g. `gen1ou-370249571_Unrated_uturn10423_vs_tintedlens67414_02-23-2024_WIN.txt` and the corresponding LOSS file.
+
+The text format is **not Markovian** — each state shows only the current battlefield (active Pokémon, HP, status, weather, side conditions) plus the POV player's bench.  The model derives cumulative knowledge by reading the state sequence from beginning to end.  Actions use explicit move names and Pokémon names (e.g. `<chosen_move>blizzard</chosen_move>`, `<chosen_move>switch alakazam</chosen_move>`) rather than integer indices.  See `docs/new_parser_format_spec.md` for the full specification.
+
+For doubles formats, `POVReplayDoubles` (a subclass of `POVReplay`) handles two active Pokémon per side.  The text output uses `<active1>`/`<active2>`/`<opponent1>`/`<opponent2>` tags, per-slot `<begin_moves slot="1">` blocks, and per-slot action entries with `slot="1"`/`slot="2"` attributes.  See `docs/doubles_implementation_plan.md`.
 
 ### Key classes in the pipeline
 - `ParsedReplay` / `Turn` / `Pokemon` / `Move` / `Action` (`replay_state.py`) — the in-memory battle state during parsing
 - `SimProtocol` (`forward.py`) — the line-by-line log interpreter
-- `POVReplay` (`backward.py`) — converts spectator state to one-sided POV
+- `POVReplay` / `POVReplayDoubles` (`backward.py`) — converts spectator state to one-sided POV (singles and doubles)
 - `ReplayParser` (`parse_replays.py`) — orchestrates the full pipeline (forward → backward → save)
-- `UniversalState` / `UniversalAction` / `UniversalPokemon` (`interface.py`) — backend-agnostic representations used by datasets and the RL env. These are what get serialized to disk and what the PyTorch datasets load.
+- `text_serializer.py` — serializes `POVReplay` objects to the new stateful text format (separate functions for singles and doubles)
+- `UniversalState` / `UniversalAction` / `UniversalPokemon` (`interface.py`) — backend-agnostic representations (still used by the RL env and world-model data generator; the new text serializer bypasses these for the parser output)
 
-**Further reading:** The core pipeline entry point is `ReplayParser.parse_replay()` in `metamon/backend/replay_parser/parse_replays.py` — read this first for the big picture. Then trace into `forward.forward_fill()` → `SimProtocol.interpret_message()`, and `backward.backward_fill()` → `POVReplay`. The validation checks in `metamon/backend/replay_parser/checks.py` document every invariant the forward and backward passes must maintain. Tests in `tests/test_forward_actions.py`, `tests/test_backward_structure.py`, and `tests/test_e2e_smoke.py` show the expected behavior. The parsed output format is consumed by `metamon/data/parsed_replay_dset.py` (PyTorch Dataset) and `metamon/env/metamon_battle.py` (online RL env), which both convert through `interface.py`'s `UniversalState`/`UniversalAction`.
+**Further reading:** The core pipeline entry point is `ReplayParser.parse_replay()` in `metamon/backend/replay_parser/parse_replays.py` — read this first for the big picture. Then trace into `forward.forward_fill()` → `SimProtocol.interpret_message()`, and `backward.backward_fill()` → `POVReplay`. The new text format is fully specified in `docs/new_parser_format_spec.md`. Tests in `tests/test_forward_actions.py`, `tests/test_backward_structure.py`, `tests/test_e2e_smoke.py`, and `tests/test_e2e_doubles.py` show the expected behavior. The parsed output format is consumed by `metamon/data/parsed_replay_dset.py` (PyTorch Dataset) and `metamon/env/metamon_battle.py` (online RL env), which both convert through `interface.py`'s `UniversalState`/`UniversalAction`.
 
-# Action indexes in the Universal format
+# Parsed-replay text format (v2)
 
-Every action a player can take is mapped to an integer **action index** between -1 and 12, as defined in `UniversalAction.from_ReplayAction()` in `metamon/interface.py`:
+The new parser output is a **stateful text format** where each file is a sequence of state blocks (`<bos>`…`<eos>`) and action blocks (`<boa>`…`<eoa>`) interleaved.  See `docs/new_parser_format_spec.md` for the authoritative specification.  Key differences from the old JSON `{"states": [...], "actions": [...]}` format:
 
-| Action Index | Meaning |
-|---|---|
-| **-1** | Missing / unknown action (the player's choice was never revealed — e.g. paralyzed, asleep, flinched, or Zoroark illusion confusion) |
-| **0–3** | **Moves** — the active Pokémon's moves, sorted alphabetically (0 also covers Recharge/Struggle/Fight when forced) |
-| **4–8** | **Switches** — up to 5 benched Pokémon (non-active, non-fainted), sorted alphabetically |
-| **9–12** | **Tera-boosted moves** — same as moves 0–3 but with the Tera gimmick active (Gen 9 only); action index = 9 + move_index |
-
-The `DefaultActionSpace` uses `Discrete(13)` (indices 0–12). The `MinimalActionSpace` strips tera by mapping 9–12 back to 0–3, using `Discrete(9)`. The world model (`sl/model.py`) uses an embedding table of size 14 (action indices -1 through 12, remapped to 0–13 via `action_idx + 1`).
-
-Legal action masking is done by `UniversalAction.maybe_valid_actions()`: during a forced switch, only switch indices (4–8) are legal; otherwise moves (0–3), tera moves (9–12 if `can_tera`), and switches (4–8) are all allowed.
-
-**Further reading:** The authoritative definitions are in `metamon/interface.py` — `UniversalAction.from_ReplayAction()` (mapping raw actions → indices), `UniversalAction.maybe_valid_actions()` (legal masking), and `UniversalAction.action_idx_to_BattleOrder()` (index → online move selection). The two action spaces (`DefaultActionSpace`, `MinimalActionSpace`) are also in `interface.py`. For how indices are consumed by models, see `metamon/sl/model.py` (`action_embedding` with 14 entries) and `metamon/rl/train.py`. Tests in `tests/test_forward_actions.py` verify action invariants, and `checks.check_action_idxs()` in `metamon/backend/replay_parser/checks.py` validates index correctness per timestep.
+- **Actions use explicit names**, not integer indices.  Moves: `<chosen_move>blizzard</chosen_move>`.  Switches: `<chosen_move>switch alakazam</chosen_move>`.  Unknown/missing: `<chosen_move>unknown</chosen_move>`.  When a Pokémon is fully paralyzed / asleep and can't execute its move: `<chosen_move cant="par">lovelykiss</chosen_move>`.
+- **States show only current battlefield info** — active Pokémon (HP, status, boosts, effects), weather, side conditions, and the POV player's bench.  Opponent bench is NOT shown (the model infers it from the state sequence).
+- **Team header** at the top of the file shows the POV player's full backward-filled team (all 6 species, types, items, abilities, gender, full 4-move movesets).
+- **Opponent team preview** (Gen 5+ only) shows opponent species at file start.
+- **Turn numbering** starts at 1 (the pre-battle lead-selection state is "turn 1").
+- **Doubles** uses `<active1>`/`<active2>`/`<opponent1>`/`<opponent2>`, per-slot moves and actions.
+- **Gender** (Gen 2+) is shown in team headers and bench entries: `M`, `F`, or `N` (unknown/genderless).  Omitted in Gen 1.
+- **No XML-style closers** — all closing tags use `<end_foo>` form (never `</foo>`).
+- **Value tokens are bracketless** — `noboosts`, `noeffect`, `nostatus`, `noweather`, `par`, `slp`, etc. have no angle brackets.
 
 # Team Preview — lead prediction model
 

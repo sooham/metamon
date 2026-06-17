@@ -274,7 +274,10 @@ class Move(PEMove):
         # poke-env stores a ton of data in each Move. it is faster
         # to manually copy fields than to go through __init__ (which
         # hits the dex JSON and entry properties).
+        # Register in memo BEFORE field assignment in case of
+        # circular references (unlikely for Move, but safe).
         new = Move.__new__(Move)
+        memo[id(self)] = new
         # Copy poke-env parent internals (set in poke_env.environment.Move.__init__)
         new._id = self._id
         new._base_power_override = self._base_power_override
@@ -291,7 +294,6 @@ class Move(PEMove):
         new.pp = self.pp
         new.maximum_pp = self.maximum_pp
         new.charge_move = self.charge_move
-        memo[id(self)] = new
         return new
 
     def from_transform(self) -> "Move":
@@ -372,6 +374,7 @@ class Pokemon:
         self.type: Optional[List[str]] = None
         self.had_type: Optional[List[str]] = None
         self.tera_type: Optional[str] = None
+        self.gender: Optional[str] = None  # "M", "F", or "N" (unknown/absent); None = not yet parsed
         self.base_stats: Dict[str, int] = {}
 
         self.active_item: Optional[str] = None
@@ -421,21 +424,52 @@ class Pokemon:
         # can reference this Pokemon, causing infinite recursion otherwise).
         memo[id(self)] = new
         new.__dict__ = self.__dict__.copy()
-        # Replace shared mutable fields with deep copies
-        new.moves = copy.deepcopy(self.moves, memo)
+        # Replace shared mutable fields with deep copies.
+        # Use dict comprehension to bypass _deepcopy_dict overhead.
+        new.moves = {k: copy.deepcopy(v, memo) for k, v in self.moves.items()}
         # had_moves Move objects are effectively immutable (PP never modified).
         # Shallow-copy the dict so adding new moves doesn't affect other turns.
         new.had_moves = self.had_moves.copy()
-        new.boosts = copy.deepcopy(self.boosts, memo)
+        # Boosts has only int fields — we can fast-copy without deepcopy dispatch.
+        new.boosts = Boosts(
+            atk_=self.boosts.atk_,
+            spa_=self.boosts.spa_,
+            def_=self.boosts.def_,
+            spd_=self.boosts.spd_,
+            spe_=self.boosts.spe_,
+            accuracy_=self.boosts.accuracy_,
+            evasion_=self.boosts.evasion_,
+        )
         new.type = self.type.copy() if self.type is not None else None
         new.had_type = self.had_type.copy() if self.had_type is not None else None
         new.effects = self.effects.copy()
         new.move_change_to_from = self.move_change_to_from.copy()
-        new.last_used_move = copy.deepcopy(self.last_used_move, memo)
-        new.last_target = copy.deepcopy(self.last_target, memo)
-        new.last_targeted_by = copy.deepcopy(self.last_targeted_by, memo)
-        new.tricking = copy.deepcopy(self.tricking, memo)
-        new.transformed_into = copy.deepcopy(self.transformed_into, memo)
+        # Most rarely-set fields are None — skip the deepcopy overhead
+        new.last_used_move = (
+            copy.deepcopy(self.last_used_move, memo)
+            if self.last_used_move is not None
+            else None
+        )
+        new.last_target = (
+            copy.deepcopy(self.last_target, memo)
+            if self.last_target is not None
+            else None
+        )
+        new.last_targeted_by = (
+            copy.deepcopy(self.last_targeted_by, memo)
+            if self.last_targeted_by is not None
+            else None
+        )
+        new.tricking = (
+            copy.deepcopy(self.tricking, memo)
+            if self.tricking is not None
+            else None
+        )
+        new.transformed_into = (
+            copy.deepcopy(self.transformed_into, memo)
+            if self.transformed_into is not None
+            else None
+        )
         return new
 
     def __eq__(self, other: object) -> bool:
@@ -556,9 +590,25 @@ class Pokemon:
         ability, item, moves, and type.  Used by the backward pass to create
         fresh copies for team prediction / final-turn filling.
 
-        Called by :class:`~metamon.backend.replay_parser.backward.TeamPredictor`.
-        """
-        fresh = copy.deepcopy(self)
+        Optimisation: only deep-copies the fields that survive the reset
+        (had_* fields and species info).  Everything else is rebuilt fresh."""
+        fresh = Pokemon.__new__(Pokemon)
+        # ── fields that survive fresh_like unchanged ────────────────
+        fresh.name = self.name
+        fresh.had_name = self.had_name
+        fresh.nickname = self.nickname
+        fresh.unique_id = self.unique_id
+        fresh.lvl = self.lvl
+        fresh.gen = self.gen
+        fresh.base_stats = self.base_stats
+        fresh.gender = self.gender
+        fresh.tera_type = self.tera_type
+        # had_moves / had_ability / had_item / had_type survive
+        fresh.had_moves = self.had_moves.copy()
+        fresh.had_ability = self.had_ability
+        fresh.had_item = self.had_item
+        fresh.had_type = self.had_type.copy() if self.had_type is not None else None
+        # ── reset to fresh-battle defaults ──────────────────────────
         fresh.boosts = Boosts()
         fresh.status = Nothing.NO_STATUS
         fresh.effects = {}
@@ -567,6 +617,15 @@ class Pokemon:
         fresh.transformed_into = None
         fresh.pending_foreign_move = None
         fresh._pending_foreign_charge_remaining = 0
+        fresh.transformed_this_turn = False
+        fresh.protected = False
+        fresh.last_target = None
+        fresh.last_targeted_by = None
+        fresh.tricking = None
+        fresh.cant_reason = None
+        fresh.last_used_move = None
+        fresh.move_change_to_from = {}
+        # ── active state mirrors had_* (fresh copy, pre-battle) ────
         fresh.active_ability = fresh.had_ability
         fresh.active_item = fresh.had_item
         fresh.moves = copy.deepcopy(fresh.had_moves)
@@ -830,6 +889,17 @@ class Pokemon:
                     self.moves[move_name] = had_move
 
     @staticmethod
+    def extract_gender(details: str) -> Optional[str]:
+        """Extract gender ("M", "F", or None) from a Showdown DETAILS string.
+
+        Gen 1 does not have genders; later gens append ``, M`` or ``, F``.
+        Returns ``None`` when no gender marker is present (Gen 1, or
+        genderless Pokémon like Magnemite).
+        """
+        m = re.search(r",\s*([MF])(?:$|,)", details)
+        return m.group(1) if m else None
+
+    @staticmethod
     def identify_from_details(
         s: str, gen: int, get_base_species: bool = False
     ) -> Tuple[str, int]:
@@ -1073,6 +1143,50 @@ class Turn:
     can_tera_2: bool = False
     teampreview_1: List[Pokemon] = field(default_factory=list)
     teampreview_2: List[Pokemon] = field(default_factory=list)
+
+    def __deepcopy__(self, memo: dict) -> "Turn":
+        """Fast deepcopy that avoids Python's default recursive dataclass
+        traversal.  Only the Pokemon objects need independent state (HP,
+        status, boosts, moves evolve per turn); everything else is either
+        immutable or can be shallow-copied.
+
+        Uses manual list/dict comprehensions instead of ``copy.deepcopy``
+        on the containers themselves — this bypasses the expensive
+        ``_deepcopy_list`` / ``_deepcopy_dict`` dispatch for every
+        container element."""
+        new = Turn.__new__(Turn)
+        memo[id(self)] = new
+        # ── team rosters (Pokemon objects → deepcopy) ────────────────
+        new.pokemon_1 = [copy.deepcopy(p, memo) for p in self.pokemon_1]
+        new.pokemon_2 = [copy.deepcopy(p, memo) for p in self.pokemon_2]
+        # Active slots — memo will return the already-copied Pokemon
+        # from pokemon_1 / pokemon_2 above, preserving shared identity.
+        new.active_pokemon_1 = [copy.deepcopy(p, memo) for p in self.active_pokemon_1]
+        new.active_pokemon_2 = [copy.deepcopy(p, memo) for p in self.active_pokemon_2]
+        # ── actions (user/target Pokemon refs remapped by memo) ─────
+        new.moves_1 = [copy.deepcopy(a, memo) for a in self.moves_1]
+        new.choices_1 = [copy.deepcopy(a, memo) for a in self.choices_1]
+        new.moves_2 = [copy.deepcopy(a, memo) for a in self.moves_2]
+        new.choices_2 = [copy.deepcopy(a, memo) for a in self.choices_2]
+        # ── immutable scalars — share ───────────────────────────────
+        new.weather = self.weather
+        new.turn_number = self.turn_number
+        new.is_force_switch = self.is_force_switch
+        new.can_tera_1 = self.can_tera_1
+        new.can_tera_2 = self.can_tera_2
+        # ── simple dicts (enum→int, values immutable) ───────────────
+        new.battle_field = self.battle_field.copy()
+        new.conditions_1 = self.conditions_1.copy()
+        new.conditions_2 = self.conditions_2.copy()
+        # ── replacements (namedtuples with Pokemon refs → memo) ─────
+        new.replacements_1 = [copy.deepcopy(r, memo) for r in self.replacements_1]
+        new.replacements_2 = [copy.deepcopy(r, memo) for r in self.replacements_2]
+        # ── subturns (dataclasses with Turn/Action refs → memo) ────
+        new.subturns = [copy.deepcopy(s, memo) for s in self.subturns]
+        # ── teampreview rosters (Pokemon objects → deepcopy) ───────
+        new.teampreview_1 = [copy.deepcopy(p, memo) for p in self.teampreview_1]
+        new.teampreview_2 = [copy.deepcopy(p, memo) for p in self.teampreview_2]
+        return new
 
     def get_active_pokemon(self, p1: bool) -> Optional[Pokemon]:
         return self.active_pokemon_1 if p1 else self.active_pokemon_2
@@ -1421,6 +1535,32 @@ class ParsedReplay:
     # Only applied during backward fill to avoid leaking full-world-state
     # information into forward-fill training states.
     showteam_data: Optional[dict] = None
+
+    def __deepcopy__(self, memo: dict) -> "ParsedReplay":
+        """Fast deepcopy that delegates to Turn.__deepcopy__ for the
+        turnlist and shares immutable metadata fields."""
+        new = ParsedReplay.__new__(ParsedReplay)
+        memo[id(self)] = new
+        # ── immutable scalars — share ──────────────────────────────
+        new.gameid = self.gameid
+        new.time_played = self.time_played  # datetime is immutable
+        new.format = self.format
+        new.gen = self.gen
+        new.winner = self.winner
+        # ── shallow-copy simple collections (elements are immutable) ─
+        new.ratings = self.ratings.copy()
+        new.players = self.players.copy()
+        new.rules = self.rules.copy()
+        new.check_warnings = self.check_warnings.copy()
+        # ── turnlist — each Turn uses Turn.__deepcopy__ ────────────
+        new.turnlist = [copy.deepcopy(t, memo) for t in self.turnlist]
+        # ── showteam_data (nested dict of strings) ─────────────────
+        new.showteam_data = (
+            copy.deepcopy(self.showteam_data, memo)
+            if self.showteam_data is not None
+            else None
+        )
+        return new
 
     def __getitem__(self, i: int) -> Turn:
         return self.turnlist[i]
