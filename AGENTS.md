@@ -226,8 +226,7 @@ Every action a player can take is mapped to an integer **action index** between 
 | Action Index | Meaning |
 |---|---|
 | **-1** | Missing / unknown action (the player's choice was never revealed — e.g. paralyzed, asleep, flinched, or Zoroark illusion confusion) |
-| **0** | No-op or special move: Recharge (after Hyper Beam), Struggle (no PP left), or Fight (Gen 1's generic attack button) |
-| **1–3** | **Moves** — up to 4 moves from the active Pokémon, sorted alphabetically for consistency |
+| **0–3** | **Moves** — the active Pokémon's moves, sorted alphabetically (0 also covers Recharge/Struggle/Fight when forced) |
 | **4–8** | **Switches** — up to 5 benched Pokémon (non-active, non-fainted), sorted alphabetically |
 | **9–12** | **Tera-boosted moves** — same as moves 0–3 but with the Tera gimmick active (Gen 9 only); action index = 9 + move_index |
 

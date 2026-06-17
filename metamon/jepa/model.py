@@ -54,7 +54,7 @@ import torch.nn.functional as F
 # to match the gen1ou empirical max; longer states are truncated in the
 # collate function.  gen9ou states can be larger but are also capped here
 # for consistent batch shapes.
-MAX_STATE_LENGTH: int = 200
+MAX_STATE_LENGTH: int = 175 # its actually 175 now
 
 # Latent dimension (size of the deterministic embedding e).
 LATENT_DIM: int = 192
