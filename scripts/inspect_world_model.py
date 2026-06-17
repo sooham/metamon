@@ -153,10 +153,10 @@ def format_pretty(tokens: list[str]) -> str:
             opp_moves = [take(1)[0] for _ in range(4)]
             lines.append(f"  │     moves: {' | '.join(opp_moves)}")
 
-        # opponent bench (5 × <opponent_switch> + 14 tokens)
+        # opponent bench (5 × <opponent_bench> + 14 tokens)
         lines.append("  │   Bench:")
         for s in range(5):
-            if peek(1) == ["<opponent_switch>"]:
+            if peek(1) == ["<opponent_bench>"]:
                 tag = take(1)[0]
                 if _is_blank_slot(tokens, i, OPPONENT_INACTIVE_TOKENS):
                     take(OPPONENT_INACTIVE_TOKENS)

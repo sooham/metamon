@@ -1318,10 +1318,40 @@ class SimProtocol:
     def _parse_cant(self, args: List[str]):
         """
         |cant|POKEMON|REASON or |cant|POKEMON|REASON|MOVE
+
+        The Pokémon was prevented from using its move.  We record the reason
+        so that the POV-alignment stage can substitute a valid action (the
+        player *did* choose a move — they just couldn't execute it).
+
+        Two exceptions produce a known action immediately:
+
+        * **recharge** — the player has no choice; sets ``is_noop=True``.
+        * **flinch** — transient; tracked as ``PEEffect.FLINCH`` in effects.
         """
-        # pokemon cannot move and we usually aren't told what the player's preferred action was.
-        # the action labels default to None, so we do nothing here.
-        pass
+        pokemon = self.curr_turn.get_pokemon_from_str(args[0])
+        reason = args[1] if len(args) > 1 else ""
+        if pokemon is None:
+            return
+
+        pokemon.cant_reason = reason
+
+        if reason == "recharge":
+            # Same as |-mustrecharge| — the only valid action is Recharge.
+            self.curr_turn.set_move_attribute(
+                s=args[0][:3],
+                move_name="Recharge",
+                is_noop=True,
+                is_switch=False,
+                user=pokemon,
+            )
+        elif reason == "flinch":
+            # Track flinch as a transient volatile effect so the state
+            # surface has it; cleared naturally at end-of-turn.
+            pokemon.start_effect(PEEffect.FLINCH)
+        # For slp, par, frz, partiallytrapped, move: Taunt, move: Heal Block,
+        # ability: Truant, Focus Punch — no Action is set here.  The action
+        # stays None and the POV-alignment stage in backward.py substitutes
+        # a random valid move (or action=0 for Truant).
 
     def _parse_immune(self, args: List[str]):
         """

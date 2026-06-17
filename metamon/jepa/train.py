@@ -14,7 +14,8 @@ model that:
 No VAE decoder, no stop-gradient, no teacher-student.  A single
 hyperparameter λ (lambda_sigreg) balances prediction vs. regularization.
 
-All states end with <eos>.
+Newer shards store every state as ``<bos> ... <eos>``.  The JEPA loader uses
+stored state tokens as-is; it does not add boundary tokens.
 
 Usage:
     uv run python -m metamon.jepa.train \\
@@ -37,7 +38,6 @@ Usage:
 
 import argparse
 import functools
-import json
 import math
 import os
 import time
@@ -78,25 +78,139 @@ except ImportError:
     pass
 
 
+def _new_embedding_stats(device: torch.device, latent_dim: int) -> dict[str, torch.Tensor | int]:
+    return {
+        "count": 0,
+        "sum": torch.zeros(latent_dim, device=device, dtype=torch.float64),
+        "sum_sq": torch.zeros(latent_dim, device=device, dtype=torch.float64),
+        "outer": torch.zeros(latent_dim, latent_dim, device=device, dtype=torch.float64),
+    }
+
+
+def _update_embedding_stats(
+    stats: dict[str, torch.Tensor | int],
+    embeddings: torch.Tensor,
+) -> None:
+    z = embeddings.detach().to(dtype=torch.float64)
+    stats["count"] = int(stats["count"]) + z.shape[0]
+    stats["sum"] = stats["sum"] + z.sum(dim=0)
+    stats["sum_sq"] = stats["sum_sq"] + z.square().sum(dim=0)
+    stats["outer"] = stats["outer"] + z.T @ z
+
+
+def _finalize_embedding_stats(
+    stats: dict[str, torch.Tensor | int],
+) -> tuple[dict[str, float], dict[str, np.ndarray]]:
+    count = int(stats["count"])
+    if count <= 0:
+        empty = np.array([], dtype=np.float32)
+        return {
+            "enc_dim_mean_mean": 0.0,
+            "enc_dim_mean_abs_mean": 0.0,
+            "enc_dim_mean_abs_max": 0.0,
+            "enc_dim_std_mean": 0.0,
+            "enc_dim_std_min": 0.0,
+            "enc_dim_std_max": 0.0,
+            "enc_cov_eff_rank": 0.0,
+        }, {"enc_dim_mean": empty, "enc_dim_std": empty}
+
+    z_sum = stats["sum"]
+    z_sum_sq = stats["sum_sq"]
+    mean = z_sum / count
+    var = (z_sum_sq / count - mean.square()).clamp_min(0.0)
+    std = var.sqrt()
+
+    if count > 1:
+        cov = (stats["outer"] - count * torch.outer(mean, mean)) / (count - 1)
+        eigvals = torch.linalg.eigvalsh(cov).clamp_min(0.0)
+        eig_sum = eigvals.sum()
+        if eig_sum > 0:
+            probs = eigvals / eig_sum
+            eff_rank = torch.exp(-(probs * probs.clamp_min(1e-12).log()).sum())
+        else:
+            eff_rank = torch.tensor(0.0, device=mean.device, dtype=mean.dtype)
+    else:
+        eff_rank = torch.tensor(0.0, device=mean.device, dtype=mean.dtype)
+
+    scalar_metrics = {
+        "enc_dim_mean_mean": mean.mean().item(),
+        "enc_dim_mean_abs_mean": mean.abs().mean().item(),
+        "enc_dim_mean_abs_max": mean.abs().max().item(),
+        "enc_dim_std_mean": std.mean().item(),
+        "enc_dim_std_min": std.min().item(),
+        "enc_dim_std_max": std.max().item(),
+        "enc_cov_eff_rank": eff_rank.item(),
+    }
+    arrays = {
+        "enc_dim_mean": mean.detach().cpu().to(dtype=torch.float32).numpy(),
+        "enc_dim_std": std.detach().cpu().to(dtype=torch.float32).numpy(),
+    }
+    return scalar_metrics, arrays
+
+
+def _wandb_validation_payload(
+    metrics: dict[str, float],
+    arrays: dict[str, np.ndarray],
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "val/loss": metrics["val_loss"],
+        "val/jepa_loss": metrics["val_jepa_loss"],
+        "val/sigreg_prev": metrics["val_sigreg_prev"],
+        "val/sigreg_next": metrics["val_sigreg_next"],
+        "val/sigreg_loss": metrics["val_sigreg_loss"],
+        "val/enc_dim_mean_mean": metrics["val_enc_dim_mean_mean"],
+        "val/enc_dim_mean_abs_mean": metrics["val_enc_dim_mean_abs_mean"],
+        "val/enc_dim_mean_abs_max": metrics["val_enc_dim_mean_abs_max"],
+        "val/enc_dim_std_mean": metrics["val_enc_dim_std_mean"],
+        "val/enc_dim_std_min": metrics["val_enc_dim_std_min"],
+        "val/enc_dim_std_max": metrics["val_enc_dim_std_max"],
+        "val/enc_cov_eff_rank": metrics["val_enc_cov_eff_rank"],
+    }
+    if _wandb_available and arrays["enc_dim_mean"].size > 0:
+        payload["val/enc_dim_mean_hist"] = wandb.Histogram(arrays["enc_dim_mean"])
+        payload["val/enc_dim_std_hist"] = wandb.Histogram(arrays["enc_dim_std"])
+    return payload
+
+
+def _validation_csv_fields(metrics: dict[str, float]) -> str:
+    keys = (
+        "val_loss",
+        "val_jepa_loss",
+        "val_sigreg_prev",
+        "val_sigreg_next",
+        "val_sigreg_loss",
+        "val_enc_dim_mean_mean",
+        "val_enc_dim_mean_abs_mean",
+        "val_enc_dim_mean_abs_max",
+        "val_enc_dim_std_mean",
+        "val_enc_dim_std_min",
+        "val_enc_dim_std_max",
+        "val_enc_cov_eff_rank",
+    )
+    return ",".join(f"{metrics[k]:.6f}" for k in keys)
+
+
 # ── Dataset ─────────────────────────────────────────────────────────────
 
 class JEPADataset(torch.utils.data.IterableDataset):
     """Iterable over sharded .npz files, yielding (prev, next, action) pairs.
 
-    Each .npz shard contains concatenated battles.  For each battle we yield
-    N-1 real transition pairs:
+    New shards contain tokenized states plus an explicit transition table
+    (prev_state_idx, next_state_idx, actions).  Transition rows are shuffled
+    within each training shard so batches mix battles and game phases.
 
-        (S[t]+<eos>, S[t+1]+<eos>, action[t])
+    Legacy trajectory shards are still supported.  For those, each battle
+    yields N-1 real transition pairs:
 
-    States are yielded **unpadded** (variable-length with <eos> appended).
-    Pairs within each shard are shuffled before yielding.
+        (S[t], S[t+1], action[t])
+
+    States are yielded **unpadded** exactly as stored in the shard.
+    For transition-table shards, transition rows are shuffled before yielding.
 
     Parameters
     ----------
     shard_paths : list[str]
         Paths to .npz shard files.
-    eos_id : int
-        Token ID for <eos> (appended to every state).
     shuffle_shards : bool
         Whether to shuffle shard order each epoch.
     """
@@ -104,13 +218,12 @@ class JEPADataset(torch.utils.data.IterableDataset):
     def __init__(
         self,
         shard_paths: list[str],
-        eos_id: int,
         shuffle_shards: bool = True,
     ):
         super().__init__()
         self.shard_paths = shard_paths
-        self.eos_id = eos_id
         self.shuffle_shards = shuffle_shards
+        self.shuffle_transitions = shuffle_shards
 
         if not self.shard_paths:
             raise ValueError("No shard paths provided")
@@ -121,6 +234,9 @@ class JEPADataset(torch.utils.data.IterableDataset):
         total = 0
         for path in shard_paths:
             data = np.load(path)
+            if "prev_state_idx" in data:
+                total += int(len(data["prev_state_idx"]))
+                continue
             battle_start = data["battle_start"]
             num_battles = len(battle_start) - 1
             for b in range(num_battles):
@@ -134,13 +250,15 @@ class JEPADataset(torch.utils.data.IterableDataset):
         cls,
         data_root: str,
         formats: list[str],
-        eos_id: int,
+        split: str,
         shuffle_shards: bool = True,
     ) -> "JEPADataset":
-        """Discover all .npz shards under *data_root* for the given *formats*."""
+        """Discover .npz shards under *data_root*/*format*/*split*."""
+        if split not in {"train", "val"}:
+            raise ValueError(f"split must be 'train' or 'val', got {split!r}")
         shard_paths: list[str] = []
         for fmt in formats:
-            fmt_dir = os.path.join(data_root, fmt)
+            fmt_dir = os.path.join(data_root, fmt, split)
             if not os.path.isdir(fmt_dir):
                 continue
             for f in sorted(os.listdir(fmt_dir)):
@@ -149,16 +267,16 @@ class JEPADataset(torch.utils.data.IterableDataset):
 
         if not shard_paths:
             raise FileNotFoundError(
-                f"No .npz shards found under {data_root} for formats {formats}"
+                f"No {split!r} .npz shards found under {data_root} for formats {formats}"
             )
-        return cls(shard_paths, eos_id, shuffle_shards)
+        return cls(shard_paths, shuffle_shards)
 
     def _iter_shard(
         self, path: str
     ) -> Iterator[tuple[np.ndarray, np.ndarray, int]]:
         """Yield (prev_tokens, next_tokens, action_idx) pairs for a single shard.
 
-        Yields only real transitions: (S[t]+<eos>, S[t+1]+<eos>, action[t])
+        Yields only real transitions: (S[t], S[t+1], action[t])
         for t = 0 .. N-2 within each battle.
         """
         data = np.load(path)
@@ -166,10 +284,29 @@ class JEPADataset(torch.utils.data.IterableDataset):
         state_lengths = data["state_lengths"]  # (N,) actual token counts
         state_offsets = data["state_offsets"]  # (N,) start index per state
         actions = data["actions"]            # (total_actions,) — one per transition
-        battle_start = data["battle_start"]  # (B+1,) cumulative state indices
 
+        if "prev_state_idx" in data:
+            prev_state_idx = data["prev_state_idx"]
+            next_state_idx = data["next_state_idx"]
+            order = np.arange(len(actions))
+            if self.shuffle_transitions:
+                rng = np.random.default_rng()
+                rng.shuffle(order)
+
+            for row in order:
+                prev_idx = int(prev_state_idx[row])
+                next_idx = int(next_state_idx[row])
+                prev_len = int(state_lengths[prev_idx])
+                next_len = int(state_lengths[next_idx])
+                prev_off = state_offsets[prev_idx]
+                next_off = state_offsets[next_idx]
+                prev_tokens = states[prev_off : prev_off + prev_len]
+                next_tokens = states[next_off : next_off + next_len]
+                yield prev_tokens.astype(np.int16, copy=False), next_tokens.astype(np.int16, copy=False), int(actions[row])
+            return
+
+        battle_start = data["battle_start"]  # (B+1,) cumulative state indices
         num_battles = len(battle_start) - 1
-        eos = self.eos_id
 
         for b in range(num_battles):
             s_start = battle_start[b]
@@ -179,16 +316,14 @@ class JEPADataset(torch.utils.data.IterableDataset):
             if n_states < 2:
                 continue
 
-            # Extract all real states for this battle (with <eos> appended).
+            # Extract all real states for this battle as stored.
             battle_states: list[np.ndarray] = []
             for i in range(n_states):
                 idx = s_start + i
                 length = int(state_lengths[idx])
                 offset = state_offsets[idx]
                 raw = states[offset : offset + length]
-                # Append <eos>
-                state_with_eos = np.append(raw, eos).astype(np.int16)
-                battle_states.append(state_with_eos)
+                battle_states.append(raw.astype(np.int16, copy=False))
 
             # Real transitions: S[t] → S[t+1]
             pairs: list[tuple[np.ndarray, np.ndarray, int]] = []
@@ -306,28 +441,25 @@ def train(args):
         print(f"Latent dim: {latent_dim}  λ_sigreg={lambda_sigreg}  "
               f"SIGReg slices={sigreg_num_slices} points={sigreg_num_points} domain={sigreg_domain}")
 
-    # ---- datasets (train / val split at shard level) ----
-    all_shards = JEPADataset.from_formats(
+    # ---- datasets (train / val split generated at raw-battle-group level) ----
+    train_shards = JEPADataset.from_formats(
         data_root=args.data_root,
         formats=args.formats,
-        eos_id=eos_id,
-        shuffle_shards=False,  # we shuffle manually before splitting
+        split="train",
+        shuffle_shards=False,
+    ).shard_paths
+    val_shards = JEPADataset.from_formats(
+        data_root=args.data_root,
+        formats=args.formats,
+        split="val",
+        shuffle_shards=False,
     ).shard_paths
 
-    rng = np.random.default_rng(args.seed)
-    perm = rng.permutation(len(all_shards))
-    all_shards = [all_shards[i] for i in perm]
-
-    n_val = max(1, int(len(all_shards) * args.val_split))
-    n_train = len(all_shards) - n_val
-    train_shards = all_shards[:n_train]
-    val_shards = all_shards[n_train:]
-
     train_dataset = JEPADataset(
-        train_shards, eos_id, shuffle_shards=True,
+        train_shards, shuffle_shards=True,
     )
     val_dataset = JEPADataset(
-        val_shards, eos_id, shuffle_shards=False,
+        val_shards, shuffle_shards=False,
     )
 
     train_loader = torch.utils.data.DataLoader(
@@ -369,19 +501,13 @@ def train(args):
 
     # Compile (CUDA only — MPS does not support torch.compile).
     #
-    # Only compile the predictor — it's tiny (<1M params, 2-token
-    # sequence) and doesn't use gradient checkpointing, so torch.compile
-    # is safe and beneficial.
-    #
-    # The encoder is NOT compiled.  torch.compile + gradient checkpointing
-    # (torch.utils.checkpoint) are fundamentally incompatible in PyTorch
-    # 2.12: compiling the whole encoder inlines through the checkpoint
-    # boundary (OOM from 18-layer workspace), and compiling per-block hits
-    # buffer-aliasing assertion failures in the inductor runtime.
+    # Compile only the predictor. The encoder now runs eager by default;
+    # predictor compilation still removes launch overhead without the long
+    # Triton autotuning phase from max-autotune.
     if device.type == "cuda":
         try:
             model.predictor = torch.compile(
-                model.predictor, dynamic=True, mode="max-autotune"
+                model.predictor, dynamic=True, mode="reduce-overhead"
             )
         except Exception:
             pass
@@ -421,8 +547,6 @@ def train(args):
                 "lr": args.lr,
                 "weight_decay": args.weight_decay,
                 "epochs": args.epochs,
-                "val_split": args.val_split,
-                "seed": args.seed,
                 "n_params": n_params,
                 "lambda_sigreg": lambda_sigreg,
                 "sigreg_num_slices": sigreg_num_slices,
@@ -442,7 +566,10 @@ def train(args):
         log_file.write(
             "epoch,step,loss,jepa_loss,sigreg_prev,sigreg_next,sigreg_loss,lr,"
             "enc_tok_s,pred_tok_s,"
-            "val_loss,val_jepa_loss,val_sigreg_prev,val_sigreg_next,val_sigreg_loss\n"
+            "val_loss,val_jepa_loss,val_sigreg_prev,val_sigreg_next,val_sigreg_loss,"
+            "val_enc_dim_mean_mean,val_enc_dim_mean_abs_mean,val_enc_dim_mean_abs_max,"
+            "val_enc_dim_std_mean,val_enc_dim_std_min,val_enc_dim_std_max,"
+            "val_enc_cov_eff_rank\n"
         )
 
     # ---- print header ----
@@ -453,7 +580,7 @@ def train(args):
         val_batches = math.ceil(val_transitions / args.batch_size)
         print(f"Params: {n_params:,}  "
               f"Shards: {len(train_shards)} train + {len(val_shards)} val "
-              f"= {len(all_shards)} total")
+              f"= {len(train_shards) + len(val_shards)} total")
         print(f"Transitions: {train_transitions:,} train  {val_transitions:,} val  "
               f"→ {train_batches:,} train batches/epoch  {val_batches:,} val batches")
         print(f"Batch size: {args.batch_size}  "
@@ -461,7 +588,7 @@ def train(args):
 
     # ---- validation function ----
     @torch.no_grad()
-    def run_validation(max_batches: int | None = None) -> dict[str, float]:
+    def run_validation(max_batches: int | None = None) -> tuple[dict[str, float], dict[str, np.ndarray]]:
         """Run a pass over the val loader, return average metrics.
 
         Validation runs in eager mode so the compiled training workspace
@@ -474,6 +601,7 @@ def train(args):
         model.eval()
         total_metrics: dict[str, float] = {}
         total_steps = 0
+        embedding_stats = _new_embedding_stats(device, latent_dim)
         # Temporarily disable dynamo so compiled wrappers run their
         # original (eager) code.  This avoids allocating eval-mode
         # workspace that competes with training memory.
@@ -488,6 +616,10 @@ def train(args):
                 actions = actions.to(device)
 
                 outputs = model(prev, next_, actions)
+                _update_embedding_stats(
+                    embedding_stats,
+                    torch.cat([outputs["e_prev"], outputs["e_next"]], dim=0),
+                )
                 _, metrics = compute_losses(
                     outputs,
                     lambda_sigreg=lambda_sigreg,
@@ -500,10 +632,13 @@ def train(args):
                 total_steps += 1
         finally:
             torch._dynamo.config.disable = old_disable
-        return {
+        val_metrics = {
             f"val_{k}": total_metrics[k] / max(total_steps, 1)
             for k in total_metrics
         }
+        enc_metrics, enc_arrays = _finalize_embedding_stats(embedding_stats)
+        val_metrics.update({f"val_{k}": v for k, v in enc_metrics.items()})
+        return val_metrics, enc_arrays
 
     # ---- training ----
     global_step = 0
@@ -580,34 +715,30 @@ def train(args):
             # ---- mid-epoch validation (fast: limited batches) ----
             if args.val_interval > 0 and global_step % args.val_interval == 0:
                 _mb = args.val_max_batches if args.val_max_batches > 0 else None
-                mid_val = run_validation(max_batches=_mb)
+                mid_val, mid_val_arrays = run_validation(max_batches=_mb)
                 model.train()  # restore training mode (gradient checkpointing)
                 if args.print_interval > 0:
                     print(
                         f"  val @ step {global_step:7d} | "
                         f"val loss {mid_val['val_loss']:.4f} | "
                         f"val jepa {mid_val['val_jepa_loss']:.4f} | "
-                        f"val sigreg {mid_val['val_sigreg_loss']:.4f}"
+                        f"val sigreg {mid_val['val_sigreg_loss']:.4f} | "
+                        f"enc std {mid_val['val_enc_dim_std_mean']:.4f} | "
+                        f"enc rank {mid_val['val_enc_cov_eff_rank']:.1f}"
                     )
                 if wandb_run:
                     wandb_run.log({
-                        "val/loss": mid_val["val_loss"],
-                        "val/jepa_loss": mid_val["val_jepa_loss"],
-                        "val/sigreg_prev": mid_val["val_sigreg_prev"],
-                        "val/sigreg_next": mid_val["val_sigreg_next"],
-                        "val/sigreg_loss": mid_val["val_sigreg_loss"],
+                        **_wandb_validation_payload(mid_val, mid_val_arrays),
                         "global_step": global_step,
                         "epoch": epoch,
                     })
                 if log_file:
-                    log_file.write(
-                        f"{epoch},{global_step},,,,,,,"
-                        f"{mid_val['val_loss']:.6f},"
-                        f"{mid_val['val_jepa_loss']:.6f},"
-                        f"{mid_val['val_sigreg_prev']:.6f},"
-                        f"{mid_val['val_sigreg_next']:.6f},"
-                        f"{mid_val['val_sigreg_loss']:.6f}\n"
-                    )
+                    log_file.write(",".join([
+                        str(epoch),
+                        str(global_step),
+                        *([""] * 8),
+                        *_validation_csv_fields(mid_val).split(","),
+                    ]) + "\n")
                     log_file.flush()
                 # Update best checkpoint if improved
                 if args.checkpoint and mid_val["val_loss"] < best_val_loss:
@@ -631,16 +762,19 @@ def train(args):
                 pred_tok_s = pred_tokens_total / pred_time_total if pred_time_total > 0 else 0.0
 
                 if log_file:
-                    log_file.write(
-                        f"{epoch},{global_step},{metrics['loss']:.6f},"
-                        f"{metrics['jepa_loss']:.6f},"
-                        f"{metrics['sigreg_prev']:.6f},"
-                        f"{metrics['sigreg_next']:.6f},"
-                        f"{metrics['sigreg_loss']:.6f},"
-                        f"{optimizer.param_groups[0]['lr']:.2e},"
-                        f"{enc_tok_s:.1f},{pred_tok_s:.1f},"
-                        f",,,,\n"
-                    )
+                    log_file.write(",".join([
+                        str(epoch),
+                        str(global_step),
+                        f"{metrics['loss']:.6f}",
+                        f"{metrics['jepa_loss']:.6f}",
+                        f"{metrics['sigreg_prev']:.6f}",
+                        f"{metrics['sigreg_next']:.6f}",
+                        f"{metrics['sigreg_loss']:.6f}",
+                        f"{optimizer.param_groups[0]['lr']:.2e}",
+                        f"{enc_tok_s:.1f}",
+                        f"{pred_tok_s:.1f}",
+                        *([""] * 12),
+                    ]) + "\n")
                     log_file.flush()
 
                 if wandb_run:
@@ -678,7 +812,7 @@ def train(args):
         scheduler.step()
 
         # ---- validation ----
-        val_metrics = run_validation(max_batches=None)
+        val_metrics, val_arrays = run_validation(max_batches=None)
 
         # ---- epoch-end metrics ----
         avg_metrics = {k: v / max(epoch_steps, 1) for k, v in epoch_metrics.items()}
@@ -691,11 +825,14 @@ def train(args):
             f"sigreg {avg_metrics['sigreg_loss']:.4f} | "
             f"val loss {val_metrics.get('val_loss', 0):.4f} | "
             f"val jepa {val_metrics.get('val_jepa_loss', 0):.4f} | "
+            f"enc std {val_metrics.get('val_enc_dim_std_mean', 0):.4f} | "
+            f"enc rank {val_metrics.get('val_enc_cov_eff_rank', 0):.1f} | "
             f"time {t_epoch:.0f}s ==="
         )
 
         if wandb_run:
             wandb_run.log({
+                **_wandb_validation_payload(val_metrics, val_arrays),
                 "epoch/train_loss": avg_metrics["loss"],
                 "epoch/train_jepa_loss": avg_metrics["jepa_loss"],
                 "epoch/train_sigreg_prev": avg_metrics["sigreg_prev"],
@@ -704,6 +841,8 @@ def train(args):
                 "epoch/val_loss": val_metrics.get("val_loss", 0),
                 "epoch/val_jepa_loss": val_metrics.get("val_jepa_loss", 0),
                 "epoch/val_sigreg_loss": val_metrics.get("val_sigreg_loss", 0),
+                "epoch/val_enc_dim_std_mean": val_metrics.get("val_enc_dim_std_mean", 0),
+                "epoch/val_enc_cov_eff_rank": val_metrics.get("val_enc_cov_eff_rank", 0),
                 "epoch/time_s": t_epoch,
                 "epoch": epoch,
             })
@@ -773,8 +912,6 @@ if __name__ == "__main__":
                         help="Path to save best checkpoint. Also saves latest_checkpoint.pt alongside.")
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--prefetch_factor", type=int, default=2)
-    parser.add_argument("--val_split", type=float, default=0.05)
-    parser.add_argument("--seed", type=int, default=42)
     # Validation
     parser.add_argument("--val_interval", type=int, default=100,
                         help="Run validation every N training steps (0 = only at epoch end).")

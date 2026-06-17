@@ -3,9 +3,10 @@
 # Training hyperparameters (lr, epochs, batch_size, etc.) are passed
 # via CLI flags to train.py and are NOT stored here.
 #
-# This is the DEFAULT config — scaled to fill a ~24 GB GPU at batch_size=256.
-# For smaller GPUs (≤16 GB) reduce batch_size or use --config mps.yaml as a
-# starting point (that config also trades capacity for MPS compatibility).
+# This is the DEFAULT CUDA config. It is intentionally modest for the
+# structured WorldModelObservationSpace token stream: enough depth for
+# next-state representation learning without spending most of the run on
+# checkpointed recomputation.
 
 model:
   # Vocabulary size (auto-detected from tokenizer if null).
@@ -16,15 +17,15 @@ model:
 
   # ── Encoder — bidirectional transformer → e ───────────────────────
   encoder:
-    d_model: 1024
-    n_heads: 16
-    n_layers: 20
-    d_ff: 4096           # 4× d_model (SwiGLU doubles effective width)
+    d_model: 512
+    n_heads: 8
+    n_layers: 10
+    d_ff: 2048           # 4× d_model
     dropout: 0.1
     max_seq_len: 1024
     theta: 10000.0
     ffn_activation: gelu
-    gradient_checkpointing: true  # trade ~30% compute for O(1) activation memory
+    gradient_checkpointing: false
 
   # ── Predictor — causal transformer: (e_prev, action) → e_next ─────
   predictor:
@@ -44,7 +45,7 @@ model:
 
   # ── SIGReg hyperparameters ────────────────────────────────────────
   # Number of random projection directions (resampled each step).
-  sigreg_num_slices: 256  # 384 → 256: cuts SIGReg memory ~33% with negligible quality loss
+  sigreg_num_slices: 128  # combined prev/next batch keeps this stable at lower cost
   # Number of trapezoidal quadrature points for Epps-Pulley integration.
   sigreg_num_points: 17
   # Integration domain for the characteristic function: [0, domain].

@@ -2187,40 +2187,46 @@ class WorldModelObservationSpace(ObservationSpace):
     Extends the default observation space with:
         - HP (0.0-1.0 float or "unknown"), split into space-separated characters
           (e.g. ``0 . 7 3``), after every Pokémon name
-        - Opponent bench information with ``<opponent_switch>`` blocks
+        - Opponent bench information with ``<opponent_bench>`` blocks
         - Player fainted Pokémon with ``<fainted>`` blocks
         - Opponent fainted Pokémon with ``<opponent_fainted>`` blocks
-        - ``<boosts>`` block with stat stage changes (e.g. ``spa-1``, ``atk+2``)
-          for every Pokémon in play — critical for world model state tracking
-        - ``unknownability``, ``unknownitem`` tokens for unrevealed info
+        - ``<opponent_teampreview>`` block with opponent's 6 species (Gen 5+)
+        - ``<noboosts>`` when no stat changes are active, or ``<boosts>``
+          with individual tokens like ``spa-1``, ``atk+2`` for non-zero stages
+        - ``<unknown_item_ability>`` for opponent Pokémon whose item AND
+          ability are both unrevealed (succinct single token)
+        - ``unknownability``, ``unknownitem`` for partially-revealed opponent info
         - ``<opponent_moveset>`` tag for opponent movesets (no ``unknownmove`` fillers)
         - Terminal token: ``<ongoing>`` / ``<won>`` / ``<lost>``
 
-    **No padding** — ``<switch>``, ``<opponent_switch>``, ``<fainted>``, and
+    **Generation-aware fields:**
+        - ``item`` fields are omitted in Gen 1 (no held items exist)
+        - ``ability`` fields are omitted in Gen 1–2 (no abilities exist)
+        - ``battle_field`` is only emitted when non-"nofield" (Gen 4+ field effects)
+        - ``opponent_teampreview`` is only emitted when non-empty (Gen 5+)
+
+    **No padding** — ``<switch>``, ``<opponent_bench>``, ``<fainted>``, and
     ``<opponent_fainted>`` blocks are only emitted when they actually contain
     Pokémon.  Opponent movesets only emit revealed moves (no ``unknownmove``
-    fillers).  ``<boosts>`` emits ``none`` when no stat changes are active,
-    or individual tokens like ``spa-1``, ``atk+2`` for non-zero stages.
-    **``<boosts>`` only appears on active Pokémon** — it is omitted from
-    benched and fainted Pokémon since stat stages reset on switch-out
+    fillers).  ``<boosts>`` only appears on active Pokémon — it is omitted
+    from benched and fainted Pokémon since stat stages reset on switch-out
     (barring Baton Pass, which is reflected on the incoming active mon).
-    This eliminates redundant identical-token computation during training.
 
     Text format (~52–312 tokens; all repeated blocks are variable-length):
-        ``<format> <forcedswitch|anychoice>``
-        ``<player> <name> <hp_c0>..<hp_c3> <item> <ability> <type_0> <type_1> <effect> <status> <boosts> <boost...>``
+        ``<format> <forcedswitch|anychoice> [<opponent_teampreview> <species>…]``
+        ``<player> <name> <hp_c0>..<hp_c3> [<item>] [<ability>] <type_0> <type_1> <effect> <status> <noboosts|boosts <boost...>>``
         ``<move> <name> <type> <category>``  ×4
-        ``<switch> <name> <hp_c0>..<hp_c3> <item> <ability> <moveset>``
+        ``<switch> <name> <hp_c0>..<hp_c3> [<item>] [<ability>] <moveset>``
         ``  <move_1>..<move_4>``  ×0–5
-        ``<opponent> <name> <hp_c0>..<hp_c3> <item> <ability> <type_0> <type_1> <effect> <status> <boosts> <boost...> <opponent_moveset>``
+        ``<opponent> <name> <hp_c0>..<hp_c3> [<item>|<unknown_item_ability>] [<ability>] <type_0> <type_1> <effect> <status> <noboosts|boosts <boost...>> <opponent_moveset>``
         ``  <move_1>..<move_N>``  (0–4 revealed moves, no fillers)
-        ``<opponent_switch> <name> <hp_c0>..<hp_c3> <item> <ability> <status> <effect> <opponent_moveset>``
+        ``<opponent_bench> <name> <hp_c0>..<hp_c3> [<item>|<unknown_item_ability>] [<ability>] <status> <effect> <opponent_moveset>``
         ``  <move_1>..<move_N>``  ×0–5 (0–4 revealed moves each, no fillers)
-        ``<fainted> <name> <item> <ability> <moveset>``
+        ``<fainted> <name> [<item>] [<ability>] <moveset>``
         ``  <move_1>..<move_4>``  ×0–5 (only actual fainted Pokémon; HP omitted — always 0.0)
-        ``<opponent_fainted> <name> <item> <ability> <status> <effect> <opponent_moveset>``
+        ``<opponent_fainted> <name> [<item>|<unknown_item_ability>] [<ability>] <status> <effect> <opponent_moveset>``
         ``  <move_1>..<move_N>``  ×0–5 (only actual fainted; HP omitted)
-        ``<conditions> <weather> <player_cond> <opponent_cond>``
+        ``<conditions> <weather> [<battle_field>] <player_cond> <opponent_cond>``
         ``<player_prev> <move> <opp_prev> <move>``
         ``<ongoing|won|lost>``
     """
@@ -2250,7 +2256,7 @@ class WorldModelObservationSpace(ObservationSpace):
 
     @property
     def tokenizable(self) -> dict[str, int]:
-        # soft max — no padding for <switch> / <opponent_switch> /
+        # soft max — no padding for <switch> / <opponent_bench> /
         # <fainted> / <opponent_fainted> blocks; opponent moveset blocks
         # only emit revealed moves (no unknownmove fillers).
         # Boosts only appear on active Pokémon (stat stages reset on switch-out).
@@ -2279,11 +2285,59 @@ class WorldModelObservationSpace(ObservationSpace):
     # accuracy/evasion appear in later gens).  UniversalPokemon always carries all of them.
     _BOOST_STATS = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
 
+    @staticmethod
+    def _generation_from_format(format_str: str) -> int:
+        """Extract generation number from a format string like 'gen1ou' → 1.
+
+        Defaults to 9 (latest) if the format string cannot be parsed.
+        """
+        match = re.match(r'gen(\d+)', format_str)
+        return int(match.group(1)) if match else 9
+
+    # ── item / ability helpers ────────────────────────────────────────
+
+    @staticmethod
+    def _is_unknown_item(item: str) -> bool:
+        """True if the item token represents an unrevealed opponent item."""
+        return item in ("unknownitem",)
+
+    @staticmethod
+    def _is_unknown_ability(ability: str) -> bool:
+        """True if the ability token represents an unrevealed opponent ability."""
+        return ability in ("unknownability",)
+
+    @classmethod
+    def _item_ability_tokens(
+        cls, pokemon, gen: int, *, is_opponent: bool = False
+    ) -> list[str]:
+        """Return item / ability tokens for a Pokémon, generation-aware.
+
+        Gen 1: no items or abilities → empty list.
+        Gen 2: items exist, no abilities → only item token.
+        Gen 3+: both exist.
+
+        For opponent Pokémon where both item and ability are unknown, emits
+        the single succinct ``<unknown_item_ability>`` token instead of two.
+        """
+        out: list[str] = []
+        has_items = gen >= 2
+        has_abilities = gen >= 3
+
+        if has_items:
+            item = pokemon.item
+            if has_abilities and is_opponent and cls._is_unknown_item(item) and cls._is_unknown_ability(pokemon.ability):
+                out.append("<unknown_item_ability>")
+                return out
+            out.append(item)
+        if has_abilities:
+            out.append(pokemon.ability)
+        return out
+
     @classmethod
     def _boost_tokens(cls, pokemon) -> list[str]:
-        """Return ``<boosts>`` token list for a Pokémon.
+        """Return boost tokens for a Pokémon.
 
-        Emits ``["<boosts>", "none"]`` if all boosts are zero, otherwise
+        Emits ``["<noboosts>"]`` if all boosts are zero, otherwise
         ``["<boosts>", "atk+1", "spa-1", ...]`` with one token per non-zero boost.
         Boost tokens look like ``atk+1``, ``spa-1``, ``spe+2`` (no leading zeros).
 
@@ -2298,7 +2352,7 @@ class WorldModelObservationSpace(ObservationSpace):
                 tokens.append(f"{stat}{sign}{val}")
         if tokens:
             return ["<boosts>"] + tokens
-        return ["<boosts>", "none"]
+        return ["<noboosts>"]
 
     def _get_move_string_features(self, move: UniversalMove, active: bool) -> list[str]:
         """Text tokens for a move: name, and optionally type + category if active."""
@@ -2336,39 +2390,45 @@ class WorldModelObservationSpace(ObservationSpace):
     def _get_pokemon_string_features(
         self, pokemon: UniversalPokemon, active: bool
     ) -> list[str]:
-        """Base string features shared by all Pokémon blocks.
+        """Base string features shared by all Pokémon blocks (legacy helper).
 
         Does NOT include types/effect/status (active-only) or moveset/moves —
         those are added by callers depending on context (player/opponent/bench).
         Includes HP as space-separated digits and boost tokens.
+
+        .. deprecated::
+            Prefer the per-context helpers (``_get_player_active_string_features``,
+            ``_get_opponent_active_string_features``, etc.) which are generation-aware.
         """
         out = [pokemon.name] + self._hp_str(pokemon.hp_pct) + [pokemon.item, pokemon.ability]
         out += self._boost_tokens(pokemon)
         return out
 
-    def _get_player_active_string_features(self, pokemon: UniversalPokemon) -> list[str]:
+    def _get_player_active_string_features(self, pokemon: UniversalPokemon, gen: int) -> list[str]:
         """Full string features for the player's active Pokémon.
 
-        Includes: name, HP digits, item, ability, types, effect, status, boosts.
+        Includes: name, HP digits, item/ability (gen-aware), types, effect, status, boosts.
         """
         return (
             [pokemon.name]
             + self._hp_str(pokemon.hp_pct)
-            + [pokemon.item, pokemon.ability, pokemon.types, pokemon.effect, pokemon.status]
+            + self._item_ability_tokens(pokemon, gen)
+            + [pokemon.types, pokemon.effect, pokemon.status]
             + self._boost_tokens(pokemon)
         )
 
-    def _get_player_bench_string_features(self, pokemon: UniversalPokemon) -> list[str]:
+    def _get_player_bench_string_features(self, pokemon: UniversalPokemon, gen: int) -> list[str]:
         """Full string features for a player bench Pokémon.
 
-        Includes 4 moves (``<blank>``-padded) after a ``<moveset>`` tag.
-        Stat boosts are omitted — they reset to zero on switch-out in every
-        generation (Baton Pass is reflected on the incoming active Pokémon).
+        Includes HP, item/ability (gen-aware), and 4 moves (``<blank>``-padded)
+        after a ``<moveset>`` tag.  Stat boosts are omitted — they reset to zero
+        on switch-out in every generation (Baton Pass is reflected on the
+        incoming active Pokémon).
         """
         out = (
             [pokemon.name]
             + self._hp_str(pokemon.hp_pct)
-            + [pokemon.item, pokemon.ability]
+            + self._item_ability_tokens(pokemon, gen)
             + ["<moveset>"]
         )
         move_num = -1
@@ -2379,13 +2439,13 @@ class WorldModelObservationSpace(ObservationSpace):
             move_num += 1
         return out
 
-    def _get_player_fainted_string_features(self, pokemon: UniversalPokemon) -> list[str]:
+    def _get_player_fainted_string_features(self, pokemon: UniversalPokemon, gen: int) -> list[str]:
         """Full string features for a player fainted Pokémon.
 
         Same as bench but omits HP (always 0.0 for fainted mons) and boosts
-        (reset on faint / switch-out).
+        (reset on faint / switch-out).  Item/ability are gen-aware.
         """
-        out = [pokemon.name, pokemon.item, pokemon.ability, "<moveset>"]
+        out = [pokemon.name] + self._item_ability_tokens(pokemon, gen) + ["<moveset>"]
         move_num = -1
         for move_num, move in enumerate(consistent_move_order(pokemon.moves)):
             out += self._get_move_string_features(move, active=False)
@@ -2394,32 +2454,35 @@ class WorldModelObservationSpace(ObservationSpace):
             move_num += 1
         return out
 
-    def _get_opponent_fainted_string_features(self, pokemon: UniversalPokemon) -> list[str]:
+    def _get_opponent_fainted_string_features(self, pokemon: UniversalPokemon, gen: int) -> list[str]:
         """Full string features for an opponent fainted Pokémon.
 
-        Same as inactive but omits HP (always 0.0 for fainted mons) and boosts
-        (reset on faint / switch-out).
+        Omits HP (always 0.0 for fainted mons) and boosts (reset on faint /
+        switch-out).  Item/ability are gen-aware; uses ``<unknown_item_ability>``
+        when both are unrevealed.
         """
         out = (
             [pokemon.name]
-            + [pokemon.item, pokemon.ability, pokemon.status, pokemon.effect]
+            + self._item_ability_tokens(pokemon, gen, is_opponent=True)
+            + [pokemon.status, pokemon.effect]
             + ["<opponent_moveset>"]
         )
         for move in consistent_move_order(pokemon.moves):
             out += self._get_move_string_features(move, active=False)
         return out
 
-    def _get_opponent_active_string_features(self, pokemon: UniversalPokemon) -> list[str]:
+    def _get_opponent_active_string_features(self, pokemon: UniversalPokemon, gen: int) -> list[str]:
         """Full string features for the opponent's active Pokémon.
 
         Uses ``<opponent_moveset>`` tag and only emits revealed moves — no
-        ``unknownmove`` fillers for unrevealed slots.  This avoids redundant
-        computation on tokens the model knows are meaningless.
+        ``unknownmove`` fillers for unrevealed slots.  Item/ability are
+        gen-aware; uses ``<unknown_item_ability>`` when both are unrevealed.
         """
         base = (
             [pokemon.name]
             + self._hp_str(pokemon.hp_pct)
-            + [pokemon.item, pokemon.ability, pokemon.types, pokemon.effect, pokemon.status]
+            + self._item_ability_tokens(pokemon, gen, is_opponent=True)
+            + [pokemon.types, pokemon.effect, pokemon.status]
             + self._boost_tokens(pokemon)
         )
         # Only emit revealed moves — no unknownmove fillers.
@@ -2428,18 +2491,20 @@ class WorldModelObservationSpace(ObservationSpace):
             moves.append(clean_name(move.name))
         return base + ["<opponent_moveset>"] + moves
 
-    def _get_opponent_inactive_string_features(self, pokemon: UniversalPokemon) -> list[str]:
+    def _get_opponent_inactive_string_features(self, pokemon: UniversalPokemon, gen: int) -> list[str]:
         """Full string features for an opponent bench / fainted Pokémon.
 
         Includes status and effect (unlike player bench).  Only emits revealed
         moves (no ``unknownmove`` fillers).  Stat boosts are omitted — they
-        reset to zero on switch-out in every generation (Baton Pass is reflected
-        on the incoming active Pokémon).
+        reset to zero on switch-out in every generation (Baton Pass is
+        reflected on the incoming active Pokémon).  Item/ability are gen-aware;
+        uses ``<unknown_item_ability>`` when both are unrevealed.
         """
         out = (
             [pokemon.name]
             + self._hp_str(pokemon.hp_pct)
-            + [pokemon.item, pokemon.ability, pokemon.status, pokemon.effect]
+            + self._item_ability_tokens(pokemon, gen, is_opponent=True)
+            + [pokemon.status, pokemon.effect]
             + ["<opponent_moveset>"]
         )
         for move in consistent_move_order(pokemon.moves):
@@ -2480,10 +2545,16 @@ class WorldModelObservationSpace(ObservationSpace):
         Pokémon are only emitted when they actually exist — no padding.
         Numerical features are still padded to fixed shapes (5 slots each for
         opponent bench, fainted, and opponent fainted).
+
+        Generation-aware: item/ability fields are omitted in Gen 1–2 where they
+        don't exist; ``battle_field`` only emitted when non-"nofield";
+        ``<opponent_teampreview>`` only emitted when non-empty (Gen 5+).
         """
+        gen = self._generation_from_format(state.agent_format)
+
         # ── player active ──
         player_str = ["<player>"] + self._get_player_active_string_features(
-            state.player_active_pokemon
+            state.player_active_pokemon, gen
         )
         numerical = [
             state.opponents_remaining / 6.0
@@ -2507,7 +2578,7 @@ class WorldModelObservationSpace(ObservationSpace):
         switch_str = []
         switch_count = 0
         for switch in consistent_pokemon_order(state.available_switches):
-            switch_str += ["<switch>"] + self._get_player_bench_string_features(switch)
+            switch_str += ["<switch>"] + self._get_player_bench_string_features(switch, gen)
             numerical += self._get_pokemon_numerical_features(switch, active=False)
             switch_count += 1
         while switch_count < 5:
@@ -2517,7 +2588,7 @@ class WorldModelObservationSpace(ObservationSpace):
         # ── opponent active ──
         force_switch = "<forcedswitch>" if state.forced_switch else "<anychoice>"
         opponent_str = ["<opponent>"] + self._get_opponent_active_string_features(
-            state.opponent_active_pokemon
+            state.opponent_active_pokemon, gen
         )
         numerical += self._get_pokemon_numerical_features(
             state.opponent_active_pokemon, active=True
@@ -2527,8 +2598,8 @@ class WorldModelObservationSpace(ObservationSpace):
         opponent_bench_str = []
         opp_bench_count = 0
         for bench_poke in consistent_pokemon_order(state.opponent_bench):
-            opponent_bench_str += ["<opponent_switch>"] + self._get_opponent_inactive_string_features(
-                bench_poke
+            opponent_bench_str += ["<opponent_bench>"] + self._get_opponent_inactive_string_features(
+                bench_poke, gen
             )
             numerical += self._get_pokemon_numerical_features(bench_poke, active=False)
             opp_bench_count += 1
@@ -2540,7 +2611,7 @@ class WorldModelObservationSpace(ObservationSpace):
         fainted_str = []
         fainted_count = 0
         for fainted_poke in consistent_pokemon_order(state.fainted_pokemon):
-            fainted_str += ["<fainted>"] + self._get_player_fainted_string_features(fainted_poke)
+            fainted_str += ["<fainted>"] + self._get_player_fainted_string_features(fainted_poke, gen)
             numerical += self._get_pokemon_numerical_features(fainted_poke, active=False)
             fainted_count += 1
         while fainted_count < self.NUM_FAINTED_SLOTS:
@@ -2551,18 +2622,19 @@ class WorldModelObservationSpace(ObservationSpace):
         opp_fainted_str = []
         opp_fainted_count = 0
         for fainted_poke in consistent_pokemon_order(state.opponent_fainted):
-            opp_fainted_str += ["<opponent_fainted>"] + self._get_opponent_fainted_string_features(fainted_poke)
+            opp_fainted_str += ["<opponent_fainted>"] + self._get_opponent_fainted_string_features(fainted_poke, gen)
             numerical += self._get_pokemon_numerical_features(fainted_poke, active=False)
             opp_fainted_count += 1
         while opp_fainted_count < self.NUM_OPPONENT_FAINTED_SLOTS:
             numerical += self._get_pokemon_pad_numerical(active=False)
             opp_fainted_count += 1
 
-        global_str = ["<conditions>"] + [
-            state.weather,
-            state.player_conditions,
-            state.opponent_conditions,
-        ]
+        # ── global conditions (weather, battle_field, side conditions) ──
+        global_tokens = ["<conditions>", state.weather]
+        if state.battle_field != "nofield":
+            global_tokens.append(state.battle_field)
+        global_tokens += [state.player_conditions, state.opponent_conditions]
+
         prev_move_str = (
             ["<player_prev>"]
             + self._get_move_string_features(state.player_prev_move, active=False)
@@ -2578,8 +2650,16 @@ class WorldModelObservationSpace(ObservationSpace):
         else:
             terminal_token = "<ongoing>"
 
+        # ── opponent teampreview (Gen 5+, only when non-empty) ──
+        teampreview_tokens = []
+        if state.opponent_teampreview:
+            teampreview_tokens = ["<opponent_teampreview>"] + [
+                pokemon_name(name) for name in state.opponent_teampreview
+            ]
+
         full_text_list = (
             [f"<{state.agent_format}>", force_switch]
+            + teampreview_tokens
             + player_str
             + move_str
             + switch_str
@@ -2587,7 +2667,7 @@ class WorldModelObservationSpace(ObservationSpace):
             + opponent_bench_str
             + fainted_str
             + opp_fainted_str
-            + global_str
+            + global_tokens
             + prev_move_str
             + [terminal_token]
         )

@@ -187,17 +187,19 @@ inspect-wm-state:
 # Automatically builds the WorldModel tokenizer if it doesn't exist yet.
 # Aborts early if parsed replays are missing for any requested format.
 #
-# Each output .npz contains:
-#   states  (seq_len, 336) int16  — token IDs for each state (padded to soft max)
-#   actions (seq_len-1,)  int16  — action index for each transition
-#   won     bool                  — whether POV won
-# Training pairs: (states[t], actions[t], states[t+1])
+# Each output .npz shard contains unpadded tokenized states plus an explicit
+# transition table:
+#   states/state_lengths/state_offsets
+#   prev_state_idx/next_state_idx/actions/battle_id/turn_idx/format_id
+# Training pairs are sampled from transition rows.
 #
 # Usage:
 #   make generate-world-model-data FORMATS=gen1ou
 #   make generate-world-model-data FORMATS="gen1ou gen9ou"
 WM_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/world-model-samples
 WM_PROCESSES ?= $(N_THREADS)
+WM_VAL_SPLIT ?= 0.05
+WM_SEED ?= 42
 TOKENIZER_FILE := $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
 generate-world-model-data:
 	@# ---- 1. Check parsed replays exist for every format ----
@@ -225,6 +227,8 @@ generate-world-model-data:
 		--tokenizer_path $(TOKENIZER_FILE) \
 		--output_dir $(WM_OUTPUT_DIR) \
 		--formats $(FORMATS) \
+		--val_split $(WM_VAL_SPLIT) \
+		--seed $(WM_SEED) \
 		--processes $(WM_PROCESSES)
 
 # ── Supervised-Learning Training ────────────────────────────────────
