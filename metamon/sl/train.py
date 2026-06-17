@@ -4,8 +4,10 @@ Loads sharded .npz files produced by scripts/generate_world_model_data.py
 and trains an autoregressive transformer to predict state[t+1] tokens
 conditioned on state[t] and action[t].
 
-States are variable-length (unpadded in storage).  Batches are padded to
-the per-batch maximum and the model uses <eos> to find state boundaries.
+States are variable-length (unpadded in storage).  Newer shards store each
+state as ``<bos> ... <eos>``; the SL loader strips those per-state boundary
+tokens before passing states to the prompt builder, which inserts the
+autoregressive prompt delimiters exactly once.
 
 Prompt structure:
     <bos>  state[t]  <eos>  <boa>  action  <eoa>  <bos>  state[t+1]  <eos>
@@ -68,10 +70,10 @@ except ImportError:
 class WorldModelDataset(torch.utils.data.IterableDataset):
     """Iterable over sharded .npz files, yielding variable-length transitions.
 
-    Each .npz shard contains concatenated battles with ``states`` (flat array),
-    ``state_lengths`` (per-state token count), ``actions``, and
-    ``battle_start`` arrays.  Transitions are yielded **within** battles only
-    — cross-battle boundaries are skipped.
+    New shards contain concatenated states plus an explicit transition table
+    (``prev_state_idx``, ``next_state_idx``, ``actions``).  Transition rows are
+    shuffled within training shards.  Legacy shards with ``battle_start`` are
+    still supported.
 
     States are yielded **unpadded**; padding to batch-max happens in the
     collate function.
@@ -93,21 +95,41 @@ class WorldModelDataset(torch.utils.data.IterableDataset):
         super().__init__()
         self.shard_paths = shard_paths
         self.shuffle_shards = shuffle_shards
+        self.shuffle_transitions = shuffle_shards
 
         if not self.shard_paths:
             raise ValueError("No shard paths provided")
+
+    @staticmethod
+    def count_transitions(shard_paths: list[str]) -> int:
+        total = 0
+        for path in shard_paths:
+            data = np.load(path)
+            if "prev_state_idx" in data:
+                total += int(len(data["prev_state_idx"]))
+                continue
+            battle_start = data["battle_start"]
+            num_battles = len(battle_start) - 1
+            for b in range(num_battles):
+                n_states = int(battle_start[b + 1]) - int(battle_start[b])
+                if n_states >= 2:
+                    total += n_states - 1
+        return total
 
     @classmethod
     def from_formats(
         cls,
         data_root: str,
         formats: list[str],
+        split: str,
         shuffle_shards: bool = True,
     ) -> "WorldModelDataset":
-        """Discover all .npz shards under *data_root* for the given *formats*."""
+        """Discover .npz shards under *data_root*/*format*/*split*."""
+        if split not in {"train", "val"}:
+            raise ValueError(f"split must be 'train' or 'val', got {split!r}")
         shard_paths: list[str] = []
         for fmt in formats:
-            fmt_dir = os.path.join(data_root, fmt)
+            fmt_dir = os.path.join(data_root, fmt, split)
             if not os.path.isdir(fmt_dir):
                 continue
             for f in sorted(os.listdir(fmt_dir)):
@@ -116,26 +138,51 @@ class WorldModelDataset(torch.utils.data.IterableDataset):
 
         if not shard_paths:
             raise FileNotFoundError(
-                f"No .npz shards found under {data_root} for formats {formats}"
+                f"No {split!r} .npz shards found under {data_root} for formats {formats}"
             )
         return cls(shard_paths, shuffle_shards=shuffle_shards)
 
     def _iter_shard(
         self, path: str
     ) -> Iterator[tuple[int, int, int, np.ndarray, np.ndarray]]:
-        """Yield (state_t_len, state_next_len, action, state_t, state_next) within battles.
+        """Yield (state_t_len, state_next_len, action, state_t, state_next).
 
-        Uses ``battle_start`` to honour battle boundaries, ensuring transitions
-        never cross between different battles.  States are sliced from a flat
-        1-D token array using ``state_offsets`` and ``state_lengths``.
+        New shards use explicit transition rows; legacy shards use
+        ``battle_start`` to avoid crossing battle boundaries.  States are
+        sliced from a flat token array using ``state_offsets`` and
+        ``state_lengths``.
         """
         data = np.load(path)
         states = data["states"]              # flat 1-D array of all token IDs
         state_lengths = data["state_lengths"]  # (N,) actual token counts
         state_offsets = data["state_offsets"]  # (N,) start index of each state in *states*
         actions = data["actions"]            # (total_actions,) — one per valid transition
-        battle_start = data["battle_start"]  # (num_battles+1,) cumulative state indices
 
+        if "prev_state_idx" in data:
+            prev_state_idx = data["prev_state_idx"]
+            next_state_idx = data["next_state_idx"]
+            order = np.arange(len(actions))
+            if self.shuffle_transitions:
+                rng = np.random.default_rng()
+                rng.shuffle(order)
+
+            for row in order:
+                idx_t = int(prev_state_idx[row])
+                idx_next = int(next_state_idx[row])
+                action = int(actions[row])
+
+                st_len = int(state_lengths[idx_t])
+                sn_len = int(state_lengths[idx_next])
+                st_off = state_offsets[idx_t]
+                sn_off = state_offsets[idx_next]
+
+                state_t = states[st_off : st_off + st_len]
+                state_next = states[sn_off : sn_off + sn_len]
+
+                yield st_len, sn_len, action, state_t, state_next
+            return
+
+        battle_start = data["battle_start"]  # (num_battles+1,) cumulative state indices
         num_battles = len(battle_start) - 1
 
         # Iterate battles, then transitions within each battle
@@ -182,6 +229,8 @@ class WorldModelDataset(torch.utils.data.IterableDataset):
 def collate_fn(
     batch: list[tuple[int, int, int, np.ndarray, np.ndarray]],
     pad_id: int = 0,
+    bos_id: int | None = None,
+    eos_id: int | None = None,
     max_state_len: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Collate variable-length transitions into padded tensors.
@@ -191,8 +240,18 @@ def collate_fn(
       where state_t/state_next are padded to *max_state_len* if given,
       otherwise to the batch maximum.
     """
-    state_t_lengths = torch.tensor([item[0] for item in batch], dtype=torch.long)
-    state_next_lengths = torch.tensor([item[1] for item in batch], dtype=torch.long)
+    def strip_boundaries(tokens: np.ndarray) -> np.ndarray:
+        start = 1 if bos_id is not None and len(tokens) > 0 and int(tokens[0]) == bos_id else 0
+        end = -1 if eos_id is not None and len(tokens) > start and int(tokens[-1]) == eos_id else len(tokens)
+        return tokens[start:end]
+
+    stripped = [
+        (strip_boundaries(item[3]), strip_boundaries(item[4]), item[2])
+        for item in batch
+    ]
+
+    state_t_lengths = torch.tensor([len(item[0]) for item in stripped], dtype=torch.long)
+    state_next_lengths = torch.tensor([len(item[1]) for item in stripped], dtype=torch.long)
     actions = torch.tensor([item[2] for item in batch], dtype=torch.long)
 
     max_st = max_state_len if max_state_len is not None else int(state_t_lengths.max().item())
@@ -201,13 +260,14 @@ def collate_fn(
     state_t_padded = torch.full((len(batch), max_st), pad_id, dtype=torch.long)
     state_next_padded = torch.full((len(batch), max_sn), pad_id, dtype=torch.long)
 
-    for i, item in enumerate(batch):
-        st = item[3]
-        sn = item[4]
-        st_len = item[0]
-        sn_len = item[1]
+    for i, (st, sn, _action) in enumerate(stripped):
+        st_len = min(len(st), max_st)
+        sn_len = min(len(sn), max_sn)
         state_t_padded[i, :st_len] = torch.from_numpy(st[:st_len].astype(np.int64))
         state_next_padded[i, :sn_len] = torch.from_numpy(sn[:sn_len].astype(np.int64))
+
+    state_t_lengths = state_t_lengths.clamp(max=max_st)
+    state_next_lengths = state_next_lengths.clamp(max=max_sn)
 
     return state_t_padded, state_next_padded, actions, state_t_lengths, state_next_lengths
 
@@ -384,23 +444,19 @@ def train(args):
 
         print(f"{'='*70}\n")
 
-    # ---- datasets (train / val split at shard level) ----
-    # Discover all shards, shuffle, then partition by shard index.
-    # This guarantees no battle appears in both splits.
-    all_shards = WorldModelDataset.from_formats(
+    # ---- datasets (train / val split generated at raw-battle-group level) ----
+    train_shards = WorldModelDataset.from_formats(
         data_root=args.data_root,
         formats=args.formats,
-        shuffle_shards=False,  # we shuffle manually before splitting
+        split="train",
+        shuffle_shards=False,
     ).shard_paths
-
-    rng = np.random.default_rng(args.seed)
-    perm = rng.permutation(len(all_shards))
-    all_shards = [all_shards[i] for i in perm]
-
-    n_val = max(1, int(len(all_shards) * args.val_split))
-    n_train = len(all_shards) - n_val
-    train_shards = all_shards[:n_train]
-    val_shards = all_shards[n_train:]
+    val_shards = WorldModelDataset.from_formats(
+        data_root=args.data_root,
+        formats=args.formats,
+        split="val",
+        shuffle_shards=False,
+    ).shard_paths
 
     train_dataset = WorldModelDataset(train_shards, shuffle_shards=True)
     val_dataset = WorldModelDataset(val_shards, shuffle_shards=False)
@@ -408,7 +464,13 @@ def train(args):
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        collate_fn=functools.partial(collate_fn, pad_id=pad_id, max_state_len=MAX_STATE_LENGTH),
+        collate_fn=functools.partial(
+            collate_fn,
+            pad_id=pad_id,
+            bos_id=bos_id,
+            eos_id=eos_id,
+            max_state_len=MAX_STATE_LENGTH,
+        ),
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         pin_memory=True,
@@ -417,7 +479,13 @@ def train(args):
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size,
-        collate_fn=functools.partial(collate_fn, pad_id=pad_id, max_state_len=MAX_STATE_LENGTH),
+        collate_fn=functools.partial(
+            collate_fn,
+            pad_id=pad_id,
+            bos_id=bos_id,
+            eos_id=eos_id,
+            max_state_len=MAX_STATE_LENGTH,
+        ),
         num_workers=max(1, args.num_workers // 2),
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         pin_memory=True,
@@ -519,8 +587,6 @@ def train(args):
                 "lr": args.lr,
                 "weight_decay": args.weight_decay,
                 "epochs": args.epochs,
-                "val_split": args.val_split,
-                "seed": args.seed,
                 "n_params": n_params,
                 "flops_per_token_fwd": flops_per_token_fwd,
                 "max_seq_len": max_seq_len,
@@ -541,26 +607,18 @@ def train(args):
             "val_loss,val_token_accuracy\n"
         )
 
-    # ---- count transitions from metadata (approximate, for display) ----
-    total_transitions = 0
-    for fmt in args.formats:
-        fmt_dir = os.path.join(args.data_root, fmt)
-        meta_path = os.path.join(fmt_dir, "metadata.json")
-        if os.path.isfile(meta_path):
-            with open(meta_path) as f:
-                meta = json.load(f)
-            total_transitions += meta.get("total_actions", 0)
-    train_est = int(total_transitions * (1.0 - args.val_split))
-    val_est = total_transitions - train_est
-    batches_per_epoch = math.ceil(train_est / args.batch_size) if train_est > 0 else "?"
+    # ---- count transitions for display ----
+    train_transitions = WorldModelDataset.count_transitions(train_shards)
+    val_transitions = WorldModelDataset.count_transitions(val_shards)
+    batches_per_epoch = math.ceil(train_transitions / args.batch_size) if train_transitions > 0 else "?"
 
     # ---- print header ----
     if args.print_interval > 0:
         print(f"Vocab: {vocab_size}  Params: {n_params:,}  "
               f"Shards: {len(train_shards)} train + {len(val_shards)} val "
-              f"= {len(all_shards)} total")
+              f"= {len(train_shards) + len(val_shards)} total")
         print(f"Batch size: {args.batch_size}  "
-              f"Transitions: ~{train_est:,} train + ~{val_est:,} val  "
+              f"Transitions: {train_transitions:,} train + {val_transitions:,} val  "
               f"Batches/epoch: {batches_per_epoch}")
         print(f"MAX_CONTEXT_LENGTH: {MAX_CONTEXT_LENGTH}  "
               f"SAFETY_FACTOR: {safety_factor}")
@@ -890,16 +948,12 @@ if __name__ == "__main__":
                              "If absent, no checkpointing.")
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--prefetch_factor", type=int, default=2)
-    parser.add_argument("--val_split", type=float, default=0.05,
-                        help="Fraction of shards to hold out for validation (default: 0.1).")
     parser.add_argument("--val_interval", type=int, default=100,
                         help="Run validation every N training steps (0 = only at epoch end).")
     parser.add_argument("--val_max_batches", type=int, default=100,
                         help="Limit mid-epoch validation to this many batches (default: 200). "
                              "Set to 0 or a very large number to do a full pass every time. "
                              "Epoch-end validation always does a full pass.")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for shard partition (default: 42).")
     # Logging
     parser.add_argument("--log", action="store_true",
                         help="Write per-step metrics to metrics.csv in save_dir.")

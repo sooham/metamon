@@ -1,5 +1,6 @@
 import copy
 import datetime
+import random
 import warnings
 from typing import List, Optional
 import collections
@@ -427,6 +428,58 @@ class POVReplay:
                     # if the move was missing, but a `choice` message was parsed,
                     # we can fall back to that.
                     actionlist[move_idx] = choice
+
+            # ── cant substitution ──────────────────────────────────────
+            # When the POV player's action is None because the Pokémon was
+            # prevented from acting (|cant|), substitute a valid action so
+            # the dataset never sees -1 for these cases.
+            #
+            # Two categories:
+            #   "had choices but couldn't act" → random valid move (0..3)
+            #     (slp, par, frz, flinch, partiallytrapped, Taunt,
+            #      Heal Block, Focus Punch)
+            #   "had no choice" → action=0 (recharge, Truant)
+            # ──────────────────────────────────────────────────────────
+            pov_slot = 0  # singles; doubles would use slot 1 as well
+            if actionlist[pov_slot] is None:
+                active = (
+                    turn_t1.active_pokemon_1[pov_slot]
+                    if self.from_p1_pov
+                    else turn_t1.active_pokemon_2[pov_slot]
+                )
+                if active is not None:
+                    reason = getattr(active, "cant_reason", None)
+                    if reason is not None:
+                        if reason in ("recharge", "ability: Truant"):
+                            # Only one valid action: the no-op.
+                            actionlist[pov_slot] = Action(
+                                name="Recharge",
+                                is_noop=True,
+                                user=active,
+                                target=None,
+                            )
+                        else:
+                            # Player chose a move but couldn't execute it.
+                            # Randomly pick from the Pokémon's known moves.
+                            move_objs = [
+                                m for m in active.moves.values() if m is not None
+                            ]
+                            if move_objs:
+                                chosen = random.choice(move_objs)
+                                actionlist[pov_slot] = Action(
+                                    name=chosen.name,
+                                    user=active,
+                                    target=None,
+                                )
+                            else:
+                                # No known moves (unusual) — fall back to 0.
+                                actionlist[pov_slot] = Action(
+                                    name="Recharge",
+                                    is_noop=True,
+                                    user=active,
+                                    target=None,
+                                )
+
             self._actionlist.append(actionlist)
 
         # add final state

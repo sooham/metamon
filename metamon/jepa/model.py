@@ -64,11 +64,13 @@ NUM_ACTIONS: int = 14
 
 # ── SIGReg defaults ──────────────────────────────────────────────────────
 # Number of random projection directions for sketching (resampled each step).
-SIGREG_NUM_SLICES: int = 384
+SIGREG_NUM_SLICES: int = 128
 # Number of trapezoidal quadrature points for Epps-Pulley integration.
 SIGREG_NUM_POINTS: int = 17
 # Integration domain for the characteristic function: [0, domain].
 SIGREG_DOMAIN: float = 3.0
+
+_SIGREG_GRID_CACHE: dict[tuple[str, int, float], tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -141,7 +143,11 @@ class SelfAttention(nn.Module):
         self.rope = RotaryPositionalEmbedding(self.d_head, max_seq_len=max_seq_len) if use_rope else None
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        key_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         B, S, D = x.shape
 
         q = self.q_proj(x).view(B, S, self.n_heads, self.d_head).transpose(1, 2)
@@ -152,9 +158,15 @@ class SelfAttention(nn.Module):
             q = self.rope(q)
             k = self.rope(k)
 
+        attn_mask = None
+        if key_padding_mask is not None:
+            # SDPA bool masks use True for positions that participate in attention.
+            # Shape broadcasts across query positions and attention heads.
+            attn_mask = key_padding_mask[:, None, None, :]
+
         y = F.scaled_dot_product_attention(
             q, k, v,
-            attn_mask=None,
+            attn_mask=attn_mask,
             dropout_p=self.dropout.p if self.training else 0.0,
             is_causal=self.causal,
         )
@@ -193,8 +205,12 @@ class TransformerBlock(nn.Module):
             raise ValueError(f"Unknown ffn_activation: {ffn_activation}")
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.ln1(x))
+    def forward(
+        self,
+        x: torch.Tensor,
+        key_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        x = x + self.attn(self.ln1(x), key_padding_mask=key_padding_mask)
         x = x + self.dropout(self._ffn(self.ln2(x)))
         return x
 
@@ -312,6 +328,24 @@ class MLP(nn.Module):
         return self.net(x)
 
 
+class AttentionPool(nn.Module):
+    """Learned masked attention pooling over token states."""
+
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.score = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.Tanh(),
+            nn.Linear(d_model, 1, bias=False),
+        )
+
+    def forward(self, x: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
+        scores = self.score(x).squeeze(-1)  # (B, S)
+        scores = scores.masked_fill(~valid_mask, torch.finfo(scores.dtype).min)
+        weights = scores.softmax(dim=1).unsqueeze(-1)
+        return (x * weights).sum(dim=1)
+
+
 class JEPAEncoder(nn.Module):
     """Transformer encoder that maps a state token sequence to a single
     deterministic embedding.
@@ -324,7 +358,7 @@ class JEPAEncoder(nn.Module):
     ------------
     ``token_ids`` → token embedding →
     N × transformer blocks (bidirectional) →
-    mean pool over non-pad positions →
+    attention pool over non-pad positions →
     MLP projector → e.
 
     Parameters
@@ -380,6 +414,7 @@ class JEPAEncoder(nn.Module):
             for _ in range(n_layers)
         ])
         self.ln_final = nn.LayerNorm(d_model)
+        self.pool = AttentionPool(d_model)
 
         # MLP projector: pooled representation → deterministic embedding.
         proj_hidden = proj_hidden_dim or (4 * d_model)
@@ -409,6 +444,8 @@ class JEPAEncoder(nn.Module):
         Returns:
             e: (B, latent_dim) — deterministic embedding.
         """
+        valid_mask = token_ids != self.pad_id  # (B, S), True for real tokens
+
         # Token embeddings
         x = self.token_embedding(token_ids)  # (B, S, d_model)
 
@@ -420,17 +457,14 @@ class JEPAEncoder(nn.Module):
         for block in self.blocks:
             if self.gradient_checkpointing and self.training:
                 x = torch.utils.checkpoint.checkpoint(
-                    block, x, use_reentrant=False
+                    block, x, valid_mask, use_reentrant=False
                 )
             else:
-                x = block(x)
+                x = block(x, key_padding_mask=valid_mask)
         x = self.ln_final(x)  # (B, S, d_model)
 
-        # Mean pool over non-pad positions
-        pad_mask = (token_ids != self.pad_id).unsqueeze(-1).to(dtype=x.dtype)  # (B, S, 1)
-        x_sum = (x * pad_mask).sum(dim=1)          # (B, d_model)
-        x_count = pad_mask.sum(dim=1).clamp(min=1) # (B, 1)
-        pooled = x_sum / x_count                   # (B, d_model)
+        # Learned attention pool over non-pad positions.
+        pooled = self.pool(x, valid_mask)  # (B, d_model)
 
         return self.proj_e(pooled)  # (B, latent_dim)
 
@@ -662,6 +696,31 @@ class JEPAModel(nn.Module):
 # SIGReg — Sketched Isotropic Gaussian Regularization (Epps-Pulley test)
 # ═════════════════════════════════════════════════════════════════════════
 
+def _sigreg_grid(
+    device: torch.device,
+    num_points: int,
+    domain: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return cached fp32 integration points, target CF, and weights."""
+    key = (str(device), num_points, float(domain))
+    cached = _SIGREG_GRID_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    t = torch.linspace(0, domain, num_points, device=device, dtype=torch.float32)
+    dt = domain / (num_points - 1)
+    weights = torch.full((num_points,), 2 * dt, device=device, dtype=torch.float32)
+    weights[0] = dt
+    weights[-1] = dt
+
+    phi = torch.exp(-0.5 * t ** 2)
+    weights = weights * phi
+
+    cached = (t, phi, weights)
+    _SIGREG_GRID_CACHE[key] = cached
+    return cached
+
+
 def sigreg(
     embeddings: torch.Tensor,
     num_slices: int = SIGREG_NUM_SLICES,
@@ -688,31 +747,21 @@ def sigreg(
     Returns:
         Scalar SIGReg loss (averaged over slices, scaled by batch size).
     """
+    # Characteristic-function math is sensitive enough that bf16 trig/exp adds
+    # avoidable noise. Keep gradients, but run SIGReg itself in fp32.
+    embeddings = embeddings.float()
     B, D = embeddings.shape
     device = embeddings.device
-    dtype = embeddings.dtype
 
     # Sample random projection directions (unit norm).
-    A = torch.randn(D, num_slices, device=device, dtype=dtype)
+    A = torch.randn(D, num_slices, device=device, dtype=torch.float32)
     A = A / A.norm(p=2, dim=0, keepdim=True)
 
     # Project embeddings onto random directions.
     proj = embeddings @ A  # (B, num_slices)
 
-    # Integration points for the characteristic function: t ∈ [0, domain].
-    # The CF of N(0,1) is even, so [0, domain] captures the full information
-    # at twice the resolution of a symmetric [-domain, domain].
-    t = torch.linspace(0, domain, num_points, device=device, dtype=dtype)
-    dt = domain / (num_points - 1)
-
-    # Trapezoidal-rule weights (endpoints get half-weight).
-    weights = torch.full((num_points,), 2 * dt, device=device, dtype=dtype)
-    weights[0] = dt
-    weights[-1] = dt
-
-    # Target CF and Gaussian window: φ(t) = w(t) = exp(-t²/2) for N(0, 1).
-    phi = torch.exp(-0.5 * t ** 2)  # (T,)
-    weights = weights * phi          # pre-multiply window into quadrature weights
+    # Integration points, Gaussian target CF, and trapezoidal weights.
+    t, phi, weights = _sigreg_grid(device, num_points, domain)
 
     # Empirical CF via separate cos / sin — avoids complex64 precision loss.
     # e^(i·t·proj) = cos(t·proj) + i·sin(t·proj)
@@ -762,10 +811,15 @@ def compute_losses(
     # SIGReg prevents collapse; asymmetry is unnecessary.
     jepa_loss = F.mse_loss(e_next, predicted_next)
 
-    # ── 2. SIGReg on both embeddings ─────────────────────────────────
-    sigreg_prev = sigreg(e_prev, sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    sigreg_next = sigreg(e_next, sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    sigreg_loss = (sigreg_prev + sigreg_next) / 2.0
+    # ── 2. SIGReg on the transition embedding distribution ───────────
+    # Concatenating prev/next embeddings doubles the effective sample count
+    # and avoids two independent random projection passes per batch.
+    sigreg_loss = sigreg(
+        torch.cat([e_prev, e_next], dim=0),
+        sigreg_num_slices,
+        sigreg_num_points,
+        sigreg_domain,
+    )
 
     # ── Total loss ──────────────────────────────────────────────────
     total_loss = jepa_loss + lambda_sigreg * sigreg_loss
@@ -773,8 +827,10 @@ def compute_losses(
     metrics = {
         "loss": total_loss.item(),
         "jepa_loss": jepa_loss.item(),
-        "sigreg_prev": sigreg_prev.item(),
-        "sigreg_next": sigreg_next.item(),
+        # Legacy metric keys kept for existing CSV/W&B dashboards; both now
+        # report the combined transition-distribution SIGReg value.
+        "sigreg_prev": sigreg_loss.item(),
+        "sigreg_next": sigreg_loss.item(),
         "sigreg_loss": sigreg_loss.item(),
     }
 

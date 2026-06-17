@@ -4,7 +4,7 @@ Provides functions to turn a flat list of WorldModelObservationSpace token
 IDs (or string tokens) into a structured, indented, human-readable tree.
 
 Text blocks are variable-length:
-  - <switch>, <opponent_switch>, <fainted>, <opponent_fainted> only emit
+  - <switch>, <opponent_bench>, <fainted>, <opponent_fainted> only emit
     blocks for Pokémon that actually exist (no <blank> slot padding).
   - <opponent_moveset> only emits revealed moves (no unknownmove fillers).
 """
@@ -19,7 +19,7 @@ HP_TOKENS = 4
 
 # Structural tokens that begin a new top-level block
 _STRUCTURAL_TOKENS = frozenset({
-    "<player>", "<move>", "<switch>", "<opponent>", "<opponent_switch>",
+    "<player>", "<move>", "<switch>", "<opponent>", "<opponent_bench>",
     "<fainted>", "<opponent_fainted>", "<conditions>", "<player_prev>",
     "<opp_prev>", "<ongoing>", "<won>", "<lost>",
     "<boosts>", "<moveset>", "<opponent_moveset>",
@@ -29,7 +29,9 @@ _STRUCTURAL_TOKENS = frozenset({
 def format_pretty(tokens: list[str]) -> str:
     """Re-parse the flat token list into an indented, human-readable tree.
 
-    Handles variable-length opponent movesets and variable-count fainted blocks.
+    Handles variable-length opponent movesets, variable-count fainted blocks,
+    generation-aware item/ability fields, ``<noboosts>``, ``<unknown_item_ability>``,
+    ``<opponent_teampreview>``, and optional ``battle_field``.
     """
     lines = []
     i = 0
@@ -58,20 +60,48 @@ def format_pretty(tokens: list[str]) -> str:
     lines.append(f"  format : {fmt}")
     lines.append(f"  choice : {choice}")
 
+    # Infer generation from format token for item/ability awareness
+    import re
+    gen_match = re.match(r'<(gen)?(\d+)', fmt)
+    gen = int(gen_match.group(2)) if gen_match else 9
+    has_items = gen >= 2
+    has_abilities = gen >= 3
+
+    # ── opponent teampreview (Gen 5+, optional) ──
+    if peek(1) == ["<opponent_teampreview>"]:
+        take(1)
+        tp_mons = _tokens_until_structural()
+        lines.append("  ┌─ Opponent Teampreview ────────────────────────────")
+        lines.append(f"  │   {', '.join(tp_mons)}")
+
     # ── helper: parse a pokemon block ──
-    def parse_pokemon(is_active, has_status_effect=False):
+    def parse_pokemon(is_active, has_status_effect=False, has_hp=True):
         nonlocal i
         name = take(1)[0]
-        hp = " ".join(take(HP_TOKENS))
-        item = take(1)[0]
-        ability = take(1)[0]
+        hp = " ".join(take(HP_TOKENS)) if has_hp else "0.00"
+
+        # Item / ability — generation-aware.
+        item = "<none>"
+        ability = "<none>"
+        if has_items and has_abilities and peek(1) == ["<unknown_item_ability>"]:
+            take(1)
+            item = "<?>"
+            ability = "<?>"
+        else:
+            if has_items:
+                item = take(1)[0]
+            if has_abilities:
+                ability = take(1)[0]
+
         boosts = []
         if is_active:
             types_ = " ".join(take(2))
             effect = take(1)[0]
             status = take(1)[0]
-            # consume <boosts> block
-            if peek(1) == ["<boosts>"]:
+            # consume <noboosts> or <boosts> block
+            if peek(1) == ["<noboosts>"]:
+                take(1)
+            elif peek(1) == ["<boosts>"]:
                 take(1)
                 boosts = _tokens_until_structural()
             return {
@@ -83,13 +113,7 @@ def format_pretty(tokens: list[str]) -> str:
             if has_status_effect:
                 status = take(1)[0]
                 effect = take(1)[0]
-            # consume <boosts> block (before <moveset> or <opponent_moveset>)
-            if peek(1) == ["<boosts>"]:
-                take(1)
-                boosts = _tokens_until_structural()
             moveset_tag = take(1)[0]  # <moveset> or <opponent_moveset>
-            # Read moves until next structural token (opponent movesets
-            # are variable-length, player movesets have 4 <blank>-padded moves).
             moves = _tokens_until_structural()
             result = {
                 "name": name, "hp": hp, "item": item, "ability": ability,
@@ -104,7 +128,7 @@ def format_pretty(tokens: list[str]) -> str:
         """Render a single pokemon dict to a compact line."""
         hp_str = p["hp"].replace(" ", "")
         boost_str = ""
-        if p.get("boosts") and p["boosts"] != ["none"]:
+        if p.get("boosts"):
             boost_str = f"  [{' '.join(p['boosts'])}]"
         if "types" in p:
             # active pokemon
@@ -169,9 +193,9 @@ def format_pretty(tokens: list[str]) -> str:
                 lines.append(f"  │     moves: (none revealed)")
 
         # opponent bench (0–5 blocks, no text padding, variable moves per mon)
-        if peek(1) == ["<opponent_switch>"]:
+        if peek(1) == ["<opponent_bench>"]:
             lines.append("  │   Bench:")
-        while peek(1) == ["<opponent_switch>"]:
+        while peek(1) == ["<opponent_bench>"]:
             take(1)
             ob = parse_pokemon(is_active=False, has_status_effect=True)
             lines.append(pokemon_line(ob, "  │     "))
@@ -181,7 +205,7 @@ def format_pretty(tokens: list[str]) -> str:
         lines.append("  ┌─ Player Fainted ──────────────────────────────────")
         while peek(1) == ["<fainted>"]:
             take(1)
-            pf = parse_pokemon(is_active=False)
+            pf = parse_pokemon(is_active=False, has_hp=False)
             lines.append(pokemon_line(pf, "  │     "))
 
     # ── Opponent Fainted ──
@@ -189,17 +213,27 @@ def format_pretty(tokens: list[str]) -> str:
         lines.append("  ┌─ Opponent Fainted ────────────────────────────────")
         while peek(1) == ["<opponent_fainted>"]:
             take(1)
-            of = parse_pokemon(is_active=False, has_status_effect=True)
+            of = parse_pokemon(is_active=False, has_status_effect=True, has_hp=False)
             lines.append(pokemon_line(of, "  │     "))
 
-    # ── Conditions ──
+    # ── Conditions (weather, optional battle_field, side conditions) ──
     if peek(1) == ["<conditions>"]:
         take(1)
         weather = take(1)[0]
+        # battle_field is optional — only present when non-"nofield"
+        battle_field = "<none>"
+        if peek(1) and peek(1)[0] not in ("noconditions", "nofield") and not peek(1)[0].startswith("no"):
+            # Heuristic: if the next token looks like a field effect (not a side condition)
+            # Known field effects: trickroom, magicroom, wonderroom, electricterrain, etc.
+            maybe_field = peek(1)[0]
+            if maybe_field not in ("noconditions",):
+                battle_field = take(1)[0]
         player_cond = take(1)[0]
         opp_cond = take(1)[0]
         lines.append("  ┌─ Conditions ──────────────────────────────────────")
         lines.append(f"  │   weather = {weather}")
+        if battle_field != "<none>":
+            lines.append(f"  │   field   = {battle_field}")
         lines.append(f"  │   player  = {player_cond}")
         lines.append(f"  │   opponent = {opp_cond}")
 

@@ -261,13 +261,16 @@ WORLD_MODEL_STRUCTURAL_TOKENS = [
     "<ongoing>",
     "<won>",
     "<lost>",
-    "<opponent_switch>",
+    "<opponent_bench>",
     "<fainted>",
     "<opponent_fainted>",
     "<bos>",
     "<eos>",
     "<boa>",
     "<eoa>",
+    "<noboosts>",
+    "<opponent_teampreview>",
+    "<unknown_item_ability>",
 ]
 
 # ── World-model action tokens (one per action index, -1 … 12) ──────────

@@ -30,13 +30,24 @@ parsed replays               scripts/generate_world_model_data.py
   (UniversalState JSON)  ──►  sharded .npz files  ──►  WorldModelDataset  ──►  WorldModelTransformer
                                   │                         (IterableDataset)       (autoregressive decoder)
                                   │
-                            states: (total_tokens,) int16   — flat array, all token IDs concatenated
-                            state_lengths: (N,) int32       — token count per state
-                            state_offsets: (N,) int64       — start index per state in states[]
-                            actions: (total_actions,) int16 — action index (-1..12) per transition
-                            battle_start: (B+1,) int64      — cumulative state index per battle
-                            won: (B,) bool                  — whether POV won
+                            states: (total_tokens,) int16      — flat array, all token IDs concatenated
+                            state_lengths: (N,) int32          — token count per state
+                            state_offsets: (N,) int64          — start index per state in states[]
+                            prev_state_idx: (T,) int32         — local state index for state[t]
+                            next_state_idx: (T,) int32         — local state index for state[t+1]
+                            actions: (T,) int16                — action index (-1..12) per transition
+                            battle_id: (T,) int32              — local battle index for each transition
+                            turn_idx: (T,) int32               — transition index within that battle
+                            format_id: (T,) int16              — format id from metadata.json
+                            battle_start: (B+1,) int64         — cumulative state index per battle
+                            won: (B,) bool                     — whether POV won
 ```
+
+The `.npz` shards are written uncompressed with `np.savez` so generation and
+training avoid compression CPU overhead. States remain contiguous per battle
+inside each shard for auditability, but loaders sample/shuffle transition rows
+instead of walking one battle at a time. Legacy shards without
+`prev_state_idx`/`next_state_idx` are still readable by the SL and JEPA loaders.
 
 ### Model architecture (`model.py`)
 
@@ -47,7 +58,7 @@ Prompt layout (variable-length, right-padded to `max_context=832`):
 <bos> state_t[0..L-1] <eos> <boa> <action_X> <eoa> <bos> state_next[0..M-1] <eos> <pad>…
 ```
 
-Key constants (derived from `WorldModelObservationSpace`): `MAX_STATE_LENGTH=312`, `ACTION_OVERHEAD=5`, `SAFETY_FACTOR=2.5`, `MAX_CONTEXT_LENGTH=832`.
+Key constants (derived from `WorldModelObservationSpace`): `MAX_STATE_LENGTH=260`, `ACTION_OVERHEAD=5`, `SAFETY_FACTOR=2.0`, `MAX_CONTEXT_LENGTH=576`.
 
 ### Training (`train.py`)
 
@@ -66,6 +77,32 @@ Training uses bf16, `torch.compile(mode="max-autotune")` with `dynamic=True`, fu
 ### Tokenizer and action tokens
 
 The `WorldModelObservationSpace` tokenizer maps battle state text to integer IDs. Action indices (-1..12) map to **non-consecutive** token IDs (e.g. `<action_0>` → 13, `<action_1>` → 17, `<action_10>` → 14 — lexicographic ordering from the JSON build). The model's `_action_lookup` buffer handles this mapping via `actions + _action_base` (where `_action_base = 1`). The tokenizer used is `WorldModelObservationSpace-v1.json` (v2 files in the tokenizers directory are orphaned — not referenced by any code).
+
+**Text format** (generation-aware; all repeated blocks are variable-length):
+```
+<format> <forcedswitch|anychoice> [<opponent_teampreview> <species>…]
+<player> <name> <hp_c0>..<hp_c3> [<item>] [<ability>] <type_0> <type_1> <effect> <status> <noboosts|boosts <boost...>>
+<move> <name> <type> <category>  ×4
+<switch> <name> <hp_c0>..<hp_c3> [<item>] [<ability>] <moveset> <move_1>..<move_4>  ×0–5
+<opponent> <name> <hp_c0>..<hp_c3> [<item>|<unknown_item_ability>] [<ability>] <type_0> <type_1> <effect> <status> <noboosts|boosts <boost...>> <opponent_moveset> <move_1>..<move_N>  (0–4 revealed moves, no fillers)
+<opponent_bench> <name> <hp_c0>..<hp_c3> [<item>|<unknown_item_ability>] [<ability>] <status> <effect> <opponent_moveset> <move_1>..<move_N>  ×0–5 (0–4 revealed moves each, no fillers)
+<fainted> <name> [<item>] [<ability>] <moveset> <move_1>..<move_4>  ×0–5 (HP omitted — always 0.0)
+<opponent_fainted> <name> [<item>|<unknown_item_ability>] [<ability>] <status> <effect> <opponent_moveset> <move_1>..<move_N>  ×0–5 (HP omitted)
+<conditions> <weather> [<battle_field>] <player_cond> <opponent_cond>
+<player_prev> <move> <opp_prev> <move>
+<ongoing|won|lost>
+```
+
+**Generation-aware rules:**
+- `item` fields omitted in Gen 1 (no held items); `ability` fields omitted in Gen 1–2 (no abilities)
+- `<unknown_item_ability>` replaces `unknownitem unknownability` when opponent's item AND ability are both unrevealed (Gen 3+)
+- `<noboosts>` replaces `<boosts> none` — a single token when no stat changes are active
+- `<opponent_bench>` (renamed from `<opponent_switch>`) for opponent's revealed bench Pokémon
+- `<opponent_teampreview>` emitted when `opponent_teampreview` is non-empty (Gen 5+ team preview)
+- `battle_field` only emitted when non-"nofield" (Gen 4+ field effects like Trick Room, terrains)
+- No padding: `<switch>`, `<opponent_bench>`, `<fainted>`, `<opponent_fainted>` blocks only emitted when they actually contain Pokémon
+- Opponent movesets only emit revealed moves (no `unknownmove` fillers)
+- Boosts only appear on active Pokémon (stat stages reset on switch-out)
 
 **Further reading:** `metamon/sl/model.py` (transformer, prompt builder, loss mask), `metamon/sl/train.py` (training loop, dataset, collate), `metamon/sl/configs/default.yaml` (model hyperparameters), `scripts/generate_world_model_data.py` (data generation), `metamon/interface.py` → `WorldModelObservationSpace` (state text format, §tokenizable limits), `metamon/tokenizer/wm_detokenizer.py` (token→text decoding for debugging), `docs/world_model_dataset_plan.md` (design notes).
 

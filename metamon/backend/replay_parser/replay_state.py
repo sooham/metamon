@@ -399,6 +399,11 @@ class Pokemon:
         self.last_target: Optional[Targeting] = None
         self.last_targeted_by: Optional[TargetedBy] = None
         self.tricking: Optional["Pokemon"] = None
+        # Set by _parse_cant when the Pokémon is prevented from acting.
+        # Cleared at start of next turn and when a move is successfully used.
+        # Reasons: slp, par, frz, flinch, partiallytrapped, recharge,
+        #   move: Taunt, move: Heal Block, ability: Truant, Focus Punch
+        self.cant_reason: Optional[str] = None
         # Tracks remaining turns for a foreign-called charge move (Fly, Dig,
         # etc.).  2 = charge turn pending + attack turn pending, 1 = only
         # attack turn pending, 0 = no pending charge move.
@@ -1202,6 +1207,13 @@ class Turn:
         next_turn.turn_number += 1
         next_turn.replacements_1 = []
         next_turn.replacements_2 = []
+        # Clear transient per-turn state on all Pokémon in the new turn.
+        for pokemon in next_turn.all_pokemon:
+            if pokemon is not None:
+                pokemon.cant_reason = None
+                pokemon.protected = False
+                pokemon.last_target = None
+                pokemon.last_targeted_by = None
         return next_turn
 
     def create_subturn(self, force_switch: bool) -> "Turn":
