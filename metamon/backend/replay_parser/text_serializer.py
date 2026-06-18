@@ -586,8 +586,14 @@ def _write_action_block(
             lines.append("<end_opponent_chosen_move>")
         else:
             name = clean_name(opponent_action.name)
+            cant = None
+            if opponent_action.user is not None:
+                cant = getattr(opponent_action.user, "cant_reason", None)
             lines.append("<opponent_chosen_move>")
-            lines.append(name)
+            if cant:
+                lines.append(f"{name} cant={cant}")
+            else:
+                lines.append(name)
             lines.append("<end_opponent_chosen_move>")
     else:
         lines.append("<opponent_chosen_move>")
@@ -901,8 +907,14 @@ def _write_action_block_doubles(
                 lines.append("<end_opponent_chosen_move>")
             else:
                 name = clean_name(oa.name)
+                cant = None
+                if oa.user is not None:
+                    cant = getattr(oa.user, "cant_reason", None)
                 lines.append(f"<opponent_chosen_move:{slot}>")
-                lines.append(name)
+                if cant:
+                    lines.append(f"{name} cant={cant}")
+                else:
+                    lines.append(name)
                 lines.append("<end_opponent_chosen_move>")
         else:
             lines.append(f"<opponent_chosen_move:{slot}>")

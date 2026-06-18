@@ -276,6 +276,8 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
                 "p2_action": sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_ai, p2_ai + 1)[0],
                 "p2_action_from_p1_perspective": sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_ai, p1_ai + 1)[0],
                 "actual_p1_action_from_p2_perspective": sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_ai, p2_ai + 1)[0],
+                "p1_won": bool(data["p1_won"][battle_id]),
+                "p2_won": bool(data["p2_won"][battle_id]),
             }
             yield sample
 
@@ -321,6 +323,10 @@ ACTION_KEYS = (
     "p2_action_from_p1_perspective",
     "actual_p1_action_from_p2_perspective",
 )
+SCALAR_KEYS = (
+    "p1_won",
+    "p2_won",
+)
 
 
 def collate_paired_fn(
@@ -361,6 +367,8 @@ def collate_paired_fn(
         out[f"{key}_valid"] = valid
     for key in ACTION_KEYS:
         out[key] = pad_actions([item[key] for item in batch])  # type: ignore[index]
+    for key in SCALAR_KEYS:
+        out[key] = torch.tensor([bool(item[key]) for item in batch], dtype=torch.bool)
     return out
 
 
@@ -368,8 +376,116 @@ def _batch_to_device(batch: dict[str, torch.Tensor], device: torch.device) -> di
     return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
 
 
+def _load_compatible_checkpoint(
+    model: PairedJEPAModel,
+    checkpoint_path: str,
+    device: torch.device,
+) -> dict:
+    """Load a checkpoint as a warm start, skipping incompatible tensors.
+
+    ``--checkpoint`` is also the "save best here" path.  After architecture
+    changes, that file may exist but contain old predictor heads.  Loading only
+    matching keys lets the encoder/action encoder warm-start while new or
+    resized Gaussian/ranking heads train from initialization.
+    """
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    raw_state = ckpt["model_state_dict"]
+    cleaned = {key.replace("_orig_mod.", ""): value for key, value in raw_state.items()}
+
+    current = model.state_dict()
+    compatible: dict[str, torch.Tensor] = {}
+    skipped: list[tuple[str, tuple[int, ...], tuple[int, ...] | None]] = []
+    for key, value in cleaned.items():
+        target = current.get(key)
+        if target is None:
+            skipped.append((key, tuple(value.shape), None))
+            continue
+        if tuple(value.shape) != tuple(target.shape):
+            skipped.append((key, tuple(value.shape), tuple(target.shape)))
+            continue
+        compatible[key] = value
+
+    model.load_state_dict(compatible, strict=False)
+
+    missing = [key for key in current if key not in compatible]
+    print(
+        f"Loaded checkpoint warm start: {checkpoint_path} "
+        f"({len(compatible)}/{len(current)} tensors matched)"
+    )
+    if skipped:
+        print(f"  skipped {len(skipped)} incompatible checkpoint tensors:")
+        for key, old_shape, new_shape in skipped[:12]:
+            if new_shape is None:
+                print(f"    {key}: checkpoint shape {old_shape}, not present in current model")
+            else:
+                print(f"    {key}: checkpoint shape {old_shape}, current shape {new_shape}")
+        if len(skipped) > 12:
+            print(f"    ... {len(skipped) - 12} more")
+    if missing:
+        print(f"  initialized {len(missing)} current-model tensors from scratch")
+    return ckpt
+
+
+def _paired_outcome_stats(shard_paths: list[str]) -> dict[str, int]:
+    stats = {
+        "battles": 0,
+        "p1_won": 0,
+        "p2_won": 0,
+        "both_won": 0,
+        "both_lost": 0,
+        "missing": 0,
+    }
+    for path in shard_paths:
+        data = np.load(path)
+        if "p1_won" not in data or "p2_won" not in data:
+            stats["missing"] += 1
+            continue
+        p1 = data["p1_won"].astype(bool, copy=False)
+        p2 = data["p2_won"].astype(bool, copy=False)
+        n = min(len(p1), len(p2))
+        if len(p1) != len(p2):
+            stats["missing"] += 1
+            p1 = p1[:n]
+            p2 = p2[:n]
+        stats["battles"] += n
+        stats["p1_won"] += int(p1.sum())
+        stats["p2_won"] += int(p2.sum())
+        stats["both_won"] += int((p1 & p2).sum())
+        stats["both_lost"] += int((~p1 & ~p2).sum())
+    return stats
+
+
+def _validate_paired_outcomes_for_rank(shard_paths: list[str], lambda_rank: float) -> dict[str, int]:
+    stats = _paired_outcome_stats(shard_paths)
+    if stats["battles"] <= 0:
+        return stats
+    invalid = stats["both_won"] + stats["both_lost"]
+    print(
+        "Paired outcome labels: "
+        f"battles={stats['battles']:,} "
+        f"p1_won={stats['p1_won']:,} "
+        f"p2_won={stats['p2_won']:,} "
+        f"both_lost={stats['both_lost']:,} "
+        f"both_won={stats['both_won']:,}"
+    )
+    invalid_fraction = invalid / max(stats["battles"], 1)
+    if lambda_rank > 0 and (stats["missing"] > 0 or invalid_fraction > 0.05):
+        raise RuntimeError(
+            "Paired JEPA shards have invalid p1_won/p2_won labels for rank training "
+            f"({invalid:,}/{stats['battles']:,} battles invalid). "
+            "Regenerate paired shards with the patched scripts/generate_world_model_data.py, "
+            "or temporarily train without ranking via --lambda_rank 0."
+        )
+    if invalid > 0:
+        print(
+            "WARNING: Some paired outcome labels are invalid. "
+            "Ties are allowed, but many both-false labels usually mean old shards."
+        )
+    return stats
+
+
 def _forward_paired(model: PairedJEPAModel, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    return model(
+    outputs = model(
         batch["p1_state_T"], batch["p1_state_T_valid"],
         batch["p1_state_T1"], batch["p1_state_T1_valid"],
         batch["p1_player_hist_T"], batch["p1_player_hist_T_valid"],
@@ -387,6 +503,9 @@ def _forward_paired(model: PairedJEPAModel, batch: dict[str, torch.Tensor]) -> d
         batch["p2_action_from_p1_perspective"],
         batch["actual_p1_action_from_p2_perspective"],
     )
+    outputs["p1_won"] = batch["p1_won"]
+    outputs["p2_won"] = batch["p2_won"]
+    return outputs
 
 
 def _paired_sigreg_breakdown(
@@ -399,9 +518,17 @@ def _paired_sigreg_breakdown(
         sigreg(outputs["enc_p1_T"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["enc_p2_T"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 2
-    state_next = (
+    state_next_true = (
         sigreg(outputs["enc_p1_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["enc_p2_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+    ) / 2
+    state_context = (
+        sigreg(outputs["ctx_p1_T"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        + sigreg(outputs["ctx_p2_T"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+    ) / 2
+    state_next_pred = (
+        sigreg(outputs["pred_p1_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        + sigreg(outputs["pred_p2_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 2
     action_own = (
         sigreg(outputs["p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
@@ -411,14 +538,24 @@ def _paired_sigreg_breakdown(
         sigreg(outputs["p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["actual_p1_action_from_p2_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 2
+    action_pred = (
+        sigreg(outputs["pred_p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        + sigreg(outputs["pred_p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+    ) / 2
     return {
         "sigreg_state_current": state_current.item(),
-        "sigreg_state_next": state_next.item(),
+        "sigreg_state_next": state_next_true.item(),
+        "sigreg_state_context": state_context.item(),
+        "sigreg_state_next_pred": state_next_pred.item(),
         "sigreg_action_own": action_own.item(),
         "sigreg_action_opponent": action_opponent.item(),
-        "sigreg_state_loss": (state_current + state_next).item(),
-        "sigreg_action_loss": (action_own + action_opponent).item(),
-        "sigreg_total_detail": (state_current + state_next + action_own + action_opponent).item(),
+        "sigreg_action_pred": action_pred.item(),
+        "sigreg_state_loss": (state_current + state_next_true + state_context + state_next_pred).item(),
+        "sigreg_action_loss": (action_own + action_opponent + action_pred).item(),
+        "sigreg_total_detail": (
+            state_current + state_next_true + state_context + state_next_pred
+            + action_own + action_opponent + action_pred
+        ).item(),
     }
 
 
@@ -477,6 +614,9 @@ def train(args: argparse.Namespace) -> None:
     lambda_sigreg = args.lambda_sigreg
     if lambda_sigreg is None:
         lambda_sigreg = model_cfg.get("lambda_sigreg", 0.1)
+    lambda_rank = args.lambda_rank
+    if lambda_rank is None:
+        lambda_rank = model_cfg.get("lambda_rank", 1.0)
     sigreg_num_slices = model_cfg.get("sigreg_num_slices", SIGREG_NUM_SLICES)
     sigreg_num_points = model_cfg.get("sigreg_num_points", SIGREG_NUM_POINTS)
     sigreg_domain = model_cfg.get("sigreg_domain", SIGREG_DOMAIN)
@@ -492,6 +632,7 @@ def train(args: argparse.Namespace) -> None:
     val_shards = PairedJEPADataset.discover(
         args.data_root, args.formats, "val", required=False
     )
+    _validate_paired_outcomes_for_rank(train_shards, float(lambda_rank))
     train_dataset = PairedJEPADataset(
         train_shards, structural_ids, shuffle_shards=True,
         max_history_blocks=args.max_history_blocks,
@@ -533,6 +674,7 @@ def train(args: argparse.Namespace) -> None:
         opponent_state_predictor_cfg=model_cfg.get("opponent_state_predictor", {}),
         action_predictor_cfg=model_cfg.get("paired_action_predictor", model_cfg.get("action_predictor", {})),
         next_state_predictor_cfg=model_cfg.get("next_state_predictor", {}),
+        rank_head_cfg=model_cfg.get("rank_head", {}),
     ).to(device)
 
     if device.type == "cuda":
@@ -562,15 +704,7 @@ def train(args: argparse.Namespace) -> None:
             print("torch.compile enabled on: encoder, action_encoder")
 
     if args.checkpoint and os.path.exists(args.checkpoint):
-        ckpt = torch.load(args.checkpoint, map_location=device)
-        # Strip torch.compile _orig_mod. prefix if present (checkpoint may
-        # have been saved while submodule compile was active).
-        state_dict = ckpt["model_state_dict"]
-        cleaned = {}
-        for k, v in state_dict.items():
-            cleaned[k.replace("_orig_mod.", "")] = v
-        model.load_state_dict(cleaned)
-        print(f"Loaded checkpoint: {args.checkpoint}")
+        _load_compatible_checkpoint(model, args.checkpoint, device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -623,6 +757,7 @@ def train(args: argparse.Namespace) -> None:
                 "lambda_opponent_state": args.lambda_opponent_state,
                 "lambda_action": args.lambda_action,
                 "lambda_next_state": args.lambda_next_state,
+                "lambda_rank": lambda_rank,
             },
         )
     elif args.wandb and not _wandb_available:
@@ -635,6 +770,7 @@ def train(args: argparse.Namespace) -> None:
             lambda_opponent_state=args.lambda_opponent_state,
             lambda_action=args.lambda_action,
             lambda_next_state=args.lambda_next_state,
+            lambda_rank=lambda_rank,
             sigreg_num_slices=sigreg_num_slices,
             sigreg_num_points=sigreg_num_points,
             sigreg_domain=sigreg_domain,
@@ -735,11 +871,18 @@ def train(args: argparse.Namespace) -> None:
                     "train/next_state_loss": metrics["next_state_loss"],
                     "train/next_state_loss_p1": metrics["next_state_loss_p1"],
                     "train/next_state_loss_p2": metrics["next_state_loss_p2"],
+                    "train/rank_loss": metrics["rank_loss"],
+                    "train/rank_loss_teacher": metrics["rank_loss_teacher"],
+                    "train/rank_loss_belief": metrics["rank_loss_belief"],
+                    "train/rank_loss_next": metrics["rank_loss_next"],
                     "train/sigreg_loss": metrics["sigreg_loss"],
                     "train/sigreg_state_current": diagnostics["sigreg_state_current"],
                     "train/sigreg_state_next": diagnostics["sigreg_state_next"],
+                    "train/sigreg_state_context": diagnostics["sigreg_state_context"],
+                    "train/sigreg_state_next_pred": diagnostics["sigreg_state_next_pred"],
                     "train/sigreg_action_own": diagnostics["sigreg_action_own"],
                     "train/sigreg_action_opponent": diagnostics["sigreg_action_opponent"],
+                    "train/sigreg_action_pred": diagnostics["sigreg_action_pred"],
                     "train/lr": optimizer.param_groups[0]["lr"],
                     "epoch": epoch,
                     "global_step": global_step,
@@ -770,11 +913,18 @@ def train(args: argparse.Namespace) -> None:
                     f"next {metrics['next_state_loss']:.4f} "
                     f"[p1 {metrics['next_state_loss_p1']:.4f}, "
                     f"p2 {metrics['next_state_loss_p2']:.4f}] | "
+                    f"rank {metrics['rank_loss']:.4f} "
+                    f"[teacher {metrics['rank_loss_teacher']:.4f}, "
+                    f"belief {metrics['rank_loss_belief']:.4f}, "
+                    f"next {metrics['rank_loss_next']:.4f}] | "
                     f"sigreg {metrics['sigreg_loss']:.4f} "
                     f"[state_cur {diagnostics['sigreg_state_current']:.4f}, "
                     f"state_next {diagnostics['sigreg_state_next']:.4f}, "
+                    f"ctx {diagnostics['sigreg_state_context']:.4f}, "
+                    f"pred_next {diagnostics['sigreg_state_next_pred']:.4f}, "
                     f"action_own {diagnostics['sigreg_action_own']:.4f}, "
-                    f"action_opp {diagnostics['sigreg_action_opponent']:.4f}]"
+                    f"action_opp {diagnostics['sigreg_action_opponent']:.4f}, "
+                    f"action_pred {diagnostics['sigreg_action_pred']:.4f}]"
                 )
 
             if args.val_interval > 0 and global_step % args.val_interval == 0:
@@ -786,11 +936,15 @@ def train(args: argparse.Namespace) -> None:
                         f"opp_state {val_metrics['val_opponent_state_loss']:.4f} | "
                         f"action {val_metrics['val_action_loss']:.4f} | "
                         f"next {val_metrics['val_next_state_loss']:.4f} | "
+                        f"rank {val_metrics.get('val_rank_loss', 0.0):.4f} | "
                         f"sigreg {val_metrics.get('val_sigreg_loss', 0.0):.4f} | "
                         f"state_cur {val_metrics.get('val_sigreg_state_current', 0.0):.4f} | "
                         f"state_next {val_metrics.get('val_sigreg_state_next', 0.0):.4f} | "
+                        f"ctx {val_metrics.get('val_sigreg_state_context', 0.0):.4f} | "
+                        f"pred_next {val_metrics.get('val_sigreg_state_next_pred', 0.0):.4f} | "
                         f"action_own {val_metrics.get('val_sigreg_action_own', 0.0):.4f} | "
-                        f"action_opp {val_metrics.get('val_sigreg_action_opponent', 0.0):.4f}"
+                        f"action_opp {val_metrics.get('val_sigreg_action_opponent', 0.0):.4f} | "
+                        f"action_pred {val_metrics.get('val_sigreg_action_pred', 0.0):.4f}"
                     )
                     if wandb_run:
                         wandb_run.log({
@@ -798,11 +952,15 @@ def train(args: argparse.Namespace) -> None:
                             "val/opponent_state_loss": val_metrics["val_opponent_state_loss"],
                             "val/action_loss": val_metrics["val_action_loss"],
                             "val/next_state_loss": val_metrics["val_next_state_loss"],
+                            "val/rank_loss": val_metrics.get("val_rank_loss", 0.0),
                             "val/sigreg_loss": val_metrics.get("val_sigreg_loss", 0.0),
                             "val/sigreg_state_current": val_metrics.get("val_sigreg_state_current", 0.0),
                             "val/sigreg_state_next": val_metrics.get("val_sigreg_state_next", 0.0),
+                            "val/sigreg_state_context": val_metrics.get("val_sigreg_state_context", 0.0),
+                            "val/sigreg_state_next_pred": val_metrics.get("val_sigreg_state_next_pred", 0.0),
                             "val/sigreg_action_own": val_metrics.get("val_sigreg_action_own", 0.0),
                             "val/sigreg_action_opponent": val_metrics.get("val_sigreg_action_opponent", 0.0),
+                            "val/sigreg_action_pred": val_metrics.get("val_sigreg_action_pred", 0.0),
                             "epoch": epoch,
                             "global_step": global_step,
                         })
@@ -833,6 +991,7 @@ def train(args: argparse.Namespace) -> None:
             f"opp_state {avg.get('opponent_state_loss', 0.0):.4f} | "
             f"action {avg.get('action_loss', 0.0):.4f} | "
             f"next {avg.get('next_state_loss', 0.0):.4f} | "
+            f"rank {avg.get('rank_loss', 0.0):.4f} | "
             f"sigreg {avg.get('sigreg_loss', 0.0):.4f}"
         )
         if val_metrics:
@@ -848,11 +1007,13 @@ def train(args: argparse.Namespace) -> None:
                 "epoch/train_opponent_state_loss": avg.get("opponent_state_loss", 0.0),
                 "epoch/train_action_loss": avg.get("action_loss", 0.0),
                 "epoch/train_next_state_loss": avg.get("next_state_loss", 0.0),
+                "epoch/train_rank_loss": avg.get("rank_loss", 0.0),
                 "epoch/train_sigreg_loss": avg.get("sigreg_loss", 0.0),
                 "epoch/val_loss": val_metrics.get("val_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_opponent_state_loss": val_metrics.get("val_opponent_state_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_action_loss": val_metrics.get("val_action_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_next_state_loss": val_metrics.get("val_next_state_loss", 0.0) if val_metrics else 0.0,
+                "epoch/val_rank_loss": val_metrics.get("val_rank_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_sigreg_loss": val_metrics.get("val_sigreg_loss", 0.0) if val_metrics else 0.0,
                 "epoch": epoch,
             })
@@ -906,6 +1067,7 @@ if __name__ == "__main__":
     parser.add_argument("--lambda_opponent_state", type=float, default=1.0)
     parser.add_argument("--lambda_action", type=float, default=1.0)
     parser.add_argument("--lambda_next_state", type=float, default=1.0)
+    parser.add_argument("--lambda_rank", type=float, default=None)
     parser.add_argument("--print_interval", type=int, default=10)
     parser.add_argument("--log_interval", type=int, default=0,
                         help="Log every N training steps to wandb (0 = same as print_interval).")

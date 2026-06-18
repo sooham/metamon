@@ -44,7 +44,10 @@ class JEPADataset(torch.utils.data.IterableDataset):
             if not os.path.isdir(split_dir):
                 continue
             for name in sorted(os.listdir(split_dir)):
-                if name.startswith("shard_") and name.endswith(".npz"):
+                if (
+                    (name.startswith("shard_") or name.startswith("seq_shard_"))
+                    and name.endswith(".npz")
+                ):
                     shard_paths.append(os.path.join(split_dir, name))
         if required and not shard_paths:
             raise FileNotFoundError(
@@ -57,7 +60,8 @@ class JEPADataset(torch.utils.data.IterableDataset):
         total = 0
         for path in shard_paths:
             data = np.load(path)
-            total += int(len(data["state_idx"]))
+            key = "state_idx" if "state_idx" in data else "prev_state_idx"
+            total += int(len(data[key]))
         return total
 
     @staticmethod
@@ -95,69 +99,82 @@ class JEPADataset(torch.utils.data.IterableDataset):
             blocks.append(np.concatenate([prefix, content, suffix]))
         return blocks
 
-    def _iter_shard(self, path: str) -> Iterator[dict[str, object]]:
+    def _iter_shard(self, path: str) -> Iterator[tuple[object, ...]]:
         data = np.load(path)
         cm_id = self.structural["chosen_move"]
         ecm_id = self.structural["end_chosen_move"]
         ocm_id = self.structural["opponent_chosen_move"]
         eocm_id = self.structural["end_opponent_chosen_move"]
 
-        n_transitions = len(data["state_idx"])
+        state_idx_arr = data["state_idx"] if "state_idx" in data else data["prev_state_idx"]
+        next_state_idx_arr = data["next_state_idx"]
+        action_idx_arr = data["action_idx"] if "action_idx" in data else np.arange(len(state_idx_arr))
+        player_actions_key = "actions" if "actions" in data else "player_actions"
+        player_action_offsets_key = "action_offsets" if "action_offsets" in data else "player_action_offsets"
+        player_action_lengths_key = "action_lengths" if "action_lengths" in data else "player_action_lengths"
+        opponent_actions_key = "opponent_actions"
+        opponent_action_offsets_key = "opponent_action_offsets"
+        opponent_action_lengths_key = "opponent_action_lengths"
+
+        n_transitions = len(state_idx_arr)
         order = np.arange(n_transitions)
         if self.shuffle_transitions:
             np.random.default_rng().shuffle(order)
 
         for row in order:
             battle_id = int(data["battle_id"][row])
-            state_idx = int(data["state_idx"][row])
-            next_state_idx = int(data["next_state_idx"][row])
-            action_idx = int(data["action_idx"][row])
+            state_idx = int(state_idx_arr[row])
+            next_state_idx = int(next_state_idx_arr[row])
+            action_idx = int(action_idx_arr[row])
 
             battle_start = int(data["battle_start"][battle_id])
             action_start = int(data["battle_action_start"][battle_id])
 
-            yield {
-                "state_N_tokens": self._slice_blocks(
-                    data["states"], data["state_offsets"], data["state_lengths"],
-                    battle_start, state_idx + 1,
-                ),
-                "state_N1_tokens": self._slice_blocks(
-                    data["states"], data["state_offsets"], data["state_lengths"],
-                    battle_start, next_state_idx + 1,
-                ),
-                "player_hist_N_tokens": self._slice_action_blocks(
-                    data["actions"], data["action_offsets"], data["action_lengths"],
-                    action_start, action_idx, cm_id, ecm_id,
-                ),
-                "opponent_hist_N_tokens": self._slice_action_blocks(
-                    data["opponent_actions"],
-                    data["opponent_action_offsets"],
-                    data["opponent_action_lengths"],
-                    action_start, action_idx, ocm_id, eocm_id,
-                ),
-                "player_hist_N1_tokens": self._slice_action_blocks(
-                    data["actions"], data["action_offsets"], data["action_lengths"],
-                    action_start, action_idx + 1, cm_id, ecm_id,
-                ),
-                "opponent_hist_N1_tokens": self._slice_action_blocks(
-                    data["opponent_actions"],
-                    data["opponent_action_offsets"],
-                    data["opponent_action_lengths"],
-                    action_start, action_idx + 1, ocm_id, eocm_id,
-                ),
-                "player_action_tokens": self._slice_action_blocks(
-                    data["actions"], data["action_offsets"], data["action_lengths"],
-                    action_idx, action_idx + 1, cm_id, ecm_id,
-                )[0],
-                "opponent_action_tokens": self._slice_action_blocks(
-                    data["opponent_actions"],
-                    data["opponent_action_offsets"],
-                    data["opponent_action_lengths"],
-                    action_idx, action_idx + 1, ocm_id, eocm_id,
-                )[0],
-            }
+            state_blocks_N = self._slice_blocks(
+                data["states"], data["state_offsets"], data["state_lengths"],
+                battle_start, state_idx + 1,
+            )
+            state_blocks_N1 = self._slice_blocks(
+                data["states"], data["state_offsets"], data["state_lengths"],
+                battle_start, next_state_idx + 1,
+            )
+            pa_hist_N = self._slice_action_blocks(
+                data[player_actions_key], data[player_action_offsets_key], data[player_action_lengths_key],
+                action_start, action_idx, cm_id, ecm_id,
+            )
+            oa_hist_N = self._slice_action_blocks(
+                data[opponent_actions_key], data[opponent_action_offsets_key], data[opponent_action_lengths_key],
+                action_start, action_idx, ocm_id, eocm_id,
+            )
+            pa_hist_N1 = self._slice_action_blocks(
+                data[player_actions_key], data[player_action_offsets_key], data[player_action_lengths_key],
+                action_start, action_idx + 1, cm_id, ecm_id,
+            )
+            oa_hist_N1 = self._slice_action_blocks(
+                data[opponent_actions_key], data[opponent_action_offsets_key], data[opponent_action_lengths_key],
+                action_start, action_idx + 1, ocm_id, eocm_id,
+            )
+            pa_tokens = self._slice_action_blocks(
+                data[player_actions_key], data[player_action_offsets_key], data[player_action_lengths_key],
+                action_idx, action_idx + 1, cm_id, ecm_id,
+            )[0]
+            oa_tokens = self._slice_action_blocks(
+                data[opponent_actions_key], data[opponent_action_offsets_key], data[opponent_action_lengths_key],
+                action_idx, action_idx + 1, ocm_id, eocm_id,
+            )[0]
 
-    def __iter__(self) -> Iterator[dict[str, object]]:
+            yield (
+                state_blocks_N,
+                state_blocks_N1,
+                pa_hist_N,
+                oa_hist_N,
+                pa_hist_N1,
+                oa_hist_N1,
+                pa_tokens,
+                oa_tokens,
+            )
+
+    def __iter__(self) -> Iterator[tuple[object, ...]]:
         paths = self.shard_paths.copy()
         if self.shuffle_shards:
             np.random.shuffle(paths)

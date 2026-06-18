@@ -551,8 +551,8 @@ One action block between every pair of states (except after the terminal state).
 ```
 <boa>
 <turn>1<end_turn>
-<chosen_move>[switch] <name> [cant="<reason>"]<end_chosen_move>
-<opponent_chosen_move>[switch] <name>|unknown<end_opponent_chosen_move>
+<chosen_move>[switch] <name> [cant=<reason>]<end_chosen_move>
+<opponent_chosen_move>[switch] <name> [cant=<reason>]|unknown<end_opponent_chosen_move>
 <eoa>
 ```
 
@@ -582,8 +582,17 @@ One action block between every pair of states (except after the terminal state).
 ```
 <boa>
 <turn>2<end_turn>
-<chosen_move cant="par">lovelykiss<end_chosen_move>
+<chosen_move>lovelykiss cant=par<end_chosen_move>
 <opponent_chosen_move>unknown<end_opponent_chosen_move>
+<eoa>
+```
+
+**Opponent moves with `cant` (opponent chose the move but couldn't execute):**
+```
+<boa>
+<turn>3<end_turn>
+<chosen_move>blizzard<end_chosen_move>
+<opponent_chosen_move>thunderbolt cant=par<end_opponent_chosen_move>
 <eoa>
 ```
 
@@ -605,7 +614,7 @@ One action block between every pair of states (except after the terminal state).
 <eoa>
 ```
 
-**Opponent action unknown (`|cant|` or unrevealed):**
+**Opponent action unknown (unrevealed):**
 ```
 <boa>
 <turn>2<end_turn>
@@ -802,7 +811,11 @@ When the player's Pokémon is paralysed, asleep, frozen, flinched, etc.:
 - **If `|choice|` message exists:** use the exact chosen move with `cant` attribute.
 - **If no `|choice|`:** randomly pick a valid move from the active Pokémon's
   available moveset. Attach the `cant` reason attribute.
-- **Opponent `|cant|`:** always `<opponent_chosen_move>unknown<end_opponent_chosen_move>`.
+- **Opponent `|cant|`:** same as player — use the opponent's known or randomly-chosen
+  move with the `cant` reason attribute, e.g.
+  `<opponent_chosen_move> blizzard cant=par <end_opponent_chosen_move>`.
+  If the opponent's move is completely unknown (no reveals, no moveset info),
+  output `<opponent_chosen_move>unknown<end_opponent_chosen_move>`.
 
 ### 7.6 Self-KO Moves (Self-Destruct, Explosion, Destiny Bond)
 

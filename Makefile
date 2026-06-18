@@ -16,12 +16,24 @@ FORMATS ?= $(FORMAT)
         wm-dataset inspect-wm-npz sample-inspect-wm-npz \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer sample-inspect-wm-state \
-        train-sl train-jepa play-sl play-jepa play-jepa-local showdown bash-completion
+        train-jepa play-jepa play-jepa-local showdown bash-completion
 
 # Start a local Pokemon Showdown server (no auth, port 8000)
 # Requires the server/pokemon-showdown submodule to be initialized.
 showdown:
 	cd server/pokemon-showdown && node pokemon-showdown start --no-security
+
+# Ensure a local Showdown server is running (starts one if not).
+# Used as a dependency by targets that need a local server.
+ensure-showdown:
+	@if curl -s http://localhost:8000 > /dev/null 2>&1; then \
+		echo "Showdown server already running on localhost:8000"; \
+	else \
+		echo "Starting Showdown server..."; \
+		cd server/pokemon-showdown && node pokemon-showdown start --no-security & \
+		sleep 3; \
+		echo "Showdown server started."; \
+	fi
 
 # Open a battle replay in browser + parsed output in Cursor
 # Usage: make battle BATTLE_ID=smogtours-gen1ou-694141
@@ -226,59 +238,7 @@ wm-dataset:
 		--processes $(WM_PROCESSES) \
 		$(if $(filter true,$(WM_PAIRED_POV)),--paired_pov)
 
-# ── Supervised-Learning Training ────────────────────────────────────
-
-# Train the WorldModelTransformer on next-state prediction using .npz shards.
-# Requires tokenized world-model data (run wm-dataset first).
-#
-# Usage:
-#   make train-sl FORMATS="gen1ou gen9ou"
-#   make train-sl FORMATS=gen9ou EPOCHS=20 BATCH_SIZE=64
-#   make train-sl FORMATS="gen1ou gen9ou" WANDB=true WANDB_PROJECT=metamon WANDB_NAME=my-run
-#   make train-sl FORMATS=gen9ou CHECKPOINT=/workspace/checkpoints/model.pt
-SL_DATA_ROOT ?= $(WM_OUTPUT_DIR)
-SL_TOKENIZER ?= $(TOKENIZER_FILE)
-SL_SAVE_DIR ?= $(METAMON_CACHE_DIR)/sl-checkpoints
-SL_BATCH_SIZE ?= 256
-SL_LR ?= 3e-4
-SL_EPOCHS ?= 100
-SL_GRAD_CLIP ?= 1.0
-SL_NUM_WORKERS ?= $(N_THREADS)
-SL_PRINT_INTERVAL ?= 50
-SL_CONFIG ?=
-CHECKPOINT ?= $(SL_SAVE_DIR)/best.pt
-WANDB ?= true
-WANDB_PROJECT ?=
-WANDB_NAME ?=
-train-sl:
-	@if [ ! -d "$(SL_DATA_ROOT)" ]; then \
-		echo "ERROR: No .npz data found at $(SL_DATA_ROOT)."; \
-		echo "  Run: make wm-dataset FORMATS=\"$(FORMATS)\" first."; \
-		exit 1; \
-	fi
-	@if [ ! -f "$(SL_TOKENIZER)" ]; then \
-		echo "ERROR: Tokenizer not found at $(SL_TOKENIZER)."; \
-		echo "  Run: make wm-tokenizer FORMATS=\"$(FORMATS)\" first."; \
-		exit 1; \
-	fi
-	mkdir -p $(SL_SAVE_DIR)
-	uv run python -m metamon.sl.train \
-		--data_root $(SL_DATA_ROOT) \
-		--formats $(FORMATS) \
-		--tokenizer_path $(SL_TOKENIZER) \
-		--save_dir $(SL_SAVE_DIR) \
-		--batch_size $(SL_BATCH_SIZE) \
-		--lr $(SL_LR) \
-		--epochs $(SL_EPOCHS) \
-		--grad_clip $(SL_GRAD_CLIP) \
-		--num_workers $(SL_NUM_WORKERS) \
-		--print_interval $(SL_PRINT_INTERVAL) \
-		$(if $(filter true,$(WANDB)),--wandb) \
-		$(if $(WANDB_PROJECT),--wandb_project $(WANDB_PROJECT)) \
-		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
-		$(if $(CHECKPOINT),--checkpoint $(CHECKPOINT)) \
-		$(if $(SL_CONFIG),--config $(SL_CONFIG)) \
-		--log --log_interval 10
+# SL targets removed — SL model deleted.
 
 # ── JEPA Training ────────────────────────────────────────────────────
 
@@ -304,7 +264,7 @@ JEPA_MAX_HISTORY ?= 32
 #   make train-jepa FORMATS=gen1ou JEPA_MAX_HISTORY=0  # full battle history
 JEPA_PAIRED_BATCH_SIZE ?= 96
 JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 3
-JEPA_PAIRED_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best_faster_sigreg.pt
+JEPA_PAIRED_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best.pt
 JEPA_PAIRED_MAX_STEPS ?= 0
 JEPA_PAIRED_VAL_INTERVAL ?= 200
 JEPA_PAIRED_VAL_MAX_BATCHES ?= 10
@@ -348,51 +308,28 @@ train-jepa:
 		--max_history_blocks $(JEPA_MAX_HISTORY) \
 		$(JEPA_PAIRED_EXTRA_ARGS)
 
-# ── World Model Showdown Play ─────────────────────────────────────────
-
-# Battle with a trained WorldModelTransformer on the local Showdown server.
-# Requires a checkpoint from train-sl and a running Showdown server.
-#
-# Usage:
-#   make play-sl FORMAT=gen1ou
-#   make play-sl FORMAT=gen1ou USERNAME=MyBot TEAM_SET=competitive NUM_BATTLES=10
-#   make play-sl FORMAT=gen9ou CHECKPOINT=/path/to/checkpoint.pt
-SL_PLAY_CHECKPOINT ?= $(SL_SAVE_DIR)/best.pt
-SL_PLAY_FORMAT ?= gen1ou gen9ou
-SL_PLAY_USERNAME ?= WorldModelBot
-SL_PLAY_TEAM_SET ?= competitive
-SL_PLAY_BATTLES ?= 5
-SL_PLAY_MAX_TOKENS ?= 200
-SL_PLAY_VERBOSE ?=
-play-sl:
-	@if [ ! -f "$(SL_PLAY_CHECKPOINT)" ]; then \
-		echo "ERROR: Checkpoint not found at $(SL_PLAY_CHECKPOINT)."; \
-		echo "  Train first: make train-sl FORMATS=$(SL_PLAY_FORMAT)"; \
-		exit 1; \
-	fi
-	uv run python -m metamon.sl.play \
-		--checkpoint $(SL_PLAY_CHECKPOINT) \
-		--format $(SL_PLAY_FORMAT) \
-		--username $(SL_PLAY_USERNAME) \
-		--team_set $(SL_PLAY_TEAM_SET) \
-		--num_battles $(SL_PLAY_BATTLES) \
-		--max_new_tokens $(SL_PLAY_MAX_TOKENS) \
-		$(if $(SL_PLAY_VERBOSE),--verbose)
-
-# Battle with a trained paired JEPA world model on the local Showdown server.
+# ── JEPA Showdown Play
 # Requires a checkpoint from train-jepa and a running Showdown server.
+#
+# Play the JEPA bot against human opponents on Showdown (or locally).
 #
 # Usage:
 #   make play-jepa
 #   make play-jepa-local
 #   make play-jepa JEPA_PLAY_FORMAT=gen1ou JEPA_PLAY_USERNAME=JEPABot
 #   make play-jepa JEPA_PLAY_CHECKPOINT=/path/to/paired_best.pt
+#   make play-jepa JEPA_PLAY_VERBOSE_BLOCKS=true JEPA_PLAY_LADDER=true
+#
+# REPL keys (press during battle):
+#   R = raw protocol logs    P = state/action blocks
+#   V = toggle verbose       O = battle overview    Q = quit REPL
 JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best.pt
 JEPA_PLAY_TOKENIZER ?= $(JEPA_TOKENIZER)
 JEPA_PLAY_FORMAT ?= gen1ou
 JEPA_PLAY_USERNAME ?= jepabot
 JEPA_PLAY_TEAM_SET ?= competitive
-JEPA_PLAY_HEURISTIC ?= max-self-state-delta
+JEPA_PLAY_HEURISTIC ?= max-rank
+JEPA_PLAY_NUM_BATTLES ?= 30
 JEPA_PLAY_LADDER ?=
 JEPA_PLAY_VERBOSE_BLOCKS ?=
 JEPA_PLAY_SERVER ?= showdown
@@ -415,6 +352,7 @@ play-jepa:
 		--username $(JEPA_PLAY_USERNAME) \
 		--team_set $(JEPA_PLAY_TEAM_SET) \
 		--heuristic $(JEPA_PLAY_HEURISTIC) \
+		--num_battles $(JEPA_PLAY_NUM_BATTLES) \
 		$(if $(JEPA_PLAY_LADDER),--ladder) \
 		$(if $(JEPA_PLAY_VERBOSE_BLOCKS),--verbose_blocks) \
 		--server $(JEPA_PLAY_SERVER) \
@@ -422,8 +360,53 @@ play-jepa:
 
 # Battle with the paired JEPA bot on a local Pokemon Showdown server.
 # Start the server first with: make showdown
-play-jepa-local:
+play-jepa-local: ensure-showdown
 	$(MAKE) play-jepa JEPA_PLAY_SERVER=localhost JEPA_PLAY_PASSWORD=
+
+# ── JEPA vs baseline competition ────────────────────────────────────
+#
+#   make test-jepa-baseline FORMAT=gen1ou BASELINE=Gen1BossAI
+#   make test-jepa-baseline BASELINE=MaxBPBaseline N_BATTLES=20
+
+JEPA_BASELINE_FORMAT ?= gen1ou
+JEPA_BASELINE ?= Gen1BossAI
+JEPA_BASELINE_N_BATTLES ?= 10
+JEPA_BASELINE_SERVER ?= localhost
+
+test-jepa-baseline: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure-showdown)
+	@if [ ! -f "$(JEPA_PLAY_CHECKPOINT)" ]; then \
+		echo "ERROR: Checkpoint not found at $(JEPA_PLAY_CHECKPOINT)."; \
+		echo "  Train first: make train-jepa FORMATS=$(JEPA_BASELINE_FORMAT)"; \
+		exit 1; \
+	fi
+	uv run python -m metamon.jepa.compete_baseline \
+		--checkpoint $(JEPA_PLAY_CHECKPOINT) \
+		--tokenizer_path $(JEPA_PLAY_TOKENIZER) \
+		--format $(JEPA_BASELINE_FORMAT) \
+		--baseline $(JEPA_BASELINE) \
+		--n_battles $(JEPA_BASELINE_N_BATTLES) \
+		--team_set $(JEPA_PLAY_TEAM_SET) \
+		--heuristic $(JEPA_PLAY_HEURISTIC) \
+		--server $(JEPA_BASELINE_SERVER)
+
+# Run JEPA against *all* registered baselines for the format.
+#   make test-jepa-all-baselines FORMAT=gen1ou
+#   make test-jepa-all-baselines N_BATTLES=5
+
+test-jepa-all-baselines: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure-showdown)
+	@if [ ! -f "$(JEPA_PLAY_CHECKPOINT)" ]; then \
+		echo "ERROR: Checkpoint not found at $(JEPA_PLAY_CHECKPOINT)."; \
+		exit 1; \
+	fi
+	uv run python -m metamon.jepa.compete_baseline \
+		--checkpoint $(JEPA_PLAY_CHECKPOINT) \
+		--tokenizer_path $(JEPA_PLAY_TOKENIZER) \
+		--format $(JEPA_BASELINE_FORMAT) \
+		--all-baselines \
+		--n_battles $(JEPA_BASELINE_N_BATTLES) \
+		--team_set $(JEPA_PLAY_TEAM_SET) \
+		--heuristic $(JEPA_PLAY_HEURISTIC) \
+		--server $(JEPA_BASELINE_SERVER)
 
 # ── Checkpoint backup ───────────────────────────────────────────────
 
@@ -442,7 +425,7 @@ save-checkpoints:
 	mkdir -p "$$dest"; \
 	echo "Backing up checkpoints to $$dest"; \
 	copied=0; \
-	for src_dir in $(SL_SAVE_DIR) $(JEPA_SAVE_DIR); do \
+	for src_dir in $(JEPA_SAVE_DIR); do \
 		if [ -d "$$src_dir" ]; then \
 			label=$$(basename "$$src_dir"); \
 			for f in "$$src_dir"/*.pt; do \

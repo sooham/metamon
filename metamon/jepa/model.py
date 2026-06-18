@@ -25,7 +25,8 @@ Architecture overview (v3 — block encoding + temporal action prediction)
 
     ┌──────────────────────────────────────────────────────────────┐
     │ LOSSES:                                                       │
-    │   MSE(pred_o_emb, actual_o_emb)   — opponent action           │
+    │   MSE(pred_opp_mu, actual_opp)   — opponent state (on mean)   │
+    │   MSE(pred_oa_mu, actual_oa)     — opponent action (on mean)  │
     │   MSE(pred_enc_{N+1}, enc_{N+1})  — state prediction          │
     │   SIGReg(enc_N, enc_{N+1}, pred_enc_{N+1})  — state space     │
     │   SIGReg(actual_p_emb, actual_o_emb) — action encoder outputs │
@@ -56,9 +57,13 @@ Losses
 
     L_state = || enc_{N+1} - predictor(enc_N, actual_p_emb, pred_o_emb) ||²
 
-*Action MSE* — MSE for opponent action prediction::
+*Opponent state MSE* — MSE on predicted mean vs target opponent latent::
 
-    L_oa = || actual_o_emb - pred_o_emb ||²
+    L_os = || enc_opp_T - pred_opp_mu ||²
+
+*Action MSE* — MSE on predicted mean vs target action latent::
+
+    L_oa = || actual_oa_emb - pred_oa_mu ||²
 
 *SIGReg* — on encoder outputs (enc_N, enc_{N+1}, pred_enc_{N+1}) and
 action encoder outputs (actual_p_emb, actual_o_emb).  NOT on
@@ -100,7 +105,7 @@ _SIGREG_GRID_CACHE: dict[tuple[str, int, float], tuple[torch.Tensor, torch.Tenso
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# Building blocks (shared with metamon/sl/model.py structure)
+# Building blocks
 # ═════════════════════════════════════════════════════════════════════════
 
 
@@ -664,7 +669,15 @@ class JEPATemporalEncoder(nn.Module):
 
 
 class JEPAOpponentStatePredictor(nn.Module):
-    """MLP mapping a visible POV latent to the hidden opponent POV latent."""
+    """Gaussian belief over the hidden opponent current-state latent.
+
+    The history/context latent carries what has been revealed so far; the
+    current-state latent carries the visible board right now.  The output is a
+    diagonal Gaussian in the same latent space as ``JEPAEncoder``.
+
+    The mean is trained via MSE against the target latent; the variance is
+    trained only via downstream gradients through reparameterized samples.
+    """
 
     def __init__(
         self,
@@ -675,7 +688,7 @@ class JEPAOpponentStatePredictor(nn.Module):
         super().__init__()
         hidden_dim = hidden_dim or (4 * latent_dim)
         layers: list[nn.Module] = []
-        in_dim = latent_dim
+        in_dim = 2 * latent_dim
         for i in range(n_layers):
             if i < n_layers - 1:
                 layers.extend([
@@ -685,7 +698,7 @@ class JEPAOpponentStatePredictor(nn.Module):
                 ])
                 in_dim = hidden_dim
             else:
-                layers.append(nn.Linear(in_dim, latent_dim))
+                layers.append(nn.Linear(in_dim, 2 * latent_dim))
         self.net = nn.Sequential(*layers)
         self.apply(self._init_weights)
 
@@ -695,12 +708,21 @@ class JEPAOpponentStatePredictor(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def forward(self, enc_self: torch.Tensor) -> torch.Tensor:
-        return self.net(enc_self)
+    def forward(
+        self,
+        history_context: torch.Tensor,
+        current_state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        mu, logvar = self.net(torch.cat([history_context, current_state], dim=-1)).chunk(2, dim=-1)
+        return mu, logvar
 
 
 class JEPAPairedActionPredictor(nn.Module):
-    """Predict the opponent's next action from self POV and predicted opponent POV."""
+    """Gaussian belief over opponent action latent from paired current states.
+
+    The mean is trained via MSE against the target action latent; the variance
+    is trained only via downstream gradients through reparameterized samples.
+    """
 
     def __init__(
         self,
@@ -722,7 +744,7 @@ class JEPAPairedActionPredictor(nn.Module):
                 ])
                 in_dim = hidden_dim
             else:
-                layers.append(nn.Linear(in_dim, action_latent_dim))
+                layers.append(nn.Linear(in_dim, 2 * action_latent_dim))
         self.net = nn.Sequential(*layers)
         self.apply(self._init_weights)
 
@@ -734,10 +756,11 @@ class JEPAPairedActionPredictor(nn.Module):
 
     def forward(
         self,
-        enc_self: torch.Tensor,
-        pred_opponent_state: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.net(torch.cat([enc_self, pred_opponent_state], dim=-1))
+        current_state: torch.Tensor,
+        opponent_state: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        mu, logvar = self.net(torch.cat([current_state, opponent_state], dim=-1)).chunk(2, dim=-1)
+        return mu, logvar
 
 
 class JEPANextStatePredictor(nn.Module):
@@ -775,17 +798,59 @@ class JEPANextStatePredictor(nn.Module):
 
     def forward(
         self,
-        enc_self: torch.Tensor,
-        pred_opponent_state: torch.Tensor,
+        current_state: torch.Tensor,
         own_action: torch.Tensor,
-        pred_opponent_action: torch.Tensor,
+        opponent_state: torch.Tensor,
+        opponent_action: torch.Tensor,
     ) -> torch.Tensor:
         return self.net(torch.cat([
-            enc_self,
-            pred_opponent_state,
+            current_state,
             own_action,
-            pred_opponent_action,
+            opponent_state,
+            opponent_action,
         ], dim=-1))
+
+
+class JEPAPairwiseRankHead(nn.Module):
+    """Predict relative advantage for ``self`` given a paired opponent latent."""
+
+    def __init__(
+        self,
+        latent_dim: int = LATENT_DIM,
+        hidden_dim: int | None = None,
+        n_layers: int = 3,
+    ):
+        super().__init__()
+        hidden_dim = hidden_dim or (4 * latent_dim)
+        layers: list[nn.Module] = []
+        in_dim = 4 * latent_dim
+        for i in range(n_layers):
+            if i < n_layers - 1:
+                layers.extend([
+                    nn.Linear(in_dim, hidden_dim),
+                    nn.LayerNorm(hidden_dim),
+                    nn.GELU(),
+                ])
+                in_dim = hidden_dim
+            else:
+                layers.append(nn.Linear(in_dim, 1))
+        self.net = nn.Sequential(*layers)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    def forward(self, self_state: torch.Tensor, opponent_state: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([
+            self_state,
+            opponent_state,
+            self_state - opponent_state,
+            self_state * opponent_state,
+        ], dim=-1)
+        return self.net(x).squeeze(-1)
 
 
 class PairedJEPAModel(nn.Module):
@@ -810,6 +875,7 @@ class PairedJEPAModel(nn.Module):
         opponent_state_predictor_cfg: Optional[dict] = None,
         action_predictor_cfg: Optional[dict] = None,
         next_state_predictor_cfg: Optional[dict] = None,
+        rank_head_cfg: Optional[dict] = None,
         **kwargs,
     ):
         super().__init__()
@@ -855,6 +921,10 @@ class PairedJEPAModel(nn.Module):
             latent_dim=latent_dim,
             action_latent_dim=action_latent_dim,
             **(next_state_predictor_cfg or {}),
+        )
+        self.rank_head = JEPAPairwiseRankHead(
+            latent_dim=latent_dim,
+            **(rank_head_cfg or {}),
         )
 
     def _encode_state_blocks(
@@ -942,6 +1012,63 @@ class PairedJEPAModel(nn.Module):
             opponent_hist_valid,
         )
 
+    @staticmethod
+    def _last_valid_indices(valid: torch.Tensor) -> torch.Tensor:
+        counts = valid.long().sum(dim=1)
+        return (counts - 1).clamp_min(0)
+
+    @staticmethod
+    def _drop_current_state_from_history(valid: torch.Tensor) -> torch.Tensor:
+        """Return a validity mask for prior/history states, excluding current.
+
+        The team header is kept even for the first decision state.  Action
+        histories are left untouched; they represent already-observed actions.
+        """
+        hist_valid = valid.clone()
+        counts = valid.long().sum(dim=1)
+        rows = torch.arange(valid.shape[0], device=valid.device)
+        idx = (counts - 1).clamp_min(0)
+        drop = counts > 1
+        hist_valid[rows[drop], idx[drop]] = False
+        return hist_valid
+
+    @staticmethod
+    def reparameterize(mu: torch.Tensor, logvar: torch.Tensor, sample: bool) -> torch.Tensor:
+        if not sample:
+            return mu
+        logvar = logvar.clamp(min=-8.0, max=6.0)
+        return mu + torch.randn_like(mu) * torch.exp(0.5 * logvar)
+
+    def encode_current_state(
+        self,
+        state_tokens: torch.Tensor,
+        state_valid: torch.Tensor,
+    ) -> torch.Tensor:
+        """Encode only the last valid state block, not the whole POV history."""
+        B = state_tokens.shape[0]
+        idx = self._last_valid_indices(state_valid)
+        rows = torch.arange(B, device=state_tokens.device)
+        return self.encoder(state_tokens[rows, idx, :])
+
+    def encode_history_context(
+        self,
+        state_tokens: torch.Tensor,
+        state_valid: torch.Tensor,
+        player_hist_tokens: torch.Tensor,
+        player_hist_valid: torch.Tensor,
+        opponent_hist_tokens: torch.Tensor,
+        opponent_hist_valid: torch.Tensor,
+    ) -> torch.Tensor:
+        """Encode prior POV context separately from the current state block."""
+        return self.encode_history(
+            state_tokens,
+            self._drop_current_state_from_history(state_valid),
+            player_hist_tokens,
+            player_hist_valid,
+            opponent_hist_tokens,
+            opponent_hist_valid,
+        )
+
     def forward(
         self,
         p1_state_T: torch.Tensor,
@@ -972,30 +1099,30 @@ class PairedJEPAModel(nn.Module):
         p2_action_tokens: torch.Tensor,
         p2_action_from_p1_perspective_tokens: torch.Tensor,
         actual_p1_action_from_p2_perspective_tokens: torch.Tensor,
+        sample_beliefs: Optional[bool] = None,
     ) -> dict[str, torch.Tensor]:
-        enc_p1_T = self.encode_history(
+        sample = self.training if sample_beliefs is None else sample_beliefs
+
+        z_p1_T = self.encode_current_state(p1_state_T, p1_state_T_valid)
+        z_p2_T = self.encode_current_state(p2_state_T, p2_state_T_valid)
+        z_p1_T1 = self.encode_current_state(p1_state_T1, p1_state_T1_valid)
+        z_p2_T1 = self.encode_current_state(p2_state_T1, p2_state_T1_valid)
+
+        ctx_p1_T = self.encode_history_context(
             p1_state_T, p1_state_T_valid,
             p1_player_hist_T, p1_player_hist_T_valid,
             p1_opponent_hist_T, p1_opponent_hist_T_valid,
         )
-        enc_p2_T = self.encode_history(
+        ctx_p2_T = self.encode_history_context(
             p2_state_T, p2_state_T_valid,
             p2_player_hist_T, p2_player_hist_T_valid,
             p2_opponent_hist_T, p2_opponent_hist_T_valid,
         )
-        enc_p1_T1 = self.encode_history(
-            p1_state_T1, p1_state_T1_valid,
-            p1_player_hist_T1, p1_player_hist_T1_valid,
-            p1_opponent_hist_T1, p1_opponent_hist_T1_valid,
-        )
-        enc_p2_T1 = self.encode_history(
-            p2_state_T1, p2_state_T1_valid,
-            p2_player_hist_T1, p2_player_hist_T1_valid,
-            p2_opponent_hist_T1, p2_opponent_hist_T1_valid,
-        )
 
-        pred_p2_T = self.opponent_state_predictor(enc_p1_T)
-        pred_p1_T = self.opponent_state_predictor(enc_p2_T)
+        pred_p2_T_mu, pred_p2_T_logvar = self.opponent_state_predictor(ctx_p1_T, z_p1_T)
+        pred_p1_T_mu, pred_p1_T_logvar = self.opponent_state_predictor(ctx_p2_T, z_p2_T)
+        pred_p2_T = self.reparameterize(pred_p2_T_mu, pred_p2_T_logvar, sample)
+        pred_p1_T = self.reparameterize(pred_p1_T_mu, pred_p1_T_logvar, sample)
 
         p1_action = self.action_encoder(p1_action_tokens)
         p2_action = self.action_encoder(p2_action_tokens)
@@ -1006,31 +1133,56 @@ class PairedJEPAModel(nn.Module):
             actual_p1_action_from_p2_perspective_tokens
         )
 
-        pred_p2_action = self.action_predictor(enc_p1_T, pred_p2_T)
-        pred_p1_action = self.action_predictor(enc_p2_T, pred_p1_T)
+        pred_p2_action_mu, pred_p2_action_logvar = self.action_predictor(z_p1_T, pred_p2_T)
+        pred_p1_action_mu, pred_p1_action_logvar = self.action_predictor(z_p2_T, pred_p1_T)
+        pred_p2_action = self.reparameterize(pred_p2_action_mu, pred_p2_action_logvar, sample)
+        pred_p1_action = self.reparameterize(pred_p1_action_mu, pred_p1_action_logvar, sample)
 
         pred_p1_T1 = self.next_state_predictor(
-            enc_p1_T, pred_p2_T, p1_action, pred_p2_action
+            z_p1_T, p1_action, pred_p2_T, pred_p2_action
         )
         pred_p2_T1 = self.next_state_predictor(
-            enc_p2_T, pred_p1_T, p2_action, pred_p1_action
+            z_p2_T, p2_action, pred_p1_T, pred_p1_action
         )
 
+        rank_p1_teacher = self.rank_head(z_p1_T, z_p2_T)
+        rank_p2_teacher = self.rank_head(z_p2_T, z_p1_T)
+        rank_p1_belief = self.rank_head(z_p1_T, pred_p2_T)
+        rank_p2_belief = self.rank_head(z_p2_T, pred_p1_T)
+        rank_p1_next_belief = self.rank_head(pred_p1_T1, pred_p2_T)
+        rank_p2_next_belief = self.rank_head(pred_p2_T1, pred_p1_T)
+
         return {
-            "enc_p1_T": enc_p1_T,
-            "enc_p2_T": enc_p2_T,
-            "enc_p1_T1": enc_p1_T1,
-            "enc_p2_T1": enc_p2_T1,
+            "enc_p1_T": z_p1_T,
+            "enc_p2_T": z_p2_T,
+            "enc_p1_T1": z_p1_T1,
+            "enc_p2_T1": z_p2_T1,
+            "ctx_p1_T": ctx_p1_T,
+            "ctx_p2_T": ctx_p2_T,
+            "pred_p2_T_mu": pred_p2_T_mu,
+            "pred_p2_T_logvar": pred_p2_T_logvar,
+            "pred_p1_T_mu": pred_p1_T_mu,
+            "pred_p1_T_logvar": pred_p1_T_logvar,
             "pred_p2_T": pred_p2_T,
             "pred_p1_T": pred_p1_T,
             "p1_action": p1_action,
             "p2_action": p2_action,
             "p2_action_from_p1_perspective": p2_action_from_p1_perspective,
             "actual_p1_action_from_p2_perspective": actual_p1_action_from_p2_perspective,
+            "pred_p2_action_mu": pred_p2_action_mu,
+            "pred_p2_action_logvar": pred_p2_action_logvar,
+            "pred_p1_action_mu": pred_p1_action_mu,
+            "pred_p1_action_logvar": pred_p1_action_logvar,
             "pred_p2_action": pred_p2_action,
             "pred_p1_action": pred_p1_action,
             "pred_p1_T1": pred_p1_T1,
             "pred_p2_T1": pred_p2_T1,
+            "rank_p1_teacher": rank_p1_teacher,
+            "rank_p2_teacher": rank_p2_teacher,
+            "rank_p1_belief": rank_p1_belief,
+            "rank_p2_belief": rank_p2_belief,
+            "rank_p1_next_belief": rank_p1_next_belief,
+            "rank_p2_next_belief": rank_p2_next_belief,
         }
 
     def save_checkpoint(self, path: str, **extra) -> None:
@@ -1124,12 +1276,37 @@ def sigreg(
     return statistic.mean()
 
 
+def gaussian_nll(
+    target: torch.Tensor,
+    mu: torch.Tensor,
+    logvar: torch.Tensor,
+    *,
+    min_logvar: float = -8.0,
+    max_logvar: float = 6.0,
+) -> torch.Tensor:
+    """Diagonal Gaussian negative log likelihood, averaged over batch/dim."""
+    logvar = logvar.clamp(min=min_logvar, max=max_logvar)
+    return 0.5 * (logvar + (target - mu).square() * torch.exp(-logvar)).mean()
+
+
+def pairwise_rank_loss(
+    p1_score: torch.Tensor,
+    p2_score: torch.Tensor,
+    p1_won: torch.Tensor,
+) -> torch.Tensor:
+    """Bradley-Terry/logistic ranking loss from the p1 outcome label."""
+    sign = p1_won.to(dtype=p1_score.dtype).mul(2.0).sub(1.0)
+    margin = p1_score - p2_score
+    return F.softplus(-sign * margin).mean()
+
+
 def compute_paired_losses(
     outputs: dict[str, torch.Tensor],
     lambda_sigreg: float = 0.1,
     lambda_opponent_state: float = 1.0,
     lambda_action: float = 1.0,
     lambda_next_state: float = 1.0,
+    lambda_rank: float = 1.0,
     sigreg_num_slices: int = SIGREG_NUM_SLICES,
     sigreg_num_points: int = SIGREG_NUM_POINTS,
     sigreg_domain: float = SIGREG_DOMAIN,
@@ -1137,35 +1314,32 @@ def compute_paired_losses(
     """Compute paired-POV JEPA losses.
 
     Loss terms:
-      - opponent_state_loss: predict current hidden POV latent from visible POV
-      - action_loss: predict the opponent's next chosen action latent
+      - opponent_state_loss: MSE between predicted mu and target latent
+      - action_loss: MSE between predicted mu and target action latent
       - next_state_loss: predict next visible POV latent conditioned on own action
         and predicted opponent state/action
-      - SIGReg on actual state/action encoder outputs only
+      - rank_loss: pairwise ranking from the winner label
+      - SIGReg on current, next, context, prediction, and action latents
     """
     enc_p1_T = outputs["enc_p1_T"]
     enc_p2_T = outputs["enc_p2_T"]
     enc_p1_T1 = outputs["enc_p1_T1"]
     enc_p2_T1 = outputs["enc_p2_T1"]
 
-    opponent_state_loss = 0.5 * (
-        F.mse_loss(outputs["pred_p2_T"], enc_p2_T)
-        + F.mse_loss(outputs["pred_p1_T"], enc_p1_T)
-    )
-    opponent_state_loss_p1_to_p2 = F.mse_loss(outputs["pred_p2_T"], enc_p2_T)
-    opponent_state_loss_p2_to_p1 = F.mse_loss(outputs["pred_p1_T"], enc_p1_T)
-    action_loss = 0.5 * (
-        F.mse_loss(outputs["pred_p2_action"], outputs["p2_action_from_p1_perspective"])
-        + F.mse_loss(outputs["pred_p1_action"], outputs["actual_p1_action_from_p2_perspective"])
-    )
+    opponent_state_loss_p1_to_p2 = F.mse_loss(outputs["pred_p2_T_mu"], enc_p2_T)
+    opponent_state_loss_p2_to_p1 = F.mse_loss(outputs["pred_p1_T_mu"], enc_p1_T)
+    opponent_state_loss = 0.5 * (opponent_state_loss_p1_to_p2 + opponent_state_loss_p2_to_p1)
+
     action_loss_p1_to_p2 = F.mse_loss(
-        outputs["pred_p2_action"],
+        outputs["pred_p2_action_mu"],
         outputs["p2_action_from_p1_perspective"],
     )
     action_loss_p2_to_p1 = F.mse_loss(
-        outputs["pred_p1_action"],
+        outputs["pred_p1_action_mu"],
         outputs["actual_p1_action_from_p2_perspective"],
     )
+    action_loss = 0.5 * (action_loss_p1_to_p2 + action_loss_p2_to_p1)
+
     next_state_loss = 0.5 * (
         F.mse_loss(outputs["pred_p1_T1"], enc_p1_T1)
         + F.mse_loss(outputs["pred_p2_T1"], enc_p2_T1)
@@ -1173,24 +1347,70 @@ def compute_paired_losses(
     next_state_loss_p1 = F.mse_loss(outputs["pred_p1_T1"], enc_p1_T1)
     next_state_loss_p2 = F.mse_loss(outputs["pred_p2_T1"], enc_p2_T1)
 
-    sigreg_enc = (
+    if "p1_won" in outputs:
+        p1_won = outputs["p1_won"].to(device=enc_p1_T.device)
+        rank_loss_teacher = pairwise_rank_loss(
+            outputs["rank_p1_teacher"],
+            outputs["rank_p2_teacher"],
+            p1_won,
+        )
+        rank_loss_belief = pairwise_rank_loss(
+            outputs["rank_p1_belief"],
+            outputs["rank_p2_belief"],
+            p1_won,
+        )
+        rank_loss_next = pairwise_rank_loss(
+            outputs["rank_p1_next_belief"],
+            outputs["rank_p2_next_belief"],
+            p1_won,
+        )
+        rank_loss = (rank_loss_teacher + rank_loss_belief + rank_loss_next) / 3
+    else:
+        rank_loss_teacher = enc_p1_T.new_tensor(0.0)
+        rank_loss_belief = enc_p1_T.new_tensor(0.0)
+        rank_loss_next = enc_p1_T.new_tensor(0.0)
+        rank_loss = enc_p1_T.new_tensor(0.0)
+
+    sigreg_current = (
         sigreg(enc_p1_T, sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(enc_p2_T, sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(enc_p1_T1, sigreg_num_slices, sigreg_num_points, sigreg_domain)
+    ) / 2
+    sigreg_next_true = (
+        sigreg(enc_p1_T1, sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(enc_p2_T1, sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    ) / 4
-    sigreg_act = (
+    ) / 2
+    sigreg_context = (
+        sigreg(outputs.get("ctx_p1_T", enc_p1_T), sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        + sigreg(outputs.get("ctx_p2_T", enc_p2_T), sigreg_num_slices, sigreg_num_points, sigreg_domain)
+    ) / 2
+    sigreg_next_pred = (
+        sigreg(outputs["pred_p1_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        + sigreg(outputs["pred_p2_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+    ) / 2
+    sigreg_action_true = (
         sigreg(outputs["p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["actual_p1_action_from_p2_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 4
-    sigreg_loss = (sigreg_enc + sigreg_act) / 2
+    sigreg_action_pred = (
+        sigreg(outputs["pred_p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        + sigreg(outputs["pred_p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+    ) / 2
+    sigreg_loss = (
+        sigreg_current
+        + sigreg_next_true
+        + sigreg_context
+        + sigreg_next_pred
+        + sigreg_action_true
+        + sigreg_action_pred
+    ) / 6
 
     pred_loss = (
         lambda_opponent_state * opponent_state_loss
         + lambda_action * action_loss
         + lambda_next_state * next_state_loss
+        + lambda_rank * rank_loss
     )
     total_loss = pred_loss + lambda_sigreg * sigreg_loss
 
@@ -1205,9 +1425,19 @@ def compute_paired_losses(
         "next_state_loss": next_state_loss.item(),
         "next_state_loss_p1": next_state_loss_p1.item(),
         "next_state_loss_p2": next_state_loss_p2.item(),
+        "rank_loss": rank_loss.item(),
+        "rank_loss_teacher": rank_loss_teacher.item(),
+        "rank_loss_belief": rank_loss_belief.item(),
+        "rank_loss_next": rank_loss_next.item(),
         "pred_loss": pred_loss.item(),
-        "sigreg_enc": sigreg_enc.item(),
-        "sigreg_act": sigreg_act.item(),
+        "sigreg_current": sigreg_current.item(),
+        "sigreg_next_true": sigreg_next_true.item(),
+        "sigreg_context": sigreg_context.item(),
+        "sigreg_next_pred": sigreg_next_pred.item(),
+        "sigreg_action_true": sigreg_action_true.item(),
+        "sigreg_action_pred": sigreg_action_pred.item(),
+        "sigreg_enc": ((sigreg_current + sigreg_next_true + sigreg_context + sigreg_next_pred) / 4).item(),
+        "sigreg_act": ((sigreg_action_true + sigreg_action_pred) / 2).item(),
         "sigreg_loss": sigreg_loss.item(),
     }
     return total_loss, metrics

@@ -11,8 +11,7 @@ import torch
 import scripts.generate_world_model_data as wm_data
 from metamon.jepa.dataset import JEPADataset
 from metamon.jepa.model import compute_paired_losses
-from metamon.sl.train import WorldModelDataset
-from metamon.sl.train import collate_fn as sl_collate_fn
+
 from scripts.generate_world_model_data import (
     PairedBattle,
     PairedShardAccumulator,
@@ -121,6 +120,19 @@ def test_raw_battle_grouping_keeps_win_loss_together():
         if "battle_a" in keys:
             assert "/tmp/gen1ou/battle_a_WIN.txt" in split_files
             assert "/tmp/gen1ou/battle_a_LOSS.txt" in split_files
+
+
+def test_terminal_regex_handles_stateful_text_whitespace():
+    text = """
+<terminal>
+won
+<end_terminal>
+"""
+
+    match = wm_data._TERMINAL_RE.search(text)
+
+    assert match is not None
+    assert match.group(1) == "won"
 
 
 def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
@@ -349,6 +361,61 @@ def test_compute_paired_losses_targets_predicted_opponent_actions():
     assert metrics["action_loss_p2_to_p1"] == pytest.approx(0.0)
 
 
+def test_compute_paired_losses_supports_gaussian_beliefs_and_rank():
+    state = torch.zeros((2, 2))
+    action = torch.zeros((2, 2))
+    outputs = {
+        "enc_p1_T": state,
+        "enc_p2_T": state,
+        "enc_p1_T1": state,
+        "enc_p2_T1": state,
+        "ctx_p1_T": state,
+        "ctx_p2_T": state,
+        "pred_p2_T_mu": state,
+        "pred_p2_T_logvar": state,
+        "pred_p1_T_mu": state,
+        "pred_p1_T_logvar": state,
+        "pred_p2_T": state,
+        "pred_p1_T": state,
+        "p1_action": action,
+        "p2_action": action,
+        "p2_action_from_p1_perspective": action,
+        "actual_p1_action_from_p2_perspective": action,
+        "pred_p2_action_mu": action,
+        "pred_p2_action_logvar": action,
+        "pred_p1_action_mu": action,
+        "pred_p1_action_logvar": action,
+        "pred_p2_action": action,
+        "pred_p1_action": action,
+        "pred_p1_T1": state,
+        "pred_p2_T1": state,
+        "rank_p1_teacher": torch.tensor([1.0, 0.0]),
+        "rank_p2_teacher": torch.tensor([0.0, 1.0]),
+        "rank_p1_belief": torch.tensor([1.0, 0.0]),
+        "rank_p2_belief": torch.tensor([0.0, 1.0]),
+        "rank_p1_next_belief": torch.tensor([1.0, 0.0]),
+        "rank_p2_next_belief": torch.tensor([0.0, 1.0]),
+        "p1_won": torch.tensor([True, False]),
+    }
+
+    loss, metrics = compute_paired_losses(
+        outputs,
+        lambda_sigreg=0.0,
+        lambda_opponent_state=1.0,
+        lambda_action=1.0,
+        lambda_next_state=1.0,
+        lambda_rank=1.0,
+        sigreg_num_slices=1,
+        sigreg_num_points=2,
+    )
+
+    assert metrics["opponent_state_loss"] == pytest.approx(0.0)
+    assert metrics["action_loss"] == pytest.approx(0.0)
+    assert metrics["next_state_loss"] == pytest.approx(0.0)
+    assert metrics["rank_loss"] == pytest.approx(torch.nn.functional.softplus(torch.tensor(-1.0)).item())
+    assert loss.item() == pytest.approx(metrics["rank_loss"])
+
+
 def test_shard_accumulator_can_shuffle_transition_rows_without_misalignment(tmp_path):
     acc = ShardAccumulator(fmt="gen1ou", fmt_id=0)
     acc.append(
@@ -479,13 +546,8 @@ def test_split_aware_dataset_discovery(tmp_path):
 
     jepa_train = JEPADataset.from_formats(str(tmp_path), ["gen1ou"], split="train", structural_token_ids=struct_ids)
     jepa_val = JEPADataset.from_formats(str(tmp_path), ["gen1ou"], split="val", structural_token_ids=struct_ids)
-    sl_train = WorldModelDataset.from_formats(str(tmp_path), ["gen1ou"], split="train")
-    sl_val = WorldModelDataset.from_formats(str(tmp_path), ["gen1ou"], split="val")
-
     assert all("/train/" in path for path in jepa_train.shard_paths)
     assert all("/val/" in path for path in jepa_val.shard_paths)
-    assert all("/train/" in path for path in sl_train.shard_paths)
-    assert all("/val/" in path for path in sl_val.shard_paths)
 
     with pytest.raises(FileNotFoundError):
         JEPADataset.from_formats(str(tmp_path), ["gen2ou"], split="train",

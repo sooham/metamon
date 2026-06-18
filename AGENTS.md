@@ -1,6 +1,9 @@
 # Environments
 The package manager in python here is `uv`. The development machine is a macbook pro M4 Pro with 1 TB of storage. Currently there is no production environement.
 
+# Dependencies
+If you install a new library (via `uv pip install` or similar), also add it to `pyproject.toml` under `[project].dependencies` so it is tracked declaratively.
+
 # Storage limitations of development machine 
 Before running any commands which will generate a lot of files, check if the computer has enough free storage.
 
@@ -19,92 +22,191 @@ The metamon repo has pytests tests , they can be run with `make test`. Analyzing
 # Performance
 You should write code which if necessary and at your own discrection and determination of performance and runtime based on input size, should use parallelism such as threading , pooling, multi-process code if necessary, be mindful of shared resources and that functions being called are thread safe.  Other common perfomance optimizations include using caching in memory, writing to files for faster processing and reading from them on the next run are also good practices.
 
-# State-Learning World Model (`metamon/sl/`)
+# JEPA — Joint Embedding Predictive Architecture (`metamon/jepa/`)
 
-`metamon/sl/` trains an autoregressive transformer that learns to predict the **next battle state** — given the tokenized current state and the player's action, it predicts every token of the resulting state. This is a supervised-learning (SL) world model, distinct from the RL agent.
+`metamon/jepa/` trains a paired-POV world model that learns to predict the **hidden opponent state** and the **next state latent** from the visible board state and action history. It is a self-supervised world model that encodes battle states into a deterministic latent space (via `JEPAEncoder`), encodes action text into action latents (via `JEPAActionEncoder`), and uses a temporal encoder over interleaved block embeddings to produce a history context. The model is trained on *paired* POV data — both players' perspectives of the same battle synchronized, so each side predicts the other's hidden state.
 
-### Data flow
+### Architecture overview
 
 ```
-parsed replays               scripts/generate_world_model_data.py
-  (.txt text format)    ──►  sharded .npz files  ──►  WorldModelDataset  ──►  WorldModelTransformer
-                                  │                         (IterableDataset)       (autoregressive decoder)
-                                  │
-                            states: (total_tokens,) int16      — flat array, all token IDs concatenated
-                            state_lengths: (N,) int32          — token count per state
-                            state_offsets: (N,) int64          — start index per state in states[]
-                            prev_state_idx: (T,) int32         — local state index for state[t]
-                            next_state_idx: (T,) int32         — local state index for state[t+1]
-                            actions: (T,) int16                — action index (-1..12) per transition
-                            battle_id: (T,) int32              — local battle index for each transition
-                            turn_idx: (T,) int32               — transition index within that battle
-                            format_id: (T,) int16              — format id from metadata.json
-                            battle_start: (B+1,) int64         — cumulative state index per battle
-                            won: (B,) bool                     — whether POV won
+State block tokens ─► JEPAEncoder φ ─► state embedding (latent_dim=192)
+Action text tokens  ─► JEPAActionEncoder ψ ─► action embedding (action_latent_dim=32)
+
+[team_header, state₀, p_action₀, o_action₀, state₁, ...] ─► JEPATemporalEncoder τ ─► history context c
+
+c + current_state_z ─► JEPAOpponentStatePredictor ─► predicted opponent state z_opp (Gaussian)
+z + z_opp           ─► JEPAPairedActionPredictor ─► predicted opponent action (Gaussian)
+z + own_action + z_opp + opp_action ─► JEPANextStatePredictor ─► predicted next state z_next
+z + z_opp           ─► JEPAPairwiseRankHead ─► scalar advantage score
 ```
 
-The `.npz` shards are written uncompressed with `np.savez` so generation and
-training avoid compression CPU overhead. States remain contiguous per battle
-inside each shard for auditability, but loaders sample/shuffle transition rows
-instead of walking one battle at a time. Legacy shards without
-`prev_state_idx`/`next_state_idx` are still readable by the SL and JEPA loaders.
+**Losses:** MSE for opponent state prediction, MSE for action prediction, MSE for next-state prediction, SIGReg (Epps-Pulley Gaussianity regularizer), and Bradley-Terry ranking loss from battle outcomes.
 
-### Model architecture (`model.py`)
+### Training (`train_paired.py`)
 
-The `WorldModelTransformer` is a decoder-only RoPE transformer with SwiGLU FFN blocks, weight tying, and a dedicated action token lookup (actions are embedded as regular vocabulary tokens via a precomputed `_action_lookup` buffer). Training uses teacher forcing: the full `state[t+1]` is provided as target and loss is computed only on the state_next region (including its closing `<eos>`).
-
-Prompt layout (variable-length, right-padded to `max_context=832`):
-```
-<bos> state_t[0..L-1] <eos> <boa> <action_X> <eoa> <bos> state_next[0..M-1] <eos> <pad>…
-```
-
-Key constants (derived from `WorldModelObservationSpace`): `MAX_STATE_LENGTH=260`, `ACTION_OVERHEAD=5`, `SAFETY_FACTOR=2.0`, `MAX_CONTEXT_LENGTH=576`.
-
-### Training (`train.py`)
+Consumes `paired_shard_*.npz` files produced by `scripts/generate_world_model_data.py --paired_pov ...`.
 
 ```bash
-uv run python -m metamon.sl.train \
+uv run python -m metamon.jepa.train_paired \
     --data_root $METAMON_CACHE_DIR/world-model-samples \
-    --formats gen1ou gen9ou \
+    --formats gen1ou \
     --tokenizer_path $METAMON_CACHE_DIR/tokenizers/WorldModelObservationSpace-v1.json \
-    --save_dir $METAMON_CACHE_DIR/sl-checkpoints \
-    --batch_size 256 --lr 3e-4 --epochs 10 --grad_clip 1.0 \
-    --num_workers 4 --wandb --log --log_interval 100
+    --save_dir $METAMON_CACHE_DIR/jepa-checkpoints \
+    --checkpoint $METAMON_CACHE_DIR/jepa-checkpoints/paired_best.pt \
+    --batch_size 8 --grad_accum_steps 4 --lr 5e-5 --epochs 10 \
+    --num_workers 4 --compile --wandb
 ```
 
-Training uses bf16, `torch.compile(mode="max-autotune")` with `dynamic=True`, fused AdamW, pinned memory, and persistent DataLoader workers. A `capture_scalar_outputs=True` Dynamo config avoids graph breaks. Checkpoints save every 10 epochs.
+Key training flags:
+- `--max_history_blocks N` — window to last N state blocks (0 = unlimited, the **default**). The team header is always retained. Lower values reduce memory and speed up training.
+- `--lambda_rank 0` — disable ranking loss (e.g. when outcome labels are unreliable)
+- `--compile` — enable `torch.compile` on encoder + action encoder (CUDA only)
+- `--checkpoint` — path for both warm-start loading AND best-checkpoint saving
 
-### Tokenizer and action tokens
+Training uses bf16 on CUDA, SIGReg resampled per step, and micro-batched encoding (max 65536 tokens per encoder call). The temporal encoder's `max_seq_len` defaults to 6144 to accommodate full-battle histories.
 
-The `WorldModelObservationSpace` tokenizer maps battle state text to integer IDs. Action indices (-1..12) map to **non-consecutive** token IDs (e.g. `<action_0>` → 13, `<action_1>` → 17, `<action_10>` → 14 — lexicographic ordering from the JSON build). The model's `_action_lookup` buffer handles this mapping via `actions + _action_base` (where `_action_base = 1`). The tokenizer used is `WorldModelObservationSpace-v1.json` (v2 files in the tokenizers directory are orphaned — not referenced by any code).
+### Config (`metamon/jepa/configs/default.yaml`)
 
-**Text format** (generation-aware; all repeated blocks are variable-length):
+| Module | Key params |
+|---|---|
+| `encoder` | d_model=384, n_heads=6, n_layers=6, d_ff=1536, max_seq_len=256, gradient_checkpointing=true |
+| `temporal_encoder` | n_heads=6, n_layers=4, d_ff=768, max_seq_len=6144 |
+| `action_encoder` | d_model=128, n_heads=4, n_layers=3, d_ff=512, max_seq_len=64 |
+| Latents | `latent_dim: 192`, `action_latent_dim: 32` |
+| Loss weights | `lambda_sigreg: 0.1`, `lambda_rank: 1.0` |
+
+### Data format (paired shards)
+
+Paired shards contain both POVs' state arrays side-by-side: `p1_states` / `p2_states`, `p1_actions` / `p2_actions`, `p1_opponent_actions` / `p2_opponent_actions`, plus per-battle outcome labels (`p1_won`, `p2_won`). Each transition row has `p1_state_idx`, `p1_next_state_idx`, `p1_action_idx` (and `p2_*` equivalents). The dataset loader pre-combines action tokens with their `<chosen_move>`/`<end_chosen_move>` delimiters on first access and caches them at the process level.
+
+### Online play (`play.py`)
+
+The JEPA model can be used as an online Pokémon Showdown bot via `metamon.jepa.play`. The bot uses JEPA latent rollouts to score legal actions and pick the best one.
+
+#### Local play (local Pokémon Showdown server)
+
+Requires a local Showdown server running on `localhost:8000`:
+
+```bash
+# Start a local showdown server first (if not already running):
+# git clone https://github.com/smogon/pokemon-showdown.git && cd pokemon-showdown && npm install && node pokemon-showdown start --no-security
+
+uv run python -m metamon.jepa.play \
+    --checkpoint $METAMON_CACHE_DIR/jepa-checkpoints/paired_best.pt \
+    --tokenizer_path $METAMON_CACHE_DIR/tokenizers/WorldModelObservationSpace-v1.json \
+    --format gen1ou \
+    --username JEPABot \
+    --num_battles 5 \
+    --heuristic max-rank \
+    --server localhost
 ```
-<format> <forcedswitch|anychoice> [<opponent_teampreview> <species>…]
-<player> <name> <hp_c0>..<hp_c3> [<item>] [<ability>] <type_0> <type_1> <effect> <status> <noboosts|boosts <boost...>>
-<move> <name> <type> <category>  ×4
-<switch> <name> <hp_c0>..<hp_c3> [<item>] [<ability>] <moveset> <move_1>..<move_4>  ×0–5
-<opponent> <name> <hp_c0>..<hp_c3> [<item>|<unknown_item_ability>] [<ability>] <type_0> <type_1> <effect> <status> <noboosts|boosts <boost...>> <opponent_moveset> <move_1>..<move_N>  (0–4 revealed moves, no fillers)
-<opponent_bench> <name> <hp_c0>..<hp_c3> [<item>|<unknown_item_ability>] [<ability>] <status> <effect> <opponent_moveset> <move_1>..<move_N>  ×0–5 (0–4 revealed moves each, no fillers)
-<fainted> <name> [<item>] [<ability>] <moveset> <move_1>..<move_4>  ×0–5 (HP omitted — always 0.0)
-<opponent_fainted> <name> [<item>|<unknown_item_ability>] [<ability>] <status> <effect> <opponent_moveset> <move_1>..<move_N>  ×0–5 (HP omitted)
-<conditions> <weather> [<battle_field>] <player_cond> <opponent_cond>
-<player_prev> <move> <opp_prev> <move>
-<ongoing|won|lost>
+
+With `--server localhost` (the default), the bot connects to `localhost:8000` and **waits for challenges**. Another user or bot must challenge it:
+```
+/challenge JEPABot, gen1ou
 ```
 
-**Generation-aware rules:**
-- `item` fields omitted in Gen 1 (no held items); `ability` fields omitted in Gen 1–2 (no abilities)
-- `<unknown_item_ability>` replaces `unknownitem unknownability` when opponent's item AND ability are both unrevealed (Gen 3+)
-- `<noboosts>` replaces `<boosts> none` — a single token when no stat changes are active
-- `<opponent_bench>` (renamed from `<opponent_switch>`) for opponent's revealed bench Pokémon
-- `<opponent_teampreview>` emitted when `opponent_teampreview` is non-empty (Gen 5+ team preview)
-- `battle_field` only emitted when non-"nofield" (Gen 4+ field effects like Trick Room, terrains)
-- No padding: `<switch>`, `<opponent_bench>`, `<fainted>`, `<opponent_fainted>` blocks only emitted when they actually contain Pokémon
-- Opponent movesets only emit revealed moves (no `unknownmove` fillers)
-- Boosts only appear on active Pokémon (stat stages reset on switch-out)
+To have the bot search for random ladder battles instead:
+```bash
+uv run python -m metamon.jepa.play \
+    --checkpoint ... \
+    --server localhost \
+    --ladder
+```
 
-**Further reading:** `metamon/sl/model.py` (transformer, prompt builder, loss mask), `metamon/sl/train.py` (training loop, dataset, collate), `metamon/sl/configs/default.yaml` (model hyperparameters), `scripts/generate_world_model_data.py` (data generation), `metamon/interface.py` → `WorldModelObservationSpace` (state text format, §tokenizable limits), `metamon/tokenizer/wm_detokenizer.py` (token→text decoding for debugging), `docs/world_model_dataset_plan.md` (design notes).
+#### Online play (real Pokémon Showdown server)
+
+Connect to `play.pokemonshowdown.com`. Requires a registered Showdown account and password:
+
+```bash
+uv run python -m metamon.jepa.play \
+    --checkpoint $METAMON_CACHE_DIR/jepa-checkpoints/paired_best.pt \
+    --tokenizer_path $METAMON_CACHE_DIR/tokenizers/WorldModelObservationSpace-v1.json \
+    --format gen1ou \
+    --username YourBotName \
+    --password your_password \
+    --num_battles 30 \
+    --heuristic max-rank \
+    --server showdown \
+    --ladder
+```
+
+Without `--ladder`, the bot waits for challenges:
+```bash
+uv run python -m metamon.jepa.play \
+    --checkpoint ... \
+    --server showdown \
+    --username YourBotName --password your_password
+```
+
+Then another player challenges with:
+```
+/challenge YourBotName, gen1ou
+```
+
+#### Heuristics (action selection)
+
+The `--heuristic` flag controls how the bot scores legal actions from JEPA latent rollouts:
+
+| Heuristic | What it maximizes |
+|---|---|
+| `max-rank` (default) | `rank_head(z_next, z_opp)` — predicted advantage after the action |
+| `max-self-state-delta` | `‖z_next − z_current‖` — how much the board state changes |
+| `max-opponent-state-delta` | `‖predicted_opp_next − predicted_opp_current‖` — disruption to the opponent |
+
+#### Interactive REPL (keyboard shortcuts during battle)
+
+Press these keys in the terminal while battles are running:
+- **R** — show last 40 raw protocol messages (`|move|`, `|switch|`, etc.)
+- **P** — show all state/action blocks + last JEPA diagnostics (latent norms, logvar, belief rank)
+- **V** — toggle verbose block printing on/off
+- **O** — overview of all active battles (turn count, Pokémon, HP)
+- **Q** — stop the REPL key listener
+
+#### Per-turn verbose output
+
+When `--verbose` (default on), each turn prints:
+```
+── JEPA turn 5 (battle-gen1ou-12345) [max-rank] ──
+  vs: opponent_name  |  replay: https://replay.pokemonshowdown.com/battle-gen1ou-12345
+  active: Snorlax hp=0.87
+  opponent: Chansey hp=0.65
+  legal actions:
+      0 move: body slam           delta=  0.234
+      1 move: earthquake           delta=  0.112
+    ...
+  chosen: move: body slam
+```
+
+With `--verbose_blocks`, it also prints the full tokenized state/action blocks, latent norms, and per-action prediction details.
+
+#### Complete CLI reference
+
+```
+uv run python -m metamon.jepa.play \
+    --checkpoint PATH                 # required: .pt checkpoint file
+    --tokenizer_path PATH             # default: $METAMON_CACHE_DIR/tokenizers/WorldModelObservationSpace-v1.json
+    --format FORMAT                   # default: gen1ou
+    --username NAME                   # default: JEPABot
+    --num_battles N                   # default: 30
+    --team_set SET                    # default: competitive (options: competitive, random, etc.)
+    --server {localhost|showdown}     # default: localhost
+    --password PASS                   # required for --server showdown
+    --heuristic {max-rank|max-self-state-delta|max-opponent-state-delta}  # default: max-rank
+    --ladder                          # search ladder instead of waiting for challenges
+    --quiet                           # suppress per-turn verbose output
+    --verbose_blocks                  # print full tokenized blocks each turn
+    --config PATH                     # model config yaml (default: configs/default.yaml)
+```
+
+#### Important notes
+
+- **No history windowing in the player** — every turn, the full battle history from turn 1 is encoded through the temporal encoder. A 50-turn battle produces a ~200-block temporal sequence. The player has no guard against exceeding the temporal encoder's `max_seq_len` (default 6144 positional slots).
+- **Random battle mode** — the bot always launches a second instance for `gen1randombattle` in parallel, searching the ladder. This runs alongside the main OU bot.
+- **Concurrent battles** — `max_concurrent_battles=30`, so the bot can handle many battles simultaneously sharing one model.
+- **Model runs in eval mode with bf16** on CUDA. MPS and CPU also work.
+
+**Further reading:** `metamon/jepa/player.py` (bot implementation, history tracking, diagnostics, REPL), `metamon/jepa/model.py` (full architecture, SIGReg, loss functions), `metamon/jepa/train_paired.py` (training loop, dataset, windowing logic), `metamon/jepa/online_serializer.py` (state/action/team block tokenization for live battles), `metamon/jepa/configs/default.yaml` (model hyperparameters).
 
 # Showdown Dex — the static Pokémon data layer
 
