@@ -118,12 +118,14 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         max_hist: int,
     ) -> tuple[int, int, int]:
         state_start = battle_start
-        if max_hist > 0 and (state_end - state_start) > max_hist:
-            state_start = state_end - max_hist
-        n_states = state_end - state_start
-        n_actions = n_states - 1
-        action_start = action_base + (state_start - battle_start)
-        action_end = action_start + n_actions
+        if max_hist > 0:
+            state_start = max(battle_start + 1, state_end - max_hist)
+        # State index 0 within each battle is the team header, so action i
+        # connects state i+1 -> state i+2. Keep only actions between retained
+        # state blocks; the current transition appears in the T1 window, not T.
+        action_start = action_base + max(0, state_start - battle_start - 1)
+        action_end = action_base + max(0, state_end - battle_start - 2)
+        action_end = max(action_start, action_end)
         return state_start, action_start, action_end
 
     @staticmethod
@@ -206,6 +208,24 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         return out
 
     @staticmethod
+    def _slice_state_window(
+        flat: np.ndarray,
+        offsets: np.ndarray,
+        lengths: np.ndarray,
+        battle_start: int,
+        state_start: int,
+        state_end: int,
+    ) -> list[np.ndarray]:
+        """Return a state history, always retaining the team header."""
+        sv = PairedJEPADataset._slice_view
+        if state_start <= battle_start:
+            return sv(flat, offsets, lengths, battle_start, state_end)
+        return (
+            sv(flat, offsets, lengths, battle_start, battle_start + 1)
+            + sv(flat, offsets, lengths, state_start, state_end)
+        )
+
+    @staticmethod
     def _iter_shard(data: dict, cm: int, ecm: int, ocm: int, eocm: int,
                     shuffle_transitions: bool, max_hist: int) -> Iterator[dict]:
         n = len(data["state_idx"])
@@ -237,12 +257,13 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
             p2_sT1_s, p2_aT1_s, p2_aT1_e = w(p2_bs, p2_nsi + 1, p2_as, max_hist)
 
             sv = PairedJEPADataset._slice_view
+            ssv = PairedJEPADataset._slice_state_window
 
             sample: dict = {
-                "p1_state_T": sv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_sT_s, p1_si + 1),
-                "p1_state_T1": sv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_sT1_s, p1_nsi + 1),
-                "p2_state_T": sv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_sT_s, p2_si + 1),
-                "p2_state_T1": sv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_sT1_s, p2_nsi + 1),
+                "p1_state_T": ssv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_bs, p1_sT_s, p1_si + 1),
+                "p1_state_T1": ssv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_bs, p1_sT1_s, p1_nsi + 1),
+                "p2_state_T": ssv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_bs, p2_sT_s, p2_si + 1),
+                "p2_state_T1": ssv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_bs, p2_sT1_s, p2_nsi + 1),
                 "p1_player_hist_T": sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_aT_s, p1_aT_e),
                 "p1_opponent_hist_T": sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_aT_s, p1_aT_e),
                 "p1_player_hist_T1": sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_aT1_s, p1_aT1_e),
@@ -253,8 +274,8 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
                 "p2_opponent_hist_T1": sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_aT1_s, p2_aT1_e),
                 "p1_action": sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_ai, p1_ai + 1)[0],
                 "p2_action": sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_ai, p2_ai + 1)[0],
-                "p1_action_as_opponent": sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_ai, p1_ai + 1)[0],
-                "p2_action_as_opponent": sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_ai, p2_ai + 1)[0],
+                "p2_action_from_p1_perspective": sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_ai, p1_ai + 1)[0],
+                "actual_p1_action_from_p2_perspective": sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_ai, p2_ai + 1)[0],
             }
             yield sample
 
@@ -297,8 +318,8 @@ BLOCK_KEYS = (
 ACTION_KEYS = (
     "p1_action",
     "p2_action",
-    "p1_action_as_opponent",
-    "p2_action_as_opponent",
+    "p2_action_from_p1_perspective",
+    "actual_p1_action_from_p2_perspective",
 )
 
 
@@ -363,8 +384,8 @@ def _forward_paired(model: PairedJEPAModel, batch: dict[str, torch.Tensor]) -> d
         batch["p2_opponent_hist_T1"], batch["p2_opponent_hist_T1_valid"],
         batch["p1_action"],
         batch["p2_action"],
-        batch["p1_action_as_opponent"],
-        batch["p2_action_as_opponent"],
+        batch["p2_action_from_p1_perspective"],
+        batch["actual_p1_action_from_p2_perspective"],
     )
 
 
@@ -387,8 +408,8 @@ def _paired_sigreg_breakdown(
         + sigreg(outputs["p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 2
     action_opponent = (
-        sigreg(outputs["p1_action_as_opponent"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["p2_action_as_opponent"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        sigreg(outputs["p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        + sigreg(outputs["actual_p1_action_from_p2_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 2
     return {
         "sigreg_state_current": state_current.item(),
@@ -570,7 +591,8 @@ def train(args: argparse.Namespace) -> None:
     print(
         f"Transitions: {train_transitions:,} train  {val_transitions:,} val  "
         f"batch={args.batch_size} grad_accum={args.grad_accum_steps} "
-        f"effective={args.batch_size * args.grad_accum_steps}"
+        f"effective={args.batch_size * args.grad_accum_steps} "
+        f"max_history_blocks={args.max_history_blocks}"
     )
 
     # ---- wandb init ----
@@ -596,6 +618,7 @@ def train(args: argparse.Namespace) -> None:
                 "n_train_transitions": train_transitions,
                 "n_val_transitions": val_transitions,
                 "context_length": context_length,
+                "max_history_blocks": args.max_history_blocks,
                 "lambda_sigreg": lambda_sigreg,
                 "lambda_opponent_state": args.lambda_opponent_state,
                 "lambda_action": args.lambda_action,
@@ -658,7 +681,21 @@ def train(args: argparse.Namespace) -> None:
             batch = _batch_to_device(batch, device)
             outputs = _forward_paired(model, batch)
             loss, metrics = loss_from_outputs(outputs)
-            (loss / args.grad_accum_steps).backward()
+            try:
+                (loss / args.grad_accum_steps).backward()
+            except torch.OutOfMemoryError:
+                if device.type == "cuda":
+                    allocated = torch.cuda.memory_allocated() / 1024 ** 3
+                    reserved = torch.cuda.memory_reserved() / 1024 ** 3
+                    print(
+                        "CUDA OOM during backward. "
+                        f"allocated={allocated:.2f} GiB reserved={reserved:.2f} GiB "
+                        f"batch_size={args.batch_size} grad_accum_steps={args.grad_accum_steps} "
+                        f"max_history_blocks={args.max_history_blocks}. "
+                        "Reduce JEPA_PAIRED_BATCH_SIZE or JEPA_MAX_HISTORY; "
+                        "increase JEPA_PAIRED_GRAD_ACCUM_STEPS to keep the same effective batch."
+                    )
+                raise
 
             for key, value in metrics.items():
                 epoch_totals[key] = epoch_totals.get(key, 0.0) + value
@@ -674,7 +711,8 @@ def train(args: argparse.Namespace) -> None:
             # count all 4 state tensors + single-action tokens.
             batch_tokens = 0
             for key in ("p1_state_T", "p2_state_T", "p1_state_T1", "p2_state_T1",
-                        "p1_action", "p2_action", "p1_action_as_opponent", "p2_action_as_opponent"):
+                        "p1_action", "p2_action", "p2_action_from_p1_perspective",
+                        "actual_p1_action_from_p2_perspective"):
                 batch_tokens += int((batch[key] != pad_id).sum().item())
             tokens_since_print += batch_tokens
 
@@ -878,8 +916,9 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_name", type=str, default=None,
                         help="Wandb run name.")
     parser.add_argument("--max_history_blocks", type=int, default=0,
-                        help="Maximum history state blocks per sample (0 = unlimited). "
-                             "Lower = faster data loading + shorter temporal sequences. Default: 0 (unlimited)")
+                        help="Maximum non-header history state blocks per sample (0 = unlimited). "
+                             "The team header is always retained. Lower = faster data loading + shorter "
+                             "temporal sequences. Default: 0 (unlimited)")
     parser.add_argument("--compile", default=False, action=argparse.BooleanOptionalAction,
                         help="Enable torch.compile (default: False). Use --compile to enable.")
     train(parser.parse_args())

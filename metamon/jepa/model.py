@@ -970,8 +970,8 @@ class PairedJEPAModel(nn.Module):
         p2_opponent_hist_T1_valid: torch.Tensor,
         p1_action_tokens: torch.Tensor,
         p2_action_tokens: torch.Tensor,
-        p1_action_as_opponent_tokens: torch.Tensor,
-        p2_action_as_opponent_tokens: torch.Tensor,
+        p2_action_from_p1_perspective_tokens: torch.Tensor,
+        actual_p1_action_from_p2_perspective_tokens: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         enc_p1_T = self.encode_history(
             p1_state_T, p1_state_T_valid,
@@ -999,8 +999,12 @@ class PairedJEPAModel(nn.Module):
 
         p1_action = self.action_encoder(p1_action_tokens)
         p2_action = self.action_encoder(p2_action_tokens)
-        p1_action_as_opponent = self.action_encoder(p1_action_as_opponent_tokens)
-        p2_action_as_opponent = self.action_encoder(p2_action_as_opponent_tokens)
+        p2_action_from_p1_perspective = self.action_encoder(
+            p2_action_from_p1_perspective_tokens
+        )
+        actual_p1_action_from_p2_perspective = self.action_encoder(
+            actual_p1_action_from_p2_perspective_tokens
+        )
 
         pred_p2_action = self.action_predictor(enc_p1_T, pred_p2_T)
         pred_p1_action = self.action_predictor(enc_p2_T, pred_p1_T)
@@ -1021,8 +1025,8 @@ class PairedJEPAModel(nn.Module):
             "pred_p1_T": pred_p1_T,
             "p1_action": p1_action,
             "p2_action": p2_action,
-            "p1_action_as_opponent": p1_action_as_opponent,
-            "p2_action_as_opponent": p2_action_as_opponent,
+            "p2_action_from_p1_perspective": p2_action_from_p1_perspective,
+            "actual_p1_action_from_p2_perspective": actual_p1_action_from_p2_perspective,
             "pred_p2_action": pred_p2_action,
             "pred_p1_action": pred_p1_action,
             "pred_p1_T1": pred_p1_T1,
@@ -1151,11 +1155,17 @@ def compute_paired_losses(
     opponent_state_loss_p1_to_p2 = F.mse_loss(outputs["pred_p2_T"], enc_p2_T)
     opponent_state_loss_p2_to_p1 = F.mse_loss(outputs["pred_p1_T"], enc_p1_T)
     action_loss = 0.5 * (
-        F.mse_loss(outputs["pred_p2_action"], outputs["p2_action_as_opponent"])
-        + F.mse_loss(outputs["pred_p1_action"], outputs["p1_action_as_opponent"])
+        F.mse_loss(outputs["pred_p2_action"], outputs["p2_action_from_p1_perspective"])
+        + F.mse_loss(outputs["pred_p1_action"], outputs["actual_p1_action_from_p2_perspective"])
     )
-    action_loss_p1_to_p2 = F.mse_loss(outputs["pred_p2_action"], outputs["p2_action_as_opponent"])
-    action_loss_p2_to_p1 = F.mse_loss(outputs["pred_p1_action"], outputs["p1_action_as_opponent"])
+    action_loss_p1_to_p2 = F.mse_loss(
+        outputs["pred_p2_action"],
+        outputs["p2_action_from_p1_perspective"],
+    )
+    action_loss_p2_to_p1 = F.mse_loss(
+        outputs["pred_p1_action"],
+        outputs["actual_p1_action_from_p2_perspective"],
+    )
     next_state_loss = 0.5 * (
         F.mse_loss(outputs["pred_p1_T1"], enc_p1_T1)
         + F.mse_loss(outputs["pred_p2_T1"], enc_p2_T1)
@@ -1172,8 +1182,8 @@ def compute_paired_losses(
     sigreg_act = (
         sigreg(outputs["p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["p1_action_as_opponent"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["p2_action_as_opponent"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        + sigreg(outputs["p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        + sigreg(outputs["actual_p1_action_from_p2_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 4
     sigreg_loss = (sigreg_enc + sigreg_act) / 2
 

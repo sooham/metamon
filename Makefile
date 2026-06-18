@@ -16,7 +16,7 @@ FORMATS ?= $(FORMAT)
         wm-dataset inspect-wm-npz sample-inspect-wm-npz \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer sample-inspect-wm-state \
-        train-sl train-jepa play-sl play-jepa showdown bash-completion
+        train-sl train-jepa play-sl play-jepa play-jepa-local showdown bash-completion
 
 # Start a local Pokemon Showdown server (no auth, port 8000)
 # Requires the server/pokemon-showdown submodule to be initialized.
@@ -294,13 +294,14 @@ JEPA_PREFETCH_FACTOR ?= 4
 JEPA_PRINT_INTERVAL ?= 10
 JEPA_CONFIG ?= metamon/jepa/configs/default.yaml
 JEPA_COMPILE ?= false
-JEPA_MAX_HISTORY ?= 0
+JEPA_MAX_HISTORY ?= 32
 
 # Train the paired-POV JEPA model on paired_shard_*.npz files.
 # Requires paired data generated with scripts/generate_world_model_data.py --paired_pov.
 #
 # Usage:
 #   make train-jepa FORMATS=gen1ou
+#   make train-jepa FORMATS=gen1ou JEPA_MAX_HISTORY=0  # full battle history
 JEPA_PAIRED_BATCH_SIZE ?= 96
 JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 3
 JEPA_PAIRED_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best_faster_sigreg.pt
@@ -383,6 +384,7 @@ play-sl:
 #
 # Usage:
 #   make play-jepa
+#   make play-jepa-local
 #   make play-jepa JEPA_PLAY_FORMAT=gen1ou JEPA_PLAY_USERNAME=JEPABot
 #   make play-jepa JEPA_PLAY_CHECKPOINT=/path/to/paired_best.pt
 JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best.pt
@@ -392,6 +394,7 @@ JEPA_PLAY_USERNAME ?= jepabot
 JEPA_PLAY_TEAM_SET ?= competitive
 JEPA_PLAY_HEURISTIC ?= max-self-state-delta
 JEPA_PLAY_LADDER ?=
+JEPA_PLAY_VERBOSE_BLOCKS ?=
 JEPA_PLAY_SERVER ?= showdown
 JEPA_PLAY_PASSWORD ?= JEPAJEPA
 play-jepa:
@@ -413,8 +416,14 @@ play-jepa:
 		--team_set $(JEPA_PLAY_TEAM_SET) \
 		--heuristic $(JEPA_PLAY_HEURISTIC) \
 		$(if $(JEPA_PLAY_LADDER),--ladder) \
+		$(if $(JEPA_PLAY_VERBOSE_BLOCKS),--verbose_blocks) \
 		--server $(JEPA_PLAY_SERVER) \
 		$(if $(JEPA_PLAY_PASSWORD),--password $(JEPA_PLAY_PASSWORD))
+
+# Battle with the paired JEPA bot on a local Pokemon Showdown server.
+# Start the server first with: make showdown
+play-jepa-local:
+	$(MAKE) play-jepa JEPA_PLAY_SERVER=localhost JEPA_PLAY_PASSWORD=
 
 # ── Checkpoint backup ───────────────────────────────────────────────
 

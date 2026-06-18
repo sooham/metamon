@@ -6,9 +6,11 @@ from pathlib import Path
 import numpy as np
 import orjson
 import pytest
+import torch
 
 import scripts.generate_world_model_data as wm_data
 from metamon.jepa.dataset import JEPADataset
+from metamon.jepa.model import compute_paired_losses
 from metamon.sl.train import WorldModelDataset
 from metamon.sl.train import collate_fn as sl_collate_fn
 from scripts.generate_world_model_data import (
@@ -204,7 +206,25 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     assert len(samples) == 2
     second = samples[1]
     assert len(second["p1_player_hist_T"]) == 2
+    assert len(second["p1_player_hist_T1"]) == 3
     assert len(second["p2_player_hist_T"]) == 3
+    assert len(second["p2_player_hist_T1"]) == 4
+    np.testing.assert_array_equal(
+        second["p1_player_hist_T"][-1],
+        np.array([5, 11, 6], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        second["p1_player_hist_T1"][-1],
+        np.array([5, 12, 6], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        second["p2_player_hist_T"][-1],
+        np.array([5, 97, 6], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        second["p2_player_hist_T1"][-1],
+        np.array([5, 22, 6], dtype=np.int16),
+    )
     np.testing.assert_array_equal(
         second["p1_action"],
         np.array([5, 12, 6], dtype=np.int16),
@@ -213,6 +233,120 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
         second["p2_action"],
         np.array([5, 22, 6], dtype=np.int16),
     )
+    np.testing.assert_array_equal(
+        second["p2_action_from_p1_perspective"],
+        np.array([7, 22, 8], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        second["actual_p1_action_from_p2_perspective"],
+        np.array([7, 12, 8], dtype=np.int16),
+    )
+
+    capped_dataset = PairedJEPADataset(
+        [str(tmp_path / "paired_shard_0000.npz")],
+        struct_ids,
+        shuffle_shards=False,
+        max_history_blocks=2,
+    )
+    capped_second = list(capped_dataset)[1]
+    assert len(capped_second["p1_state_T"]) == 3
+    assert len(capped_second["p1_state_T1"]) == 3
+    np.testing.assert_array_equal(
+        capped_second["p1_state_T"][0],
+        np.array([90], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        capped_second["p1_state_T"][1],
+        np.array([102], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        capped_second["p1_state_T"][2],
+        np.array([103], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        capped_second["p1_state_T1"][0],
+        np.array([90], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        capped_second["p1_state_T1"][1],
+        np.array([103], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        capped_second["p1_state_T1"][2],
+        np.array([104], dtype=np.int16),
+    )
+    assert len(capped_second["p1_player_hist_T"]) == 1
+    assert len(capped_second["p1_player_hist_T1"]) == 1
+    np.testing.assert_array_equal(
+        capped_second["p1_player_hist_T"][0],
+        np.array([5, 11, 6], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        capped_second["p1_player_hist_T1"][0],
+        np.array([5, 12, 6], dtype=np.int16),
+    )
+
+
+def test_paired_jepa_dataset_history_window_can_be_capped():
+    assert PairedJEPADataset._resolve_window(
+        battle_start=0,
+        state_end=4,
+        action_base=0,
+        max_hist=0,
+    ) == (0, 0, 2)
+    assert PairedJEPADataset._resolve_window(
+        battle_start=0,
+        state_end=5,
+        action_base=0,
+        max_hist=0,
+    ) == (0, 0, 3)
+    assert PairedJEPADataset._resolve_window(
+        battle_start=0,
+        state_end=4,
+        action_base=0,
+        max_hist=2,
+    ) == (2, 1, 2)
+    assert PairedJEPADataset._resolve_window(
+        battle_start=0,
+        state_end=5,
+        action_base=0,
+        max_hist=2,
+    ) == (3, 2, 3)
+
+
+def test_compute_paired_losses_targets_predicted_opponent_actions():
+    state = torch.zeros((1, 2))
+    outputs = {
+        "enc_p1_T": state,
+        "enc_p2_T": state,
+        "enc_p1_T1": state,
+        "enc_p2_T1": state,
+        "pred_p2_T": state,
+        "pred_p1_T": state,
+        "p1_action": state,
+        "p2_action": state,
+        "p2_action_from_p1_perspective": torch.tensor([[1.0, 0.0]]),
+        "actual_p1_action_from_p2_perspective": torch.tensor([[0.0, 2.0]]),
+        "pred_p2_action": torch.tensor([[1.0, 0.0]]),
+        "pred_p1_action": torch.tensor([[0.0, 2.0]]),
+        "pred_p1_T1": state,
+        "pred_p2_T1": state,
+    }
+
+    loss, metrics = compute_paired_losses(
+        outputs,
+        lambda_sigreg=0.0,
+        lambda_opponent_state=0.0,
+        lambda_action=1.0,
+        lambda_next_state=0.0,
+        sigreg_num_slices=1,
+        sigreg_num_points=2,
+    )
+
+    assert loss.item() == pytest.approx(0.0)
+    assert metrics["action_loss"] == pytest.approx(0.0)
+    assert metrics["action_loss_p1_to_p2"] == pytest.approx(0.0)
+    assert metrics["action_loss_p2_to_p1"] == pytest.approx(0.0)
 
 
 def test_shard_accumulator_can_shuffle_transition_rows_without_misalignment(tmp_path):
