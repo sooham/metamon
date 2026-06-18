@@ -8,16 +8,21 @@ import orjson
 import pytest
 
 import scripts.generate_world_model_data as wm_data
-from metamon.jepa.train import JEPADataset
+from metamon.jepa.dataset import JEPADataset
 from metamon.sl.train import WorldModelDataset
 from metamon.sl.train import collate_fn as sl_collate_fn
 from scripts.generate_world_model_data import (
+    PairedBattle,
+    PairedShardAccumulator,
     ShardAccumulator,
+    TokenizedPOV,
+    _paired_transition_rows,
     raw_battle_key,
     split_groups,
     group_txt_files,
     tokenize_battle,
 )
+from metamon.jepa.train_paired import PairedJEPADataset
 
 
 def test_shard_accumulator_writes_transition_table_v2_uncompressed_npz(tmp_path):
@@ -90,13 +95,19 @@ def test_raw_battle_grouping_keeps_win_loss_together():
     files = [
         "/tmp/gen1ou/battle_a_WIN.txt",
         "/tmp/gen1ou/battle_a_LOSS.txt",
+        "/tmp/gen1ou/gen1ou-2405104611_Unrated_voltorb80670_vs_synthesis81182_07-18-2025_LOSS.txt",
+        "/tmp/gen1ou/gen1ou-2405104611_Unrated_synthesis81182_vs_voltorb80670_07-18-2025_WIN.txt",
+        "/tmp/gen1ou/smogtours-gen1ou-749168_Unrated_encore90411_vs_mindplate96156_02-23-2024_WIN.txt",
         "/tmp/gen1ou/battle_b_WIN.txt",
         "/tmp/gen1ou/standalone.txt",
     ]
 
     assert raw_battle_key(files[0]) == "battle_a"
     assert raw_battle_key(files[1]) == "battle_a"
-    assert raw_battle_key(files[3]) == "standalone"
+    assert raw_battle_key(files[2]) == "gen1ou-2405104611"
+    assert raw_battle_key(files[3]) == "gen1ou-2405104611"
+    assert raw_battle_key(files[4]) == "smogtours-gen1ou-749168"
+    assert raw_battle_key(files[-1]) == "standalone"
 
     groups = group_txt_files(files)
     rng = np.random.default_rng(0)
@@ -108,6 +119,100 @@ def test_raw_battle_grouping_keeps_win_loss_together():
         if "battle_a" in keys:
             assert "/tmp/gen1ou/battle_a_WIN.txt" in split_files
             assert "/tmp/gen1ou/battle_a_LOSS.txt" in split_files
+
+
+def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
+    p1 = TokenizedPOV(
+        state_token_arrays=[
+            np.array([90], dtype=np.int16),
+            np.array([101], dtype=np.int16),
+            np.array([102], dtype=np.int16),
+            np.array([103], dtype=np.int16),
+            np.array([104], dtype=np.int16),
+        ],
+        player_action_arrays=[
+            np.array([10], dtype=np.int16),
+            np.array([11], dtype=np.int16),
+            np.array([12], dtype=np.int16),
+        ],
+        opponent_action_arrays=[
+            np.array([20], dtype=np.int16),
+            np.array([21], dtype=np.int16),
+            np.array([22], dtype=np.int16),
+        ],
+        turn_numbers=[1, 2, 3, 4],
+        won=True,
+        path="p1.txt",
+    )
+    p2 = TokenizedPOV(
+        state_token_arrays=[
+            np.array([91], dtype=np.int16),
+            np.array([201], dtype=np.int16),
+            np.array([202], dtype=np.int16),
+            np.array([299], dtype=np.int16),  # extra turn-2 subturn
+            np.array([203], dtype=np.int16),
+            np.array([204], dtype=np.int16),
+        ],
+        player_action_arrays=[
+            np.array([20], dtype=np.int16),
+            np.array([98], dtype=np.int16),
+            np.array([97], dtype=np.int16),
+            np.array([22], dtype=np.int16),
+        ],
+        opponent_action_arrays=[
+            np.array([10], dtype=np.int16),
+            np.array([88], dtype=np.int16),
+            np.array([87], dtype=np.int16),
+            np.array([12], dtype=np.int16),
+        ],
+        turn_numbers=[1, 2, 2, 3, 4],
+        won=False,
+        path="p2.txt",
+    )
+    rows = _paired_transition_rows(p1, p2)
+    assert [(r.p1_action_idx, r.p2_action_idx) for r in rows] == [(0, 0), (2, 3)]
+
+    acc = PairedShardAccumulator(fmt="gen1ou", fmt_id=0)
+    acc.append(PairedBattle("battle-1", p1, p2, rows))
+    stats = acc.write(str(tmp_path), shard_idx=0)
+    assert stats["transitions"] == 2
+
+    data = np.load(tmp_path / "paired_shard_0000.npz")
+    np.testing.assert_array_equal(data["p1_state_idx"], np.array([1, 3], dtype=np.int32))
+    np.testing.assert_array_equal(data["p1_next_state_idx"], np.array([2, 4], dtype=np.int32))
+    np.testing.assert_array_equal(data["p1_action_idx"], np.array([0, 2], dtype=np.int32))
+    np.testing.assert_array_equal(data["p2_state_idx"], np.array([1, 4], dtype=np.int32))
+    np.testing.assert_array_equal(data["p2_next_state_idx"], np.array([2, 5], dtype=np.int32))
+    np.testing.assert_array_equal(data["p2_action_idx"], np.array([0, 3], dtype=np.int32))
+    np.testing.assert_array_equal(data["p1_battle_start"], np.array([0, 5], dtype=np.int64))
+    np.testing.assert_array_equal(data["p2_battle_start"], np.array([0, 6], dtype=np.int64))
+    np.testing.assert_array_equal(data["p1_battle_action_start"], np.array([0, 3], dtype=np.int64))
+    np.testing.assert_array_equal(data["p2_battle_action_start"], np.array([0, 4], dtype=np.int64))
+
+    struct_ids = {
+        "chosen_move": 5,
+        "end_chosen_move": 6,
+        "opponent_chosen_move": 7,
+        "end_opponent_chosen_move": 8,
+    }
+    dataset = PairedJEPADataset(
+        [str(tmp_path / "paired_shard_0000.npz")],
+        struct_ids,
+        shuffle_shards=False,
+    )
+    samples = list(dataset)
+    assert len(samples) == 2
+    second = samples[1]
+    assert len(second["p1_player_hist_T"]) == 2
+    assert len(second["p2_player_hist_T"]) == 3
+    np.testing.assert_array_equal(
+        second["p1_action"],
+        np.array([5, 12, 6], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        second["p2_action"],
+        np.array([5, 22, 6], dtype=np.int16),
+    )
 
 
 def test_shard_accumulator_can_shuffle_transition_rows_without_misalignment(tmp_path):

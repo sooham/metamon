@@ -553,9 +553,9 @@ def _write_action_block(
             lines.append("<chosen_move>")
             lines.append(f"switch {target_name}")
             lines.append("<end_chosen_move>")
-        elif player_action.is_noop:
+        elif player_action.is_noop or player_action.name is None:
             lines.append("<chosen_move>")
-            lines.append("recharge")
+            lines.append("recharge" if player_action.is_noop else "unknown")
             lines.append("<end_chosen_move>")
         else:
             name = clean_name(player_action.name)

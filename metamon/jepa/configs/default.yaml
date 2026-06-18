@@ -1,5 +1,9 @@
 # LeJEPA v2 — model hyperparameters for battle-prefix encoding + action prediction.
 #
+# Works for both gen1ou and gen9ou: the encoder is sized for Gen 9's longer
+# states (~200+ tokens with items, abilities, Tera types, field effects)
+# while still being efficient for Gen 1's ~80-token states.
+#
 # Training hyperparameters (lr, epochs, batch_size, etc.) are passed
 # via CLI flags to train.py and are NOT stored here.
 
@@ -15,12 +19,12 @@ model:
 
   # ── Block Encoder — bidirectional transformer over one header/state block ──
   encoder:
-    d_model: 512
-    n_heads: 8
-    n_layers: 10
-    d_ff: 2048           # 4× d_model
+    d_model: 384
+    n_heads: 6
+    n_layers: 6
+    d_ff: 1536           # 4× d_model
     dropout: 0.1
-    max_seq_len: 2048
+    max_seq_len: 256
     theta: 10000.0
     ffn_activation: gelu
     gradient_checkpointing: true
@@ -31,9 +35,9 @@ model:
     n_layers: 4
     d_ff: 768
     dropout: 0.1
-    max_seq_len: 4096
+    max_seq_len: 6144
     ffn_activation: gelu
-    gradient_checkpointing: false
+    gradient_checkpointing: true
 
   # ── Action Encoder — small bidirectional transformer → action embedding ─
   # Shares token embedding with the main encoder.  Encodes action text with
@@ -51,8 +55,23 @@ model:
 
   # ── Action Predictor — MLP: enc_N → pred_o_emb ───────────────────
   action_predictor:
-    hidden_dim: null       # defaults to 4×latent_dim (768)
-    n_layers: 3
+    hidden_dim: 512       # 2.7× latent_dim
+    n_layers: 4
+
+  # ── Paired-POV opponent state predictor — MLP: enc_self_T → pred_enc_other_T ──
+  opponent_state_predictor:
+    hidden_dim: 512       # 2.7× latent_dim
+    n_layers: 4
+
+  # ── Paired-POV action predictor — MLP: enc_self_T + pred_other_T → pred_other_action ──
+  paired_action_predictor:
+    hidden_dim: 512       # 2.7× latent_dim
+    n_layers: 4
+
+  # ── Paired-POV next-state predictor — MLP over paired state/action latents ──
+  next_state_predictor:
+    hidden_dim: 512       # 2.7× latent_dim
+    n_layers: 4
 
   # ── State Predictor — AdaLN-zero conditional transformer ──────────
   # Conditions on encoded player action + predicted opponent action.

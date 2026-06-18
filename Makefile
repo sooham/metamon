@@ -8,7 +8,7 @@ else
 METAMON_CACHE_DIR ?= /workspace/poke-datasets
 endif
 RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/raw-replays
-FORMAT ?= gen1ou
+FORMAT ?= gen1ou gen9ou
 FORMATS ?= $(FORMAT)
 
 .PHONY: parse-no-pred parse parse-all-no-pred parse-all battle battle-inspect inspect-replay \
@@ -16,7 +16,7 @@ FORMATS ?= $(FORMAT)
         wm-dataset inspect-wm-npz sample-inspect-wm-npz \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer sample-inspect-wm-state \
-        train-sl train-jepa train-jepa-mps play-sl play-jepa showdown bash-completion
+        train-sl train-jepa play-sl play-jepa showdown bash-completion
 
 # Start a local Pokemon Showdown server (no auth, port 8000)
 # Requires the server/pokemon-showdown submodule to be initialized.
@@ -86,11 +86,7 @@ parse-all-no-pred:
 
 # Parse all supported formats with NoPredictor
 parse-all:
-	@for fmt in gen1ou gen1uu gen1nu gen1ubers \
-	            gen2ou gen2uu gen2nu gen2ubers \
-	            gen3ou gen3uu gen3nu gen3ubers \
-	            gen4ou gen4uu gen4nu gen4ubers \
-	            gen9ou; do \
+	@for fmt in gen1ou gen9ou; do \
 		echo "=== $$fmt ==="; \
 		$(MAKE) parse FORMAT=$$fmt; \
 	done
@@ -186,11 +182,9 @@ inspect-wm-state:
 # Automatically builds the WorldModel tokenizer if it doesn't exist yet.
 # Aborts early if parsed replays are missing for any requested format.
 #
-# Each output .npz shard contains unpadded tokenized states plus an explicit
-# transition table:
-#   states/state_lengths/state_offsets
-#   prev_state_idx/next_state_idx/actions/battle_id/turn_idx/format_id
-# Training pairs are sampled from transition rows.
+# Each output .npz shard contains paired POV transition data by default:
+#   p1_* / p2_* state + action arrays, plus aligned transition rows.
+# Set WM_PAIRED_POV=false to keep the legacy single-POV transition shards.
 #
 # Usage:
 #   make wm-dataset FORMATS=gen1ou
@@ -199,6 +193,7 @@ WM_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/world-model-samples
 WM_PROCESSES ?= $(N_THREADS)
 WM_VAL_SPLIT ?= 0.05
 WM_SEED ?= 42
+WM_PAIRED_POV ?= true
 TOKENIZER_FILE := $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
 wm-dataset:
 	@# ---- 1. Check parsed replays exist for every format ----
@@ -228,7 +223,8 @@ wm-dataset:
 		--formats $(FORMATS) \
 		--val_split $(WM_VAL_SPLIT) \
 		--seed $(WM_SEED) \
-		--processes $(WM_PROCESSES)
+		--processes $(WM_PROCESSES) \
+		$(if $(filter true,$(WM_PAIRED_POV)),--paired_pov)
 
 # ── Supervised-Learning Training ────────────────────────────────────
 
@@ -286,107 +282,70 @@ train-sl:
 
 # ── JEPA Training ────────────────────────────────────────────────────
 
-# Train the JEPA model on state transitions using .npz shards.
-# Requires tokenized world-model data (run wm-dataset first).
-#
-# Usage:
-#   make train-jepa FORMATS="gen1ou gen9ou"
-#   make train-jepa FORMATS=gen9ou EPOCHS=20 BATCH_SIZE=64
-#   make train-jepa FORMATS="gen1ou gen9ou" WANDB=true WANDB_PROJECT=metamon WANDB_NAME=my-run
 JEPA_DATA_ROOT ?= $(WM_OUTPUT_DIR)
 JEPA_TOKENIZER ?= $(TOKENIZER_FILE)
 JEPA_SAVE_DIR ?= $(METAMON_CACHE_DIR)/jepa-checkpoints
-JEPA_BATCH_SIZE ?= 16
-JEPA_GRAD_ACCUM_STEPS ?= 16
+
 JEPA_LR ?= 5e-5
-JEPA_EPOCHS ?= 100
+JEPA_EPOCHS ?= 10
 JEPA_GRAD_CLIP ?= 1.0
-JEPA_NUM_WORKERS ?= 8
-JEPA_PREFETCH_FACTOR ?= 2
+JEPA_NUM_WORKERS ?= 12
+JEPA_PREFETCH_FACTOR ?= 4
 JEPA_PRINT_INTERVAL ?= 10
-JEPA_VAL_INTERVAL ?= 1000
-JEPA_VAL_MAX_BATCHES ?= 50
-JEPA_CONFIG ?=
-JEPA_CHECKPOINT ?= $(JEPA_SAVE_DIR)/best.pt
+JEPA_CONFIG ?= metamon/jepa/configs/default.yaml
+JEPA_COMPILE ?= false
+JEPA_MAX_HISTORY ?= 0
+
+# Train the paired-POV JEPA model on paired_shard_*.npz files.
+# Requires paired data generated with scripts/generate_world_model_data.py --paired_pov.
+#
+# Usage:
+#   make train-jepa FORMATS=gen1ou
+JEPA_PAIRED_BATCH_SIZE ?= 96
+JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 3
+JEPA_PAIRED_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best_faster_sigreg.pt
+JEPA_PAIRED_MAX_STEPS ?= 0
+JEPA_PAIRED_VAL_INTERVAL ?= 200
+JEPA_PAIRED_VAL_MAX_BATCHES ?= 10
+JEPA_PAIRED_PRINT_INTERVAL ?= 20
+JEPA_PAIRED_LOG_INTERVAL ?= 20
+JEPA_PAIRED_EXTRA_ARGS ?=
 train-jepa:
 	@if [ ! -d "$(JEPA_DATA_ROOT)" ]; then \
-		echo "ERROR: No .npz data found at $(JEPA_DATA_ROOT)."; \
-		echo "  Run: make wm-dataset FORMATS=\"$(FORMATS)\" first."; \
+		echo "ERROR: No paired .npz data found at $(JEPA_DATA_ROOT)."; \
 		exit 1; \
 	fi
 	@if [ ! -f "$(JEPA_TOKENIZER)" ]; then \
 		echo "ERROR: Tokenizer not found at $(JEPA_TOKENIZER)."; \
-		echo "  Run: make wm-tokenizer FORMATS=\"$(FORMATS)\" first."; \
 		exit 1; \
 	fi
 	mkdir -p $(JEPA_SAVE_DIR)
 	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-	uv run python -m metamon.jepa.train \
+	uv run python -m metamon.jepa.train_paired \
 		--data_root $(JEPA_DATA_ROOT) \
 		--formats $(FORMATS) \
 		--tokenizer_path $(JEPA_TOKENIZER) \
 		--save_dir $(JEPA_SAVE_DIR) \
-		--batch_size $(JEPA_BATCH_SIZE) \
-		--grad_accum_steps $(JEPA_GRAD_ACCUM_STEPS) \
+		--batch_size $(JEPA_PAIRED_BATCH_SIZE) \
+		--grad_accum_steps $(JEPA_PAIRED_GRAD_ACCUM_STEPS) \
 		--lr $(JEPA_LR) \
 		--epochs $(JEPA_EPOCHS) \
+		--max_steps $(JEPA_PAIRED_MAX_STEPS) \
 		--grad_clip $(JEPA_GRAD_CLIP) \
 		--num_workers $(JEPA_NUM_WORKERS) \
 		--prefetch_factor $(JEPA_PREFETCH_FACTOR) \
-		--print_interval $(JEPA_PRINT_INTERVAL) \
-		$(if $(filter true,$(WANDB)),--wandb) \
-		$(if $(WANDB_PROJECT),--wandb_project $(WANDB_PROJECT)) \
-		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
-		$(if $(JEPA_CHECKPOINT),--checkpoint $(JEPA_CHECKPOINT)) \
+		--print_interval $(JEPA_PAIRED_PRINT_INTERVAL) \
+		$(if $(JEPA_PAIRED_CHECKPOINT),--checkpoint $(JEPA_PAIRED_CHECKPOINT)) \
 		$(if $(JEPA_CONFIG),--config $(JEPA_CONFIG)) \
-		--val_interval $(JEPA_VAL_INTERVAL) \
-		--val_max_batches $(JEPA_VAL_MAX_BATCHES) \
-		--log --log_interval 10
-
-# Train the JEPA model with MPS-optimized settings for Apple Silicon (24 GB unified memory).
-# Uses the smaller mps.yaml config, conservatively lower batch size, and single-worker
-# data loading (MPS does not support multiprocessing on macOS).
-#
-# Usage:
-#   make train-jepa-mps FORMATS="gen1ou gen9ou"
-#   make train-jepa-mps FORMATS=gen9ou EPOCHS=50
-#   make train-jepa-mps FORMATS="gen1ou gen9ou" WANDB=true WANDB_PROJECT=metamon WANDB_NAME=mps-run
-JEPA_MPS_BATCH_SIZE ?= 128
-JEPA_MPS_NUM_WORKERS ?= 0
-JEPA_MPS_CONFIG ?= metamon/jepa/configs/mps.yaml
-JEPA_MPS_VAL_INTERVAL ?= 400
-JEPA_MPS_VAL_MAX_BATCHES ?= 50
-train-jepa-mps:
-	@if [ ! -d "$(JEPA_DATA_ROOT)" ]; then \
-		echo "ERROR: No .npz data found at $(JEPA_DATA_ROOT)."; \
-		echo "  Run: make wm-dataset FORMATS=\"$(FORMATS)\" first."; \
-		exit 1; \
-	fi
-	@if [ ! -f "$(JEPA_TOKENIZER)" ]; then \
-		echo "ERROR: Tokenizer not found at $(JEPA_TOKENIZER)."; \
-		echo "  Run: make wm-tokenizer FORMATS=\"$(FORMATS)\" first."; \
-		exit 1; \
-	fi
-	mkdir -p $(JEPA_SAVE_DIR)
-	uv run python -m metamon.jepa.train \
-		--config $(JEPA_MPS_CONFIG) \
-		--data_root $(JEPA_DATA_ROOT) \
-		--formats $(FORMATS) \
-		--tokenizer_path $(JEPA_TOKENIZER) \
-		--save_dir $(JEPA_SAVE_DIR) \
-		--batch_size $(JEPA_MPS_BATCH_SIZE) \
-		--lr $(JEPA_LR) \
-		--epochs $(JEPA_EPOCHS) \
-		--grad_clip $(JEPA_GRAD_CLIP) \
-		--num_workers $(JEPA_MPS_NUM_WORKERS) \
-		--print_interval $(JEPA_PRINT_INTERVAL) \
-		--val_interval $(JEPA_MPS_VAL_INTERVAL) \
-		--val_max_batches $(JEPA_MPS_VAL_MAX_BATCHES) \
-		$(if $(filter true,$(WANDB)),--wandb) \
+		--log_interval $(JEPA_PAIRED_LOG_INTERVAL) \
+		$(if $(filter false,$(WANDB)),--no-wandb) \
 		$(if $(WANDB_PROJECT),--wandb_project $(WANDB_PROJECT)) \
 		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
-		$(if $(JEPA_CHECKPOINT),--checkpoint $(JEPA_CHECKPOINT)) \
-		--log --log_interval 20
+		--val_interval $(JEPA_PAIRED_VAL_INTERVAL) \
+		--val_max_batches $(JEPA_PAIRED_VAL_MAX_BATCHES) \
+		$(if $(filter false,$(JEPA_COMPILE)),--no-compile) \
+		--max_history_blocks $(JEPA_MAX_HISTORY) \
+		$(JEPA_PAIRED_EXTRA_ARGS)
 
 # ── World Model Showdown Play ─────────────────────────────────────────
 
@@ -419,18 +378,22 @@ play-sl:
 		--max_new_tokens $(SL_PLAY_MAX_TOKENS) \
 		$(if $(SL_PLAY_VERBOSE),--verbose)
 
-# Battle with a trained JEPA world model on the local Showdown server.
+# Battle with a trained paired JEPA world model on the local Showdown server.
 # Requires a checkpoint from train-jepa and a running Showdown server.
 #
 # Usage:
 #   make play-jepa
 #   make play-jepa JEPA_PLAY_FORMAT=gen1ou JEPA_PLAY_USERNAME=JEPABot
-#   make play-jepa JEPA_PLAY_CHECKPOINT=/path/to/best.pt
-JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/best.pt
+#   make play-jepa JEPA_PLAY_CHECKPOINT=/path/to/paired_best.pt
+JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best.pt
 JEPA_PLAY_TOKENIZER ?= $(JEPA_TOKENIZER)
 JEPA_PLAY_FORMAT ?= gen1ou
-JEPA_PLAY_USERNAME ?= JEPABot
+JEPA_PLAY_USERNAME ?= jepabot
 JEPA_PLAY_TEAM_SET ?= competitive
+JEPA_PLAY_HEURISTIC ?= max-self-state-delta
+JEPA_PLAY_LADDER ?=
+JEPA_PLAY_SERVER ?= showdown
+JEPA_PLAY_PASSWORD ?= JEPAJEPA
 play-jepa:
 	@if [ ! -f "$(JEPA_PLAY_CHECKPOINT)" ]; then \
 		echo "ERROR: Checkpoint not found at $(JEPA_PLAY_CHECKPOINT)."; \
@@ -447,7 +410,46 @@ play-jepa:
 		--tokenizer_path $(JEPA_PLAY_TOKENIZER) \
 		--format $(JEPA_PLAY_FORMAT) \
 		--username $(JEPA_PLAY_USERNAME) \
-		--team_set $(JEPA_PLAY_TEAM_SET)
+		--team_set $(JEPA_PLAY_TEAM_SET) \
+		--heuristic $(JEPA_PLAY_HEURISTIC) \
+		$(if $(JEPA_PLAY_LADDER),--ladder) \
+		--server $(JEPA_PLAY_SERVER) \
+		$(if $(JEPA_PLAY_PASSWORD),--password $(JEPA_PLAY_PASSWORD))
+
+# ── Checkpoint backup ───────────────────────────────────────────────
+
+# Copy all world-model checkpoints (SL + JEPA) to a timestamped backup
+# directory under the metamon cache dir.  The original checkpoints in
+# train save-dirs are left untouched.
+#
+# Usage:
+#   make save-checkpoints
+#   make save-checkpoints BACKUP_NAME=experiment-v2
+BACKUP_NAME ?=
+save-checkpoints:
+	@now=$$(date +%Y-%m-%d_%H%M%S); \
+	if [ -n "$(BACKUP_NAME)" ]; then dest="$(METAMON_CACHE_DIR)/checkpoints-backups/$(BACKUP_NAME)_$${now}"; \
+	else dest="$(METAMON_CACHE_DIR)/checkpoints-backups/$${now}"; fi; \
+	mkdir -p "$$dest"; \
+	echo "Backing up checkpoints to $$dest"; \
+	copied=0; \
+	for src_dir in $(SL_SAVE_DIR) $(JEPA_SAVE_DIR); do \
+		if [ -d "$$src_dir" ]; then \
+			label=$$(basename "$$src_dir"); \
+			for f in "$$src_dir"/*.pt; do \
+				if [ -f "$$f" ]; then \
+					cp -v "$$f" "$$dest/$${label}_$$(basename "$$f")"; \
+					copied=$$((copied + 1)); \
+				fi; \
+			done; \
+		fi; \
+	done; \
+	if [ $$copied -eq 0 ]; then \
+		echo "No checkpoints found to back up."; \
+		rmdir "$$dest"; \
+	else \
+		echo "Saved $$copied checkpoints to $$dest"; \
+	fi
 
 # Run the full test suite (parallel by default via pytest-xdist)
 test:

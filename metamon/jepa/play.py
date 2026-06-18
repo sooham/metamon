@@ -1,19 +1,20 @@
 """Play Pokémon Showdown battles with JEPA world-model diagnostics.
 
-JEPA is a latent predictive model: it predicts opponent-action embeddings and
-next-history embeddings, but it does not decode a next state into text.  This
+Paired JEPA is a latent predictive model: from this player's visible POV it
+predicts the hidden opponent POV, the opponent's next action embedding, and the
+next visible POV embedding. It does not decode a next state into text. This
 player therefore uses JEPA for introspection and latent rollouts while choosing
 the action whose predicted next-state embedding is farthest from the current
-state embedding.  The verbose logs show:
+state embedding. The verbose logs show:
 
   - the block history being encoded,
-  - JEPA's predicted opponent-action embedding norm,
+  - JEPA's predicted opponent-state/action embedding norms,
   - each legal action's encoded text and latent next-state delta,
   - the max-delta action selected for play.
 
 Usage:
     uv run python -m metamon.jepa.play \\
-        --checkpoint /workspace/poke-datasets/jepa-checkpoints/best.pt \\
+        --checkpoint /workspace/poke-datasets/jepa-checkpoints/paired_best.pt \\
         --tokenizer_path /workspace/poke-datasets/tokenizers/WorldModelObservationSpace-v1.json \\
         --format gen1ou \\
         --username JEPABot
@@ -41,8 +42,7 @@ from metamon.data.download import METAMON_CACHE_DIR
 from metamon.env import get_metamon_teams
 from metamon.env.metamon_player import MetamonPlayer
 from metamon.interface import UniversalAction, UniversalState, consistent_move_order, consistent_pokemon_order
-from metamon.jepa.model import JEPAModel
-from metamon.jepa.train import collate_fn
+from metamon.jepa.model import PairedJEPAModel
 from metamon.tokenizer import PokemonTokenizer
 
 
@@ -61,15 +61,15 @@ def _status_token(pokemon) -> str:
     status = getattr(pokemon, "status", None)
     if status is None:
         return "nostatus"
-    raw = getattr(status, "value", None)
-    if raw is None:
-        raw = getattr(status, "name", None)
-    if raw is None:
-        raw = str(status)
-    name = str(raw).lower()
-    if name in {"0", "none", "null"}:
+    # Handle poke-env Status enum (int values 1-7)
+    name = getattr(status, "name", None)
+    if name is not None:
+        return clean_name(str(name)) or "nostatus"
+    # Handle string status values
+    raw = str(status).lower()
+    if raw in {"0", "none", "null", ""}:
         return "nostatus"
-    return clean_name(name) or "nostatus"
+    return clean_name(raw) or "nostatus"
 
 
 def _species_token(pokemon) -> str:
@@ -122,8 +122,50 @@ def _pokemon_types(pokemon) -> list[str]:
     return types or ["normal"]
 
 
+def _boosts_words(pokemon) -> list[str]:
+    """Return boost tokens for a Pokémon in training-data format.
+
+    No boosts → ["noboosts"]
+    With boosts → ["<boosts>", "spa-1", "spd-1", "<end_boosts>"]
+
+    Gen 1 note: Special is a single stat; spa and spd always change together.
+    We mirror whichever of the two poke-env reports.
+    """
+    boosts = getattr(pokemon, "boosts", None) or {}
+    if not boosts:
+        return ["noboosts"]
+    # Mirror spa↔spd for Gen 1 linked Special stat
+    if "spa" in boosts and "spd" not in boosts:
+        boosts = dict(boosts, spd=boosts["spa"])
+    elif "spd" in boosts and "spa" not in boosts:
+        boosts = dict(boosts, spa=boosts["spd"])
+    parts = ["<boosts>"]
+    has_any = False
+    for stat in ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]:
+        amount = boosts.get(stat, 0)
+        if amount != 0:
+            parts.append(f"{stat}{amount:+d}")
+            has_any = True
+    if not has_any:
+        return ["noboosts"]
+    parts.append("<end_boosts>")
+    return parts
+
+
 def _tokenize_words(tokenizer: PokemonTokenizer, words: list[str]) -> np.ndarray:
-    return np.array([tokenizer[_safe_token(tokenizer, word)] for word in words], dtype=np.int16)
+    """Tokenize words, replacing unknowns with <unk> and warning."""
+    ids = []
+    unk_id = tokenizer["<unk>"]
+    unknown_words: list[str] = []
+    for word in words:
+        if word in tokenizer:
+            ids.append(tokenizer[word])
+        else:
+            ids.append(unk_id)
+            unknown_words.append(word)
+    if unknown_words:
+        print(f"WARNING: <unk> tokens for words not in tokenizer: {unknown_words}")
+    return np.array(ids, dtype=np.int16)
 
 
 def _format_action_text(action_name: str) -> str:
@@ -156,8 +198,12 @@ def _action_block(
     return _tokenize_words(tokenizer, words)
 
 
-def _state_block(tokenizer: PokemonTokenizer, battle: AbstractBattle, fmt: str) -> np.ndarray:
-    active = battle.active_pokemon
+def _state_block(tokenizer: PokemonTokenizer, battle: AbstractBattle, fmt: str, *, is_force_switch: bool = False, override_active=None) -> np.ndarray:
+    active = override_active if override_active is not None else battle.active_pokemon
+    # Belt-and-suspenders: if active would render as HP 0.00, force forceswitch.
+    if not is_force_switch and active is not None:
+        if _hp_token(getattr(active, "current_hp_fraction", None)) == "0.00":
+            is_force_switch = True
     opponent = battle.opponent_active_pokemon
 
     words: list[str] = [
@@ -169,21 +215,41 @@ def _state_block(tokenizer: PokemonTokenizer, battle: AbstractBattle, fmt: str) 
         _species_token(active),
         _hp_token(getattr(active, "current_hp_fraction", None)),
         *_pokemon_types(active),
-        "noeffect",
-        _status_token(active),
-        "noboosts",
-        "<end_active>",
+    ]
+
+    status_str = _status_token(active)
+    boost_words = _boosts_words(active)
+    if status_str == "nostatus" and boost_words == ["noboosts"]:
+        words.append("clean")
+    else:
+        words.append("noeffect")
+        words.append(status_str)
+        words.extend(boost_words)
+
+    words.append("<end_active>")
+
+    words.extend([
         "<opponent>",
         _species_token(opponent),
         _hp_token(getattr(opponent, "current_hp_fraction", None)),
         *_pokemon_types(opponent),
-        "noeffect",
-        _status_token(opponent),
-        "noboosts",
-        "<end_opponent>",
+    ])
+
+    opp_status_str = _status_token(opponent)
+    opp_boost_words = _boosts_words(opponent)
+    if opp_status_str == "nostatus" and opp_boost_words == ["noboosts"]:
+        words.append("clean")
+    else:
+        words.append("noeffect")
+        words.append(opp_status_str)
+        words.extend(opp_boost_words)
+
+    words.append("<end_opponent>")
+
+    words.extend([
         "<end_arena>",
         "<begin_moves>",
-    ]
+    ])
 
     moves = consistent_move_order(list(getattr(active, "moves", {}).values()))
     for move in moves[:4]:
@@ -197,28 +263,49 @@ def _state_block(tokenizer: PokemonTokenizer, battle: AbstractBattle, fmt: str) 
     words.append("<end_moves>")
 
     words.append("<bench>")
-    bench = [p for p in battle.team.values() if p is not None and not p.active]
-    for pokemon in consistent_pokemon_order(bench):
+    # Exclude the active Pokémon from bench (poke-env may use different
+    # object identities, so compare by species+HP+status as fallback).
+    active_obj = override_active if override_active is not None else battle.active_pokemon
+    active_species = _species_token(active_obj) if active_obj else ""
+    active_hp = _hp_token(getattr(active_obj, "current_hp_fraction", None)) if active_obj else ""
+    bench = []
+    for p in battle.team.values():
+        if p is None:
+            continue
+        if p is active_obj:
+            continue
+        if active_obj is not None:
+            if _species_token(p) == active_species and _hp_token(getattr(p, "current_hp_fraction", None)) == active_hp:
+                continue
+        bench.append(p)
+    for i, pokemon in enumerate(consistent_pokemon_order(bench), start=1):
         words.extend([
-            "<you>",
+            f"<poke{i}>",
             _species_token(pokemon),
             _hp_token(getattr(pokemon, "current_hp_fraction", None)),
             *_pokemon_types(pokemon),
-            _status_token(pokemon),
-            "<end_you>",
         ])
-    words.extend([
-        "<end_bench>",
-        "<conditions>",
-        "noweather",
-        "nocondition",
-        "nocondition",
-        "<end_conditions>",
-        "<terminal>",
-        "ongoing",
-        "<end_terminal>",
-        "<eos>",
-    ])
+        poke_status = _status_token(pokemon)
+        if poke_status != "nostatus":
+            words.append(poke_status)
+        words.append(f"<end_poke{i}>")
+    words.append("<end_bench>")
+    if is_force_switch:
+        words.extend([
+            "<conditions>",
+            "noweather",
+            "<you>",
+            "forceswitch",
+            "<end_you>",
+            "<opponent_empty>",
+            "<end_conditions>",
+        ])
+    else:
+        words.extend([
+            "<conditions>",
+            "<conditions_empty>",
+        ])
+    words.append("<eos>")
     return _tokenize_words(tokenizer, words)
 
 
@@ -245,6 +332,7 @@ class BattleHistory:
     pending_player_action: Optional[np.ndarray] = None
     pending_player_action_text: Optional[str] = None
     last_turn: int = -1
+    _prev_active = None
 
 
 class JEPAWorldModelPlayer(MetamonPlayer):
@@ -253,9 +341,10 @@ class JEPAWorldModelPlayer(MetamonPlayer):
     def __init__(
         self,
         *args,
-        model: JEPAModel,
+        model: PairedJEPAModel,
         tokenizer: PokemonTokenizer,
         fmt: str,
+        heuristic: str = "max-self-state-delta",
         verbose: bool = True,
         **kwargs,
     ):
@@ -263,6 +352,7 @@ class JEPAWorldModelPlayer(MetamonPlayer):
         self._jepa = model
         self._tokenizer = tokenizer
         self._fmt = fmt
+        self._heuristic = heuristic
         self._verbose = verbose
         self._histories: dict[str, BattleHistory] = {}
 
@@ -291,12 +381,20 @@ class JEPAWorldModelPlayer(MetamonPlayer):
             self._histories[battle.battle_tag] = hist
 
         if hist.last_turn < 0:
-            hist.state_blocks.append(_state_block(self._tokenizer, battle, self._fmt))
+            hist._prev_active = battle.active_pokemon
+            hist.state_blocks.append(_state_block(
+                self._tokenizer, battle, self._fmt,
+                is_force_switch=self._is_force_switch(battle),
+            ))
             hist.last_turn = battle.turn
             return hist
 
         if battle.turn != hist.last_turn:
             if hist.pending_player_action is not None:
+                prev_active = hist._prev_active
+                hist._prev_active = battle.active_pokemon
+
+                # Record the previous turn's actions first
                 hist.player_actions.append(hist.pending_player_action)
                 opp_text = self._infer_opponent_previous_action(battle)
                 hist.opponent_actions.append(
@@ -304,9 +402,61 @@ class JEPAWorldModelPlayer(MetamonPlayer):
                 )
                 hist.pending_player_action = None
                 hist.pending_player_action_text = None
-            hist.state_blocks.append(_state_block(self._tokenizer, battle, self._fmt))
+
+                # If the previous active fainted, insert a forceswitch subturn
+                # AFTER recording actions (matching training-data ordering).
+                if prev_active is not None:
+                    # Check if prev_active fainted — use _hp_token for robust HP check,
+                    # and also check the bench as a fallback (poke-env may update
+                    # the bench before the Pokemon object's HP property).
+                    prev_fainted = _hp_token(getattr(prev_active, "current_hp_fraction", None)) == "0.00"
+                    if not prev_fainted:
+                        prev_species = _species_token(prev_active)
+                        for p in battle.team.values():
+                            if p is not None and _species_token(p) == prev_species and _status_token(p) == "fnt":
+                                prev_fainted = True
+                                prev_active = p  # use the bench object (has correct HP)
+                                break
+                    if prev_fainted:
+                        if self._verbose:
+                            print(f"  [inserting forceswitch subturn: prev_active {_species_token(prev_active)} fainted]")
+                        hist.state_blocks.append(_state_block(
+                            self._tokenizer, battle, self._fmt,
+                            is_force_switch=True,
+                            override_active=prev_active,
+                        ))
+            hist.state_blocks.append(_state_block(
+                self._tokenizer, battle, self._fmt,
+                is_force_switch=self._is_force_switch(battle),
+            ))
             hist.last_turn = battle.turn
         return hist
+
+    def _is_force_switch(self, battle: AbstractBattle) -> bool:
+        """Return True if the bot must switch (fainted active, forced out, etc.)."""
+        active = battle.active_pokemon
+        if active is None:
+            return True
+        hp = getattr(active, "current_hp_fraction", None)
+        if hp is not None and hp <= 0:
+            return True
+        # Fallback: check if active is fainted (status == fnt) — more reliable
+        # than current_hp_fraction which may lag behind poke-env updates.
+        if _status_token(active) == "fnt":
+            return True
+        # Check if only switches are available and this is NOT a recharge/struggle/fight turn.
+        available_moves = getattr(battle, "available_moves", None) or []
+        move_ids = {m.id for m in available_moves} if available_moves else set()
+        if not move_ids or move_ids == {"recharge"}:
+            return False  # recharge turn, not a faint
+        if move_ids == {"struggle"} or move_ids == {"fight"}:
+            return False  # out of PP or can't act, not a faint
+        # Only switches available → forced switch
+        legal = self._legal_action_indices(battle)
+        result = all(idx >= 4 for idx in legal) if legal else False
+        if result and self._verbose:
+            print(f"  [forceswitch detected via legal-actions-only: moves={move_ids} legal={legal}]")
+        return result
 
     def _legal_action_indices(self, battle: AbstractBattle) -> list[int]:
         state = UniversalState.from_Battle(battle)
@@ -320,7 +470,7 @@ class JEPAWorldModelPlayer(MetamonPlayer):
         elif valid_moves == {"struggle"}:
             move_names = ["struggle"] * 4
         elif "fight" in valid_moves:
-            move_names = ["fight"] * 4
+            move_names = ["struggle"] * 4
         else:
             move_names = [m.id for m in consistent_move_order(list(battle.active_pokemon.moves.values()))]
 
@@ -350,38 +500,76 @@ class JEPAWorldModelPlayer(MetamonPlayer):
             return f"opponent move: {_move_token(prev)}"
         return "unknown"
 
-    def _encode_sample(self, hist: BattleHistory):
-        return collate_fn([
-            (
-                hist.state_blocks,
-                hist.state_blocks,
-                hist.player_actions,
-                hist.opponent_actions,
-                hist.player_actions,
-                hist.opponent_actions,
-                _action_block(self._tokenizer, "unknown", opponent=False),
-                _action_block(self._tokenizer, "unknown", opponent=True),
-            )
-        ], pad_id=self._tokenizer.pad_token_id)
+    def _encode_history_tensors(self, hist: BattleHistory):
+        pad_id = self._tokenizer.pad_token_id
+
+        def pad_blocks(blocks: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
+            max_blocks = max(len(blocks), 1)
+            max_tokens = max((len(block) for block in blocks), default=1)
+            padded = torch.full((1, max_blocks, max_tokens), pad_id, dtype=torch.long)
+            valid = torch.zeros((1, max_blocks), dtype=torch.bool)
+            for block_idx, block in enumerate(blocks):
+                tokens = torch.from_numpy(block.astype(np.int64, copy=False))
+                padded[0, block_idx, :len(tokens)] = tokens
+                valid[0, block_idx] = True
+            return padded, valid
+
+        state_tokens, state_valid = pad_blocks(hist.state_blocks)
+        player_hist_tokens, player_hist_valid = pad_blocks(hist.player_actions)
+        opponent_hist_tokens, opponent_hist_valid = pad_blocks(hist.opponent_actions)
+        return (
+            state_tokens,
+            state_valid,
+            player_hist_tokens,
+            player_hist_valid,
+            opponent_hist_tokens,
+            opponent_hist_valid,
+        )
 
     @torch.no_grad()
     def _jepa_diagnostics(self, battle: AbstractBattle, hist: BattleHistory, action_names: dict[int, str]):
         device = next(self._jepa.parameters()).device
-        batch = [tensor.to(device) for tensor in self._encode_sample(hist)]
-        outputs = self._jepa(*batch)
-        enc_N = outputs["enc_N"]
-        pred_o = outputs["pred_o_emb"]
-        pred_o_norm = torch.norm(pred_o, dim=-1).item()
+        (
+            state_tokens,
+            state_valid,
+            player_hist_tokens,
+            player_hist_valid,
+            opponent_hist_tokens,
+            opponent_hist_valid,
+        ) = (tensor.to(device) for tensor in self._encode_history_tensors(hist))
+
+        enc_self = self._jepa.encode_history(
+            state_tokens,
+            state_valid,
+            player_hist_tokens,
+            player_hist_valid,
+            opponent_hist_tokens,
+            opponent_hist_valid,
+        )
+        pred_opponent_state = self._jepa.opponent_state_predictor(enc_self)
+        pred_opponent_action = self._jepa.action_predictor(enc_self, pred_opponent_state)
+        pred_state_norm = torch.norm(pred_opponent_state, dim=-1).item()
+        pred_state_delta = torch.norm(pred_opponent_state - enc_self, dim=-1).item()
+        pred_action_norm = torch.norm(pred_opponent_action, dim=-1).item()
 
         rows = []
         for idx, name in action_names.items():
             pa = _action_block(self._tokenizer, name, opponent=False)
             pa_tensor = torch.from_numpy(pa.astype(np.int64)).unsqueeze(0).to(device)
-            pa_emb = self._jepa.action_encoder(pa_tensor)
-            pred_next = self._jepa.predictor(enc_N, pa_emb, pred_o)
-            latent_delta = torch.norm(pred_next - enc_N, dim=-1).item()
-            rows.append((idx, name, latent_delta))
-        return pred_o_norm, rows
+            own_action = self._jepa.action_encoder(pa_tensor)
+            pred_next = self._jepa.next_state_predictor(
+                enc_self,
+                pred_opponent_state,
+                own_action,
+                pred_opponent_action,
+            )
+            if self._heuristic == "max-opponent-state-delta":
+                next_pred_opponent = self._jepa.opponent_state_predictor(pred_next)
+                delta = torch.norm(next_pred_opponent - pred_opponent_state, dim=-1).item()
+            else:
+                delta = torch.norm(pred_next - enc_self, dim=-1).item()
+            rows.append((idx, name, delta))
+        return pred_state_norm, pred_state_delta, pred_action_norm, rows
 
     def choose_move(self, battle: AbstractBattle) -> BattleOrder:
         legal_actions = self._legal_action_indices(battle)
@@ -390,21 +578,32 @@ class JEPAWorldModelPlayer(MetamonPlayer):
 
         hist = self._history(battle)
         action_names = self._resolve_action_names(battle, legal_actions)
-        pred_o_norm, rows = self._jepa_diagnostics(battle, hist, action_names)
+        pred_state_norm, pred_state_delta, pred_action_norm, rows = self._jepa_diagnostics(
+            battle, hist, action_names
+        )
 
         best_idx = max(rows, key=lambda row: row[2])[0]
 
         if self._verbose:
-            print(f"\n── JEPA turn {battle.turn} ({battle.battle_tag}) ──")
-            print(f"  blocks: states={len(hist.state_blocks)} player_actions={len(hist.player_actions)} opponent_actions={len(hist.opponent_actions)}")
+            opponent_name = getattr(battle, "opponent_username", "?")
+            replay_url = f"https://replay.pokemonshowdown.com/{battle.battle_tag}"
+            print(f"\n── JEPA turn {battle.turn} ({battle.battle_tag}) [{self._heuristic}] ──")
+            print(f"  vs: {opponent_name}  |  replay: {replay_url}")
             print(f"  active: {_species_token(battle.active_pokemon)} hp={_hp_token(getattr(battle.active_pokemon, 'current_hp_fraction', None))}")
             print(f"  opponent: {_species_token(battle.opponent_active_pokemon)} hp={_hp_token(getattr(battle.opponent_active_pokemon, 'current_hp_fraction', None))}")
-            self._print_history_blocks(hist)
-            print(f"  predicted opponent action embedding norm: {pred_o_norm:.4f}")
-            print("  legal actions:")
-            for idx, name, latent_delta in rows:
-                marker = " <- chosen" if idx == best_idx else ""
-                print(f"    {idx:3d} {name:28s} latent_delta={latent_delta:7.3f}{marker}")
+            if self._verbose_blocks:
+                print(f"  blocks: states={len(hist.state_blocks)} player_actions={len(hist.player_actions)} opponent_actions={len(hist.opponent_actions)}")
+                self._print_history_blocks(hist)
+                print(f"  predicted opponent state embedding norm: {pred_state_norm:.4f}  delta_from_self={pred_state_delta:.4f}")
+                print(f"  predicted opponent action embedding norm: {pred_action_norm:.4f}")
+                print("  legal actions:")
+                for idx, name, latent_delta in rows:
+                    marker = " <- chosen" if idx == best_idx else ""
+                    print(f"    {idx:3d} {name:28s} delta={latent_delta:7.3f}{marker}")
+            else:
+                # Minimal: just the chosen action
+                chosen_name = action_names.get(best_idx, "?")
+                print(f"  chosen: {chosen_name}")
 
         order = UniversalAction.action_idx_to_BattleOrder(battle, action_idx=best_idx)
         if order is None:
@@ -419,12 +618,24 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="Play Showdown with JEPA diagnostics.")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--tokenizer_path", default=os.path.join(METAMON_CACHE_DIR, "tokenizers", "WorldModelObservationSpace-v1.json"))
-    parser.add_argument("--format", type=str, nargs="+", default=["gen1ou"])
+    parser.add_argument("--format", type=str, default="gen1ou",
+                        help="Battle format (default: gen1ou).")
     parser.add_argument("--username", default="JEPABot")
-    parser.add_argument("--num_battles", type=int, default=5)
+    parser.add_argument("--num_battles", type=int, default=30,
+                        help="Number of battles to play (default: 30).")
     parser.add_argument("--team_set", default="competitive")
     parser.add_argument("--config", default=os.path.join(os.path.dirname(__file__), "configs", "default.yaml"))
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--ladder", action="store_true",
+                        help="Search for random ladder battles instead of waiting for challenges.")
+    parser.add_argument("--server", default="localhost",
+                        choices=["localhost", "showdown"],
+                        help="Server to connect to (default: localhost).")
+    parser.add_argument("--password", default=None,
+                        help="Showdown password (required for real server).")
+    parser.add_argument("--heuristic", default="max-self-state-delta",
+                        choices=["max-self-state-delta", "max-opponent-state-delta"],
+                        help="Action selection heuristic (default: max-self-state-delta).")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
@@ -443,7 +654,7 @@ async def main() -> None:
         with open(args.config, "r", encoding="utf-8") as f:
             model_cfg = yaml.safe_load(f)["model"]
 
-    model = JEPAModel(
+    model = PairedJEPAModel(
         vocab_size=ckpt.get("vocab_size", len(tokenizer)),
         pad_id=tokenizer.pad_token_id,
         bos_id=tokenizer["<bos>"],
@@ -453,47 +664,87 @@ async def main() -> None:
         encoder_cfg=model_cfg.get("encoder", {}),
         temporal_encoder_cfg=model_cfg.get("temporal_encoder", {}),
         action_encoder_cfg=model_cfg.get("action_encoder", {}),
-        action_predictor_cfg=model_cfg.get("action_predictor", {}),
-        predictor_cfg=model_cfg.get("predictor", {}),
+        opponent_state_predictor_cfg=model_cfg.get("opponent_state_predictor", {}),
+        action_predictor_cfg=model_cfg.get("paired_action_predictor", model_cfg.get("action_predictor", {})),
+        next_state_predictor_cfg=model_cfg.get("next_state_predictor", {}),
     ).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     if device.type == "cuda":
         model = model.to(dtype=torch.bfloat16)
     model.eval()
-    print(f"Loaded JEPA checkpoint: {args.checkpoint}")
+    print(f"Loaded paired JEPA checkpoint: {args.checkpoint}")
     print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
 
-    players = []
-    for fmt in args.format:
-        Dex.from_format(fmt)
-        team_set = get_metamon_teams(fmt, args.team_set)
-        fmt_short = fmt.replace("gen", "g").replace("ou", "")
-        username = f"{args.username}-{fmt_short}" if len(args.format) > 1 else args.username
-        player = JEPAWorldModelPlayer(
-            model=model,
-            tokenizer=tokenizer,
-            fmt=fmt,
-            verbose=not args.quiet,
-            account_configuration=AccountConfiguration(username, None),
-            battle_format=fmt,
-            team=team_set,
-            start_timer_on_battle_start=False,
-            max_concurrent_battles=1,
-        )
-        players.append((fmt, username, player))
+    # Create lightweight bot instances sharing one model.
+    # gen1ou needs a competitive team; gen1randombattle gets team from server.
+    from poke_env.ps_client.server_configuration import LocalhostServerConfiguration, ShowdownServerConfiguration
+    server_config = ShowdownServerConfiguration if args.server == "showdown" else LocalhostServerConfiguration
+    team_set = get_metamon_teams("gen1ou", args.team_set)
+
+    # Generate unique usernames for the real server.
+    # With password: use the registered name as-is.
+    # Without password: lowercase + random suffix (guest access).
+    import random, string
+    if args.server == "showdown":
+        if args.password:
+            username = args.username
+            username_rb = args.username + "-rb"
+        else:
+            suffix = "-" + "".join(random.choices(string.ascii_lowercase, k=6))
+            username = args.username.lower() + suffix
+            username_rb = args.username.lower() + "-rb" + suffix
+    else:
+        username = args.username
+        username_rb = args.username + "-rb"
+
+    player_ou = JEPAWorldModelPlayer(
+        model=model,
+        tokenizer=tokenizer,
+        fmt="gen1ou",
+        heuristic=args.heuristic,
+        verbose=not args.quiet,
+        verbose_blocks=args.verbose_blocks,
+        account_configuration=AccountConfiguration(username, args.password),
+        server_configuration=server_config,
+        battle_format="gen1ou",
+        team=team_set,
+        start_timer_on_battle_start=False,
+        max_concurrent_battles=30,
+    )
+    player_rb = JEPAWorldModelPlayer(
+        model=model,
+        tokenizer=tokenizer,
+        fmt="gen1ou",
+        heuristic=args.heuristic,
+        verbose=not args.quiet,
+        verbose_blocks=args.verbose_blocks,
+        account_configuration=AccountConfiguration(username_rb, args.password),
+        server_configuration=server_config,
+        battle_format="gen1randombattle",
+        team=None,
+        start_timer_on_battle_start=False,
+        max_concurrent_battles=30,
+    )
 
     await asyncio.sleep(2)
-    print("Bots online:", ", ".join(f"{username} ({fmt})" for fmt, username, _ in players))
-    print("Challenge one locally with: /challenge <username>")
+    tasks = []
+    if args.ladder:
+        print(f"Searching for {args.num_battles} gen1ou ladder battles...")
+        tasks.append(player_ou.ladder(args.num_battles))
+    else:
+        print(f"Bot online: {username} (gen1ou)")
+        print(f"Challenge with: /challenge {username}, gen1ou")
+        tasks.append(player_ou.accept_challenges(None, args.num_battles))
 
-    async def accept_for(fmt: str, username: str, player: JEPAWorldModelPlayer):
-        await player.accept_challenges(None, args.num_battles)
-        print(f"\nResults for {username} ({fmt}):")
-        print(f"  Wins: {player.n_won_battles}")
-        print(f"  Losses: {player.n_lost_battles}")
-        print(f"  Ties: {player.n_tied_battles}")
+    # Random battle bot always ladders.
+    print(f"Searching for {args.num_battles} gen1randombattle ladder battles as {username_rb}...")
+    tasks.append(player_rb.ladder(args.num_battles))
 
-    await asyncio.gather(*(accept_for(fmt, username, player) for fmt, username, player in players))
+    await asyncio.gather(*tasks)
+    print(f"\nResults for {username} (gen1ou):")
+    print(f"  Wins: {player_ou.n_won_battles}  Losses: {player_ou.n_lost_battles}  Ties: {player_ou.n_tied_battles}")
+    print(f"Results for {username_rb} (gen1randombattle):")
+    print(f"  Wins: {player_rb.n_won_battles}  Losses: {player_rb.n_lost_battles}  Ties: {player_rb.n_tied_battles}")
 
 
 if __name__ == "__main__":
