@@ -136,9 +136,37 @@ class POVReplayDoubles(POVReplay):
                                     )
 
             self._actionlist.append(actionlist)
-            self._opponent_actionlist.append(
-                [opponent_moves[0], opponent_moves[1]]
-            )
+
+            # ── opponent cant substitution for BOTH slots ──
+            opponent_actionlist = [opponent_moves[0], opponent_moves[1]]
+            for opp_slot in (0, 1):
+                if opponent_actionlist[opp_slot] is None:
+                    opp_active = (
+                        turn_t1.active_pokemon_2[opp_slot]
+                        if self.from_p1_pov
+                        else turn_t1.active_pokemon_1[opp_slot]
+                    )
+                    if opp_active is not None:
+                        reason = getattr(opp_active, "cant_reason", None)
+                        if reason is not None:
+                            if reason in ("recharge", "ability: Truant"):
+                                opponent_actionlist[opp_slot] = Action(
+                                    name="Recharge", is_noop=True,
+                                    user=opp_active, target=None,
+                                )
+                            else:
+                                move_objs = [m for m in opp_active.moves.values() if m is not None]
+                                if move_objs:
+                                    chosen = random.choice(move_objs)
+                                    opponent_actionlist[opp_slot] = Action(
+                                        name=chosen.name, user=opp_active, target=None,
+                                    )
+                                else:
+                                    opponent_actionlist[opp_slot] = Action(
+                                        name="Recharge", is_noop=True,
+                                        user=opp_active, target=None,
+                                    )
+            self._opponent_actionlist.append(opponent_actionlist)
 
         # final state
         self._povturnlist.append(turn_t1)
@@ -225,6 +253,16 @@ When a slot has no action (e.g., only one Pokémon moved):
 <chosen_move slot="1">protect<end_chosen_move>
 <chosen_move slot="2">unknown<end_chosen_move>
 ```
+
+**Opponent cant handling** mirrors the player side: when the opponent's
+Pokémon is prevented from acting (paralysis, sleep, freeze, etc.), the
+serialized action includes a ``cant=<reason>`` token, e.g.:
+```xml
+<opponent_chosen_move slot="1">blizzard cant=par<end_opponent_chosen_move>
+```
+This is handled in ``_align_states_actions`` (backward.py) via opponent
+cant substitution and in ``_write_action_block_doubles`` (text_serializer.py)
+via the same ``user.cant_reason`` lookup used for player actions.
 
 ### Bench
 

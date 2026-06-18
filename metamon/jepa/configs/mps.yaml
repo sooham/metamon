@@ -53,6 +53,22 @@ model:
     hidden_dim: null
     n_layers: 2
 
+  opponent_state_predictor:
+    hidden_dim: null
+    n_layers: 2
+
+  paired_action_predictor:
+    hidden_dim: null
+    n_layers: 2
+
+  next_state_predictor:
+    hidden_dim: null
+    n_layers: 2
+
+  rank_head:
+    hidden_dim: null
+    n_layers: 2
+
   predictor:
     d_model: 128
     n_heads: 4
@@ -63,6 +79,7 @@ model:
     gradient_checkpointing: false
 
   lambda_sigreg: 0.05
+  lambda_rank: 1.0
 
   sigreg_num_slices: 128
   sigreg_num_points: 17

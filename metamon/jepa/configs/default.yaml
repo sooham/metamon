@@ -73,6 +73,11 @@ model:
     hidden_dim: 512       # 2.7× latent_dim
     n_layers: 4
 
+  # ── Pairwise ranking head — RankHead(z_self, z_opp) → scalar advantage ──
+  rank_head:
+    hidden_dim: 512       # 2.7× latent_dim
+    n_layers: 4
+
   # ── State Predictor — AdaLN-zero conditional transformer ──────────
   # Conditions on encoded player action + predicted opponent action.
   predictor:
@@ -86,6 +91,7 @@ model:
 
   # ── LeJEPA loss ───────────────────────────────────────────────────
   lambda_sigreg: 0.1
+  lambda_rank: 1.0
 
   # ── SIGReg hyperparameters ────────────────────────────────────────
   sigreg_num_slices: 128

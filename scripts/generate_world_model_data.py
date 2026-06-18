@@ -120,6 +120,9 @@ _OPPONENT_CHOSEN_MOVE_RE = re.compile(
     r"<opponent_chosen_move>(.*?)<end_opponent_chosen_move>", re.DOTALL
 )
 _TURN_RE = re.compile(r"<turn>\s*(\d+)\s*<end_turn>", re.DOTALL)
+_TERMINAL_RE = re.compile(
+    r"<terminal>\s*(won|lost|forfeit|tie)\s*<end_terminal>", re.DOTALL
+)
 _BATTLE_ID_RE = re.compile(r"^((?:smogtours-)?[A-Za-z0-9]+-\d+)")
 
 
@@ -223,9 +226,8 @@ def _parse_single_battle_file_detailed(filepath: str) -> TokenizedPOV | None:
             opponent_action_arrays.append(np.array([], dtype=np.int16))
 
     # ── extract won/lost ───────────────────────────────────────────
-    won = False
-    if "<terminal>won<end_terminal>" in text or "<terminal>forfeit<end_terminal>" in text:
-        won = True
+    terminal_match = _TERMINAL_RE.search(text)
+    won = terminal_match is not None and terminal_match.group(1) in {"won", "forfeit"}
 
     return TokenizedPOV(
         state_token_arrays=state_token_arrays,
