@@ -84,10 +84,11 @@ _CHOSEN_MOVE_START_ID: int = -1
 _END_CHOSEN_MOVE_ID: int = -1
 _OPPONENT_CHOSEN_MOVE_START_ID: int = -1
 _END_OPPONENT_CHOSEN_MOVE_ID: int = -1
+_UNKNOWN_ID: int = -1
 
 
 def _init_worker(tokenizer_path: str) -> None:
-    global _TOKENIZER, _BOS_ID, _EOS_ID
+    global _TOKENIZER, _BOS_ID, _EOS_ID, _UNKNOWN_ID
     global _CHOSEN_MOVE_START_ID, _END_CHOSEN_MOVE_ID
     global _OPPONENT_CHOSEN_MOVE_START_ID, _END_OPPONENT_CHOSEN_MOVE_ID
     tokenizer = PokemonTokenizer()
@@ -99,6 +100,7 @@ def _init_worker(tokenizer_path: str) -> None:
     _END_CHOSEN_MOVE_ID = tokenizer["<end_chosen_move>"]
     _OPPONENT_CHOSEN_MOVE_START_ID = tokenizer["<opponent_chosen_move>"]
     _END_OPPONENT_CHOSEN_MOVE_ID = tokenizer["<end_opponent_chosen_move>"]
+    _UNKNOWN_ID = tokenizer["unknown"]
 
 
 # Regexes for parsing the new text format -- anchored by structural tokens.
@@ -117,6 +119,18 @@ _CHOSEN_MOVE_RE = re.compile(
 _OPPONENT_CHOSEN_MOVE_RE = re.compile(
     r"<opponent_chosen_move>(.*?)<end_opponent_chosen_move>", re.DOTALL
 )
+_TURN_RE = re.compile(r"<turn>\s*(\d+)\s*<end_turn>", re.DOTALL)
+_BATTLE_ID_RE = re.compile(r"^((?:smogtours-)?[A-Za-z0-9]+-\d+)")
+
+
+@dataclass
+class TokenizedPOV:
+    state_token_arrays: list[np.ndarray]  # header + states
+    player_action_arrays: list[np.ndarray]
+    opponent_action_arrays: list[np.ndarray]
+    turn_numbers: list[int]
+    won: bool
+    path: str
 
 
 def _tokenize_action_text(text: str) -> np.ndarray:
@@ -141,14 +155,8 @@ def _tokenize_text_block(text: str) -> np.ndarray:
     return np.array([_TOKENIZER[word] for word in words], dtype=np.int16)
 
 
-def _parse_single_battle_file(filepath: str) -> tuple | None:
-    """Parse one new-format .txt file into tokenized arrays.
-
-    Returns ``(state_token_arrays, player_action_arrays, opponent_action_arrays, won)``
-    or ``None`` on failure.
-
-    *state_token_arrays* includes the team header as the first element.
-    """
+def _parse_single_battle_file_detailed(filepath: str) -> TokenizedPOV | None:
+    """Parse one new-format .txt file into tokenized arrays + alignment metadata."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             text = f.read()
@@ -176,6 +184,7 @@ def _parse_single_battle_file(filepath: str) -> tuple | None:
 
     # ── tokenize header + states ──────────────────────────────────
     state_token_arrays: list[np.ndarray] = []
+    turn_numbers: list[int] = []
 
     # Header is stored as "state -1" (always the first element)
     header_tokens = _tokenize_text_block(header_text)
@@ -186,6 +195,11 @@ def _parse_single_battle_file(filepath: str) -> tuple | None:
         # Include the <bos> and <eos> tokens themselves
         tokens = _tokenize_text_block(state_text)
         state_token_arrays.append(tokens)
+        turn_match = _TURN_RE.search(state_text)
+        if turn_match:
+            turn_numbers.append(int(turn_match.group(1)))
+        else:
+            return None
 
     # ── tokenize actions ───────────────────────────────────────────
     player_action_arrays: list[np.ndarray] = []
@@ -213,7 +227,33 @@ def _parse_single_battle_file(filepath: str) -> tuple | None:
     if "<terminal>won<end_terminal>" in text or "<terminal>forfeit<end_terminal>" in text:
         won = True
 
-    return state_token_arrays, player_action_arrays, opponent_action_arrays, won
+    return TokenizedPOV(
+        state_token_arrays=state_token_arrays,
+        player_action_arrays=player_action_arrays,
+        opponent_action_arrays=opponent_action_arrays,
+        turn_numbers=turn_numbers,
+        won=won,
+        path=filepath,
+    )
+
+
+def _parse_single_battle_file(filepath: str) -> tuple | None:
+    """Parse one new-format .txt file into tokenized arrays.
+
+    Returns ``(state_token_arrays, player_action_arrays, opponent_action_arrays, won)``
+    or ``None`` on failure.
+
+    *state_token_arrays* includes the team header as the first element.
+    """
+    pov = _parse_single_battle_file_detailed(filepath)
+    if pov is None:
+        return None
+    return (
+        pov.state_token_arrays,
+        pov.player_action_arrays,
+        pov.opponent_action_arrays,
+        pov.won,
+    )
 
 
 def tokenize_battle(args: tuple[str, str]) -> tuple | None:
@@ -468,6 +508,419 @@ class ShardAccumulator:
         }
 
 
+def _is_unknown_action(tokens: np.ndarray) -> bool:
+    return len(tokens) == 0 or (len(tokens) == 1 and int(tokens[0]) == _UNKNOWN_ID)
+
+
+def _actions_compatible(left: np.ndarray, right: np.ndarray) -> bool:
+    return bool(np.array_equal(left, right) or _is_unknown_action(left) or _is_unknown_action(right))
+
+
+def _subturn_indices(turn_numbers: list[int]) -> list[int]:
+    counts: dict[int, int] = {}
+    out: list[int] = []
+    for turn in turn_numbers:
+        idx = counts.get(turn, 0)
+        out.append(idx)
+        counts[turn] = idx + 1
+    return out
+
+
+@dataclass
+class PairedBattle:
+    raw_battle_key: str
+    p1: TokenizedPOV
+    p2: TokenizedPOV
+    aligned_rows: list["PairedTransitionRow"]
+
+
+@dataclass(frozen=True)
+class PairedTransitionRow:
+    p1_state_idx: int
+    p1_next_state_idx: int
+    p1_action_idx: int
+    p2_state_idx: int
+    p2_next_state_idx: int
+    p2_action_idx: int
+    turn_number: int
+    subturn_idx: int
+
+
+def _state_occurrence_keys(turn_numbers: list[int]) -> list[tuple[int, int]]:
+    counts: dict[int, int] = {}
+    keys: list[tuple[int, int]] = []
+    for turn in turn_numbers:
+        occurrence = counts.get(turn, 0)
+        keys.append((turn, occurrence))
+        counts[turn] = occurrence + 1
+    return keys
+
+
+def _paired_transition_rows(
+    p1: TokenizedPOV,
+    p2: TokenizedPOV,
+) -> list[PairedTransitionRow]:
+    p1_keys = _state_occurrence_keys(p1.turn_numbers)
+    p2_keys = _state_occurrence_keys(p2.turn_numbers)
+    p2_by_key = {key: idx + 1 for idx, key in enumerate(p2_keys)}
+
+    rows: list[PairedTransitionRow] = []
+    for idx in range(len(p1_keys) - 1):
+        cur_key = p1_keys[idx]
+        next_key = p1_keys[idx + 1]
+        if cur_key not in p2_by_key or next_key not in p2_by_key:
+            continue
+
+        p1_state_idx = idx + 1
+        p1_next_state_idx = idx + 2
+        p2_state_idx = p2_by_key[cur_key]
+        p2_next_state_idx = p2_by_key[next_key]
+
+        # This model predicts one action pair and one next state. If either POV
+        # has extra forced-switch/subturn states between these common states,
+        # skip that interval rather than folding multiple decisions into one row.
+        if p2_next_state_idx != p2_state_idx + 1:
+            continue
+
+        p1_action_idx = p1_state_idx - 1
+        p2_action_idx = p2_state_idx - 1
+        if (
+            p1_action_idx >= len(p1.player_action_arrays)
+            or p2_action_idx >= len(p2.player_action_arrays)
+        ):
+            continue
+        if not _actions_compatible(
+            p1.player_action_arrays[p1_action_idx],
+            p2.opponent_action_arrays[p2_action_idx],
+        ):
+            continue
+        if not _actions_compatible(
+            p2.player_action_arrays[p2_action_idx],
+            p1.opponent_action_arrays[p1_action_idx],
+        ):
+            continue
+
+        rows.append(PairedTransitionRow(
+            p1_state_idx=p1_state_idx,
+            p1_next_state_idx=p1_next_state_idx,
+            p1_action_idx=p1_action_idx,
+            p2_state_idx=p2_state_idx,
+            p2_next_state_idx=p2_next_state_idx,
+            p2_action_idx=p2_action_idx,
+            turn_number=cur_key[0],
+            subturn_idx=cur_key[1],
+        ))
+    return rows
+
+
+def _validate_paired_battle(key: str, p1: TokenizedPOV, p2: TokenizedPOV) -> str | None:
+    n_states_1 = len(p1.state_token_arrays)
+    n_states_2 = len(p2.state_token_arrays)
+    n_actions_1 = len(p1.player_action_arrays)
+    n_actions_2 = len(p2.player_action_arrays)
+    if len(p1.opponent_action_arrays) != n_actions_1 or len(p2.opponent_action_arrays) != n_actions_2:
+        return "opponent_action_count_mismatch"
+
+    expected_actions = n_states_1 - 2  # header + (T+1 states) -> T transitions
+    if n_actions_1 != expected_actions:
+        return f"p1_state_action_mismatch:{n_states_1}_states/{n_actions_1}_actions"
+    expected_actions = n_states_2 - 2
+    if n_actions_2 != expected_actions:
+        return f"p2_state_action_mismatch:{n_states_2}_states/{n_actions_2}_actions"
+
+    rows = _paired_transition_rows(p1, p2)
+    if not rows:
+        return "no_aligned_transitions"
+
+    return None
+
+
+def tokenize_battle_pair(args: tuple[str, list[str], str]) -> tuple[PairedBattle | None, str | None]:
+    """Tokenize and validate one raw-battle group containing both POV files."""
+    key, paths, tokenizer_path = args
+    global _TOKENIZER
+    if _TOKENIZER is None:
+        _init_worker(tokenizer_path)
+
+    if len(paths) != 2:
+        return None, f"expected_2_povs_got_{len(paths)}"
+
+    p1 = _parse_single_battle_file_detailed(paths[0])
+    p2 = _parse_single_battle_file_detailed(paths[1])
+    if p1 is None or p2 is None:
+        return None, "parse_failed"
+
+    reason = _validate_paired_battle(key, p1, p2)
+    if reason is not None:
+        return None, reason
+    return PairedBattle(
+        raw_battle_key=key,
+        p1=p1,
+        p2=p2,
+        aligned_rows=_paired_transition_rows(p1, p2),
+    ), None
+
+
+@dataclass
+class PairedShardAccumulator:
+    """Packs paired-POV battles into transition-indexed paired shards."""
+
+    fmt: str
+    fmt_id: int
+
+    p1_states_flat: list[np.ndarray] = field(default_factory=list)
+    p1_state_offsets: list[int] = field(default_factory=lambda: [0])
+    p1_state_lengths: list[int] = field(default_factory=list)
+    p2_states_flat: list[np.ndarray] = field(default_factory=list)
+    p2_state_offsets: list[int] = field(default_factory=lambda: [0])
+    p2_state_lengths: list[int] = field(default_factory=list)
+
+    p1_actions_flat: list[np.ndarray] = field(default_factory=list)
+    p1_action_offsets: list[int] = field(default_factory=lambda: [0])
+    p1_action_lengths: list[int] = field(default_factory=list)
+    p1_opponent_actions_flat: list[np.ndarray] = field(default_factory=list)
+    p1_opponent_action_offsets: list[int] = field(default_factory=lambda: [0])
+    p1_opponent_action_lengths: list[int] = field(default_factory=list)
+    p2_actions_flat: list[np.ndarray] = field(default_factory=list)
+    p2_action_offsets: list[int] = field(default_factory=lambda: [0])
+    p2_action_lengths: list[int] = field(default_factory=list)
+    p2_opponent_actions_flat: list[np.ndarray] = field(default_factory=list)
+    p2_opponent_action_offsets: list[int] = field(default_factory=lambda: [0])
+    p2_opponent_action_lengths: list[int] = field(default_factory=list)
+
+    p1_state_idx: list[int] = field(default_factory=list)
+    p1_next_state_idx: list[int] = field(default_factory=list)
+    p1_action_idx: list[int] = field(default_factory=list)
+    p2_state_idx: list[int] = field(default_factory=list)
+    p2_next_state_idx: list[int] = field(default_factory=list)
+    p2_action_idx: list[int] = field(default_factory=list)
+    battle_ids: list[np.ndarray] = field(default_factory=list)
+    turn_idx: list[np.ndarray] = field(default_factory=list)
+    turn_number: list[np.ndarray] = field(default_factory=list)
+    subturn_idx: list[np.ndarray] = field(default_factory=list)
+    format_ids: list[np.ndarray] = field(default_factory=list)
+
+    p1_won: list[bool] = field(default_factory=list)
+    p2_won: list[bool] = field(default_factory=list)
+    raw_battle_keys: list[str] = field(default_factory=list)
+    battle_start: list[int] = field(default_factory=lambda: [0])
+    battle_action_start: list[int] = field(default_factory=lambda: [0])
+    p1_battle_start: list[int] = field(default_factory=lambda: [0])
+    p2_battle_start: list[int] = field(default_factory=lambda: [0])
+    p1_battle_action_start: list[int] = field(default_factory=lambda: [0])
+    p2_battle_action_start: list[int] = field(default_factory=lambda: [0])
+    max_battle_len: int = 0
+
+    def __len__(self) -> int:
+        return len(self.raw_battle_keys)
+
+    @property
+    def num_states(self) -> int:
+        return len(self.p1_state_lengths)
+
+    @property
+    def num_actions(self) -> int:
+        return len(self.p1_action_lengths)
+
+    def append(self, battle: PairedBattle) -> None:
+        battle_id = len(self.raw_battle_keys)
+        p1_state_base = len(self.p1_state_lengths)
+        p2_state_base = len(self.p2_state_lengths)
+        p1_action_base = len(self.p1_action_lengths)
+        p2_action_base = len(self.p2_action_lengths)
+
+        n_transitions = len(battle.aligned_rows)
+
+        battle_token_count = (
+            sum(len(a) for a in battle.p1.state_token_arrays)
+            + sum(len(a) for a in battle.p2.state_token_arrays)
+            + sum(len(a) for a in battle.p1.player_action_arrays)
+            + sum(len(a) for a in battle.p1.opponent_action_arrays)
+            + sum(len(a) for a in battle.p2.player_action_arrays)
+            + sum(len(a) for a in battle.p2.opponent_action_arrays)
+        )
+        self.max_battle_len = max(self.max_battle_len, battle_token_count)
+
+        for tok_arr in battle.p1.state_token_arrays:
+            self.p1_states_flat.append(tok_arr)
+            self.p1_state_lengths.append(len(tok_arr))
+            self.p1_state_offsets.append(self.p1_state_offsets[-1] + len(tok_arr))
+        for tok_arr in battle.p2.state_token_arrays:
+            self.p2_states_flat.append(tok_arr)
+            self.p2_state_lengths.append(len(tok_arr))
+            self.p2_state_offsets.append(self.p2_state_offsets[-1] + len(tok_arr))
+
+        for tok_arr in battle.p1.player_action_arrays:
+            self.p1_actions_flat.append(tok_arr)
+            self.p1_action_lengths.append(len(tok_arr))
+            self.p1_action_offsets.append(self.p1_action_offsets[-1] + len(tok_arr))
+        for tok_arr in battle.p1.opponent_action_arrays:
+            self.p1_opponent_actions_flat.append(tok_arr)
+            self.p1_opponent_action_lengths.append(len(tok_arr))
+            self.p1_opponent_action_offsets.append(
+                self.p1_opponent_action_offsets[-1] + len(tok_arr)
+            )
+        for tok_arr in battle.p2.player_action_arrays:
+            self.p2_actions_flat.append(tok_arr)
+            self.p2_action_lengths.append(len(tok_arr))
+            self.p2_action_offsets.append(self.p2_action_offsets[-1] + len(tok_arr))
+        for tok_arr in battle.p2.opponent_action_arrays:
+            self.p2_opponent_actions_flat.append(tok_arr)
+            self.p2_opponent_action_lengths.append(len(tok_arr))
+            self.p2_opponent_action_offsets.append(
+                self.p2_opponent_action_offsets[-1] + len(tok_arr)
+            )
+
+        if n_transitions > 0:
+            self.p1_state_idx.extend(
+                p1_state_base + row.p1_state_idx for row in battle.aligned_rows
+            )
+            self.p1_next_state_idx.extend(
+                p1_state_base + row.p1_next_state_idx for row in battle.aligned_rows
+            )
+            self.p1_action_idx.extend(
+                p1_action_base + row.p1_action_idx for row in battle.aligned_rows
+            )
+            self.p2_state_idx.extend(
+                p2_state_base + row.p2_state_idx for row in battle.aligned_rows
+            )
+            self.p2_next_state_idx.extend(
+                p2_state_base + row.p2_next_state_idx for row in battle.aligned_rows
+            )
+            self.p2_action_idx.extend(
+                p2_action_base + row.p2_action_idx for row in battle.aligned_rows
+            )
+            self.battle_ids.append(np.full(n_transitions, battle_id, dtype=np.int32))
+            self.turn_idx.append(np.arange(n_transitions, dtype=np.int32))
+            self.turn_number.append(
+                np.array([row.turn_number for row in battle.aligned_rows], dtype=np.int32)
+            )
+            self.subturn_idx.append(
+                np.array([row.subturn_idx for row in battle.aligned_rows], dtype=np.int16)
+            )
+            self.format_ids.append(np.full(n_transitions, self.fmt_id, dtype=np.int16))
+
+        self.p1_won.append(battle.p1.won)
+        self.p2_won.append(battle.p2.won)
+        self.raw_battle_keys.append(battle.raw_battle_key)
+        self.battle_start.append(self.battle_start[-1] + len(battle.p1.state_token_arrays))
+        self.battle_action_start.append(
+            self.battle_action_start[-1] + len(battle.p1.player_action_arrays)
+        )
+        self.p1_battle_start.append(
+            self.p1_battle_start[-1] + len(battle.p1.state_token_arrays)
+        )
+        self.p2_battle_start.append(
+            self.p2_battle_start[-1] + len(battle.p2.state_token_arrays)
+        )
+        self.p1_battle_action_start.append(
+            self.p1_battle_action_start[-1] + len(battle.p1.player_action_arrays)
+        )
+        self.p2_battle_action_start.append(
+            self.p2_battle_action_start[-1] + len(battle.p2.player_action_arrays)
+        )
+
+    def write(self, out_dir: str, shard_idx: int, rng: np.random.Generator | None = None) -> dict[str, int | float]:
+        p1_states = np.concatenate(self.p1_states_flat, axis=0).astype(np.int16)
+        p2_states = np.concatenate(self.p2_states_flat, axis=0).astype(np.int16)
+        p1_actions = np.concatenate(self.p1_actions_flat, axis=0).astype(np.int16)
+        p1_opponent_actions = np.concatenate(self.p1_opponent_actions_flat, axis=0).astype(np.int16)
+        p2_actions = np.concatenate(self.p2_actions_flat, axis=0).astype(np.int16)
+        p2_opponent_actions = np.concatenate(self.p2_opponent_actions_flat, axis=0).astype(np.int16)
+
+        p1_state_idx_arr = np.array(self.p1_state_idx, dtype=np.int32)
+        p1_next_state_idx_arr = np.array(self.p1_next_state_idx, dtype=np.int32)
+        p1_action_idx_arr = np.array(self.p1_action_idx, dtype=np.int32)
+        p2_state_idx_arr = np.array(self.p2_state_idx, dtype=np.int32)
+        p2_next_state_idx_arr = np.array(self.p2_next_state_idx, dtype=np.int32)
+        p2_action_idx_arr = np.array(self.p2_action_idx, dtype=np.int32)
+        battle_id_arr = np.concatenate(self.battle_ids, axis=0).astype(np.int32)
+        turn_idx_arr = np.concatenate(self.turn_idx, axis=0).astype(np.int32)
+        turn_number_arr = np.concatenate(self.turn_number, axis=0).astype(np.int32)
+        subturn_idx_arr = np.concatenate(self.subturn_idx, axis=0).astype(np.int16)
+        format_id_arr = np.concatenate(self.format_ids, axis=0).astype(np.int16)
+
+        if rng is not None and len(p1_state_idx_arr) > 1:
+            order = rng.permutation(len(p1_state_idx_arr))
+            p1_state_idx_arr = p1_state_idx_arr[order]
+            p1_next_state_idx_arr = p1_next_state_idx_arr[order]
+            p1_action_idx_arr = p1_action_idx_arr[order]
+            p2_state_idx_arr = p2_state_idx_arr[order]
+            p2_next_state_idx_arr = p2_next_state_idx_arr[order]
+            p2_action_idx_arr = p2_action_idx_arr[order]
+            battle_id_arr = battle_id_arr[order]
+            turn_idx_arr = turn_idx_arr[order]
+            turn_number_arr = turn_number_arr[order]
+            subturn_idx_arr = subturn_idx_arr[order]
+            format_id_arr = format_id_arr[order]
+
+        shard_name = f"paired_shard_{shard_idx:04d}.npz"
+        shard_path = os.path.join(out_dir, shard_name)
+        np.savez(
+            shard_path,
+            p1_states=p1_states,
+            p1_state_offsets=np.array(self.p1_state_offsets[:-1], dtype=np.int64),
+            p1_state_lengths=np.array(self.p1_state_lengths, dtype=np.int32),
+            p2_states=p2_states,
+            p2_state_offsets=np.array(self.p2_state_offsets[:-1], dtype=np.int64),
+            p2_state_lengths=np.array(self.p2_state_lengths, dtype=np.int32),
+            p1_actions=p1_actions,
+            p1_action_offsets=np.array(self.p1_action_offsets[:-1], dtype=np.int64),
+            p1_action_lengths=np.array(self.p1_action_lengths, dtype=np.int32),
+            p1_opponent_actions=p1_opponent_actions,
+            p1_opponent_action_offsets=np.array(self.p1_opponent_action_offsets[:-1], dtype=np.int64),
+            p1_opponent_action_lengths=np.array(self.p1_opponent_action_lengths, dtype=np.int32),
+            p2_actions=p2_actions,
+            p2_action_offsets=np.array(self.p2_action_offsets[:-1], dtype=np.int64),
+            p2_action_lengths=np.array(self.p2_action_lengths, dtype=np.int32),
+            p2_opponent_actions=p2_opponent_actions,
+            p2_opponent_action_offsets=np.array(self.p2_opponent_action_offsets[:-1], dtype=np.int64),
+            p2_opponent_action_lengths=np.array(self.p2_opponent_action_lengths, dtype=np.int32),
+            p1_state_idx=p1_state_idx_arr,
+            p1_next_state_idx=p1_next_state_idx_arr,
+            p1_action_idx=p1_action_idx_arr,
+            p2_state_idx=p2_state_idx_arr,
+            p2_next_state_idx=p2_next_state_idx_arr,
+            p2_action_idx=p2_action_idx_arr,
+            state_idx=p1_state_idx_arr,
+            next_state_idx=p1_next_state_idx_arr,
+            action_idx=p1_action_idx_arr,
+            battle_id=battle_id_arr,
+            turn_idx=turn_idx_arr,
+            turn_number=turn_number_arr,
+            subturn_idx=subturn_idx_arr,
+            format_id=format_id_arr,
+            p1_won=np.array(self.p1_won, dtype=bool),
+            p2_won=np.array(self.p2_won, dtype=bool),
+            raw_battle_key=np.array(self.raw_battle_keys),
+            battle_start=np.array(self.battle_start, dtype=np.int64),
+            battle_action_start=np.array(self.battle_action_start, dtype=np.int64),
+            p1_battle_start=np.array(self.p1_battle_start, dtype=np.int64),
+            p2_battle_start=np.array(self.p2_battle_start, dtype=np.int64),
+            p1_battle_action_start=np.array(self.p1_battle_action_start, dtype=np.int64),
+            p2_battle_action_start=np.array(self.p2_battle_action_start, dtype=np.int64),
+            format_name=np.array(self.fmt),
+            format_id_value=np.array(self.fmt_id, dtype=np.int16),
+        )
+
+        transitions = len(p1_state_idx_arr)
+        return {
+            "battles": len(self),
+            "states": len(self.p1_state_lengths),
+            "actions": len(self.p1_action_lengths),
+            "transitions": transitions,
+            "max_battle_len": self.max_battle_len,
+            "uncompressed_mb": (
+                p1_states.nbytes
+                + p2_states.nbytes
+                + p1_actions.nbytes
+                + p1_opponent_actions.nbytes
+                + p2_actions.nbytes
+                + p2_opponent_actions.nbytes
+            ) / (1024 * 1024),
+        }
+
+
 # ---------------------------------------------------------------------------
 # File I/O helpers
 # ---------------------------------------------------------------------------
@@ -487,9 +940,13 @@ def iter_txt_files(fmt_dir: str) -> list[str]:
 def raw_battle_key(path: str) -> str:
     """Extract the raw-battle key from a POV file path.
 
-    Strips the ``_WIN`` / ``_LOSS`` suffix so both POVs map to the same key.
+    Uses the replay id prefix (e.g. ``gen1ou-123`` or
+    ``smogtours-gen1ou-123``), so reversed POV filenames map to one battle.
     """
     stem = Path(path).stem
+    match = _BATTLE_ID_RE.match(stem)
+    if match:
+        return match.group(1)
     for suffix in ("_WIN", "_LOSS"):
         if stem.endswith(suffix):
             return stem[: -len(suffix)]
@@ -557,6 +1014,39 @@ def iter_tokenized_battles(
         _init_worker(tokenizer_path)
         for item in tqdm.tqdm(work, desc=desc):
             yield tokenize_battle(item)
+
+
+def iter_tokenized_battle_pairs(
+    groups: dict[str, list[str]],
+    keys: list[str],
+    tokenizer_path: str,
+    processes: int,
+    desc: str,
+) -> Iterable[tuple[str, PairedBattle | None, str | None]]:
+    """Multiprocess tokenize paired POV groups.
+
+    Yields ``(raw_battle_key, paired_battle_or_none, skip_reason_or_none)``.
+    """
+    work = [(key, groups[key], tokenizer_path) for key in keys]
+    if processes > 1:
+        with Pool(
+            processes, initializer=_init_worker, initargs=(tokenizer_path,)
+        ) as pool:
+            for key, result in zip(
+                keys,
+                tqdm.tqdm(
+                    pool.imap(tokenize_battle_pair, work, chunksize=50),
+                    total=len(work),
+                    desc=desc,
+                ),
+            ):
+                battle, reason = result
+                yield key, battle, reason
+    else:
+        _init_worker(tokenizer_path)
+        for item in tqdm.tqdm(work, desc=desc):
+            battle, reason = tokenize_battle_pair(item)
+            yield item[0], battle, reason
 
 
 def write_split_shards(
@@ -644,6 +1134,89 @@ def write_split_shards(
     return totals, max_battle_len, shard_idx
 
 
+def write_paired_split_shards(
+    *,
+    fmt: str,
+    fmt_id: int,
+    split_name: str,
+    groups: dict[str, list[str]],
+    group_keys: list[str],
+    tokenizer_path: str,
+    processes: int,
+    battles_per_shard: int,
+    out_dir: str,
+    rng: np.random.Generator,
+) -> tuple[dict, int, int]:
+    """Tokenize and write paired-POV shards for one split."""
+    os.makedirs(out_dir, exist_ok=True)
+
+    totals: dict[str, int | dict[str, int]] = {
+        "num_raw_battle_groups": len(group_keys),
+        "num_battles": 0,
+        "num_shards": 0,
+        "total_states": 0,
+        "total_actions": 0,
+        "total_transitions": 0,
+        "failed": 0,
+        "skip_reasons": {},
+    }
+    shard_idx = 0
+    max_battle_len = 0
+    acc = PairedShardAccumulator(fmt=fmt, fmt_id=fmt_id)
+
+    for _, battle, reason in iter_tokenized_battle_pairs(
+        groups,
+        group_keys,
+        tokenizer_path,
+        processes,
+        desc=f"  Pair-tokenizing {fmt}/{split_name}",
+    ):
+        if battle is None:
+            totals["failed"] = int(totals["failed"]) + 1
+            skip_reasons = totals["skip_reasons"]
+            assert isinstance(skip_reasons, dict)
+            reason = reason or "unknown"
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            continue
+
+        acc.append(battle)
+        if len(acc) >= battles_per_shard:
+            stats = acc.write(out_dir, shard_idx, rng=rng)
+            totals["num_battles"] = int(totals["num_battles"]) + int(stats["battles"])
+            totals["total_states"] = int(totals["total_states"]) + int(stats["states"])
+            totals["total_actions"] = int(totals["total_actions"]) + int(stats["actions"])
+            totals["total_transitions"] = int(totals["total_transitions"]) + int(stats["transitions"])
+            max_battle_len = max(max_battle_len, int(stats["max_battle_len"]))
+            print(
+                f"  {split_name} paired shard {shard_idx:04d}: "
+                f"{stats['battles']} battle pairs, {stats['states']} states/side, "
+                f"{stats['transitions']} transitions, "
+                f"max battle {stats['max_battle_len']} tok, "
+                f"{stats['uncompressed_mb']:.0f} MB"
+            )
+            shard_idx += 1
+            acc = PairedShardAccumulator(fmt=fmt, fmt_id=fmt_id)
+
+    if len(acc) > 0:
+        stats = acc.write(out_dir, shard_idx, rng=rng)
+        totals["num_battles"] = int(totals["num_battles"]) + int(stats["battles"])
+        totals["total_states"] = int(totals["total_states"]) + int(stats["states"])
+        totals["total_actions"] = int(totals["total_actions"]) + int(stats["actions"])
+        totals["total_transitions"] = int(totals["total_transitions"]) + int(stats["transitions"])
+        max_battle_len = max(max_battle_len, int(stats["max_battle_len"]))
+        print(
+            f"  {split_name} paired shard {shard_idx:04d}: "
+            f"{stats['battles']} battle pairs, {stats['states']} states/side, "
+            f"{stats['transitions']} transitions, "
+            f"max battle {stats['max_battle_len']} tok, "
+            f"{stats['uncompressed_mb']:.0f} MB"
+        )
+        shard_idx += 1
+
+    totals["num_shards"] = shard_idx
+    return totals, max_battle_len, shard_idx
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -661,6 +1234,17 @@ def main() -> None:
     parser.add_argument("--processes", type=int, default=1)
     parser.add_argument("--val_split", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--paired_pov",
+        action="store_true",
+        help="Write paired-POV shards for JEPA opponent-state training.",
+    )
+    parser.add_argument(
+        "--max_groups",
+        type=int,
+        default=0,
+        help="Optional cap on raw battle groups per format, useful for smoke data generation.",
+    )
     args = parser.parse_args()
 
     # Load tokenizer to verify it has required tokens
@@ -692,6 +1276,20 @@ def main() -> None:
         train_keys, val_keys, train_files, val_files = split_groups(
             groups, args.val_split, split_rng
         )
+        if args.max_groups > 0:
+            if args.val_split > 0 and val_keys and args.max_groups > 1:
+                val_limit = max(1, int(round(args.max_groups * args.val_split)))
+                val_limit = min(val_limit, len(val_keys), args.max_groups - 1)
+            else:
+                val_limit = 0
+            train_limit = min(len(train_keys), args.max_groups - val_limit)
+            train_keys = train_keys[:train_limit]
+            val_keys = val_keys[:val_limit]
+            if not train_keys and val_keys:
+                train_keys = val_keys[:1]
+                val_keys = val_keys[1:]
+            train_files = [path for key in train_keys for path in groups[key]]
+            val_files = [path for key in val_keys for path in groups[key]]
 
         print(
             f"\nProcessing {fmt}: {len(txt_files)} POV files, "
@@ -706,28 +1304,54 @@ def main() -> None:
         os.makedirs(out_dir, exist_ok=True)
 
         shard_rng = np.random.default_rng(args.seed + 1009 * (format_id_map[fmt] + 1))
-        train_totals, train_btl_max, _ = write_split_shards(
-            fmt=fmt,
-            fmt_id=format_id_map[fmt],
-            split_name="train",
-            txt_files=train_files,
-            tokenizer_path=args.tokenizer_path,
-            processes=args.processes,
-            battles_per_shard=args.battles_per_shard,
-            out_dir=os.path.join(out_dir, "train"),
-            rng=shard_rng,
-        )
-        val_totals, val_btl_max, _ = write_split_shards(
-            fmt=fmt,
-            fmt_id=format_id_map[fmt],
-            split_name="val",
-            txt_files=val_files,
-            tokenizer_path=args.tokenizer_path,
-            processes=args.processes,
-            battles_per_shard=args.battles_per_shard,
-            out_dir=os.path.join(out_dir, "val"),
-            rng=shard_rng,
-        )
+        if args.paired_pov:
+            train_totals, train_btl_max, _ = write_paired_split_shards(
+                fmt=fmt,
+                fmt_id=format_id_map[fmt],
+                split_name="train",
+                groups=groups,
+                group_keys=train_keys,
+                tokenizer_path=args.tokenizer_path,
+                processes=args.processes,
+                battles_per_shard=args.battles_per_shard,
+                out_dir=os.path.join(out_dir, "train"),
+                rng=shard_rng,
+            )
+            val_totals, val_btl_max, _ = write_paired_split_shards(
+                fmt=fmt,
+                fmt_id=format_id_map[fmt],
+                split_name="val",
+                groups=groups,
+                group_keys=val_keys,
+                tokenizer_path=args.tokenizer_path,
+                processes=args.processes,
+                battles_per_shard=args.battles_per_shard,
+                out_dir=os.path.join(out_dir, "val"),
+                rng=shard_rng,
+            )
+        else:
+            train_totals, train_btl_max, _ = write_split_shards(
+                fmt=fmt,
+                fmt_id=format_id_map[fmt],
+                split_name="train",
+                txt_files=train_files,
+                tokenizer_path=args.tokenizer_path,
+                processes=args.processes,
+                battles_per_shard=args.battles_per_shard,
+                out_dir=os.path.join(out_dir, "train"),
+                rng=shard_rng,
+            )
+            val_totals, val_btl_max, _ = write_split_shards(
+                fmt=fmt,
+                fmt_id=format_id_map[fmt],
+                split_name="val",
+                txt_files=val_files,
+                tokenizer_path=args.tokenizer_path,
+                processes=args.processes,
+                battles_per_shard=args.battles_per_shard,
+                out_dir=os.path.join(out_dir, "val"),
+                rng=shard_rng,
+            )
 
         fmt_battle_max = max(train_btl_max, val_btl_max)
 
@@ -742,14 +1366,16 @@ def main() -> None:
 
         tokenizer_version = os.path.splitext(os.path.basename(args.tokenizer_path))[0]
         metadata = {
-            "schema_version": "transition_table_v2",
+            "schema_version": "paired_pov_v1" if args.paired_pov else "transition_table_v2",
             "tokenizer_version": tokenizer_version,
             "format": fmt,
             "format_id": format_id_map[fmt],
             "format_id_map": format_id_map,
             "split_mode": "raw_battle_group",
+            "paired_pov": bool(args.paired_pov),
             "seed": args.seed,
             "val_split": args.val_split,
+            "max_groups": args.max_groups,
             "num_raw_battle_groups": len(groups),
             "train_raw_battle_groups": len(train_keys),
             "val_raw_battle_groups": len(val_keys),
@@ -766,9 +1392,16 @@ def main() -> None:
             "total_states": total_states,
             "total_transitions": total_transitions,
             "max_battle_len": fmt_battle_max,
-            "storage": "transition_indexed_variable_length_v2",
+            "storage": (
+                "paired_pov_transition_indexed_variable_length_v1"
+                if args.paired_pov
+                else "transition_indexed_variable_length_v2"
+            ),
             "compressed": False,
         }
+        if args.paired_pov:
+            metadata["train_skip_reasons"] = train_totals.get("skip_reasons", {})
+            metadata["val_skip_reasons"] = val_totals.get("skip_reasons", {})
         meta_path = os.path.join(out_dir, "metadata.json")
         with open(meta_path, "w") as f:
             json.dump(metadata, f, indent=2)
