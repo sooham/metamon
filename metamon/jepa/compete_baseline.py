@@ -152,11 +152,17 @@ def main():
     all_results: list[dict] = []
     for baseline_name in baseline_names:
         BaselineCls = get_baseline(baseline_name)
+        # Showdown usernames are limited to 18 characters.
+        base_username = f"base-{baseline_name}"
+        if len(base_username) > 18:
+            # Truncate the baseline name part, keeping "base-" prefix.
+            max_name_len = 18 - len("base-")
+            base_username = f"base-{baseline_name[:max_name_len]}"
         baseline = BaselineCls(
             battle_format=args.format,
             team=team_set,
             max_concurrent_battles=args.max_concurrent,
-            account_configuration=AccountConfiguration(f"base-{baseline_name}", args.password),
+            account_configuration=AccountConfiguration(base_username, args.password),
             server_configuration=server_config,
         )
 

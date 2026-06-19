@@ -33,6 +33,7 @@ from metamon.env import get_metamon_teams
 from metamon.jepa.model import PairedJEPAModel
 from metamon.jepa.player import JEPAWorldModelPlayer
 from metamon.tokenizer import PokemonTokenizer
+from metamon.tui import TuiMixin
 
 
 async def main() -> None:
