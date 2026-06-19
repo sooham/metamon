@@ -1075,6 +1075,7 @@ class Action:
     is_switch: bool = False
     is_tera: bool = False
     is_revival: bool = False
+    failed: bool = False
 
     def __repr__(self) -> str:
         return f"Action: {self.name}"
@@ -1399,6 +1400,7 @@ class Turn:
         user: Optional[Pokemon] = None,
         target: Optional[Pokemon] = None,
         is_tera: Optional[bool] = None,
+        failed: Optional[bool] = None,
     ) -> None:
         # "p1a", "p2a", ...
         if s[1] == "1":
@@ -1423,6 +1425,7 @@ class Turn:
                 user=user or None,
                 target=target or None,
                 is_tera=is_tera or False,
+                failed=failed or False,
             )
         else:
             # adjust existing Action
@@ -1438,6 +1441,8 @@ class Turn:
                 moves_list[index].is_noop = is_noop
             if is_tera is not None:
                 moves_list[index].is_tera = is_tera
+            if failed is not None:
+                moves_list[index].failed = failed
 
     def __repr__(self) -> str:
         poke_1_str = "\n\t\t".join([str(x) for x in self.pokemon_1])

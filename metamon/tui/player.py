@@ -130,6 +130,7 @@ class TuiMixin:
     _repl_active_instance: Optional["TuiMixin"] = None
     _repl_all_instances: list["TuiMixin"] = []
     _repl_verbose_blocks: bool = False
+    _repl_max_history_blocks: int = 0       # 0 = unlimited; set by player on init
     _repl_last_auto_redraw: float = 0.0
     _repl_selected_turn: int = -1
     _repl_show_raw_for_turn: bool = False
@@ -147,6 +148,48 @@ class TuiMixin:
 
     def _tui_current_hist(self) -> Optional[BattleHistory]:
         raise NotImplementedError("subclass must provide _tui_current_hist")
+
+    # ── windowing (matches training dataset _resolve_window) ──────────
+
+    @staticmethod
+    def _window_blocks(
+        state_blocks: list,
+        player_actions: list,
+        opponent_actions: list,
+        max_hist: int,
+    ) -> tuple[list, list, list]:
+        """Return windowed copies matching the training dataset's windowing logic.
+
+        State index 0 is the team header.  Subsequent states are S[1], S[2], …
+        Player/opponent action i connects state_{i+1} → state_{i+2}.
+        """
+        if max_hist <= 0:
+            return state_blocks, player_actions, opponent_actions
+
+        S = len(state_blocks)
+        battle_start = 0
+        state_end = S
+
+        # _resolve_window logic (train_paired.py):
+        #   state_start = max(battle_start + 1, state_end - max_hist)
+        #   action_start = max(0, state_start - battle_start - 1)
+        #   action_end   = max(0, state_end - battle_start - 2)
+        state_start = max(battle_start + 1, state_end - max_hist)
+        action_start = max(0, state_start - battle_start - 1)
+        action_end = max(0, state_end - battle_start - 2)
+        action_end = max(action_start, action_end)
+
+        # _slice_state_window: always keep team header [0], then [state_start, state_end)
+        windowed_states = [state_blocks[0]]
+        if state_start > battle_start + 1:
+            windowed_states.extend(state_blocks[state_start:state_end])
+        else:
+            windowed_states.extend(state_blocks[battle_start + 1:state_end])
+
+        windowed_player = player_actions[action_start:action_end]
+        windowed_opponent = opponent_actions[action_start:action_end]
+
+        return windowed_states, windowed_player, windowed_opponent
 
     # ── registration (called from concrete __init__) ──────────────────
 
@@ -224,7 +267,7 @@ class TuiMixin:
                             continue
                         # ── vim‑style navigation (j=down, k=up, h=up, g=top, G=bottom) ──
                         if key_str.lower() in ('j', 'k', 'h', 'g', 'l') or key_str == 'G':
-                            self._tui_handle_nav_key(key_str)
+                            cls._tui_handle_nav_key(key_str)
                             continue
                         # Enter / Return
                         if key_str in ("\r", "\n"):
@@ -470,18 +513,37 @@ class TuiMixin:
             n_states = ctx.num_state_blocks
             n_player = ctx.num_player_actions
             n_opp = ctx.num_opponent_actions
-            print(f"    blocks: states={n_states} player_actions={n_player} opponent_actions={n_opp}")
-            # Show team header (first block) for context.
-            if len(hist.state_blocks) >= 1:
-                team = hist.state_blocks[0]
+            max_hist = TuiMixin._repl_max_history_blocks
+            print(f"    blocks: states={n_states} player_actions={n_player} opponent_actions={n_opp}"
+                  + (f"  (window={max_hist})" if max_hist else ""))
+            # Apply history windowing to show the same context the model sees.
+            w_states, w_pa, w_oa = TuiMixin._window_blocks(
+                hist.state_blocks, hist.player_actions, hist.opponent_actions, max_hist,
+            )
+            total_states = len(w_states)
+            orig_start_idx = len(hist.state_blocks) - len(w_states)  # how many states were dropped
+            # Show team header.
+            if total_states >= 1:
+                team = w_states[0]
                 colored_team = colorize_state_line(self._tui_detok(team), term=term)
                 print(f"    [team] {colored_team}")
-            # Show the most recent state block.
-            if len(hist.state_blocks) >= 2:
-                last_block = hist.state_blocks[-1]
-                label = f"state_{len(hist.state_blocks) - 2}"
-                colored = colorize_state_line(self._tui_detok(last_block), term=term)
-                print(f"    [{label}] {colored}")
+            # Show every state block interleaved with its actions.
+            for si in range(1, total_states):
+                # Label reflects original index (not windowed position).
+                state_label = f"state_{orig_start_idx + si - 1}"
+                colored_state = colorize_state_line(self._tui_detok(w_states[si]), term=term)
+                marker = " ← current" if si == total_states - 1 else ""
+                print(f"    [{state_label}]{marker} {colored_state}")
+                ai = si - 1  # action index in windowed list
+                if ai < len(w_pa):
+                    pa_colored = colorize_state_line(self._tui_detok(w_pa[ai]), term=term)
+                    print(f"      [player_action_{orig_start_idx + ai}] {pa_colored}")
+                if ai < len(w_oa):
+                    oa_colored = colorize_state_line(self._tui_detok(w_oa[ai]), term=term)
+                    print(f"      [opponent_action_{orig_start_idx + ai}] {oa_colored}")
+            if max_hist and len(hist.state_blocks) > len(w_states):
+                skipped = len(hist.state_blocks) - len(w_states)
+                print(f"    ... ({skipped} earlier state blocks outside window)")
             # Model‑specific context lines.
             for line in diag.context_lines:
                 print(f"    {line}")
@@ -536,21 +598,31 @@ class TuiMixin:
         if hist is None:
             print("\n  [no active battle]")
             return
-        print(f"  states={len(hist.state_blocks)}  player_actions={len(hist.player_actions)}  opponent_actions={len(hist.opponent_actions)}")
+        max_hist = TuiMixin._repl_max_history_blocks
+        w_states, w_pa, w_oa = TuiMixin._window_blocks(
+            hist.state_blocks, hist.player_actions, hist.opponent_actions, max_hist,
+        )
+        print(f"  states={len(hist.state_blocks)}  player_actions={len(hist.player_actions)}"
+              f"  opponent_actions={len(hist.opponent_actions)}"
+              + (f"  (window={max_hist} → showing {len(w_states)} states)" if max_hist else ""))
         print()
         term = TuiMixin._repl_term
-        for i, block in enumerate(hist.state_blocks):
-            label = "team_header" if i == 0 else f"state_{i - 1}"
+        orig_start_idx = len(hist.state_blocks) - len(w_states)
+        for i, block in enumerate(w_states):
+            label = "team_header" if i == 0 else f"state_{orig_start_idx + i - 1}"
             colored = colorize_state_line(self._tui_detok(block), term=term)
             print(f"  [{label}] {colored}")
             if i >= 1:
                 ai = i - 1
-                if ai < len(hist.player_actions):
-                    pa_colored = colorize_state_line(self._tui_detok(hist.player_actions[ai]), term=term)
-                    print(f"  [player_action_{ai}] {pa_colored}")
-                if ai < len(hist.opponent_actions):
-                    oa_colored = colorize_state_line(self._tui_detok(hist.opponent_actions[ai]), term=term)
-                    print(f"  [opponent_action_{ai}] {oa_colored}")
+                if ai < len(w_pa):
+                    pa_colored = colorize_state_line(self._tui_detok(w_pa[ai]), term=term)
+                    print(f"  [player_action_{orig_start_idx + ai}] {pa_colored}")
+                if ai < len(w_oa):
+                    oa_colored = colorize_state_line(self._tui_detok(w_oa[ai]), term=term)
+                    print(f"  [opponent_action_{orig_start_idx + ai}] {oa_colored}")
+        if max_hist and len(hist.state_blocks) > len(w_states):
+            skipped = len(hist.state_blocks) - len(w_states)
+            print(f"  ... ({skipped} earlier state blocks outside window)")
         for turn_idx in range(len(hist.turn_contexts)):
             ctx = hist.turn_contexts[turn_idx]
             diag = hist.turn_diagnostics[turn_idx]

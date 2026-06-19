@@ -352,11 +352,96 @@ def _write_opponent_team_preview(pov: POVReplay) -> list[str]:
     return lines
 
 
+def _write_last_turn_results_block(
+    prev_player_action: Optional[Action],
+    prev_opponent_action: Optional[Action],
+    is_first_state: bool = False,
+) -> list[str]:
+    """Build a <last_turn_results> … <end_last_turn_results> block.
+
+    Describes the outcome of the action that transitioned from the previous
+    state into this one.  The first state has an empty block.
+
+    Outcome tokens per action:
+      - ``success`` — the move executed normally (or was a switch / recharge).
+      - ``fail`` — the move was attempted but failed (e.g. Sucker Punch whiff,
+        Barrier at +6, Reflect used twice).
+      - ``cant <reason>`` — the Pokémon couldn't execute its chosen move
+        (paralysis, sleep, freeze, flinch, etc.).
+
+    Format::
+
+        <last_turn_results>
+        <active>movename outcome [reason]<end_active>
+        <opponent>movename outcome [reason]<end_opponent>
+        <end_last_turn_results>
+    """
+    lines = ["<last_turn_results>"]
+
+    if is_first_state:
+        lines.append("<end_last_turn_results>")
+        return lines
+
+    # ── active ──
+    lines.append("<active>")
+    if prev_player_action is not None:
+        if prev_player_action.is_switch or prev_player_action.is_revival:
+            target_name = clean_name(prev_player_action.target.name) if prev_player_action.target else "unknown"
+            action_name = f"switch {target_name}"
+        elif prev_player_action.is_noop or prev_player_action.name is None:
+            action_name = "recharge" if prev_player_action.is_noop else "unknown"
+        else:
+            action_name = clean_name(prev_player_action.name)
+
+        # Determine outcome
+        cant = None
+        if prev_player_action.user is not None:
+            cant = getattr(prev_player_action.user, "cant_reason", None)
+        if cant:
+            lines.append(f"{action_name} cant {cant}")
+        elif prev_player_action.failed:
+            lines.append(f"{action_name} fail")
+        else:
+            lines.append(f"{action_name} success")
+    else:
+        lines.append("unknown")
+    lines.append("<end_active>")
+
+    # ── opponent ──
+    lines.append("<opponent>")
+    if prev_opponent_action is not None:
+        if prev_opponent_action.is_switch:
+            target_name = clean_name(prev_opponent_action.target.name) if prev_opponent_action.target else "unknown"
+            action_name = f"switch {target_name}"
+        elif prev_opponent_action.is_noop or prev_opponent_action.name is None:
+            action_name = "unknown"
+        else:
+            action_name = clean_name(prev_opponent_action.name)
+
+        cant = None
+        if prev_opponent_action.user is not None:
+            cant = getattr(prev_opponent_action.user, "cant_reason", None)
+        if cant:
+            lines.append(f"{action_name} cant {cant}")
+        elif prev_opponent_action.failed:
+            lines.append(f"{action_name} fail")
+        else:
+            lines.append(f"{action_name} success")
+    else:
+        lines.append("unknown")
+    lines.append("<end_opponent>")
+
+    lines.append("<end_last_turn_results>")
+    return lines
+
+
 def _write_state_block(
     turn: Turn,
     pov: POVReplay,
     is_terminal: bool = False,
     display_turn: int | None = None,
+    prev_player_action: Optional[Action] = None,
+    prev_opponent_action: Optional[Action] = None,
 ) -> list[str]:
     """Build a single <bos> … <eos> state block."""
     lines = ["<bos>"]
@@ -377,6 +462,13 @@ def _write_state_block(
     lines.append("<turn>")
     lines.append(str(turn_num))
     lines.append("<end_turn>")
+
+    # ── last turn results ──
+    has_prev_actions = prev_player_action is not None or prev_opponent_action is not None
+    lines.extend(_write_last_turn_results_block(
+        prev_player_action, prev_opponent_action,
+        is_first_state=(not has_prev_actions),
+    ))
 
     # ── arena ──
     lines.append("<arena>")
@@ -546,7 +638,7 @@ def _write_action_block(
     lines.append(str(turn_num))
     lines.append("<end_turn>")
 
-    # player action
+    # player action — outcome now lives in <last_turn_results> of the next state
     if player_action is not None:
         if player_action.is_switch or player_action.is_revival:
             target_name = clean_name(player_action.target.name) if player_action.target else "unknown"
@@ -559,21 +651,15 @@ def _write_action_block(
             lines.append("<end_chosen_move>")
         else:
             name = clean_name(player_action.name)
-            cant = None
-            if player_action.user is not None:
-                cant = getattr(player_action.user, "cant_reason", None)
             lines.append("<chosen_move>")
-            if cant:
-                lines.append(f"{name} cant={cant}")
-            else:
-                lines.append(name)
+            lines.append(name)
             lines.append("<end_chosen_move>")
     else:
         lines.append("<chosen_move>")
         lines.append("unknown")
         lines.append("<end_chosen_move>")
 
-    # opponent action
+    # opponent action — outcome now lives in <last_turn_results> of the next state
     if opponent_action is not None:
         if opponent_action.is_switch:
             target_name = clean_name(opponent_action.target.name) if opponent_action.target else "unknown"
@@ -586,14 +672,8 @@ def _write_action_block(
             lines.append("<end_opponent_chosen_move>")
         else:
             name = clean_name(opponent_action.name)
-            cant = None
-            if opponent_action.user is not None:
-                cant = getattr(opponent_action.user, "cant_reason", None)
             lines.append("<opponent_chosen_move>")
-            if cant:
-                lines.append(f"{name} cant={cant}")
-            else:
-                lines.append(name)
+            lines.append(name)
             lines.append("<end_opponent_chosen_move>")
     else:
         lines.append("<opponent_chosen_move>")
@@ -652,8 +732,20 @@ def serialize_pov_replay(pov: POVReplay) -> str:
         else:
             display_turn = raw
 
+        # Determine previous actions for <last_turn_results>
+        if i == 0:
+            prev_player_action = None
+            prev_opponent_action = None
+        else:
+            prev_player_action = actions[i - 1][0] if i - 1 < len(actions) else None
+            prev_opponent_action = opp_actions[i - 1] if i - 1 < len(opp_actions) else None
+
         # Write state block
-        lines.extend(_write_state_block(turn, pov, is_terminal=is_terminal, display_turn=display_turn))
+        lines.extend(_write_state_block(
+            turn, pov, is_terminal=is_terminal, display_turn=display_turn,
+            prev_player_action=prev_player_action,
+            prev_opponent_action=prev_opponent_action,
+        ))
         lines.append("")
 
         # Write action block (skip for terminal state)
@@ -673,6 +765,8 @@ def _write_state_block_doubles(
     turn: Turn,
     pov: POVReplay,
     is_terminal: bool = False,
+    prev_player_actions: list = None,
+    prev_opponent_actions: list = None,
 ) -> list[str]:
     """Build a single <bos> … <eos> state block for doubles."""
     lines = ["<bos>"]
@@ -688,6 +782,58 @@ def _write_state_block_doubles(
     lines.append("<turn>")
     lines.append(str(turn_num))
     lines.append("<end_turn>")
+
+    # ── last turn results ──
+    lines.append("<last_turn_results>")
+    if prev_player_actions is None and prev_opponent_actions is None:
+        # First state: empty block
+        pass
+    else:
+        # Per-slot results for doubles
+        for slot_idx, slot_tag in enumerate(("active1", "active2")):
+            lines.append(f"<{slot_tag}>")
+            pa = prev_player_actions[slot_idx] if prev_player_actions and slot_idx < len(prev_player_actions) else None
+            if pa is not None:
+                if pa.is_switch or pa.is_revival:
+                    target_name = clean_name(pa.target.name) if pa.target else "unknown"
+                    action_name = f"switch {target_name}"
+                elif pa.is_noop or pa.name is None:
+                    action_name = "recharge" if pa.is_noop else "unknown"
+                else:
+                    action_name = clean_name(pa.name)
+                cant = getattr(pa.user, "cant_reason", None) if pa.user else None
+                if cant:
+                    lines.append(f"{action_name} cant {cant}")
+                elif pa.failed:
+                    lines.append(f"{action_name} fail")
+                else:
+                    lines.append(f"{action_name} success")
+            else:
+                lines.append("unknown")
+            lines.append(f"<end_{slot_tag}>")
+
+        for slot_idx, slot_tag in enumerate(("opponent1", "opponent2")):
+            lines.append(f"<{slot_tag}>")
+            oa = prev_opponent_actions[slot_idx] if prev_opponent_actions and slot_idx < len(prev_opponent_actions) else None
+            if oa is not None:
+                if oa.is_switch:
+                    target_name = clean_name(oa.target.name) if oa.target else "unknown"
+                    action_name = f"switch {target_name}"
+                elif oa.is_noop or oa.name is None:
+                    action_name = "unknown"
+                else:
+                    action_name = clean_name(oa.name)
+                cant = getattr(oa.user, "cant_reason", None) if oa.user else None
+                if cant:
+                    lines.append(f"{action_name} cant {cant}")
+                elif oa.failed:
+                    lines.append(f"{action_name} fail")
+                else:
+                    lines.append(f"{action_name} success")
+            else:
+                lines.append("unknown")
+            lines.append(f"<end_{slot_tag}>")
+    lines.append("<end_last_turn_results>")
 
     # ── arena (doubles: active1/active2, opponent1/opponent2) ──
     lines.append("<arena>")
@@ -865,7 +1011,7 @@ def _write_action_block_doubles(
     for slot_idx in (0, 1):
         slot = slot_idx + 1
 
-        # player action for this slot
+        # player action for this slot — outcome now in <last_turn_results> of next state
         pa = player_actions[slot_idx] if slot_idx < len(player_actions) else None
         if pa is not None:
             if pa.is_switch or pa.is_revival:
@@ -879,21 +1025,15 @@ def _write_action_block_doubles(
                 lines.append("<end_chosen_move>")
             else:
                 name = clean_name(pa.name)
-                cant = None
-                if pa.user is not None:
-                    cant = getattr(pa.user, "cant_reason", None)
                 lines.append(f"<chosen_move:{slot}>")
-                if cant:
-                    lines.append(f"{name} cant={cant}")
-                else:
-                    lines.append(name)
+                lines.append(name)
                 lines.append("<end_chosen_move>")
         else:
             lines.append(f"<chosen_move:{slot}>")
             lines.append("unknown")
             lines.append("<end_chosen_move>")
 
-        # opponent action for this slot
+        # opponent action for this slot — outcome now in <last_turn_results> of next state
         oa = opponent_actions[slot_idx] if slot_idx < len(opponent_actions) else None
         if oa is not None:
             if oa.is_switch:
@@ -907,14 +1047,8 @@ def _write_action_block_doubles(
                 lines.append("<end_opponent_chosen_move>")
             else:
                 name = clean_name(oa.name)
-                cant = None
-                if oa.user is not None:
-                    cant = getattr(oa.user, "cant_reason", None)
                 lines.append(f"<opponent_chosen_move:{slot}>")
-                if cant:
-                    lines.append(f"{name} cant={cant}")
-                else:
-                    lines.append(name)
+                lines.append(name)
                 lines.append("<end_opponent_chosen_move>")
         else:
             lines.append(f"<opponent_chosen_move:{slot}>")
@@ -952,8 +1086,20 @@ def serialize_pov_replay_doubles(pov: POVReplay) -> str:
 
         is_terminal = (i == n - 1)
 
+        # Determine previous actions for <last_turn_results>
+        if i == 0:
+            prev_player_actions = None
+            prev_opponent_actions = None
+        else:
+            prev_player_actions = actions[i - 1] if i - 1 < len(actions) else [None, None]
+            prev_opponent_actions = opp_actions[i - 1] if i - 1 < len(opp_actions) else [None, None]
+
         # Write state block
-        lines.extend(_write_state_block_doubles(turn, pov, is_terminal=is_terminal))
+        lines.extend(_write_state_block_doubles(
+            turn, pov, is_terminal=is_terminal,
+            prev_player_actions=prev_player_actions,
+            prev_opponent_actions=prev_opponent_actions,
+        ))
         lines.append("")
 
         # Write action block (skip for terminal state)

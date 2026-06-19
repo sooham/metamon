@@ -1512,6 +1512,16 @@ class SimProtocol:
             pokemon.reveal_item(from_item)
         if from_ability is not None and from_mon is not None:
             pokemon.reveal_ability(from_ability)
+
+        # Mark the corresponding action as failed so the text serializer
+        # can output a "fail" outcome in <last_turn_results>.
+        team_slot = self.curr_turn.pokemon_to_action_idx(pokemon)
+        if team_slot:
+            team, slot = team_slot
+            moves_list = self.curr_turn.moves_1 if team == 1 else self.curr_turn.moves_2
+            if moves_list[slot] is not None:
+                moves_list[slot].failed = True
+
         self._cancel_user_switch_based_on_failure(user_pokemon=pokemon)
         self._cancel_opponent_parting_shot(
             user_pokemon=pokemon, extra_condition=any("unboost" in s for s in args)

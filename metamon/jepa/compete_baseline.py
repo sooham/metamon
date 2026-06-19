@@ -35,7 +35,6 @@ from metamon.tokenizer import PokemonTokenizer
 def main():
     parser = argparse.ArgumentParser(description="JEPA vs Baseline competition")
     parser.add_argument("--checkpoint", required=True, help="Path to JEPA checkpoint .pt file")
-    parser.add_argument("--tokenizer_path", required=True, help="Path to tokenizer .json file")
     parser.add_argument("--format", default="gen1ou", help="Battle format (default: gen1ou)")
     parser.add_argument("--baseline", default=None, help="Name of the baseline to compete against")
     parser.add_argument("--all-baselines", action="store_true",
@@ -66,21 +65,37 @@ def main():
     else:
         device = torch.device("cpu")
 
-    # ── Load tokenizer + model ──
-    tokenizer = PokemonTokenizer()
-    tokenizer.load_tokens_from_disk(args.tokenizer_path)
-
+    # ── Load tokenizer from checkpoint (preferred) ──
     ckpt = torch.load(args.checkpoint, map_location=device)
     model_cfg = ckpt.get("config")
     if not model_cfg:
         with open(args.config, "r", encoding="utf-8") as f:
             model_cfg = yaml.safe_load(f)["model"]
 
+    from metamon.data.download import METAMON_CACHE_DIR
+
+    tokenizer_state = ckpt.get("tokenizer_state")
+    if tokenizer_state is not None:
+        tokenizer = PokemonTokenizer.from_state(tokenizer_state)
+        print(f"Loaded tokenizer from checkpoint (vocab={len(tokenizer)})")
+    else:
+        default_tok = os.path.join(METAMON_CACHE_DIR, "tokenizers",
+                                   "WorldModelObservationSpace-v1.json")
+        print(f"WARNING: checkpoint has no tokenizer_state — "
+              f"loading from {default_tok}")
+        tokenizer = PokemonTokenizer()
+        tokenizer.load_tokens_from_disk(default_tok)
+
+    vocab_size = ckpt.get("vocab_size", len(tokenizer))
+    pad_id = tokenizer.pad_token_id
+    bos_id = tokenizer["<bos>"]
+    eos_id = tokenizer["<eos>"]
+
     model = PairedJEPAModel(
-        vocab_size=ckpt.get("vocab_size", len(tokenizer)),
-        pad_id=tokenizer.pad_token_id,
-        bos_id=tokenizer["<bos>"],
-        eos_id=tokenizer["<eos>"],
+        vocab_size=vocab_size,
+        pad_id=pad_id,
+        bos_id=bos_id,
+        eos_id=eos_id,
         latent_dim=model_cfg.get("latent_dim", 192),
         action_latent_dim=model_cfg.get("action_latent_dim", 32),
         encoder_cfg=model_cfg.get("encoder", {}),

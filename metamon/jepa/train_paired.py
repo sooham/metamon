@@ -48,7 +48,6 @@ from metamon.jepa.model import (
     SIGREG_NUM_SLICES,
     PairedJEPAModel,
     compute_paired_losses,
-    sigreg,
 )
 
 
@@ -508,45 +507,6 @@ def _forward_paired(model: PairedJEPAModel, batch: dict[str, torch.Tensor]) -> d
     return outputs
 
 
-def _paired_sigreg_breakdown(
-    outputs: dict[str, torch.Tensor],
-    sigreg_num_slices: int,
-    sigreg_num_points: int,
-    sigreg_domain: float,
-) -> dict[str, float]:
-    state_current = (
-        sigreg(outputs["enc_p1_T"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["enc_p2_T"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    ) / 2
-    state_next_true = (
-        sigreg(outputs["enc_p1_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["enc_p2_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    ) / 2
-    state_context = (
-        sigreg(outputs["ctx_p1_T"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["ctx_p2_T"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    ) / 2
-    action_own = (
-        sigreg(outputs["p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    ) / 2
-    action_opponent = (
-        sigreg(outputs["actual_p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["actual_p1_action_from_p2_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    ) / 2
-    return {
-        "sigreg_state_current": state_current.item(),
-        "sigreg_state_next": state_next_true.item(),
-        "sigreg_state_context": state_context.item(),
-        "sigreg_action_own": action_own.item(),
-        "sigreg_action_opponent": action_opponent.item(),
-        "sigreg_state_loss": (state_current + state_next_true + state_context).item(),
-        "sigreg_action_loss": (action_own + action_opponent).item(),
-        "sigreg_total_detail": (
-            state_current + state_next_true + state_context
-            + action_own + action_opponent
-        ).item(),
-    }
 
 
 def _make_loader(
@@ -805,13 +765,6 @@ def train(args: argparse.Namespace) -> None:
             batch = _batch_to_device(batch, device)
             outputs = _forward_paired(model, batch)
             _, metrics = loss_from_outputs(outputs)
-            diagnostics = _paired_sigreg_breakdown(
-                outputs,
-                sigreg_num_slices,
-                sigreg_num_points,
-                sigreg_domain,
-            )
-            metrics.update(diagnostics)
             for key, value in metrics.items():
                 totals[key] = totals.get(key, 0.0) + value
             steps += 1
@@ -878,12 +831,6 @@ def train(args: argparse.Namespace) -> None:
                 tok_per_sec_wandb = tokens_since_wandb / elapsed if elapsed > 0 else 0
                 t_last_wandb = now
                 tokens_since_wandb = 0
-                diagnostics = _paired_sigreg_breakdown(
-                    outputs,
-                    sigreg_num_slices,
-                    sigreg_num_points,
-                    sigreg_domain,
-                )
                 wandb_run.log({
                     "train/tok_per_sec": tok_per_sec_wandb,
                     "train/loss": metrics["loss"],
@@ -903,11 +850,11 @@ def train(args: argparse.Namespace) -> None:
                     "train/sigreg_loss": metrics["sigreg_loss"],
                     "train/sigreg_state_loss": metrics["sigreg_state_loss"],
                     "train/sigreg_action_loss": metrics["sigreg_action_loss"],
-                    "train/sigreg_state_current": diagnostics["sigreg_state_current"],
-                    "train/sigreg_state_next": diagnostics["sigreg_state_next"],
-                    "train/sigreg_state_context": diagnostics["sigreg_state_context"],
-                    "train/sigreg_action_own": diagnostics["sigreg_action_own"],
-                    "train/sigreg_action_opponent": diagnostics["sigreg_action_opponent"],
+                    "train/sigreg_current": metrics["sigreg_current"],
+                    "train/sigreg_next_true": metrics["sigreg_next_true"],
+                    "train/sigreg_context": metrics["sigreg_context"],
+                    "train/sigreg_action_own": metrics["sigreg_action_own"],
+                    "train/sigreg_action_opponent": metrics["sigreg_action_opponent"],
                     "train/next_state_logvar_p1": metrics["next_state_logvar_p1"],
                     "train/next_state_logvar_p2": metrics["next_state_logvar_p2"],
                     "train/lr": optimizer.param_groups[0]["lr"],
@@ -922,12 +869,6 @@ def train(args: argparse.Namespace) -> None:
                 tok_per_sec = tokens_since_print / elapsed if elapsed > 0 else 0
                 t_last_print = now
                 tokens_since_print = 0
-                diagnostics = _paired_sigreg_breakdown(
-                    outputs,
-                    sigreg_num_slices,
-                    sigreg_num_points,
-                    sigreg_domain,
-                )
                 print(
                     f"  epoch {epoch:3d} | step {global_step:6d} | "
                     f"tok/s {tok_per_sec:,.0f} | "
@@ -946,12 +887,12 @@ def train(args: argparse.Namespace) -> None:
                     f"belief {metrics['rank_loss_belief']:.4f}, "
                     f"next {metrics['rank_loss_next']:.4f}] | "
                     f"sigreg_state {metrics['sigreg_state_loss']:.4f} "
-                    f"[cur {diagnostics['sigreg_state_current']:.4f}, "
-                    f"next {diagnostics['sigreg_state_next']:.4f}, "
-                    f"ctx {diagnostics['sigreg_state_context']:.4f}] | "
+                    f"[cur {metrics['sigreg_current']:.4f}, "
+                    f"next {metrics['sigreg_next_true']:.4f}, "
+                    f"ctx {metrics['sigreg_context']:.4f}] | "
                     f"sigreg_action {metrics['sigreg_action_loss']:.4f} "
-                    f"[own {diagnostics['sigreg_action_own']:.4f}, "
-                    f"opp {diagnostics['sigreg_action_opponent']:.4f}] | "
+                    f"[own {metrics['sigreg_action_own']:.4f}, "
+                    f"opp {metrics['sigreg_action_opponent']:.4f}] | "
                     f"logvar_next {metrics['next_state_logvar_p1']:.3f}/{metrics['next_state_logvar_p2']:.3f}"
                 )
 
@@ -990,6 +931,8 @@ def train(args: argparse.Namespace) -> None:
                             global_step=global_step,
                             config=model_cfg,
                             vocab_size=vocab_size,
+                            max_history_blocks=args.max_history_blocks,
+                            tokenizer_state=tokenizer.to_state(),
                         )
                         print(f"  best checkpoint -> {args.checkpoint}")
 
@@ -1047,6 +990,8 @@ def train(args: argparse.Namespace) -> None:
             global_step=global_step,
             config=model_cfg,
             vocab_size=vocab_size,
+            max_history_blocks=args.max_history_blocks,
+            tokenizer_state=tokenizer.to_state(),
         )
         if args.checkpoint and (not val_metrics or val_metrics.get("val_loss", float("inf")) < best_val_loss):
             best_val_loss = val_metrics.get("val_loss", avg.get("loss", best_val_loss))

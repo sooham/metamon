@@ -93,6 +93,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         heuristic: str = "max-self-state-delta",
         verbose: bool = True,
         verbose_blocks: bool = False,
+        max_history_blocks: int = 0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -101,7 +102,9 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         self._fmt = fmt
         self._heuristic = heuristic
         self._verbose = verbose
+        self._max_history_blocks = max_history_blocks  # 0 = unlimited
         TuiMixin._repl_verbose_blocks = verbose_blocks
+        TuiMixin._repl_max_history_blocks = max_history_blocks
         self._histories: dict[str, BattleHistory] = {}
         self._last_active_battle_tag: Optional[str] = None
         self._tui_register()
@@ -270,29 +273,69 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         return None
 
     def _opponent_action_block(self, move: str, *, cant: Optional[str] = None) -> np.ndarray:
-        """Build an opponent action token block, optionally with a cant=X token.
+        """Build an opponent action token block.
 
-        The training-data format for a cant'd opponent move is::
-
-            <opponent_chosen_move> blizzard cant=par <end_opponent_chosen_move>
-
-        where ``cant=par`` is a **single** token in the vocabulary.
+        Action blocks contain only the chosen move name — no outcome
+        tokens.  Outcomes (success / fail / cant <reason>) now live in
+        ``<last_turn_results>`` inside the *following* state block.
         """
-        words: list[str] = ["<opponent_chosen_move>"]
-        if cant is not None:
-            words.append(move)
-            words.append(f"cant={cant}")
-        else:
-            words.append(move)
-        words.append("<end_opponent_chosen_move>")
+        words: list[str] = ["<opponent_chosen_move>", move, "<end_opponent_chosen_move>"]
         return tokenize_words(self._tokenizer, words, warn_unknown=False)
 
     # ═══════════════════════════════════════════════════════════════════
     # Tensor encoding for JEPA forward pass
     # ═══════════════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _window_history(
+        state_blocks: list[np.ndarray],
+        player_actions: list[np.ndarray],
+        opponent_actions: list[np.ndarray],
+        max_hist: int,
+    ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
+        """Apply history windowing matching the training dataset's _resolve_window logic.
+
+        State index 0 is the team header (always retained).  Subsequent states
+        are indexed 1..S-1.  Actions connect state_{i+1}→state_{i+2}.
+
+        Returns (windowed_states, windowed_player_actions, windowed_opponent_actions).
+        """
+        if max_hist <= 0:
+            return state_blocks, player_actions, opponent_actions
+
+        S = len(state_blocks)         # total state blocks (incl. team header)
+        battle_start = 0
+        state_end = S
+
+        # Match _resolve_window logic from train_paired.py:
+        #   state_start = max(battle_start + 1, state_end - max_hist)
+        #   action_start = max(0, state_start - battle_start - 1)
+        #   action_end   = max(0, state_end - battle_start - 2)
+        state_start = max(battle_start + 1, state_end - max_hist)
+        action_start = max(0, state_start - battle_start - 1)
+        action_end = max(0, state_end - battle_start - 2)
+        action_end = max(action_start, action_end)
+
+        # _slice_state_window: always keep team header, then states [state_start, state_end)
+        windowed_states = [state_blocks[0]]
+        if state_start > battle_start + 1:
+            windowed_states.extend(state_blocks[state_start:state_end])
+        else:
+            windowed_states.extend(state_blocks[battle_start + 1:state_end])
+
+        windowed_player = player_actions[action_start:action_end]
+        windowed_opponent = opponent_actions[action_start:action_end]
+
+        return windowed_states, windowed_player, windowed_opponent
+
     def _encode_history_tensors(self, hist: BattleHistory):
         pad_id = self._tokenizer.pad_token_id
+
+        # Apply history windowing so the model sees the same context length it was trained on.
+        states, p_actions, o_actions = self._window_history(
+            hist.state_blocks, hist.player_actions, hist.opponent_actions,
+            self._max_history_blocks,
+        )
 
         def pad_blocks(blocks: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
             max_blocks = max(len(blocks), 1)
@@ -305,9 +348,9 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
                 valid[0, block_idx] = True
             return padded, valid
 
-        state_tokens, state_valid = pad_blocks(hist.state_blocks)
-        player_hist_tokens, player_hist_valid = pad_blocks(hist.player_actions)
-        opponent_hist_tokens, opponent_hist_valid = pad_blocks(hist.opponent_actions)
+        state_tokens, state_valid = pad_blocks(states)
+        player_hist_tokens, player_hist_valid = pad_blocks(p_actions)
+        opponent_hist_tokens, opponent_hist_valid = pad_blocks(o_actions)
         return (
             state_tokens,
             state_valid,
