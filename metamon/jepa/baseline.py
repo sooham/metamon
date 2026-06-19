@@ -33,6 +33,7 @@ _shared_model: Optional[PairedJEPAModel] = None
 _shared_tokenizer: Optional[PokemonTokenizer] = None
 _shared_fmt: str = "gen1ou"
 _shared_heuristic: str = "max-rank"
+_shared_max_history_blocks: int = 0
 _registered: bool = False
 
 
@@ -41,14 +42,17 @@ def register_jepa_baseline(
     tokenizer: PokemonTokenizer,
     fmt: str = "gen1ou",
     heuristic: str = "max-rank",
+    max_history_blocks: int = 0,
 ) -> None:
     """Register JEPA as a baseline so it can be used in head2head / compete."""
-    global _shared_model, _shared_tokenizer, _shared_fmt, _shared_heuristic, _registered
+    global _shared_model, _shared_tokenizer, _shared_fmt, _shared_heuristic
+    global _shared_max_history_blocks, _registered
 
     _shared_model = model
     _shared_tokenizer = tokenizer
     _shared_fmt = fmt
     _shared_heuristic = heuristic
+    _shared_max_history_blocks = max_history_blocks
 
     if not _registered:
         # Register for all gens/formats — the JEPA model is format-specific
@@ -86,6 +90,7 @@ class JEPABaseline(Baseline):
             heuristic=_shared_heuristic,
             verbose=False,
             verbose_blocks=False,
+            max_history_blocks=_shared_max_history_blocks,
             **inner_kwargs,
         )
         # Share the same histories dict so the TUI (if active) can see battles.

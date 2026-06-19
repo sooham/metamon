@@ -91,6 +91,9 @@ def main():
     bos_id = tokenizer["<bos>"]
     eos_id = tokenizer["<eos>"]
 
+    # Extract training-time windowing parameter (0 = unlimited).
+    max_history_blocks = ckpt.get("max_history_blocks", 0)
+
     model = PairedJEPAModel(
         vocab_size=vocab_size,
         pad_id=pad_id,
@@ -135,7 +138,8 @@ def main():
         baseline_user = f"baseline-{args.baseline}"
 
     # ── Register JEPA as a baseline (uses shared model) ──
-    register_jepa_baseline(model, tokenizer, fmt=args.format, heuristic=args.heuristic)
+    register_jepa_baseline(model, tokenizer, fmt=args.format, heuristic=args.heuristic,
+                          max_history_blocks=max_history_blocks)
 
     # ── Create the JEPA player via the baseline registry ──
     JEPACls = get_baseline("JEPABaseline")
