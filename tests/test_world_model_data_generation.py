@@ -246,7 +246,7 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
         np.array([5, 22, 6], dtype=np.int16),
     )
     np.testing.assert_array_equal(
-        second["p2_action_from_p1_perspective"],
+        second["actual_p2_action_from_p1_perspective"],
         np.array([7, 22, 8], dtype=np.int16),
     )
     np.testing.assert_array_equal(
@@ -337,7 +337,7 @@ def test_compute_paired_losses_targets_predicted_opponent_actions():
         "pred_p1_T": state,
         "p1_action": state,
         "p2_action": state,
-        "p2_action_from_p1_perspective": torch.tensor([[1.0, 0.0]]),
+        "actual_p2_action_from_p1_perspective": torch.tensor([[1.0, 0.0]]),
         "actual_p1_action_from_p2_perspective": torch.tensor([[0.0, 2.0]]),
         "pred_p2_action": torch.tensor([[1.0, 0.0]]),
         "pred_p1_action": torch.tensor([[0.0, 2.0]]),
@@ -379,7 +379,7 @@ def test_compute_paired_losses_supports_gaussian_beliefs_and_rank():
         "pred_p1_T": state,
         "p1_action": action,
         "p2_action": action,
-        "p2_action_from_p1_perspective": action,
+        "actual_p2_action_from_p1_perspective": action,
         "actual_p1_action_from_p2_perspective": action,
         "pred_p2_action_mu": action,
         "pred_p2_action_logvar": action,

@@ -67,6 +67,12 @@ class BattleHistory:
     # Convenience aliases for the most recent turn (kept for backward compat).
     last_diag: Optional[dict] = None
     last_action_names: Optional[dict[int, str]] = None
+    # Per-turn structured diagnostics for TUI REPL views.
+    turn_contexts: list[TurnContext] = field(default_factory=list)
+    turn_diagnostics: list[TuiDiagnostic] = field(default_factory=list)
+    # Battle outcome tracking.
+    finished: bool = False
+    outcome: Optional[str] = None  # "win", "loss", "tie", or None
     # Indices into raw_messages where each turn started (for per‑turn raw log view).
     turn_msg_boundaries: list[int] = field(default_factory=list)
 

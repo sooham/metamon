@@ -122,7 +122,16 @@ def load_prerelease_model_to_cpu(model_filename):
     path = os.path.join(os.path.dirname(__file__), "pretrained_models", model_filename)
     model = torch.load(path, map_location="cpu", weights_only=False)
     new_tokenizer = PokemonTokenizer()
-    new_tokenizer.load_tokens(model.turn_embedding.tokenizer._data)
+    # Load the original 0‑based token→id dict *without* shifting to
+    # 1‑based and *without* adding world‑model structural tokens.
+    # TokenEmbedding.forward does (tokens + 1) which expects 0‑based
+    # input; the original training used token id 0 as unknown/pad.
+    data = dict(model.turn_embedding.tokenizer._data)
+    new_tokenizer._initial_ids = data
+    new_tokenizer._new_ids = {}
+    new_tokenizer.unknown_token_id = 0
+    new_tokenizer.pad_token_id = 0
+    new_tokenizer._frozen = True
     model.turn_embedding.tokenizer = new_tokenizer
     model.turn_embedding.token_embedding.tokenizer = new_tokenizer
     model.tokenizer = new_tokenizer

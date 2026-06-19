@@ -57,7 +57,6 @@ def register_jepa_baseline(
         _registered = True
 
 
-@register_baseline()
 class JEPABaseline(Baseline):
     """Baseline wrapper around JEPAWorldModelPlayer.
 
@@ -71,6 +70,14 @@ class JEPABaseline(Baseline):
             raise RuntimeError(
                 "JEPA model not loaded. Call register_jepa_baseline(model, tokenizer) first."
             )
+        # The inner JEPAWorldModelPlayer is logic-only; it must NOT
+        # receive server/auth kwargs (account_configuration,
+        # server_configuration) or it will double-connect.
+        inner_kwargs = {
+            k: v for k, v in kwargs.items()
+            if k not in ("account_configuration", "server_configuration",
+                         "start_timer_on_battle_start")
+        }
         self._jepa_player = JEPAWorldModelPlayer(
             *args,
             model=_shared_model,
@@ -79,7 +86,7 @@ class JEPABaseline(Baseline):
             heuristic=_shared_heuristic,
             verbose=False,
             verbose_blocks=False,
-            **kwargs,
+            **inner_kwargs,
         )
         # Share the same histories dict so the TUI (if active) can see battles.
         self._histories = self._jepa_player._histories
@@ -88,23 +95,21 @@ class JEPABaseline(Baseline):
     def choose_move(self, battle: AbstractBattle) -> BattleOrder:
         return self._jepa_player.choose_move(battle)
 
+    def randomize(self) -> None:
+        pass
+
     def reset_battles(self) -> None:
-        super().reset_battles()
+        try:
+            super().reset_battles()
+        except OSError:
+            # Stale battles from a previous run may still be on the server.
+            # Force-clear the battle dict so we can start fresh.
+            self._battles = {}
         self._jepa_player.reset_battles()
 
     # Forward battle-count properties to the wrapped JEPA player.
-    @property
-    def n_won_battles(self) -> int:
-        return self._jepa_player.n_won_battles
+    # NOTE: The outer JEPABaseline (a Player connected to the server) tracks
+    # wins/losses via the base Player mechanism.  The inner player is logic-only
+    # and has no battle tracking, so we must NOT delegate these properties.
+    # Removing the overrides lets the base Player counters work correctly.
 
-    @property
-    def n_lost_battles(self) -> int:
-        return self._jepa_player.n_lost_battles
-
-    @property
-    def n_tied_battles(self) -> int:
-        return self._jepa_player.n_tied_battles
-
-    @property
-    def n_finished_battles(self) -> int:
-        return self._jepa_player.n_finished_battles

@@ -290,6 +290,8 @@ class TuiMixin:
     # ═══════════════════════════════════════════════════════════════════
 
     def _process_repl_keys(self) -> None:
+        if TuiMixin._repl_lock is None or not TuiMixin._repl_running:
+            return
         while True:
             with self._repl_lock:
                 if not self._repl_keys:

@@ -1097,7 +1097,7 @@ class PairedJEPAModel(nn.Module):
         p2_opponent_hist_T1_valid: torch.Tensor,
         p1_action_tokens: torch.Tensor,
         p2_action_tokens: torch.Tensor,
-        p2_action_from_p1_perspective_tokens: torch.Tensor,
+        actual_p2_action_from_p1_perspective_tokens: torch.Tensor,
         actual_p1_action_from_p2_perspective_tokens: torch.Tensor,
         sample_beliefs: Optional[bool] = None,
     ) -> dict[str, torch.Tensor]:
@@ -1126,8 +1126,8 @@ class PairedJEPAModel(nn.Module):
 
         p1_action = self.action_encoder(p1_action_tokens)
         p2_action = self.action_encoder(p2_action_tokens)
-        p2_action_from_p1_perspective = self.action_encoder(
-            p2_action_from_p1_perspective_tokens
+        actual_p2_action_from_p1_perspective = self.action_encoder(
+            actual_p2_action_from_p1_perspective_tokens
         )
         actual_p1_action_from_p2_perspective = self.action_encoder(
             actual_p1_action_from_p2_perspective_tokens
@@ -1167,7 +1167,7 @@ class PairedJEPAModel(nn.Module):
             "pred_p1_T": pred_p1_T,
             "p1_action": p1_action,
             "p2_action": p2_action,
-            "p2_action_from_p1_perspective": p2_action_from_p1_perspective,
+            "actual_p2_action_from_p1_perspective": actual_p2_action_from_p1_perspective,
             "actual_p1_action_from_p2_perspective": actual_p1_action_from_p2_perspective,
             "pred_p2_action_mu": pred_p2_action_mu,
             "pred_p2_action_logvar": pred_p2_action_logvar,
@@ -1332,7 +1332,7 @@ def compute_paired_losses(
 
     action_loss_p1_to_p2 = F.mse_loss(
         outputs["pred_p2_action_mu"],
-        outputs["p2_action_from_p1_perspective"],
+        outputs["actual_p2_action_from_p1_perspective"],
     )
     action_loss_p2_to_p1 = F.mse_loss(
         outputs["pred_p1_action_mu"],
@@ -1390,7 +1390,7 @@ def compute_paired_losses(
     sigreg_action_true = (
         sigreg(outputs["p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        + sigreg(outputs["actual_p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["actual_p1_action_from_p2_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 4
     sigreg_action_pred = (

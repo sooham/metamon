@@ -274,7 +274,7 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
                 "p2_opponent_hist_T1": sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_aT1_s, p2_aT1_e),
                 "p1_action": sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_ai, p1_ai + 1)[0],
                 "p2_action": sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_ai, p2_ai + 1)[0],
-                "p2_action_from_p1_perspective": sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_ai, p1_ai + 1)[0],
+                "actual_p2_action_from_p1_perspective": sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_ai, p1_ai + 1)[0],
                 "actual_p1_action_from_p2_perspective": sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_ai, p2_ai + 1)[0],
                 "p1_won": bool(data["p1_won"][battle_id]),
                 "p2_won": bool(data["p2_won"][battle_id]),
@@ -320,7 +320,7 @@ BLOCK_KEYS = (
 ACTION_KEYS = (
     "p1_action",
     "p2_action",
-    "p2_action_from_p1_perspective",
+    "actual_p2_action_from_p1_perspective",
     "actual_p1_action_from_p2_perspective",
 )
 SCALAR_KEYS = (
@@ -500,7 +500,7 @@ def _forward_paired(model: PairedJEPAModel, batch: dict[str, torch.Tensor]) -> d
         batch["p2_opponent_hist_T1"], batch["p2_opponent_hist_T1_valid"],
         batch["p1_action"],
         batch["p2_action"],
-        batch["p2_action_from_p1_perspective"],
+        batch["actual_p2_action_from_p1_perspective"],
         batch["actual_p1_action_from_p2_perspective"],
     )
     outputs["p1_won"] = batch["p1_won"]
@@ -535,7 +535,7 @@ def _paired_sigreg_breakdown(
         + sigreg(outputs["p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 2
     action_opponent = (
-        sigreg(outputs["p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
+        sigreg(outputs["actual_p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["actual_p1_action_from_p2_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 2
     action_pred = (
@@ -860,7 +860,7 @@ def train(args: argparse.Namespace) -> None:
             # count all 4 state tensors + single-action tokens.
             batch_tokens = 0
             for key in ("p1_state_T", "p2_state_T", "p1_state_T1", "p2_state_T1",
-                        "p1_action", "p2_action", "p2_action_from_p1_perspective",
+                        "p1_action", "p2_action", "actual_p2_action_from_p1_perspective",
                         "actual_p1_action_from_p2_perspective"):
                 batch_tokens += int((batch[key] != pad_id).sum().item())
             tokens_since_print += batch_tokens
