@@ -194,9 +194,8 @@ inspect-wm-state:
 # Automatically builds the WorldModel tokenizer if it doesn't exist yet.
 # Aborts early if parsed replays are missing for any requested format.
 #
-# Each output .npz shard contains paired POV transition data by default:
+# Each output .npz shard contains paired POV transition data:
 #   p1_* / p2_* state + action arrays, plus aligned transition rows.
-# Set WM_PAIRED_POV=false to keep the legacy single-POV transition shards.
 #
 # Usage:
 #   make wm-dataset FORMATS=gen1ou
@@ -205,7 +204,6 @@ WM_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/world-model-samples
 WM_PROCESSES ?= $(N_THREADS)
 WM_VAL_SPLIT ?= 0.05
 WM_SEED ?= 42
-WM_PAIRED_POV ?= true
 TOKENIZER_FILE := $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
 wm-dataset:
 	@# ---- 1. Check parsed replays exist for every format ----
@@ -235,8 +233,7 @@ wm-dataset:
 		--formats $(FORMATS) \
 		--val_split $(WM_VAL_SPLIT) \
 		--seed $(WM_SEED) \
-		--processes $(WM_PROCESSES) \
-		$(if $(filter true,$(WM_PAIRED_POV)),--paired_pov)
+		--processes $(WM_PROCESSES)
 
 # SL targets removed — SL model deleted.
 

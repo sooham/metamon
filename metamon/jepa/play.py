@@ -44,6 +44,18 @@ def random_battle_format_for(fmt: str) -> str:
     return f"{match.group(1)}randombattle"
 
 
+def _patch_null_max_seq_len(model_cfg: dict) -> None:
+    """Replace null max_seq_len with safe defaults for YAML-fallback configs.
+
+    Checkpoints saved by train_paired.py already contain concrete integers;
+    this only matters when loading the standalone default.yaml directly.
+    """
+    for section, fallback in [("encoder", 256), ("temporal_encoder", 6144)]:
+        sec = model_cfg.setdefault(section, {})
+        if sec.get("max_seq_len") is None:
+            sec["max_seq_len"] = fallback
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Play Showdown with JEPA diagnostics.")
     parser.add_argument("--checkpoint", required=True)
@@ -90,6 +102,9 @@ async def main() -> None:
     if not model_cfg:
         with open(args.config, "r", encoding="utf-8") as f:
             model_cfg = yaml.safe_load(f)["model"]
+    # Ensure max_seq_len is never None (YAML null) — the model constructor
+    # needs explicit ints or its own defaults.
+    _patch_null_max_seq_len(model_cfg)
 
     # ── Load tokenizer from checkpoint ──
     tokenizer = require_tokenizer_from_checkpoint(ckpt, args.checkpoint)

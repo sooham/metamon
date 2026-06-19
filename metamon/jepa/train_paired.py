@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import os
 import time
 from pathlib import Path
@@ -594,12 +595,49 @@ def train(args: argparse.Namespace) -> None:
     sigreg_num_points = model_cfg.get("sigreg_num_points", SIGREG_NUM_POINTS)
     sigreg_domain = model_cfg.get("sigreg_domain", SIGREG_DOMAIN)
     context_length = model_cfg.get("encoder", {}).get("max_seq_len", CONTEXT_LENGTH)
+    temporal_max_seq_len = model_cfg.get("temporal_encoder", {}).get("max_seq_len", 6144)
+    # Defaults if config has null (match previous default.yaml concrete values)
+    if context_length is None:
+        context_length = 256
+    if temporal_max_seq_len is None:
+        temporal_max_seq_len = 6144
+
+    # ── auto-detect max_seq_len from dataset sequence_stats.json ──
+    # The stats file already includes a 1.2× safety multiplier on max values.
+    auto_state_block_max = None
+    auto_temporal_max = None
+    auto_safety_multiplier = None
+    for fmt in args.formats:
+        stats_path = os.path.join(args.data_root, fmt, "sequence_stats.json")
+        if os.path.exists(stats_path):
+            with open(stats_path, "r") as f:
+                seq_stats = json.load(f)
+            sl = seq_stats["state_block_len"]["max"]
+            tl = seq_stats["temporal_sequence_len"]["max"]
+            if auto_state_block_max is None or sl > auto_state_block_max:
+                auto_state_block_max = sl
+            if auto_temporal_max is None or tl > auto_temporal_max:
+                auto_temporal_max = tl
+            if auto_safety_multiplier is None:
+                auto_safety_multiplier = seq_stats.get("safety_multiplier")
+    if auto_state_block_max is not None:
+        # The inflated max already includes safety margin; use it directly.
+        if auto_state_block_max > context_length:
+            context_length = auto_state_block_max
+        model_cfg.setdefault("encoder", {})["max_seq_len"] = context_length
+    if auto_temporal_max is not None:
+        if auto_temporal_max > temporal_max_seq_len:
+            temporal_max_seq_len = auto_temporal_max
+        model_cfg.setdefault("temporal_encoder", {})["max_seq_len"] = temporal_max_seq_len
+    if auto_safety_multiplier is not None:
+        print(f"Auto-detected max_seq_len from sequence_stats.json (safety ×{auto_safety_multiplier})")
 
     print(f"Vocabulary size: {vocab_size}")
     print(f"Special tokens: bos={bos_id} eos={eos_id} pad={pad_id}")
     print(f"Structural token IDs: {structural_ids}")
     print(f"Latent dim: {latent_dim}  action_latent_dim: {action_latent_dim}")
     print(f"CONTEXT_LENGTH (encoder max_seq_len): {context_length}")
+    print(f"Temporal max_seq_len: {temporal_max_seq_len}")
 
     train_shards = PairedJEPADataset.discover(args.data_root, args.formats, "train")
     val_shards = PairedJEPADataset.discover(
