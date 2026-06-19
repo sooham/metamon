@@ -963,6 +963,13 @@ def main() -> None:
             continue
 
         groups = group_txt_files(txt_files)
+        # Drop battles with only one POV — paired training needs both sides.
+        incomplete = {k for k, v in groups.items() if len(v) < 2}
+        if incomplete:
+            for k in incomplete:
+                del groups[k]
+            print(f"  Dropped {len(incomplete)} battles with only one POV file")
+
         split_rng = np.random.default_rng(args.seed + format_id_map[fmt])
         train_keys, val_keys, train_files, val_files = split_groups(
             groups, args.val_split, split_rng
@@ -982,9 +989,11 @@ def main() -> None:
             train_files = [path for key in train_keys for path in groups[key]]
             val_files = [path for key in val_keys for path in groups[key]]
 
+        pairs_total = len(groups) * 2
+        dropped_povs = len(txt_files) - pairs_total
         print(
-            f"\nProcessing {fmt}: {len(txt_files)} POV files, "
-            f"{len(groups)} battle groups"
+            f"\nProcessing {fmt}: {pairs_total} POV files ({len(groups)} complete battle pairs), "
+            f"{dropped_povs} dropped (single-POV)"
         )
         print(
             f"  Split: {len(train_keys)} train / {len(val_keys)} val groups "
@@ -1055,7 +1064,7 @@ def main() -> None:
             "num_raw_battle_groups": len(groups),
             "train_raw_battle_groups": len(train_keys),
             "val_raw_battle_groups": len(val_keys),
-            "num_parsed_files": len(txt_files),
+            "num_parsed_files": pairs_total,
             "train_parsed_files": len(train_files),
             "val_parsed_files": len(val_files),
             "num_battles": total_battles,
