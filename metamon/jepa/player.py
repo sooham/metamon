@@ -339,13 +339,11 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
             player_hist_tokens, player_hist_valid,
             opponent_hist_tokens, opponent_hist_valid,
         )
-        pred_opponent_state_mu, pred_opponent_state_logvar = self._jepa.opponent_state_predictor(
+        (pred_opponent_state_mu, pred_opponent_state_logvar,
+         pred_opponent_action_mu, pred_opponent_action_logvar) = self._jepa.opponent_belief_predictor(
             c_self, z_self,
         )
         pred_opponent_state = pred_opponent_state_mu
-        pred_opponent_action_mu, pred_opponent_action_logvar = self._jepa.action_predictor(
-            z_self, pred_opponent_state,
-        )
         pred_opponent_action = pred_opponent_action_mu
 
         z_self_norm = torch.norm(z_self, dim=-1).item()
@@ -361,7 +359,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
             pa = action_block(self._tokenizer, name, opponent=False)
             pa_tensor = torch.from_numpy(pa.astype(np.int64)).unsqueeze(0).to(device)
             own_action = self._jepa.action_encoder(pa_tensor)
-            pred_next = self._jepa.next_state_predictor(
+            pred_next, _ = self._jepa.next_state_predictor(
                 z_self, own_action, pred_opponent_state, pred_opponent_action,
             )
             next_norm = torch.norm(pred_next, dim=-1).item()
@@ -371,7 +369,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
                 rank_score = self._jepa.rank_head(pred_next, pred_opponent_state).item()
                 delta = rank_score
             elif self._heuristic == "max-opponent-state-delta":
-                next_pred_opponent, _ = self._jepa.opponent_state_predictor(c_self, pred_next)
+                next_pred_opponent, _ = self._jepa.opponent_belief_predictor(c_self, pred_next)[:2]
                 delta = torch.norm(next_pred_opponent - pred_opponent_state, dim=-1).item()
                 rank_score = None
             else:

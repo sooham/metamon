@@ -86,8 +86,10 @@ def main():
         encoder_cfg=model_cfg.get("encoder", {}),
         temporal_encoder_cfg=model_cfg.get("temporal_encoder", {}),
         action_encoder_cfg=model_cfg.get("action_encoder", {}),
-        opponent_state_predictor_cfg=model_cfg.get("opponent_state_predictor", {}),
-        action_predictor_cfg=model_cfg.get("paired_action_predictor", model_cfg.get("action_predictor", {})),
+        opponent_belief_predictor_cfg=model_cfg.get(
+            "opponent_belief_predictor",
+            model_cfg.get("opponent_state_predictor", {})
+        ),
         next_state_predictor_cfg=model_cfg.get("next_state_predictor", {}),
         rank_head_cfg=model_cfg.get("rank_head", {}),
     ).to(device)

@@ -668,38 +668,52 @@ class JEPATemporalEncoder(nn.Module):
         return self.proj_e(pooled)
 
 
-class JEPAOpponentStatePredictor(nn.Module):
-    """Gaussian belief over the hidden opponent current-state latent.
+class JEPAOpponentBeliefPredictor(nn.Module):
+    """Shared-backbone predictor for opponent state AND opponent action beliefs.
 
-    The history/context latent carries what has been revealed so far; the
-    current-state latent carries the visible board right now.  The output is a
-    diagonal Gaussian in the same latent space as ``JEPAEncoder``.
+    Takes (history_context, current_state) through a shared MLP backbone,
+    then forks into two heads:
 
-    The mean is trained via MSE against the target latent; the variance is
-    trained only via downstream gradients through reparameterized samples.
+      - State head:  diagonal Gaussian over opponent current-state latent
+      - Action head: diagonal Gaussian over opponent next-action latent
+
+    Both means are trained via MSE against their respective targets; the
+    variances are trained only via downstream gradients through reparameterized
+    samples (and, for the action head, through the next-state predictor).
+
+    Merging replaces the separate ``JEPAOpponentStatePredictor`` and
+    ``JEPAPairedActionPredictor`` with a single module that learns a shared
+    representation of the opponent from the observable history + current board.
     """
 
     def __init__(
         self,
         latent_dim: int = LATENT_DIM,
+        action_latent_dim: int = ACTION_LATENT_DIM,
         hidden_dim: int | None = None,
-        n_layers: int = 3,
+        n_layers: int = 4,
     ):
         super().__init__()
         hidden_dim = hidden_dim or (4 * latent_dim)
-        layers: list[nn.Module] = []
-        in_dim = 2 * latent_dim
-        for i in range(n_layers):
-            if i < n_layers - 1:
-                layers.extend([
-                    nn.Linear(in_dim, hidden_dim),
-                    nn.LayerNorm(hidden_dim),
-                    nn.GELU(),
-                ])
-                in_dim = hidden_dim
-            else:
-                layers.append(nn.Linear(in_dim, 2 * latent_dim))
-        self.net = nn.Sequential(*layers)
+
+        # ── Shared backbone ──
+        in_dim = 2 * latent_dim  # [history_context, current_state]
+        backbone_layers: list[nn.Module] = []
+        for i in range(n_layers - 1):
+            backbone_layers.extend([
+                nn.Linear(in_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+            ])
+            in_dim = hidden_dim
+        self.backbone = nn.Sequential(*backbone_layers)
+
+        # ── State head ──
+        self.state_head = nn.Linear(hidden_dim, 2 * latent_dim)
+
+        # ── Action head ──
+        self.action_head = nn.Linear(hidden_dim, 2 * action_latent_dim)
+
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -712,59 +726,26 @@ class JEPAOpponentStatePredictor(nn.Module):
         self,
         history_context: torch.Tensor,
         current_state: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        mu, logvar = self.net(torch.cat([history_context, current_state], dim=-1)).chunk(2, dim=-1)
-        return mu, logvar
-
-
-class JEPAPairedActionPredictor(nn.Module):
-    """Gaussian belief over opponent action latent from paired current states.
-
-    The mean is trained via MSE against the target action latent; the variance
-    is trained only via downstream gradients through reparameterized samples.
-    """
-
-    def __init__(
-        self,
-        latent_dim: int = LATENT_DIM,
-        action_latent_dim: int = ACTION_LATENT_DIM,
-        hidden_dim: int | None = None,
-        n_layers: int = 3,
-    ):
-        super().__init__()
-        hidden_dim = hidden_dim or (4 * latent_dim)
-        layers: list[nn.Module] = []
-        in_dim = 2 * latent_dim
-        for i in range(n_layers):
-            if i < n_layers - 1:
-                layers.extend([
-                    nn.Linear(in_dim, hidden_dim),
-                    nn.LayerNorm(hidden_dim),
-                    nn.GELU(),
-                ])
-                in_dim = hidden_dim
-            else:
-                layers.append(nn.Linear(in_dim, 2 * action_latent_dim))
-        self.net = nn.Sequential(*layers)
-        self.apply(self._init_weights)
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
-
-    def forward(
-        self,
-        current_state: torch.Tensor,
-        opponent_state: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        mu, logvar = self.net(torch.cat([current_state, opponent_state], dim=-1)).chunk(2, dim=-1)
-        return mu, logvar
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Returns (state_mu, state_logvar, action_mu, action_logvar)."""
+        shared = self.backbone(torch.cat([history_context, current_state], dim=-1))
+        state_mu, state_logvar = self.state_head(shared).chunk(2, dim=-1)
+        action_mu, action_logvar = self.action_head(shared).chunk(2, dim=-1)
+        return state_mu, state_logvar, action_mu, action_logvar
 
 
 class JEPANextStatePredictor(nn.Module):
-    """Predict next self-POV state latent from current paired state/action latents."""
+    """Diagonal-Gaussian predictor for the next self-POV state latent.
+
+    Takes current self-state, own action, predicted opponent state, and
+    predicted opponent action — all of which feed through a small MLP that
+    outputs mu and logvar for the next-state latent.
+
+    The world is stochastic (damage rolls, status effects, speed ties, …),
+    so a deterministic predictor would be misspecified.  The mean is trained
+    via MSE against the target encoder latent; the variance is trained only
+    via downstream gradients through reparameterized samples.
+    """
 
     def __init__(
         self,
@@ -786,7 +767,7 @@ class JEPANextStatePredictor(nn.Module):
                 ])
                 in_dim = hidden_dim
             else:
-                layers.append(nn.Linear(in_dim, latent_dim))
+                layers.append(nn.Linear(in_dim, 2 * latent_dim))
         self.net = nn.Sequential(*layers)
         self.apply(self._init_weights)
 
@@ -802,13 +783,15 @@ class JEPANextStatePredictor(nn.Module):
         own_action: torch.Tensor,
         opponent_state: torch.Tensor,
         opponent_action: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.net(torch.cat([
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        x = self.net(torch.cat([
             current_state,
             own_action,
             opponent_state,
             opponent_action,
         ], dim=-1))
+        mu, logvar = x.chunk(2, dim=-1)
+        return mu, logvar
 
 
 class JEPAPairwiseRankHead(nn.Module):
@@ -876,6 +859,7 @@ class PairedJEPAModel(nn.Module):
         action_predictor_cfg: Optional[dict] = None,
         next_state_predictor_cfg: Optional[dict] = None,
         rank_head_cfg: Optional[dict] = None,
+        opponent_belief_predictor_cfg: Optional[dict] = None,
         **kwargs,
     ):
         super().__init__()
@@ -908,14 +892,16 @@ class PairedJEPAModel(nn.Module):
             action_latent_dim=action_latent_dim,
             **temp_cfg,
         )
-        self.opponent_state_predictor = JEPAOpponentStatePredictor(
-            latent_dim=latent_dim,
-            **(opponent_state_predictor_cfg or {}),
-        )
-        self.action_predictor = JEPAPairedActionPredictor(
+        # ── Merged opponent belief predictor (state + action) ──
+        # Replaces the old separate opponent_state_predictor and action_predictor.
+        # Config: prefer the new "opponent_belief_predictor" key; fall back to
+        # "opponent_state_predictor" for backward compat (ignoring action_predictor
+        # cfg since the merged backbone subsumes it).
+        belief_cfg = opponent_belief_predictor_cfg or opponent_state_predictor_cfg or {}
+        self.opponent_belief_predictor = JEPAOpponentBeliefPredictor(
             latent_dim=latent_dim,
             action_latent_dim=action_latent_dim,
-            **(action_predictor_cfg or {}),
+            **belief_cfg,
         )
         self.next_state_predictor = JEPANextStatePredictor(
             latent_dim=latent_dim,
@@ -1119,10 +1105,15 @@ class PairedJEPAModel(nn.Module):
             p2_opponent_hist_T, p2_opponent_hist_T_valid,
         )
 
-        pred_p2_T_mu, pred_p2_T_logvar = self.opponent_state_predictor(ctx_p1_T, z_p1_T)
-        pred_p1_T_mu, pred_p1_T_logvar = self.opponent_state_predictor(ctx_p2_T, z_p2_T)
+        # ── Predict opponent state AND action from shared backbone ──
+        (pred_p2_T_mu, pred_p2_T_logvar,
+         pred_p2_action_mu, pred_p2_action_logvar) = self.opponent_belief_predictor(ctx_p1_T, z_p1_T)
+        (pred_p1_T_mu, pred_p1_T_logvar,
+         pred_p1_action_mu, pred_p1_action_logvar) = self.opponent_belief_predictor(ctx_p2_T, z_p2_T)
         pred_p2_T = self.reparameterize(pred_p2_T_mu, pred_p2_T_logvar, sample)
         pred_p1_T = self.reparameterize(pred_p1_T_mu, pred_p1_T_logvar, sample)
+        pred_p2_action = self.reparameterize(pred_p2_action_mu, pred_p2_action_logvar, sample)
+        pred_p1_action = self.reparameterize(pred_p1_action_mu, pred_p1_action_logvar, sample)
 
         p1_action = self.action_encoder(p1_action_tokens)
         p2_action = self.action_encoder(p2_action_tokens)
@@ -1133,17 +1124,15 @@ class PairedJEPAModel(nn.Module):
             actual_p1_action_from_p2_perspective_tokens
         )
 
-        pred_p2_action_mu, pred_p2_action_logvar = self.action_predictor(z_p1_T, pred_p2_T)
-        pred_p1_action_mu, pred_p1_action_logvar = self.action_predictor(z_p2_T, pred_p1_T)
-        pred_p2_action = self.reparameterize(pred_p2_action_mu, pred_p2_action_logvar, sample)
-        pred_p1_action = self.reparameterize(pred_p1_action_mu, pred_p1_action_logvar, sample)
-
-        pred_p1_T1 = self.next_state_predictor(
+        # ── Predict next visible state (stochastic) ──
+        pred_p1_T1_mu, pred_p1_T1_logvar = self.next_state_predictor(
             z_p1_T, p1_action, pred_p2_T, pred_p2_action
         )
-        pred_p2_T1 = self.next_state_predictor(
+        pred_p2_T1_mu, pred_p2_T1_logvar = self.next_state_predictor(
             z_p2_T, p2_action, pred_p1_T, pred_p1_action
         )
+        pred_p1_T1 = self.reparameterize(pred_p1_T1_mu, pred_p1_T1_logvar, sample)
+        pred_p2_T1 = self.reparameterize(pred_p2_T1_mu, pred_p2_T1_logvar, sample)
 
         rank_p1_teacher = self.rank_head(z_p1_T, z_p2_T)
         rank_p2_teacher = self.rank_head(z_p2_T, z_p1_T)
@@ -1175,6 +1164,10 @@ class PairedJEPAModel(nn.Module):
             "pred_p1_action_logvar": pred_p1_action_logvar,
             "pred_p2_action": pred_p2_action,
             "pred_p1_action": pred_p1_action,
+            "pred_p1_T1_mu": pred_p1_T1_mu,
+            "pred_p1_T1_logvar": pred_p1_T1_logvar,
+            "pred_p2_T1_mu": pred_p2_T1_mu,
+            "pred_p2_T1_logvar": pred_p2_T1_logvar,
             "pred_p1_T1": pred_p1_T1,
             "pred_p2_T1": pred_p2_T1,
             "rank_p1_teacher": rank_p1_teacher,
@@ -1303,6 +1296,8 @@ def pairwise_rank_loss(
 def compute_paired_losses(
     outputs: dict[str, torch.Tensor],
     lambda_sigreg: float = 0.1,
+    lambda_sigreg_state: float | None = None,
+    lambda_sigreg_action: float | None = None,
     lambda_opponent_state: float = 1.0,
     lambda_action: float = 1.0,
     lambda_next_state: float = 1.0,
@@ -1316,11 +1311,21 @@ def compute_paired_losses(
     Loss terms:
       - opponent_state_loss: MSE between predicted mu and target latent
       - action_loss: MSE between predicted mu and target action latent
-      - next_state_loss: predict next visible POV latent conditioned on own action
-        and predicted opponent state/action
+      - next_state_loss: MSE between predicted next-state mu and target latent
+        (the next-state predictor is stochastic — mu+logvar — because the
+        world has inherent randomness: damage rolls, status, speed ties, …)
       - rank_loss: pairwise ranking from the winner label
-      - SIGReg on current, next, context, prediction, and action latents
+      - SIGReg on state encoder outputs (current, next, context).
+        Predicted next-state latents are NOT regularised — they are Gaussian
+        samples (mu + ε·σ) by construction.
+
+    If lambda_sigreg_state/lambda_sigreg_action are None, both fall back to
+    lambda_sigreg for backward compatibility.
     """
+    if lambda_sigreg_state is None:
+        lambda_sigreg_state = lambda_sigreg
+    if lambda_sigreg_action is None:
+        lambda_sigreg_action = lambda_sigreg
     enc_p1_T = outputs["enc_p1_T"]
     enc_p2_T = outputs["enc_p2_T"]
     enc_p1_T1 = outputs["enc_p1_T1"]
@@ -1341,11 +1346,11 @@ def compute_paired_losses(
     action_loss = 0.5 * (action_loss_p1_to_p2 + action_loss_p2_to_p1)
 
     next_state_loss = 0.5 * (
-        F.mse_loss(outputs["pred_p1_T1"], enc_p1_T1)
-        + F.mse_loss(outputs["pred_p2_T1"], enc_p2_T1)
+        F.mse_loss(outputs["pred_p1_T1_mu"], enc_p1_T1)
+        + F.mse_loss(outputs["pred_p2_T1_mu"], enc_p2_T1)
     )
-    next_state_loss_p1 = F.mse_loss(outputs["pred_p1_T1"], enc_p1_T1)
-    next_state_loss_p2 = F.mse_loss(outputs["pred_p2_T1"], enc_p2_T1)
+    next_state_loss_p1 = F.mse_loss(outputs["pred_p1_T1_mu"], enc_p1_T1)
+    next_state_loss_p2 = F.mse_loss(outputs["pred_p2_T1_mu"], enc_p2_T1)
 
     if "p1_won" in outputs:
         p1_won = outputs["p1_won"].to(device=enc_p1_T.device)
@@ -1383,28 +1388,22 @@ def compute_paired_losses(
         sigreg(outputs.get("ctx_p1_T", enc_p1_T), sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs.get("ctx_p2_T", enc_p2_T), sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 2
-    sigreg_next_pred = (
-        sigreg(outputs["pred_p1_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["pred_p2_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    ) / 2
     sigreg_action_true = (
         sigreg(outputs["p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["actual_p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["actual_p1_action_from_p2_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 4
-    sigreg_action_pred = (
-        sigreg(outputs["pred_p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["pred_p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    ) / 2
+    sigreg_state_loss = (
+        sigreg_current + sigreg_next_true + sigreg_context
+    ) / 3
+    sigreg_action_loss = sigreg_action_true
     sigreg_loss = (
         sigreg_current
         + sigreg_next_true
         + sigreg_context
-        + sigreg_next_pred
         + sigreg_action_true
-        + sigreg_action_pred
-    ) / 6
+    ) / 4
 
     pred_loss = (
         lambda_opponent_state * opponent_state_loss
@@ -1412,7 +1411,11 @@ def compute_paired_losses(
         + lambda_next_state * next_state_loss
         + lambda_rank * rank_loss
     )
-    total_loss = pred_loss + lambda_sigreg * sigreg_loss
+    total_loss = (
+        pred_loss
+        + lambda_sigreg_state * sigreg_state_loss
+        + lambda_sigreg_action * sigreg_action_loss
+    )
 
     metrics = {
         "loss": total_loss.item(),
@@ -1433,11 +1436,12 @@ def compute_paired_losses(
         "sigreg_current": sigreg_current.item(),
         "sigreg_next_true": sigreg_next_true.item(),
         "sigreg_context": sigreg_context.item(),
-        "sigreg_next_pred": sigreg_next_pred.item(),
         "sigreg_action_true": sigreg_action_true.item(),
-        "sigreg_action_pred": sigreg_action_pred.item(),
-        "sigreg_enc": ((sigreg_current + sigreg_next_true + sigreg_context + sigreg_next_pred) / 4).item(),
-        "sigreg_act": ((sigreg_action_true + sigreg_action_pred) / 2).item(),
+        "sigreg_enc": ((sigreg_current + sigreg_next_true + sigreg_context) / 3).item(),
+        "sigreg_state_loss": sigreg_state_loss.item(),
+        "sigreg_action_loss": sigreg_action_loss.item(),
         "sigreg_loss": sigreg_loss.item(),
+        "next_state_logvar_p1": outputs["pred_p1_T1_logvar"].mean().item(),
+        "next_state_logvar_p2": outputs["pred_p2_T1_logvar"].mean().item(),
     }
     return total_loss, metrics
