@@ -202,6 +202,7 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     np.testing.assert_array_equal(data["p2_battle_start"], np.array([0, 6], dtype=np.int64))
     np.testing.assert_array_equal(data["p1_battle_action_start"], np.array([0, 3], dtype=np.int64))
     np.testing.assert_array_equal(data["p2_battle_action_start"], np.array([0, 4], dtype=np.int64))
+    np.testing.assert_array_equal(data["rank_valid"], np.array([True], dtype=bool))
 
     struct_ids = {
         "chosen_move": 5,
@@ -216,6 +217,7 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     )
     samples = list(dataset)
     assert len(samples) == 2
+    assert samples[0]["rank_valid"] is True
     second = samples[1]
     assert len(second["p1_player_hist_T"]) == 2
     assert len(second["p1_player_hist_T1"]) == 3
@@ -431,6 +433,66 @@ def test_compute_paired_losses_supports_gaussian_beliefs_and_rank():
     assert metrics["next_state_loss"] == pytest.approx(0.0)
     assert metrics["rank_loss"] == pytest.approx(torch.nn.functional.softplus(torch.tensor(-1.0)).item())
     assert loss.item() == pytest.approx(metrics["rank_loss"])
+
+
+def test_compute_paired_losses_ignores_rank_invalid_ties():
+    state = torch.zeros((2, 2))
+    action = torch.zeros((2, 2))
+    outputs = {
+        "enc_p1_T": state,
+        "enc_p2_T": state,
+        "enc_p1_T1": state,
+        "enc_p2_T1": state,
+        "ctx_p1_T": state,
+        "ctx_p2_T": state,
+        "pred_p2_T_mu": state,
+        "pred_p2_T_logvar": state,
+        "pred_p1_T_mu": state,
+        "pred_p1_T_logvar": state,
+        "pred_p2_T": state,
+        "pred_p1_T": state,
+        "p1_action": action,
+        "p2_action": action,
+        "actual_p2_action_from_p1_perspective": action,
+        "actual_p1_action_from_p2_perspective": action,
+        "pred_p2_action_mu": action,
+        "pred_p2_action_logvar": action,
+        "pred_p1_action_mu": action,
+        "pred_p1_action_logvar": action,
+        "pred_p2_action": action,
+        "pred_p1_action": action,
+        "pred_p1_T1_mu": state,
+        "pred_p1_T1_logvar": state,
+        "pred_p2_T1_mu": state,
+        "pred_p2_T1_logvar": state,
+        "pred_p1_T1": state,
+        "pred_p2_T1": state,
+        "rank_p1_teacher": torch.tensor([1.0, -10.0]),
+        "rank_p2_teacher": torch.tensor([0.0, 10.0]),
+        "rank_p1_belief": torch.tensor([1.0, -10.0]),
+        "rank_p2_belief": torch.tensor([0.0, 10.0]),
+        "rank_p1_next_belief": torch.tensor([1.0, -10.0]),
+        "rank_p2_next_belief": torch.tensor([0.0, 10.0]),
+        "p1_won": torch.tensor([True, False]),
+        "p2_won": torch.tensor([False, False]),
+        "rank_valid": torch.tensor([True, False]),
+    }
+
+    loss, metrics = compute_paired_losses(
+        outputs,
+        lambda_sigreg=0.0,
+        lambda_opponent_state=0.0,
+        lambda_action=0.0,
+        lambda_next_state=0.0,
+        lambda_rank=1.0,
+        sigreg_num_slices=1,
+        sigreg_num_points=2,
+    )
+
+    expected = torch.nn.functional.softplus(torch.tensor(-1.0)).item()
+    assert metrics["rank_loss"] == pytest.approx(expected)
+    assert metrics["rank_valid"] == pytest.approx(0.5)
+    assert loss.item() == pytest.approx(expected)
 
 
 def test_shard_accumulator_can_shuffle_transition_rows_without_misalignment(tmp_path):

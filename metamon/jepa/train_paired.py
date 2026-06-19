@@ -7,8 +7,8 @@ This trainer consumes ``paired_shard_*.npz`` files produced by:
 For each transition, the dataset provides both player perspectives through
 state T and T+1. The model learns:
 
-1. visible POV latent -> hidden opponent POV latent
-2. visible POV latent + predicted opponent POV latent -> opponent action latent
+1. history context + visible POV latent -> hidden opponent POV latent
+2. the same shared opponent-belief backbone -> opponent action latent
 3. visible POV latent + predicted opponent POV/action + own action -> next POV latent
 """
 
@@ -39,6 +39,7 @@ try:
 except ImportError:
     pass
 
+from metamon.jepa.checkpointing import save_paired_jepa_checkpoint
 from metamon.jepa.model import (
     ACTION_LATENT_DIM,
     CONTEXT_LENGTH,
@@ -277,6 +278,11 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
                 "actual_p1_action_from_p2_perspective": sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_ai, p2_ai + 1)[0],
                 "p1_won": bool(data["p1_won"][battle_id]),
                 "p2_won": bool(data["p2_won"][battle_id]),
+                "rank_valid": (
+                    bool(data["rank_valid"][battle_id])
+                    if "rank_valid" in data
+                    else bool(data["p1_won"][battle_id]) != bool(data["p2_won"][battle_id])
+                ),
             }
             yield sample
 
@@ -325,6 +331,7 @@ ACTION_KEYS = (
 SCALAR_KEYS = (
     "p1_won",
     "p2_won",
+    "rank_valid",
 )
 
 
@@ -432,6 +439,7 @@ def _paired_outcome_stats(shard_paths: list[str]) -> dict[str, int]:
         "p2_won": 0,
         "both_won": 0,
         "both_lost": 0,
+        "rank_valid": 0,
         "missing": 0,
     }
     for path in shard_paths:
@@ -451,6 +459,10 @@ def _paired_outcome_stats(shard_paths: list[str]) -> dict[str, int]:
         stats["p2_won"] += int(p2.sum())
         stats["both_won"] += int((p1 & p2).sum())
         stats["both_lost"] += int((~p1 & ~p2).sum())
+        if "rank_valid" in data:
+            stats["rank_valid"] += int(data["rank_valid"][:n].astype(bool, copy=False).sum())
+        else:
+            stats["rank_valid"] += int((p1 ^ p2).sum())
     return stats
 
 
@@ -464,21 +476,21 @@ def _validate_paired_outcomes_for_rank(shard_paths: list[str], lambda_rank: floa
         f"battles={stats['battles']:,} "
         f"p1_won={stats['p1_won']:,} "
         f"p2_won={stats['p2_won']:,} "
+        f"rank_valid={stats['rank_valid']:,} "
         f"both_lost={stats['both_lost']:,} "
         f"both_won={stats['both_won']:,}"
     )
     invalid_fraction = invalid / max(stats["battles"], 1)
-    if lambda_rank > 0 and (stats["missing"] > 0 or invalid_fraction > 0.05):
+    if lambda_rank > 0 and stats["missing"] > 0:
         raise RuntimeError(
-            "Paired JEPA shards have invalid p1_won/p2_won labels for rank training "
-            f"({invalid:,}/{stats['battles']:,} battles invalid). "
+            "Paired JEPA shards are missing p1_won/p2_won labels for rank training. "
             "Regenerate paired shards with the patched scripts/generate_world_model_data.py, "
             "or temporarily train without ranking via --lambda_rank 0."
         )
     if invalid > 0:
         print(
-            "WARNING: Some paired outcome labels are invalid. "
-            "Ties are allowed, but many both-false labels usually mean old shards."
+            "WARNING: Some paired outcome labels are invalid for ranking "
+            f"({invalid_fraction:.2%}); these battles will be ignored by rank loss."
         )
     return stats
 
@@ -504,6 +516,7 @@ def _forward_paired(model: PairedJEPAModel, batch: dict[str, torch.Tensor]) -> d
     )
     outputs["p1_won"] = batch["p1_won"]
     outputs["p2_won"] = batch["p2_won"]
+    outputs["rank_valid"] = batch["rank_valid"]
     return outputs
 
 
@@ -925,14 +938,15 @@ def train(args: argparse.Namespace) -> None:
                         })
                     if val_metrics["val_loss"] < best_val_loss and args.checkpoint:
                         best_val_loss = val_metrics["val_loss"]
-                        model.save_checkpoint(
+                        save_paired_jepa_checkpoint(
+                            model,
                             args.checkpoint,
                             epoch=epoch,
                             global_step=global_step,
                             config=model_cfg,
                             vocab_size=vocab_size,
                             max_history_blocks=args.max_history_blocks,
-                            tokenizer_state=tokenizer.to_state(),
+                            tokenizer=tokenizer,
                         )
                         print(f"  best checkpoint -> {args.checkpoint}")
 
@@ -984,23 +998,27 @@ def train(args: argparse.Namespace) -> None:
             })
 
         latest_path = save_dir / "paired_latest.pt"
-        model.save_checkpoint(
+        save_paired_jepa_checkpoint(
+            model,
             str(latest_path),
             epoch=epoch,
             global_step=global_step,
             config=model_cfg,
             vocab_size=vocab_size,
             max_history_blocks=args.max_history_blocks,
-            tokenizer_state=tokenizer.to_state(),
+            tokenizer=tokenizer,
         )
         if args.checkpoint and (not val_metrics or val_metrics.get("val_loss", float("inf")) < best_val_loss):
             best_val_loss = val_metrics.get("val_loss", avg.get("loss", best_val_loss))
-            model.save_checkpoint(
+            save_paired_jepa_checkpoint(
+                model,
                 args.checkpoint,
                 epoch=epoch,
                 global_step=global_step,
                 config=model_cfg,
                 vocab_size=vocab_size,
+                max_history_blocks=args.max_history_blocks,
+                tokenizer=tokenizer,
             )
         if done:
             break
@@ -1033,9 +1051,9 @@ if __name__ == "__main__":
     parser.add_argument("--lambda_sigreg", type=float, default=None,
                         help="Deprecated: backward-compat fallback for lambda_sigreg_state and lambda_sigreg_action.")
     parser.add_argument("--lambda_sigreg_state", type=float, default=None,
-                        help="SIGReg weight on state latents (encoder, context, next-state preds). Default from config or 0.1.")
+                        help="SIGReg weight on state latents (current encoder outputs, true next-state targets, context; not predicted next-state latents). Default from config or 0.1.")
     parser.add_argument("--lambda_sigreg_action", type=float, default=None,
-                        help="SIGReg weight on action latents (own, opponent, predicted). Default from config or 0.0 (off).")
+                        help="SIGReg weight on true action encoder outputs (own and opponent actions from both POVs). Default from config or 0.0 (off).")
     parser.add_argument("--lambda_opponent_state", type=float, default=1.0)
     parser.add_argument("--lambda_action", type=float, default=1.0)
     parser.add_argument("--lambda_next_state", type=float, default=1.0)

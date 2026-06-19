@@ -96,7 +96,7 @@ def colorize_state_line(text: str, term=None) -> str:
     for t in ("<bos>", "<eos>", "<boa>", "<eoa>",
               "<format>", "<end_format>", "<turn>", "<end_turn>",
               "<arena>", "<end_arena>", "<conditions>", "<end_conditions>",
-              "<conditions_empty>", "<boosts>", "<end_boosts>"):
+              "<empty_conditions>", "<conditions_empty>", "<boosts>", "<end_boosts>"):
         tag_color[t] = dim + cyan
     # Active Pokémon
     for t in ("<active>", "<end_active>"):

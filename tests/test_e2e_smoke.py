@@ -123,8 +123,11 @@ class TestE2ESmoke:
             # Must have bench section
             assert "<bench>" in text, f"Missing <bench> in {f}"
 
-            # Must have conditions
-            assert "<conditions>" in text, f"Missing <conditions> in {f}"
+            # Must have a conditions representation
+            assert "<conditions>" in text or "<empty_conditions>" in text, (
+                f"Missing conditions representation in {f}"
+            )
+            assert "<conditions_empty>" not in text, f"Legacy <conditions_empty> in {f}"
 
             # Must have last_turn_results in every state
             ltr_count = text.count("<last_turn_results>")

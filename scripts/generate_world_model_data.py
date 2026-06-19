@@ -134,6 +134,7 @@ class TokenizedPOV:
     turn_numbers: list[int]
     won: bool
     path: str
+    rank_valid: bool = True
 
 
 def _tokenize_action_text(text: str) -> np.ndarray:
@@ -225,9 +226,11 @@ def _parse_single_battle_file_detailed(filepath: str) -> TokenizedPOV | None:
         else:
             opponent_action_arrays.append(np.array([], dtype=np.int16))
 
-    # ── extract won/lost ───────────────────────────────────────────
+    # ── extract terminal outcome ───────────────────────────────────
     terminal_match = _TERMINAL_RE.search(text)
-    won = terminal_match is not None and terminal_match.group(1) in {"won", "forfeit"}
+    terminal = terminal_match.group(1) if terminal_match is not None else None
+    won = terminal in {"won", "forfeit"}
+    rank_valid = terminal in {"won", "lost", "forfeit"}
 
     return TokenizedPOV(
         state_token_arrays=state_token_arrays,
@@ -236,6 +239,7 @@ def _parse_single_battle_file_detailed(filepath: str) -> TokenizedPOV | None:
         turn_numbers=turn_numbers,
         won=won,
         path=filepath,
+        rank_valid=rank_valid,
     )
 
 
@@ -704,6 +708,7 @@ class PairedShardAccumulator:
 
     p1_won: list[bool] = field(default_factory=list)
     p2_won: list[bool] = field(default_factory=list)
+    rank_valid: list[bool] = field(default_factory=list)
     raw_battle_keys: list[str] = field(default_factory=list)
     battle_start: list[int] = field(default_factory=lambda: [0])
     battle_action_start: list[int] = field(default_factory=lambda: [0])
@@ -804,6 +809,9 @@ class PairedShardAccumulator:
 
         self.p1_won.append(battle.p1.won)
         self.p2_won.append(battle.p2.won)
+        self.rank_valid.append(
+            battle.p1.rank_valid and battle.p2.rank_valid and (battle.p1.won != battle.p2.won)
+        )
         self.raw_battle_keys.append(battle.raw_battle_key)
         self.battle_start.append(self.battle_start[-1] + len(battle.p1.state_token_arrays))
         self.battle_action_start.append(
@@ -894,6 +902,7 @@ class PairedShardAccumulator:
             format_id=format_id_arr,
             p1_won=np.array(self.p1_won, dtype=bool),
             p2_won=np.array(self.p2_won, dtype=bool),
+            rank_valid=np.array(self.rank_valid, dtype=bool),
             raw_battle_key=np.array(self.raw_battle_keys),
             battle_start=np.array(self.battle_start, dtype=np.int64),
             battle_action_start=np.array(self.battle_action_start, dtype=np.int64),

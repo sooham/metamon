@@ -13,8 +13,11 @@ aggregated into individual states.
 
 **Tag rules:**
 
-- Every structural tag has a matching close tag, always in `<end_*>` form
-  (never `</foo>` XML-style).
+- Every structural block tag has a matching close tag, always in `<end_*>`
+  form (never `</foo>` XML-style).
+- `<empty_conditions>` is a standalone sentinel, not a block. It appears only
+  when the arena is completely clear: no weather, field effect, side condition,
+  forced switch, forced revival, or Tera availability marker.
 - Value tokens — species names, status codes, weather, boost tokens, etc. —
   are bare words without angle brackets.
 
@@ -76,7 +79,7 @@ canonical (cleaned) species name, matching `consistent_pokemon_order()`.
 
 ```
 <pokeN>
-<species> <type1> <type2> [<item>] [<ability>]
+<species> <type1> <type2> [<item>] [<ability>] [<gender>]
 <begin_moves>
 <move>move1<end_move>
 <move>move2<end_move>
@@ -93,6 +96,7 @@ canonical (cleaned) species name, matching `consistent_pokemon_order()`.
 | `type2` | ✓ | ✓ | ✓ | omitted if single-typed |
 | `item` | ✗ | ✓ | ✓ | e.g. `leftovers`; omitted in Gen 1 |
 | `ability` | ✗ | ✗ | ✓ | e.g. `intimidate`; omitted in Gen 1–2 |
+| `gender` | ✗ | ✓ | ✓ | `M`, `F`, or `N` (genderless/unknown); omitted in Gen 1 |
 | `<begin_moves>`… | ✓ | ✓ | ✓ | 4 moves, alphabetically ordered |
 
 Moves are shown as **names only** in the team header (no type/category — those
@@ -162,7 +166,7 @@ tauros normal
 ```
 <begin_team>
 <poke1>
-gholdengo steel ghost leftovers goodasgold
+gholdengo steel ghost leftovers goodasgold N
 <begin_moves>
 <move>focusblast<end_move>
 <move>makeitrain<end_move>
@@ -171,7 +175,7 @@ gholdengo steel ghost leftovers goodasgold
 <end_moves>
 <end_poke1>
 <poke2>
-greattusk ground fighting heavy-dutyboots protosynthesis
+greattusk ground fighting heavy-dutyboots protosynthesis M
 <begin_moves>
 <move>earthquake<end_move>
 <move>headlongrush<end_move>
@@ -228,6 +232,13 @@ Every state is a snapshot of what the POV player can observe at one timestep.
 <opponent>
 <species> <hp> <type1> <type2> [<item>] [<ability>] <effect> <status> [tera:<type>] <boosts_section>
 <end_opponent>
+<empty_conditions>
+OR
+<conditions>
+<weather> [<battle_field>]
+<you> [forceswitch|forcedrevival|cantera] [<side_cond>…] <end_you>
+<opponent> [<side_cond>…] <end_opponent>
+<end_conditions>
 <end_arena>
 <begin_moves>
 <move>
@@ -237,15 +248,10 @@ Every state is a snapshot of what the POV player can observe at one timestep.
 <end_moves>
 <bench>
 <pokeN>
-<species> <hp> <type1> <type2> [<item>] [<ability>] [<status>]
+<species> <hp> <type1> <type2> [<item>] [<ability>] [<gender>] [<status>]
 <end_pokeN>
 …                           ×0–5 (benched + fainted, only when present)
 <end_bench>
-<conditions>
-<weather> [<battle_field>]
-<you> [forceswitch|forcedrevival|cantera] [<side_cond>…] <end_you>
-<opponent> [<side_cond>…] <end_opponent>
-<end_conditions>
 <terminal>won<end_terminal>   ← only in final state
 <eos>
 ```
@@ -333,6 +339,13 @@ lives here, in the *following* state, separating choice from result.
 <opponent>
 <species> <hp> <type1> <type2> [<item>] [<ability>] <effect> <status> [tera:<type>] <boosts_section>
 <end_opponent>
+<empty_conditions>
+OR
+<conditions>
+<weather> [<battle_field>]
+<you> [forceswitch|forcedrevival|cantera] [<side_cond>…] <end_you>
+<opponent> [<side_cond>…] <end_opponent>
+<end_conditions>
 <end_arena>
 ```
 
@@ -347,6 +360,7 @@ lives here, in the *following* state, separating choice from result.
 …<end_opponent1>
 <opponent2>
 …<end_opponent2>
+<empty_conditions>  OR  <conditions>…<end_conditions>
 <end_arena>
 ```
 
@@ -380,6 +394,7 @@ jinx 1.00 ice psychic par noboosts
 <opponent>
 starmie 1.00 psychic water slp
 <end_opponent>
+<empty_conditions>
 <end_arena>
 ```
 
@@ -392,6 +407,24 @@ garganacl 0.72 rock leftovers purifying salt clean tera:rock <boosts> def+2 spd+
 <opponent>
 greattusk 0.45 ground fighting unknownitem unknownability clean
 <end_opponent>
+<empty_conditions>
+<end_arena>
+```
+
+**Concrete example (Gen 9 with weather and side conditions):**
+```
+<arena>
+<active>
+rotom-wash 0.88 electric water leftovers levitate clean
+<end_active>
+<opponent>
+ferrothorn 0.45 grass steel leftovers ironbarbs clean
+<end_opponent>
+<conditions>
+raindance
+<you> reflect lightscreen <end_you>
+<opponent> stealthrock <end_opponent>
+<end_conditions>
 <end_arena>
 ```
 
@@ -449,7 +482,7 @@ fainted Pokémon (marked with `fnt` status and `0.00` HP).  Ordered by
 ```
 <bench>
 <pokeN>
-<species> <hp> <type1> <type2> [<item>] [<ability>] [<status>]
+<species> <hp> <type1> <type2> [<item>] [<ability>] [<gender>] [<status>]
 <end_pokeN>
 …
 <end_bench>
@@ -462,6 +495,7 @@ fainted Pokémon (marked with `fnt` status and `0.00` HP).  Ordered by
 | `type1`/`type2` | Always known (from dex). |
 | `item` | Omitted Gen 1. Always known for own Pokémon. |
 | `ability` | Omitted Gen 1–2. Always known for own Pokémon. |
+| `gender` | Omitted Gen 1. `M`, `F`, or `N` (genderless/unknown). Always known for own Pokémon. |
 | `status` | Omitted when `nostatus` (healthy). Shown when `par`, `slp`, `psn`, `tox`, `brn`, `frz`, or `fnt`. |
 
 **Omissions:**
@@ -471,7 +505,7 @@ fainted Pokémon (marked with `fnt` status and `0.00` HP).  Ordered by
 - Fainted Pokémon stay in `<bench>` with `0.00` HP and `fnt` status. No
   separate `<fainted>` section.
 
-**Example:**
+**Example (Gen 1 — no gender):**
 ```
 <bench>
 <poke1>
@@ -492,7 +526,31 @@ starmie 0.00 psychic water fnt
 <end_bench>
 ```
 
-### 4.7 `<conditions>` — Weather, Field, Side Conditions
+**Example (Gen 2+ — gender after ability):**
+```
+<bench>
+<poke1>
+tyranitar 0.80 rock dark leftovers sandstream F
+<end_poke1>
+<poke2>
+blissey 1.00 normal lefties naturalcure N
+<end_poke2>
+<end_bench>
+```
+
+### 4.7 `<empty_conditions>` / `<conditions>` — Weather, Field, Side Conditions
+
+Conditions live **inside `<arena>…<end_arena>`**, after the active/opponent entries.
+
+```
+<empty_conditions>
+```
+
+Use `<empty_conditions>` only when the arena is completely clear: `noweather`,
+no battle field effect, no side conditions or hazards on either side, and no
+special side marker such as `forceswitch`, `forcedrevival`, or `cantera`.
+
+Otherwise, use the populated block:
 
 ```
 <conditions>
@@ -558,7 +616,7 @@ starmie 0.00 psychic water fnt
 
 No weather, no side conditions, no special state (fully empty — collapsed):
 ```
-<conditions_empty>
+<empty_conditions>
 ```
 
 Sandstorm with your Reflect + Light Screen up:
@@ -763,14 +821,10 @@ landorus-therian 0.82 ground flying leftovers intimidate clean
 <opponent>
 ferrothorn 0.45 grass steel leftovers ironbarbs clean
 <end_opponent>
+<empty_conditions>
 <end_arena>
 <begin_moves>…<end_moves>
 <bench>…<end_bench>
-<conditions>
- noweather
- <you_empty>
- <opponent_empty>
-<end_conditions>
 <eos>
 
 <boa>
@@ -789,14 +843,14 @@ landorus-therian 0.82 ground flying leftovers intimidate clean
 <opponent>
 ferrothorn 0.45 grass steel leftovers ironbarbs clean
 <end_opponent>
+<conditions>
+noweather
+<you> forceswitch <end_you>
+<opponent_empty>
+<end_conditions>
 <end_arena>
 <begin_moves>…<end_moves>
 <bench>…<end_bench>
-<conditions>
- noweather
- <you> forceswitch <end_you>
- <opponent_empty>
-<end_conditions>
 <eos>
 
 <boa>
@@ -815,6 +869,7 @@ rotom-wash 1.00 electric water leftovers levitate clean
 <opponent>
 ferrothorn 0.45 grass steel leftovers ironbarbs clean
 <end_opponent>
+<empty_conditions>
 <end_arena>
 …
 <eos>
@@ -975,7 +1030,7 @@ The `<you>` section in conditions carries `cantera` until it's consumed:
 <conditions>
 noweather
 <you> cantera <end_you>
-<opponent> <end_opponent>
+<opponent_empty>
 <end_conditions>
 ```
 
@@ -1004,7 +1059,9 @@ ROM hacks or custom formats.)
 
 ## 9. Token / Vocabulary Reference
 
-### Structural tags (always paired `<foo>`…`<end_foo>`)
+### Structural tags
+
+Paired block tags:
 `<begin_team>` `<end_team>` `<pokeN>` `<end_pokeN>` `<begin_moves>` `<end_moves>`
 `<move>` `<end_move>` `<begin_opponent_team>` `<end_opponent_team>` `<bos>` `<eos>`
 `<boa>` `<eoa>` `<last_turn_results>` `<end_last_turn_results>` `<arena>` `<end_arena>`
@@ -1014,6 +1071,9 @@ ROM hacks or custom formats.)
 `<boosts>` `<end_boosts>` `<chosen_move>` `<end_chosen_move>` `<opponent_chosen_move>`
 `<end_opponent_chosen_move>` `<format>` `<end_format>` `<turn>` `<end_turn>`
 `<terminal>` `<end_terminal>`
+
+Standalone sentinel tags:
+`<empty_conditions>` `<you_empty>` `<opponent_empty>`
 
 ### Status tokens (bare words)
 `par` `slp` `psn` `tox` `brn` `frz` `fnt`

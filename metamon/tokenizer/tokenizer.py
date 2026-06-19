@@ -202,7 +202,8 @@ WORLD_MODEL_STRUCTURAL_TOKENS = [
     "<begin_moves:1>", "<begin_moves:2>",
     "<bench>", "<end_bench>",
     "<conditions>", "<end_conditions>",
-    "<conditions_empty>",
+    "<empty_conditions>",
+    "<conditions_empty>",  # legacy parsed-replay marker; new output uses <empty_conditions>
     "<you>", "<end_you>", "<you_empty>",
     "<opponent_empty>",
     "<boosts>", "<end_boosts>",

@@ -289,7 +289,7 @@ def _move_values(pokemon) -> list:
     return sorted(moves, key=_move_sort_key)
 
 
-def _format_action_text(action_name: str) -> str:
+def format_action_text(action_name: str) -> str:
     if action_name.startswith("move: "):
         return move_name(action_name.removeprefix("move: "))
     if action_name.startswith("tera+move: "):
@@ -312,7 +312,7 @@ def action_words(action_text: str, *, opponent: bool) -> list[str]:
     else:
         start = "<chosen_move>"
         end = "<end_chosen_move>"
-    return [start, *_format_action_text(action_text).split(), end]
+    return [start, *format_action_text(action_text).split(), end]
 
 
 def action_block(tokenizer: PokemonTokenizer, action_text: str, *, opponent: bool) -> np.ndarray:
@@ -376,11 +376,30 @@ def is_force_switch_state(battle) -> bool:
     return bool(available_switches) and not available_moves
 
 
+def _append_last_turn_result(
+    words: list[str],
+    start_tag: str,
+    end_tag: str,
+    action_text: Optional[str],
+    outcome: Optional[str],
+) -> None:
+    words.append(start_tag)
+    if action_text is None:
+        words.append("unknown")
+    else:
+        action_tokens = format_action_text(action_text).split() or ["unknown"]
+        words.extend(action_tokens)
+        if outcome is not None and action_tokens != ["unknown"]:
+            words.extend(str(outcome).split())
+    words.append(end_tag)
+
+
 def state_words(
     battle,
     fmt: str,
     *,
     is_force_switch: bool = False,
+    is_force_revival: bool = False,
     override_active=None,
     is_terminal: bool = False,
     last_turn_player_action: Optional[str] = None,
@@ -401,24 +420,14 @@ def state_words(
     # ── last_turn_results ──
     words.append("<last_turn_results>")
     if last_turn_player_action is not None or last_turn_opponent_action is not None:
-        # Active
-        words.append("<active>")
-        if last_turn_player_action is not None:
-            words.append(last_turn_player_action)
-            if last_turn_player_outcome is not None:
-                words.append(last_turn_player_outcome)
-        else:
-            words.append("unknown")
-        words.append("<end_active>")
-        # Opponent
-        words.append("<opponent>")
-        if last_turn_opponent_action is not None:
-            words.append(last_turn_opponent_action)
-            if last_turn_opponent_outcome is not None:
-                words.append(last_turn_opponent_outcome)
-        else:
-            words.append("unknown")
-        words.append("<end_opponent>")
+        _append_last_turn_result(
+            words, "<active>", "<end_active>",
+            last_turn_player_action, last_turn_player_outcome,
+        )
+        _append_last_turn_result(
+            words, "<opponent>", "<end_opponent>",
+            last_turn_opponent_action, last_turn_opponent_outcome,
+        )
     words.append("<end_last_turn_results>")
 
     words.extend([
@@ -455,6 +464,35 @@ def state_words(
             words.append(tera)
         words.append("<end_opponent>")
 
+    # ── conditions (inside arena) ──
+    weather = _weather_token(getattr(battle, "weather", None))
+    field = _field_token(getattr(battle, "fields", None))
+    you_parts: list[str] = []
+    if is_force_switch:
+        you_parts.append("forceswitch")
+    can_tera = getattr(battle, "can_tera", None)
+    if gen == 9 and can_tera is not None and can_tera is not False:
+        you_parts.append("cantera")
+    you_parts.extend(_side_condition_tokens(getattr(battle, "side_conditions", None)))
+    opp_parts = _side_condition_tokens(getattr(battle, "opponent_side_conditions", None))
+
+    if weather == "noweather" and field is None and not you_parts and not opp_parts:
+        words.append("<empty_conditions>")
+    else:
+        words.append("<conditions>")
+        words.append(weather)
+        if field is not None:
+            words.append(field)
+        if you_parts:
+            words.extend(["<you>", *you_parts, "<end_you>"])
+        else:
+            words.append("<you_empty>")
+        if opp_parts:
+            words.extend(["<opponent>", *opp_parts, "<end_opponent>"])
+        else:
+            words.append("<opponent_empty>")
+        words.append("<end_conditions>")
+
     words.extend(["<end_arena>", "<begin_moves>"])
     for move in _move_values(active)[:4]:
         words.extend(["<move>", _move_token(move), _move_type(move), _move_category(move), "<end_move>"])
@@ -479,34 +517,6 @@ def state_words(
         words.append(f"<end_poke{idx}>")
     words.append("<end_bench>")
 
-    weather = _weather_token(getattr(battle, "weather", None))
-    field = _field_token(getattr(battle, "fields", None))
-    you_parts: list[str] = []
-    if is_force_switch:
-        you_parts.append("forceswitch")
-    can_tera = getattr(battle, "can_tera", None)
-    if gen == 9 and can_tera is not None and can_tera is not False:
-        you_parts.append("cantera")
-    you_parts.extend(_side_condition_tokens(getattr(battle, "side_conditions", None)))
-    opp_parts = _side_condition_tokens(getattr(battle, "opponent_side_conditions", None))
-
-    words.append("<conditions>")
-    if weather == "noweather" and field is None and not you_parts and not opp_parts:
-        words.append("<conditions_empty>")
-    else:
-        words.append(weather)
-        if field is not None:
-            words.append(field)
-        if you_parts:
-            words.extend(["<you>", *you_parts, "<end_you>"])
-        else:
-            words.append("<you_empty>")
-        if opp_parts:
-            words.extend(["<opponent>", *opp_parts, "<end_opponent>"])
-        else:
-            words.append("<opponent_empty>")
-        words.append("<end_conditions>")
-
     if is_terminal:
         if getattr(battle, "won", False):
             terminal = "won"
@@ -525,6 +535,7 @@ def state_block(
     fmt: str,
     *,
     is_force_switch: bool = False,
+    is_force_revival: bool = False,
     override_active=None,
     is_terminal: bool = False,
     last_turn_player_action: Optional[str] = None,
@@ -538,6 +549,7 @@ def state_block(
             battle,
             fmt,
             is_force_switch=is_force_switch,
+            is_force_revival=is_force_revival,
             override_active=override_active,
             is_terminal=is_terminal,
             last_turn_player_action=last_turn_player_action,
