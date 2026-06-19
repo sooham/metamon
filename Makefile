@@ -16,7 +16,7 @@ FORMATS ?= $(FORMAT)
         wm-dataset inspect-wm-npz sample-inspect-wm-npz \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer sample-inspect-wm-state \
-        train-jepa play-jepa play-jepa-local showdown bash-completion
+        train-jepa _train-jepa-inner play-jepa play-jepa-local showdown bash-completion
 
 # Start a local Pokemon Showdown server (no auth, port 8000)
 # Requires the server/pokemon-showdown submodule to be initialized.
@@ -249,29 +249,52 @@ JEPA_SAVE_DIR ?= $(METAMON_CACHE_DIR)/jepa-checkpoints
 JEPA_LR ?= 5e-5
 JEPA_EPOCHS ?= 10
 JEPA_GRAD_CLIP ?= 1.0
-JEPA_NUM_WORKERS ?= 12
+JEPA_NUM_WORKERS ?= 20
 JEPA_PREFETCH_FACTOR ?= 4
 JEPA_PRINT_INTERVAL ?= 10
 JEPA_CONFIG ?= metamon/jepa/configs/default.yaml
-JEPA_COMPILE ?= false
+JEPA_COMPILE ?= true
 JEPA_MAX_HISTORY ?= 32
 
 # Train the paired-POV JEPA model on paired_shard_*.npz files.
 # Requires paired data generated with scripts/generate_world_model_data.py --paired_pov.
 #
+# Automatically launches inside a tmux session named 'jepa-train' so the job
+# survives SSH disconnects.  Attach/detach with:
+#   tmux attach -t jepa-train    # reattach to watch progress
+#   Ctrl+B, D                    # detach (leave running)
+#
 # Usage:
 #   make train-jepa FORMATS=gen1ou
 #   make train-jepa FORMATS=gen1ou JEPA_MAX_HISTORY=0  # full battle history
-JEPA_PAIRED_BATCH_SIZE ?= 96
-JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 3
+JEPA_PAIRED_BATCH_SIZE ?= 200
+JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 2
 JEPA_PAIRED_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best.pt
 JEPA_PAIRED_MAX_STEPS ?= 0
 JEPA_PAIRED_VAL_INTERVAL ?= 200
 JEPA_PAIRED_VAL_MAX_BATCHES ?= 10
-JEPA_PAIRED_PRINT_INTERVAL ?= 20
+JEPA_PAIRED_PRINT_INTERVAL ?= 50
 JEPA_PAIRED_LOG_INTERVAL ?= 20
 JEPA_PAIRED_EXTRA_ARGS ?=
 train-jepa:
+	@if [ -z "$$TMUX" ]; then \
+		if tmux has-session -t jepa-train 2>/dev/null; then \
+			echo "tmux session 'jepa-train' already exists."; \
+			echo "  Attach:  tmux attach -t jepa-train"; \
+			echo "  Kill:    tmux kill-session -t jepa-train"; \
+			exit 1; \
+		fi; \
+		echo "Launching training in tmux session 'jepa-train'..."; \
+		tmux new-session -d -s jepa-train "$(MAKE) _train-jepa-inner FORMAT='$(FORMAT)' FORMATS='$(FORMATS)' WANDB='$(WANDB)' WANDB_PROJECT='$(WANDB_PROJECT)' WANDB_NAME='$(WANDB_NAME)' JEPA_COMPILE='$(JEPA_COMPILE)' JEPA_MAX_HISTORY='$(JEPA_MAX_HISTORY)' JEPA_PAIRED_BATCH_SIZE='$(JEPA_PAIRED_BATCH_SIZE)' JEPA_PAIRED_GRAD_ACCUM_STEPS='$(JEPA_PAIRED_GRAD_ACCUM_STEPS)' JEPA_LR='$(JEPA_LR)' JEPA_EPOCHS='$(JEPA_EPOCHS)' JEPA_NUM_WORKERS='$(JEPA_NUM_WORKERS)' JEPA_PREFETCH_FACTOR='$(JEPA_PREFETCH_FACTOR)' JEPA_GRAD_CLIP='$(JEPA_GRAD_CLIP)' JEPA_PAIRED_MAX_STEPS='$(JEPA_PAIRED_MAX_STEPS)' JEPA_PAIRED_VAL_INTERVAL='$(JEPA_PAIRED_VAL_INTERVAL)' JEPA_PAIRED_VAL_MAX_BATCHES='$(JEPA_PAIRED_VAL_MAX_BATCHES)' JEPA_PAIRED_PRINT_INTERVAL='$(JEPA_PAIRED_PRINT_INTERVAL)' JEPA_PAIRED_LOG_INTERVAL='$(JEPA_PAIRED_LOG_INTERVAL)' JEPA_PAIRED_EXTRA_ARGS='$(JEPA_PAIRED_EXTRA_ARGS)'"; \
+		echo ""; \
+		echo "  Attach:  tmux attach -t jepa-train"; \
+		echo "  Detach:  Ctrl+B, D"; \
+		echo "  Kill:    tmux kill-session -t jepa-train"; \
+	else \
+		$(MAKE) _train-jepa-inner; \
+	fi
+
+_train-jepa-inner:
 	@if [ ! -d "$(JEPA_DATA_ROOT)" ]; then \
 		echo "ERROR: No paired .npz data found at $(JEPA_DATA_ROOT)."; \
 		exit 1; \

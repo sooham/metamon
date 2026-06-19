@@ -748,6 +748,16 @@ def train(args: argparse.Namespace) -> None:
                 "lr": args.lr,
                 "weight_decay": args.weight_decay,
                 "epochs": args.epochs,
+                "max_steps": args.max_steps,
+                "grad_clip": args.grad_clip,
+                "num_workers": args.num_workers,
+                "prefetch_factor": args.prefetch_factor,
+                "compile": args.compile,
+                "config_path": args.config,
+                "val_interval": args.val_interval,
+                "val_max_batches": args.val_max_batches,
+                "print_interval": args.print_interval,
+                "log_interval": args.log_interval,
                 "n_params": n_params,
                 "n_train_transitions": train_transitions,
                 "n_val_transitions": val_transitions,
@@ -758,6 +768,7 @@ def train(args: argparse.Namespace) -> None:
                 "lambda_action": args.lambda_action,
                 "lambda_next_state": args.lambda_next_state,
                 "lambda_rank": lambda_rank,
+                "checkpoint": args.checkpoint,
             },
         )
     elif args.wandb and not _wandb_available:
@@ -808,6 +819,8 @@ def train(args: argparse.Namespace) -> None:
     done = False
     t_last_print = time.time()
     tokens_since_print = 0
+    t_last_wandb = time.time()
+    tokens_since_wandb = 0
 
     for epoch in range(args.epochs):
         model.train()
@@ -851,9 +864,15 @@ def train(args: argparse.Namespace) -> None:
                         "actual_p1_action_from_p2_perspective"):
                 batch_tokens += int((batch[key] != pad_id).sum().item())
             tokens_since_print += batch_tokens
+            tokens_since_wandb += batch_tokens
 
             log_step = args.log_interval if args.log_interval > 0 else args.print_interval
             if wandb_run and log_step > 0 and global_step % log_step == 0:
+                now = time.time()
+                elapsed = now - t_last_wandb
+                tok_per_sec_wandb = tokens_since_wandb / elapsed if elapsed > 0 else 0
+                t_last_wandb = now
+                tokens_since_wandb = 0
                 diagnostics = _paired_sigreg_breakdown(
                     outputs,
                     sigreg_num_slices,
@@ -861,6 +880,7 @@ def train(args: argparse.Namespace) -> None:
                     sigreg_domain,
                 )
                 wandb_run.log({
+                    "train/tok_per_sec": tok_per_sec_wandb,
                     "train/loss": metrics["loss"],
                     "train/opponent_state_loss": metrics["opponent_state_loss"],
                     "train/opponent_state_loss_p1_to_p2": metrics["opponent_state_loss_p1_to_p2"],
@@ -886,6 +906,7 @@ def train(args: argparse.Namespace) -> None:
                     "train/lr": optimizer.param_groups[0]["lr"],
                     "epoch": epoch,
                     "global_step": global_step,
+                    "samples_seen": args.batch_size * global_step,
                 })
 
             if args.print_interval > 0 and global_step % args.print_interval == 0:
@@ -963,6 +984,7 @@ def train(args: argparse.Namespace) -> None:
                             "val/sigreg_action_pred": val_metrics.get("val_sigreg_action_pred", 0.0),
                             "epoch": epoch,
                             "global_step": global_step,
+                            "samples_seen": args.batch_size * global_step,
                         })
                     if val_metrics["val_loss"] < best_val_loss and args.checkpoint:
                         best_val_loss = val_metrics["val_loss"]
@@ -1016,6 +1038,7 @@ def train(args: argparse.Namespace) -> None:
                 "epoch/val_rank_loss": val_metrics.get("val_rank_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_sigreg_loss": val_metrics.get("val_sigreg_loss", 0.0) if val_metrics else 0.0,
                 "epoch": epoch,
+                "samples_seen": args.batch_size * global_step,
             })
 
         latest_path = save_dir / "paired_latest.pt"
