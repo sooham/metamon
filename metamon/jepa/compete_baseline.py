@@ -30,6 +30,14 @@ from metamon.jepa.checkpointing import require_tokenizer_from_checkpoint
 from metamon.jepa.model import PairedJEPAModel
 
 
+def _patch_null_max_seq_len(model_cfg: dict) -> None:
+    """Replace null max_seq_len with safe defaults for YAML-fallback configs."""
+    for section, fallback in [("encoder", 256), ("temporal_encoder", 6144)]:
+        sec = model_cfg.setdefault(section, {})
+        if sec.get("max_seq_len") is None:
+            sec["max_seq_len"] = fallback
+
+
 def main():
     parser = argparse.ArgumentParser(description="JEPA vs Baseline competition")
     parser.add_argument("--checkpoint", required=True, help="Path to JEPA checkpoint .pt file")
@@ -69,6 +77,8 @@ def main():
     if not model_cfg:
         with open(args.config, "r", encoding="utf-8") as f:
             model_cfg = yaml.safe_load(f)["model"]
+    # Replace null max_seq_len (YAML sentinel) with safe defaults.
+    _patch_null_max_seq_len(model_cfg)
 
     tokenizer = require_tokenizer_from_checkpoint(ckpt, args.checkpoint)
     print(f"Loaded tokenizer from checkpoint (vocab={len(tokenizer)}, name={tokenizer.name})")
