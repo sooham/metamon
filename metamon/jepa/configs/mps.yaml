@@ -1,9 +1,9 @@
-# LeJEPA v2 — MPS-optimized config for Apple Silicon (24 GB unified memory)
+# LeJEPA v4 — MPS-optimized config for Apple Silicon (24 GB unified memory)
 #
 # Reduced capacity vs default.yaml for MPS (no torch.compile, slower per-op).
 #
 # CLI invocation (from repo root):
-#   uv run python -m metamon.jepa.train \
+#   uv run python -m metamon.jepa.train_paired \
 #       --config metamon/jepa/configs/mps.yaml \
 #       --data_root $METAMON_CACHE_DIR/world-model-samples \
 #       --formats gen1ou \
@@ -48,16 +48,7 @@ model:
     ffn_activation: gelu
     gradient_checkpointing: false
 
-  # MLP: enc_N → pred_o_emb
-  action_predictor:
-    hidden_dim: null
-    n_layers: 2
-
-  opponent_state_predictor:
-    hidden_dim: null
-    n_layers: 2
-
-  paired_action_predictor:
+  opponent_belief_predictor:
     hidden_dim: null
     n_layers: 2
 
@@ -68,15 +59,6 @@ model:
   rank_head:
     hidden_dim: null
     n_layers: 2
-
-  predictor:
-    d_model: 128
-    n_heads: 4
-    n_layers: 3
-    d_ff: 512
-    dropout: 0.0
-    max_seq_len: 64
-    gradient_checkpointing: false
 
   lambda_sigreg: 0.05
   lambda_rank: 1.0

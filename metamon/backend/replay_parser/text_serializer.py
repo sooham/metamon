@@ -301,12 +301,12 @@ def _write_team_header(pov: POVReplay) -> list[str]:
 
         lines.append(" " + " ".join(line_parts))
 
-        # moves
+        # moves (always exactly 4; cap had_moves in case Transform/Mimic/
+        # Zoroark edge cases pushed it above 4)
         lines.append(" <begin_moves>")
-        # Use had_moves for full moveset (backward-filled)
         had_moves = list(poke.had_moves.values()) if poke.had_moves else []
         had_moves.sort(key=lambda m: clean_name(m.name))
-        for move in had_moves:
+        for move in had_moves[:4]:
             lines.append(f" <move> {clean_name(move.name)} <end_move>")
         lines.append(" <end_moves>")
 
@@ -516,14 +516,56 @@ def _write_state_block(
         lines.append(" " + " ".join(parts))
         lines.append("<end_opponent>")
 
+    # ── conditions (inside arena) ──
+    weather_str = _weather_str(turn.weather)
+    bf = _battle_field_str(turn.battle_field)
+
+    # player conditions
+    player_conds = turn.conditions_1 if p1 else turn.conditions_2
+    player_cond_str = _side_conditions_str(player_conds)
+    you_parts = []
+    if turn.is_force_revival:
+        you_parts.append("forcedrevival")
+    elif turn.is_force_switch:
+        you_parts.append("forceswitch")
+    if turn.can_tera_1 if p1 else turn.can_tera_2:
+        if gen == 9:
+            you_parts.append("cantera")
+    if player_cond_str:
+        you_parts.append(player_cond_str)
+    you_inner = " ".join(you_parts)
+
+    # opponent conditions
+    opp_conds = turn.conditions_2 if p1 else turn.conditions_1
+    opp_cond_str = _side_conditions_str(opp_conds)
+
+    # ── collapse only when the arena is completely clear ──
+    no_field = bf is None or bf == "nofield"
+    if weather_str == "noweather" and no_field and not you_inner and not opp_cond_str:
+        lines.append(" <empty_conditions>")
+    else:
+        lines.append(" <conditions>")
+        lines.append("  " + weather_str)
+        if bf and bf != "nofield":
+            lines.append("  " + bf)
+        if you_inner:
+            lines.append(f"  <you> {you_inner} <end_you>")
+        else:
+            lines.append("  <you_empty>")
+        if opp_cond_str:
+            lines.append(f"  <opponent> {opp_cond_str} <end_opponent>")
+        else:
+            lines.append("  <opponent_empty>")
+        lines.append(" <end_conditions>")
+
     lines.append("<end_arena>")
 
-    # ── available moves ──
+    # ── available moves (0–4; cap in case Transform/Mimic edge cases) ──
     lines.append("<begin_moves>")
     if active is not None:
         moves = list(active.moves.values()) if active.moves else []
         moves.sort(key=lambda m: clean_name(m.name))
-        for move in moves:
+        for move in moves[:4]:
             move_name = clean_name(move.name)
             move_type = _move_type_str(move)
             move_cat = _move_category_str(move)
@@ -562,46 +604,6 @@ def _write_state_block(
             lines.append(" " + " ".join(parts))
             lines.append(f"<end_poke{i + 1}>")
     lines.append("<end_bench>")
-
-    # ── conditions ──
-    lines.append("<conditions>")
-    weather_str = _weather_str(turn.weather)
-    bf = _battle_field_str(turn.battle_field)
-
-    # player conditions
-    player_conds = turn.conditions_1 if p1 else turn.conditions_2
-    player_cond_str = _side_conditions_str(player_conds)
-    you_parts = []
-    if turn.is_force_switch:
-        you_parts.append("forceswitch")
-    if turn.can_tera_1 if p1 else turn.can_tera_2:
-        if gen == 9:
-            you_parts.append("cantera")
-    if player_cond_str:
-        you_parts.append(player_cond_str)
-    you_inner = " ".join(you_parts)
-
-    # opponent conditions
-    opp_conds = turn.conditions_2 if p1 else turn.conditions_1
-    opp_cond_str = _side_conditions_str(opp_conds)
-
-    # ── collapse fully empty conditions ──
-    no_field = bf is None or bf == "nofield"
-    if weather_str == "noweather" and no_field and not you_inner and not opp_cond_str:
-        lines.append("<conditions_empty>")
-    else:
-        lines.append(" " + weather_str)
-        if bf and bf != "nofield":
-            lines.append(" " + bf)
-        if you_inner:
-            lines.append(f" <you> {you_inner} <end_you>")
-        else:
-            lines.append(" <you_empty>")
-        if opp_cond_str:
-            lines.append(f" <opponent> {opp_cond_str} <end_opponent>")
-        else:
-            lines.append(" <opponent_empty>")
-        lines.append("<end_conditions>")
 
     # ── terminal ──
     if is_terminal:
@@ -726,7 +728,7 @@ def serialize_pov_replay(pov: POVReplay) -> str:
 
         if offset == 1:
             display_turn = raw + 1
-            if turn.is_force_switch:
+            if turn.is_force_switch or turn.is_force_revival:
                 offset = 0
                 display_turn = raw  # subturn keeps the action's turn
         else:
@@ -885,6 +887,45 @@ def _write_state_block_doubles(
             lines.append(" " + " ".join(parts))
             lines.append(f"<end_{slot_tag}>")
 
+    # ── conditions (inside arena) ──
+    weather_str = _weather_str(turn.weather)
+    bf = _battle_field_str(turn.battle_field)
+
+    player_conds = turn.conditions_1 if p1 else turn.conditions_2
+    player_cond_str = _side_conditions_str(player_conds)
+    you_parts = []
+    if turn.is_force_revival:
+        you_parts.append("forcedrevival")
+    elif turn.is_force_switch:
+        you_parts.append("forceswitch")
+    if turn.can_tera_1 if p1 else turn.can_tera_2:
+        if gen == 9:
+            you_parts.append("cantera")
+    if player_cond_str:
+        you_parts.append(player_cond_str)
+    you_inner = " ".join(you_parts)
+
+    opp_conds = turn.conditions_2 if p1 else turn.conditions_1
+    opp_cond_str = _side_conditions_str(opp_conds)
+
+    no_field = bf is None or bf == "nofield"
+    if weather_str == "noweather" and no_field and not you_inner and not opp_cond_str:
+        lines.append(" <empty_conditions>")
+    else:
+        lines.append(" <conditions>")
+        lines.append("  " + weather_str)
+        if bf and bf != "nofield":
+            lines.append("  " + bf)
+        if you_inner:
+            lines.append(f"  <you> {you_inner} <end_you>")
+        else:
+            lines.append("  <you_empty>")
+        if opp_cond_str:
+            lines.append(f"  <opponent> {opp_cond_str} <end_opponent>")
+        else:
+            lines.append("  <opponent_empty>")
+        lines.append(" <end_conditions>")
+
     lines.append("<end_arena>")
 
     # ── available moves (per-slot in doubles) ──
@@ -896,7 +937,7 @@ def _write_state_block_doubles(
         lines.append(f'<begin_moves:{slot}>')
         moves = list(poke.moves.values()) if poke.moves else []
         moves.sort(key=lambda m: clean_name(m.name))
-        for move in moves:
+        for move in moves[:4]:
             move_name = clean_name(move.name)
             move_type = _move_type_str(move)
             move_cat = _move_category_str(move)
@@ -932,43 +973,6 @@ def _write_state_block_doubles(
             lines.append(" " + " ".join(parts))
             lines.append(f"<end_poke{i + 1}>")
     lines.append("<end_bench>")
-
-    # ── conditions ── (same as singles) ──
-    lines.append("<conditions>")
-    weather_str = _weather_str(turn.weather)
-    bf = _battle_field_str(turn.battle_field)
-
-    player_conds = turn.conditions_1 if p1 else turn.conditions_2
-    player_cond_str = _side_conditions_str(player_conds)
-    you_parts = []
-    if turn.is_force_switch:
-        you_parts.append("forceswitch")
-    if turn.can_tera_1 if p1 else turn.can_tera_2:
-        if gen == 9:
-            you_parts.append("cantera")
-    if player_cond_str:
-        you_parts.append(player_cond_str)
-    you_inner = " ".join(you_parts)
-
-    opp_conds = turn.conditions_2 if p1 else turn.conditions_1
-    opp_cond_str = _side_conditions_str(opp_conds)
-
-    no_field = bf is None or bf == "nofield"
-    if weather_str == "noweather" and no_field and not you_inner and not opp_cond_str:
-        lines.append("<conditions_empty>")
-    else:
-        lines.append(" " + weather_str)
-        if bf and bf != "nofield":
-            lines.append(" " + bf)
-        if you_inner:
-            lines.append(f" <you> {you_inner} <end_you>")
-        else:
-            lines.append(" <you_empty>")
-        if opp_cond_str:
-            lines.append(f" <opponent> {opp_cond_str} <end_opponent>")
-        else:
-            lines.append(" <opponent_empty>")
-        lines.append("<end_conditions>")
 
     # ── terminal ──
     if is_terminal:

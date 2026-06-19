@@ -54,6 +54,17 @@ def validate_file(path: str) -> list[str]:
     if n_states != n_actions + 1:
         errors.append(f"states ({n_states}) != actions+1 ({n_actions + 1})")
 
+    n_condition_blocks = text.count("<conditions>")
+    n_empty_conditions = text.count("<empty_conditions>")
+    if n_condition_blocks + n_empty_conditions != n_states:
+        errors.append(
+            "condition representations "
+            f"({n_condition_blocks} <conditions> + {n_empty_conditions} <empty_conditions>) "
+            f"!= states ({n_states})"
+        )
+    if "<conditions_empty>" in text:
+        errors.append("legacy <conditions_empty> tag found; use standalone <empty_conditions>")
+
     # ── terminal ────────────────────────────────────────────────────
     if "<terminal>" not in text or "<end_terminal>" not in text:
         errors.append("missing <terminal> / <end_terminal>")

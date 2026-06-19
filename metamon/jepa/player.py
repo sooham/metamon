@@ -16,12 +16,14 @@ import torch
 from poke_env.environment import AbstractBattle
 from poke_env.player import BattleOrder
 
-from metamon.backend.replay_parser.str_parsing import move_name
+from metamon.backend.replay_parser.str_parsing import move_name, pokemon_name
 from metamon.env.metamon_player import MetamonPlayer
 from metamon.interface import UniversalAction, UniversalState, consistent_move_order, consistent_pokemon_order
 from metamon.jepa.model import PairedJEPAModel
 from metamon.jepa.online_serializer import (
     action_block,
+    action_words,
+    format_action_text,
     is_force_switch_state,
     state_block,
     team_context_block,
@@ -57,6 +59,7 @@ class BattleHistory:
     pending_player_action: Optional[np.ndarray] = None
     pending_player_action_text: Optional[str] = None
     pending_forced_switch: bool = False
+    pending_raw_message_start: int = 0
     last_state_key: Optional[tuple[int, ...]] = None
     current_forced_switch: bool = False
     # Raw protocol messages (pipe-delimited strings) for the "R" REPL key.
@@ -153,27 +156,50 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
             hist.state_blocks.append(team_context_block(self._tokenizer, battle, self._fmt))
 
         force_switch = self._is_force_switch(battle)
-        current_state = state_block(
+        force_revival = self._is_force_revival(battle)
+        state_key_block = state_block(
             self._tokenizer, battle, self._fmt, is_force_switch=force_switch,
+            is_force_revival=force_revival,
         )
-        current_key = tuple(int(x) for x in current_state.tolist())
+        current_key = tuple(int(x) for x in state_key_block.tolist())
         hist.current_forced_switch = force_switch
 
         if hist.last_state_key is None:
-            hist.state_blocks.append(current_state)
+            hist.state_blocks.append(state_key_block)
             hist.last_state_key = current_key
             return hist
 
         if current_key != hist.last_state_key:
             if hist.pending_player_action is not None:
+                (
+                    player_action_text,
+                    player_outcome,
+                    opponent_action_text,
+                    opponent_outcome,
+                ) = self._infer_previous_turn_results(battle, hist)
+                current_state = state_block(
+                    self._tokenizer,
+                    battle,
+                    self._fmt,
+                    is_force_switch=force_switch,
+                    is_force_revival=force_revival,
+                    last_turn_player_action=player_action_text,
+                    last_turn_player_outcome=player_outcome,
+                    last_turn_opponent_action=opponent_action_text,
+                    last_turn_opponent_outcome=opponent_outcome,
+                )
                 hist.player_actions.append(hist.pending_player_action)
-                opp_block = self._infer_opponent_previous_action(battle, hist)
+                opp_block = self._opponent_action_block(opponent_action_text or "unknown")
                 hist.opponent_actions.append(opp_block)
                 hist.pending_player_action = None
                 hist.pending_player_action_text = None
                 hist.pending_forced_switch = False
+                hist.pending_raw_message_start = len(hist.raw_messages)
             elif self._verbose and TuiMixin._repl_verbose_blocks:
                 print("  [state advanced without a pending player action]")
+                current_state = state_key_block
+            else:
+                current_state = state_key_block
 
             hist.state_blocks.append(current_state)
             hist.last_state_key = current_key
@@ -185,6 +211,9 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
 
     def _is_force_switch(self, battle: AbstractBattle) -> bool:
         return is_force_switch_state(battle)
+
+    def _is_force_revival(self, battle: AbstractBattle) -> bool:
+        return bool(getattr(battle, "reviving", False))
 
     def _legal_action_indices(self, battle: AbstractBattle) -> list[int]:
         state = UniversalState.from_Battle(battle)
@@ -232,35 +261,136 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
                 names[idx] = f"action_{idx}"
         return names
 
-    def _infer_opponent_previous_action(self, battle: AbstractBattle, hist: BattleHistory) -> np.ndarray:
-        """Return the tokenised opponent action block.
+    def _infer_previous_turn_results(
+        self,
+        battle: AbstractBattle,
+        hist: BattleHistory,
+    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+        """Infer previous action choices and outcomes for the next state block.
 
-        Detects ``|cant|`` from raw protocol messages so that moves that were
-        clicked but not executed (paralysis, sleep, freeze) carry the same
-        ``cant=X`` token the training data uses.
+        Action embeddings stay choice-only.  This helper returns the outcome
+        tokens used in ``<last_turn_results>`` for the state reached by the
+        pending player action.
         """
-        prev = getattr(battle.opponent_active_pokemon, "previous_move", None)
-        if prev is None:
-            return self._opponent_action_block("unknown")
+        player_action = hist.pending_player_action_text
+        player_outcome = self._default_outcome(player_action)
+        opponent_action: Optional[str] = None
+        opponent_outcome: Optional[str] = None
 
-        raw = getattr(prev, "id", None) or getattr(prev, "name", None) or str(prev)
-        move = move_name(str(raw))
-
-        # Check raw protocol messages for a recent |cant| affecting the opponent.
-        cant_reason: Optional[str] = None
+        our_prefix = self._player_role_prefix(battle)
         opponent_prefix = self._opponent_role_prefix(battle)
-        if opponent_prefix is not None:
-            for msg in reversed(hist.raw_messages[-4:]):
-                if msg.startswith(f"|cant|{opponent_prefix}a:"):
-                    parts = msg.split("|")
-                    # |cant|p2a: Jynx|par → parts = ['', 'cant', 'p2a: Jynx', 'par']
-                    if len(parts) >= 4:
-                        reason = parts[3].strip().lower()
-                        if reason in {"par", "slp", "frz"}:
-                            cant_reason = reason
-                    break
+        raw_messages = hist.raw_messages[hist.pending_raw_message_start:]
+        fainted_sides: set[str] = set()
+        for msg in raw_messages:
+            kind, args = self._split_protocol_message(msg)
+            if kind is None:
+                continue
 
-        return self._opponent_action_block(move, cant=cant_reason)
+            if kind == "move" and len(args) >= 2:
+                side = self._side_from_identifier(args[0], our_prefix, opponent_prefix)
+                if side == "opponent":
+                    opponent_action = f"opponent move: {args[1]}"
+                    opponent_outcome = "success"
+                elif side == "player" and player_outcome is None:
+                    player_outcome = self._default_outcome(player_action)
+            elif kind == "switch" and len(args) >= 2:
+                side = self._side_from_identifier(args[0], our_prefix, opponent_prefix)
+                if side in fainted_sides:
+                    continue
+                species = self._species_from_protocol_details(args[1])
+                if side == "opponent":
+                    opponent_action = f"opponent switch: {species}"
+                    opponent_outcome = "success"
+                elif side == "player" and player_outcome is None:
+                    player_outcome = self._default_outcome(player_action)
+            elif kind == "cant" and len(args) >= 2:
+                side = self._side_from_identifier(args[0], our_prefix, opponent_prefix)
+                reason = args[1].strip()
+                if side == "player" and self._known_action(player_action):
+                    player_outcome = f"cant {reason}"
+                elif side == "opponent":
+                    if len(args) >= 3 and args[2].strip():
+                        opponent_action = f"opponent move: {args[2]}"
+                        opponent_outcome = f"cant {reason}"
+                    elif self._known_action(opponent_action):
+                        opponent_outcome = f"cant {reason}"
+                    else:
+                        opponent_action = "unknown"
+                        opponent_outcome = None
+            elif kind == "-fail" and args:
+                side = self._side_from_identifier(args[0], our_prefix, opponent_prefix)
+                if side == "player" and self._known_action(player_action):
+                    player_outcome = "fail"
+                elif side == "opponent" and self._known_action(opponent_action):
+                    opponent_outcome = "fail"
+            elif kind == "faint" and args:
+                side = self._side_from_identifier(args[0], our_prefix, opponent_prefix)
+                if side is not None:
+                    fainted_sides.add(side)
+
+        if opponent_action is None:
+            opponent_action, opponent_outcome = self._fallback_opponent_previous_action(
+                battle, raw_messages,
+            )
+
+        return player_action, player_outcome, opponent_action, opponent_outcome
+
+    @staticmethod
+    def _split_protocol_message(msg: str) -> tuple[Optional[str], list[str]]:
+        parts = msg.split("|")
+        if parts and parts[0] == "":
+            parts = parts[1:]
+        if not parts or not parts[0]:
+            return None, []
+        return parts[0], parts[1:]
+
+    @staticmethod
+    def _side_from_identifier(
+        identifier: str,
+        our_prefix: Optional[str],
+        opponent_prefix: Optional[str],
+    ) -> Optional[str]:
+        if our_prefix is not None and identifier.startswith(our_prefix):
+            return "player"
+        if opponent_prefix is not None and identifier.startswith(opponent_prefix):
+            return "opponent"
+        return None
+
+    @staticmethod
+    def _species_from_protocol_details(details: str) -> str:
+        return pokemon_name(details.split(",", 1)[0].strip()) or "unknown"
+
+    @staticmethod
+    def _known_action(action_text: Optional[str]) -> bool:
+        if action_text is None:
+            return False
+        return format_action_text(action_text) != "unknown"
+
+    @classmethod
+    def _default_outcome(cls, action_text: Optional[str]) -> Optional[str]:
+        return "success" if cls._known_action(action_text) else None
+
+    def _fallback_opponent_previous_action(
+        self,
+        battle: AbstractBattle,
+        raw_messages: list[str],
+    ) -> tuple[str, Optional[str]]:
+        if raw_messages:
+            return "unknown", None
+        opponent_active = getattr(battle, "opponent_active_pokemon", None)
+        prev = getattr(opponent_active, "previous_move", None)
+        if prev is None:
+            return "unknown", None
+        raw = getattr(prev, "id", None) or getattr(prev, "name", None) or str(prev)
+        return f"opponent move: {move_name(str(raw))}", "success"
+
+    @staticmethod
+    def _player_role_prefix(battle: AbstractBattle) -> Optional[str]:
+        """Return ``'p1'`` or ``'p2'`` for our role, or None if unknown."""
+        our_role = getattr(battle, "_player_role", None)
+        if our_role in {"p1", "p2"}:
+            return our_role
+        return None
 
     @staticmethod
     def _opponent_role_prefix(battle: AbstractBattle) -> Optional[str]:
@@ -272,14 +402,14 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
             return "p1"
         return None
 
-    def _opponent_action_block(self, move: str, *, cant: Optional[str] = None) -> np.ndarray:
+    def _opponent_action_block(self, action_text: str) -> np.ndarray:
         """Build an opponent action token block.
 
         Action blocks contain only the chosen move name — no outcome
         tokens.  Outcomes (success / fail / cant <reason>) now live in
         ``<last_turn_results>`` inside the *following* state block.
         """
-        words: list[str] = ["<opponent_chosen_move>", move, "<end_opponent_chosen_move>"]
+        words = action_words(action_text, opponent=True)
         return tokenize_words(self._tokenizer, words, warn_unknown=False)
 
     # ═══════════════════════════════════════════════════════════════════
@@ -514,4 +644,5 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         hist.pending_player_action = action_block(self._tokenizer, action_names[best_idx], opponent=False)
         hist.pending_player_action_text = action_names[best_idx]
         hist.pending_forced_switch = hist.current_forced_switch
+        hist.pending_raw_message_start = len(hist.raw_messages)
         return order

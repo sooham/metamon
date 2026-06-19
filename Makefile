@@ -335,6 +335,8 @@ _train-jepa-inner:
 # Requires a checkpoint from train-jepa and a running Showdown server.
 #
 # Play the JEPA bot against human opponents on Showdown (or locally).
+# The tokenizer and max-history window are loaded from the checkpoint; do not
+# pass a separate tokenizer path to play targets.
 #
 # Usage:
 #   make play-jepa

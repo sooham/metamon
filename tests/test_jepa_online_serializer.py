@@ -116,7 +116,7 @@ def test_forced_switch_state_uses_training_conditions_shape():
 
     words = state_words(battle, "gen9ou", is_force_switch=True)
 
-    conditions = words[words.index("<conditions>") : words.index("<eos>")]
+    conditions = words[words.index("<conditions>") : words.index("<end_arena>")]
     assert conditions == [
         "<conditions>",
         "raindance",
@@ -132,7 +132,20 @@ def test_forced_switch_state_uses_training_conditions_shape():
         "<end_opponent>",
         "<end_conditions>",
     ]
-    assert "<conditions_empty>" not in conditions
+    assert "<empty_conditions>" not in conditions
+    assert "<conditions_empty>" not in words
+
+
+def test_clear_state_uses_empty_conditions_sentinel():
+    words = state_words(_battle(), "gen1ou")
+
+    assert words.count("<empty_conditions>") == 1
+    assert "<conditions>" not in words
+    assert "<end_conditions>" not in words
+    # conditions are now inside <arena>, before <end_arena>
+    empty_idx = words.index("<empty_conditions>")
+    arena_end_idx = words.index("<end_arena>")
+    assert empty_idx < arena_end_idx
 
 
 def test_force_switch_detection_accepts_request_flag_and_switch_only_request():
@@ -156,3 +169,52 @@ def test_action_words_use_training_action_tags():
         "alakazam",
         "<end_chosen_move>",
     ]
+    assert action_words("opponent move: Body Slam", opponent=True) == [
+        "<opponent_chosen_move>",
+        "bodyslam",
+        "<end_opponent_chosen_move>",
+    ]
+
+
+def test_last_turn_results_use_training_result_shape():
+    battle = _battle()
+
+    words = state_words(
+        battle,
+        "gen1ou",
+        last_turn_player_action="switch: Alakazam",
+        last_turn_player_outcome="success",
+        last_turn_opponent_action="opponent move: Body Slam",
+        last_turn_opponent_outcome="cant par",
+    )
+
+    block = words[words.index("<last_turn_results>") : words.index("<end_last_turn_results>") + 1]
+    assert block == [
+        "<last_turn_results>",
+        "<active>",
+        "switch",
+        "alakazam",
+        "success",
+        "<end_active>",
+        "<opponent>",
+        "bodyslam",
+        "cant",
+        "par",
+        "<end_opponent>",
+        "<end_last_turn_results>",
+    ]
+
+
+def test_last_turn_results_unknown_action_has_no_outcome():
+    words = state_words(
+        _battle(),
+        "gen1ou",
+        last_turn_player_action="move: Blizzard",
+        last_turn_player_outcome="success",
+        last_turn_opponent_action="unknown",
+        last_turn_opponent_outcome="cant par",
+    )
+
+    start = words.index("<opponent>", words.index("<last_turn_results>"))
+    end = words.index("<end_opponent>", start)
+    assert words[start:end + 1] == ["<opponent>", "unknown", "<end_opponent>"]

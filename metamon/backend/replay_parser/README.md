@@ -1,6 +1,6 @@
 # Replay Parser
 
-The replay parser converts from the spectator POV of raw Pokémon Showdown replays to the first-peron POV of RL agents. In Showdown terms, this is a from-scratch python implementation of the sim protocol that simulates requests and predicts teams.
+The replay parser converts raw Pokémon Showdown replays from spectator POV into one-sided player POV trajectories. In Showdown terms, this is a from-scratch Python implementation of the sim protocol that simulates requests and predicts teams.
 
 The process is summarized by the following (simplified) example.
 

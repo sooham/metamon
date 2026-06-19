@@ -98,6 +98,7 @@ class BattleHistory:
     pending_player_action: Optional[np.ndarray] = None
     pending_player_action_text: Optional[str] = None
     pending_forced_switch: bool = False
+    pending_raw_message_start: int = 0
     last_state_key: Optional[tuple[int, ...]] = None
     current_forced_switch: bool = False
     # Raw protocol messages (pipe-delimited strings) for the "R" REPL key.
@@ -136,6 +137,7 @@ class TuiMixin:
     _repl_show_raw_for_turn: bool = False
     _repl_scroll_offset: int = 0
     _repl_save_raw_dir: Optional[str] = None  # set by play.py --save-raw-replay
+    _repl_save_raw_by_format: bool = False
 
     # ── hooks that concrete players must provide ──────────────────────
 
@@ -850,8 +852,8 @@ class TuiMixin:
         for msg in hist.raw_messages:
             if msg.startswith("|player|"):
                 parts = msg.split("|")
-                if len(parts) >= 3 and parts[2] != our_name:
-                    opponent = parts[2]
+                if len(parts) >= 4 and parts[3] != our_name:
+                    opponent = parts[3]
                     break
 
         date_str = datetime.now().strftime("%m-%d-%Y")
@@ -861,8 +863,17 @@ class TuiMixin:
             f"{tag_format}-{battle_id}_{our_name}_vs_{opponent}"
             f"_{date_str}_{outcome_str}.txt"
         )
+        if TuiMixin._repl_save_raw_by_format:
+            import re as _re
+
+            match = _re.match(r"^(gen\d+)(.*)$", tag_format)
+            gen_dir = match.group(1) if match else tag_format
+            tier_dir = match.group(2) if match else ""
+            save_dir = _os2.path.join(save_dir, gen_dir, tier_dir)
+
         path = _os2.path.join(save_dir, filename)
         try:
+            _os2.makedirs(save_dir, exist_ok=True)
             header = (
                 f"# outcome: {hist.outcome or 'unknown'}\n"
                 f"# messages: {len(hist.raw_messages)}\n"

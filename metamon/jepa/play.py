@@ -3,7 +3,6 @@
 Usage:
     uv run python -m metamon.jepa.play \\
         --checkpoint /workspace/poke-datasets/jepa-checkpoints/paired_best.pt \\
-        --tokenizer_path /workspace/poke-datasets/tokenizers/WorldModelObservationSpace-v1.json \\
         --format gen1ou \\
         --username JEPABot
 
@@ -28,12 +27,21 @@ from poke_env.ps_client.server_configuration import (
     ShowdownServerConfiguration,
 )
 
-from metamon.data.download import METAMON_CACHE_DIR
 from metamon.env import get_metamon_teams
+from metamon.jepa.checkpointing import require_tokenizer_from_checkpoint
 from metamon.jepa.model import PairedJEPAModel
 from metamon.jepa.player import JEPAWorldModelPlayer
-from metamon.tokenizer import PokemonTokenizer
 from metamon.tui import TuiMixin
+
+
+def random_battle_format_for(fmt: str) -> str:
+    """Return the random-battle equivalent for a Showdown format id."""
+    import re
+
+    match = re.match(r"^(gen\d+)", fmt)
+    if match is None:
+        return "gen1randombattle"
+    return f"{match.group(1)}randombattle"
 
 
 async def main() -> None:
@@ -83,19 +91,9 @@ async def main() -> None:
         with open(args.config, "r", encoding="utf-8") as f:
             model_cfg = yaml.safe_load(f)["model"]
 
-    # ── Load tokenizer from checkpoint (preferred) ──
-    tokenizer_state = ckpt.get("tokenizer_state")
-    if tokenizer_state is not None:
-        tokenizer = PokemonTokenizer.from_state(tokenizer_state)
-        print(f"Loaded tokenizer from checkpoint (vocab={len(tokenizer)}, name={tokenizer.name})")
-    else:
-        # Backward compat: old checkpoints lack tokenizer_state.
-        default_tok = os.path.join(METAMON_CACHE_DIR, "tokenizers",
-                                   "WorldModelObservationSpace-v1.json")
-        print(f"WARNING: checkpoint has no tokenizer_state — "
-              f"loading from {default_tok}")
-        tokenizer = PokemonTokenizer()
-        tokenizer.load_tokens_from_disk(default_tok)
+    # ── Load tokenizer from checkpoint ──
+    tokenizer = require_tokenizer_from_checkpoint(ckpt, args.checkpoint)
+    print(f"Loaded tokenizer from checkpoint (vocab={len(tokenizer)}, name={tokenizer.name})")
 
     # All token IDs derived from the loaded tokenizer.
     vocab_size = ckpt.get("vocab_size", len(tokenizer))
@@ -134,7 +132,9 @@ async def main() -> None:
 
     # Create lightweight bot instances sharing one model.
     server_config = ShowdownServerConfiguration if args.server == "showdown" else LocalhostServerConfiguration
-    team_set = get_metamon_teams("gen1ou", args.team_set)
+    main_format = args.format
+    random_format = random_battle_format_for(main_format)
+    team_set = get_metamon_teams(main_format, args.team_set)
 
     # Generate unique usernames for the real server.
     if args.server == "showdown":
@@ -154,30 +154,28 @@ async def main() -> None:
     if save_replay is None:
         save_replay = (args.server == "showdown")  # on by default for online play
     if save_replay:
-        import re
-        m = re.match(r"gen(\d+)(\w+)", args.format)
-        gen = f"gen{m.group(1)}" if m else args.format
-        tier = m.group(2) if m else ""
         base = args.raw_replay_dir or os.path.join(
             os.environ.get("METAMON_CACHE_DIR", "."), "online-raw-replays"
         )
-        TuiMixin._repl_save_raw_dir = os.path.join(base, "jepa", gen, tier)
+        TuiMixin._repl_save_raw_dir = os.path.join(base, "jepa")
+        TuiMixin._repl_save_raw_by_format = True
         os.makedirs(TuiMixin._repl_save_raw_dir, exist_ok=True)
         print(f"Saving raw replays to {TuiMixin._repl_save_raw_dir}")
     else:
         TuiMixin._repl_save_raw_dir = None
+        TuiMixin._repl_save_raw_by_format = False
 
     player_ou = JEPAWorldModelPlayer(
         model=model,
         tokenizer=tokenizer,
-        fmt="gen1ou",
+        fmt=main_format,
         heuristic=args.heuristic,
         verbose=not args.quiet,
         verbose_blocks=args.verbose_blocks,
         max_history_blocks=max_history_blocks,
         account_configuration=AccountConfiguration(username, args.password),
         server_configuration=server_config,
-        battle_format="gen1ou",
+        battle_format=main_format,
         team=team_set,
         start_timer_on_battle_start=False,
         max_concurrent_battles=30,
@@ -185,14 +183,14 @@ async def main() -> None:
     player_rb = JEPAWorldModelPlayer(
         model=model,
         tokenizer=tokenizer,
-        fmt="gen1randombattle",
+        fmt=random_format,
         heuristic=args.heuristic,
         verbose=not args.quiet,
         verbose_blocks=args.verbose_blocks,
         max_history_blocks=max_history_blocks,
         account_configuration=AccountConfiguration(username_rb, args.password),
         server_configuration=server_config,
-        battle_format="gen1randombattle",
+        battle_format=random_format,
         team=None,
         start_timer_on_battle_start=False,
         max_concurrent_battles=30,
@@ -205,15 +203,15 @@ async def main() -> None:
 
     tasks = []
     if args.ladder:
-        print(f"Searching for {args.num_battles} gen1ou ladder battles...")
+        print(f"Searching for {args.num_battles} {main_format} ladder battles...")
         tasks.append(player_ou.ladder(args.num_battles))
     else:
-        print(f"Bot online: {username} (gen1ou)")
-        print(f"Challenge with: /challenge {username}, gen1ou")
+        print(f"Bot online: {username} ({main_format})")
+        print(f"Challenge with: /challenge {username}, {main_format}")
         tasks.append(player_ou.accept_challenges(None, args.num_battles))
 
     # Random battle bot always ladders.
-    print(f"Searching for {args.num_battles} gen1randombattle ladder battles as {username_rb}...")
+    print(f"Searching for {args.num_battles} {random_format} ladder battles as {username_rb}...")
     tasks.append(player_rb.ladder(args.num_battles))
 
     try:
@@ -222,9 +220,9 @@ async def main() -> None:
         pass
     finally:
         JEPAWorldModelPlayer._stop_repl()
-        print(f"\nResults for {username} (gen1ou):")
+        print(f"\nResults for {username} ({main_format}):")
         print(f"  Wins: {player_ou.n_won_battles}  Losses: {player_ou.n_lost_battles}  Ties: {player_ou.n_tied_battles}")
-        print(f"Results for {username_rb} (gen1randombattle):")
+        print(f"Results for {username_rb} ({random_format}):")
         print(f"  Wins: {player_rb.n_won_battles}  Losses: {player_rb.n_lost_battles}  Ties: {player_rb.n_tied_battles}")
 
 

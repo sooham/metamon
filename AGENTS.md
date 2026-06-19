@@ -34,11 +34,14 @@ Action text tokens  ─► JEPAActionEncoder ψ ─► action embedding (action_
 
 [team_header, state₀, p_action₀, o_action₀, state₁, ...] ─► JEPATemporalEncoder τ ─► history context c
 
-c + current_state_z ─► JEPAOpponentStatePredictor ─► predicted opponent state z_opp (Gaussian)
-z + z_opp           ─► JEPAPairedActionPredictor ─► predicted opponent action (Gaussian)
-z + own_action + z_opp + opp_action ─► JEPANextStatePredictor ─► predicted next state z_next
-z + z_opp           ─► JEPAPairwiseRankHead ─► scalar advantage score
+c + current_state_z ─► JEPAOpponentBeliefPredictor shared backbone
+                    ├─ state head  ─► predicted opponent state z_opp (Gaussian)
+                    └─ action head ─► predicted opponent action a_opp (Gaussian)
+z + own_action + z_opp + a_opp ─► JEPANextStatePredictor ─► predicted next state z_next
+z + z_opp                    ─► JEPAPairwiseRankHead ─► scalar advantage score
 ```
+
+`JEPAOpponentBeliefPredictor` is the current code path and checkpoint module name; it replaces the older separate opponent-state and paired-action predictor modules with a shared representation plus two output heads.
 
 **Losses:** MSE for opponent state prediction, MSE for action prediction, MSE for next-state prediction, SIGReg (Epps-Pulley Gaussianity regularizer), and Bradley-Terry ranking loss from battle outcomes.
 
@@ -54,7 +57,7 @@ uv run python -m metamon.jepa.train_paired \
     --save_dir $METAMON_CACHE_DIR/jepa-checkpoints \
     --checkpoint $METAMON_CACHE_DIR/jepa-checkpoints/paired_best.pt \
     --batch_size 8 --grad_accum_steps 4 --lr 5e-5 --epochs 10 \
-    --num_workers 4 --compile --wandb
+    --num_workers 4 --compile
 ```
 
 Key training flags:
@@ -62,6 +65,7 @@ Key training flags:
 - `--lambda_rank 0` — disable ranking loss (e.g. when outcome labels are unreliable)
 - `--compile` — enable `torch.compile` on encoder + action encoder (CUDA only)
 - `--checkpoint` — path for both warm-start loading AND best-checkpoint saving
+- `--no-wandb` — disable Weights & Biases logging. W&B is enabled by default when the `wandb` package is installed; `--wandb` is accepted but redundant.
 
 Training uses bf16 on CUDA, SIGReg resampled per step, and micro-batched encoding (max 65536 tokens per encoder call). The temporal encoder's `max_seq_len` defaults to 6144 to accommodate full-battle histories.
 
@@ -73,7 +77,7 @@ Training uses bf16 on CUDA, SIGReg resampled per step, and micro-batched encodin
 | `temporal_encoder` | n_heads=6, n_layers=4, d_ff=768, max_seq_len=6144 |
 | `action_encoder` | d_model=128, n_heads=4, n_layers=3, d_ff=512, max_seq_len=64 |
 | Latents | `latent_dim: 192`, `action_latent_dim: 32` |
-| Loss weights | `lambda_sigreg: 0.1`, `lambda_rank: 1.0` |
+| Loss weights | `lambda_sigreg_state: 0.1`, `lambda_sigreg_action: 0.0`, `lambda_rank: 1.0`; deprecated fallback `lambda_sigreg: 0.1` |
 
 ### Data format (paired shards)
 
@@ -93,7 +97,6 @@ Requires a local Showdown server running on `localhost:8000`:
 
 uv run python -m metamon.jepa.play \
     --checkpoint $METAMON_CACHE_DIR/jepa-checkpoints/paired_best.pt \
-    --tokenizer_path $METAMON_CACHE_DIR/tokenizers/WorldModelObservationSpace-v1.json \
     --format gen1ou \
     --username JEPABot \
     --num_battles 5 \
@@ -121,7 +124,6 @@ Connect to `play.pokemonshowdown.com`. Requires a registered Showdown account an
 ```bash
 uv run python -m metamon.jepa.play \
     --checkpoint $METAMON_CACHE_DIR/jepa-checkpoints/paired_best.pt \
-    --tokenizer_path $METAMON_CACHE_DIR/tokenizers/WorldModelObservationSpace-v1.json \
     --format gen1ou \
     --username YourBotName \
     --password your_password \
@@ -185,7 +187,6 @@ With `--verbose_blocks`, it also prints the full tokenized state/action blocks, 
 ```
 uv run python -m metamon.jepa.play \
     --checkpoint PATH                 # required: .pt checkpoint file
-    --tokenizer_path PATH             # default: $METAMON_CACHE_DIR/tokenizers/WorldModelObservationSpace-v1.json
     --format FORMAT                   # default: gen1ou
     --username NAME                   # default: JEPABot
     --num_battles N                   # default: 30
@@ -199,9 +200,11 @@ uv run python -m metamon.jepa.play \
     --config PATH                     # model config yaml (default: configs/default.yaml)
 ```
 
+The play CLI loads tokenizer vocabulary and `max_history_blocks` from the checkpoint. There is no `--tokenizer_path` override for `metamon.jepa.play`; checkpoints without embedded `tokenizer_state` are rejected because loading a separate tokenizer can silently change token IDs.
+
 #### Important notes
 
-- **No history windowing in the player** — every turn, the full battle history from turn 1 is encoded through the temporal encoder. A 50-turn battle produces a ~200-block temporal sequence. The player has no guard against exceeding the temporal encoder's `max_seq_len` (default 6144 positional slots).
+- **Checkpoint-controlled history windowing in the player** — `play.py` loads `max_history_blocks` from the checkpoint, and `player.py` applies the same windowing logic used during paired training. The team header is always retained. `max_history_blocks=0` means unlimited/full-history encoding; positive values keep only the most recent N state blocks to stay within the temporal encoder's `max_seq_len` (default 6144 positional slots).
 - **Random battle mode** — the bot always launches a second instance for `gen1randombattle` in parallel, searching the ladder. This runs alongside the main OU bot.
 - **Concurrent battles** — `max_concurrent_battles=30`, so the bot can handle many battles simultaneously sharing one model.
 - **Model runs in eval mode with bf16** on CUDA. MPS and CPU also work.
@@ -220,7 +223,7 @@ The `Dex` class (`metamon/backend/showdown_dex/dex.py`) is the **single source o
 |---|---|---|
 | `moves/gen{gen}moves.json` | All move definitions | type, power, accuracy, pp, category, priority, flags |
 | `pokemon/gen{gen}pokedex.json` | All Pokémon species | name, baseSpecies, types, baseStats, abilities, requiredItem, requiredAbility, requiredTeraType, cosmeticFormes, num |
-| `typechart/gen{gen}typechart.json` | Type effectiveness matrix | damageTaken mapping (0=immune, 1=2× resist, 2=½× resist, 3=normal) |
+| `typechart/gen{gen}typechart.json` | Type effectiveness matrix | raw Showdown `damageTaken` codes (0=normal, 1=weak to attacker, 2=resists attacker, 3=immune); `Dex.type_chart` converts these to multipliers (1.0, 2.0, 0.5, 0.0) |
 | `natures.json` | Stat-modifying natures (Gen 3+) | increased/decreased stat |
 | `learnset.json` | Move learnsets per Pokémon | which Pokémon learn which moves |
 
@@ -240,7 +243,6 @@ When looking up a Pokémon that might not exist in the current gen's Pokédex (e
 | Consumer | How it uses Dex |
 |---|---|
 | **Replay parser** (`replay_state.py`) | Looks up species name, types, base stats, abilities, required items, and Tera types when a Pokémon is first revealed during parsing |
-| **RL environment** (`metamon_player.py`) | Gets the generation number from the battle format to configure the online battle |
 | **Team construction** (`pokemon_pool.py`) | Looks up dex entries for ability resolution, required items, species clause enforcement (via `num`/`baseSpecies`), and base species deduplication |
 | **Team prediction / usage stats** | Resolves species from usage data for team prediction models |
 
@@ -322,9 +324,9 @@ For doubles formats, `POVReplayDoubles` (a subclass of `POVReplay`) handles two 
 - `POVReplay` / `POVReplayDoubles` (`backward.py`) — converts spectator state to one-sided POV (singles and doubles)
 - `ReplayParser` (`parse_replays.py`) — orchestrates the full pipeline (forward → backward → save)
 - `text_serializer.py` — serializes `POVReplay` objects to the new stateful text format (separate functions for singles and doubles)
-- `UniversalState` / `UniversalAction` / `UniversalPokemon` (`interface.py`) — backend-agnostic representations (still used by the RL env and world-model data generator; the new text serializer bypasses these for the parser output)
+- `UniversalState` / `UniversalAction` / `UniversalPokemon` (`interface.py`) — legacy backend-agnostic representations for JSON trajectory data; the new text serializer bypasses these for parser output
 
-**Further reading:** The core pipeline entry point is `ReplayParser.parse_replay()` in `metamon/backend/replay_parser/parse_replays.py` — read this first for the big picture. Then trace into `forward.forward_fill()` → `SimProtocol.interpret_message()`, and `backward.backward_fill()` → `POVReplay`. The new text format is fully specified in `docs/new_parser_format_spec.md`. Tests in `tests/test_forward_actions.py`, `tests/test_backward_structure.py`, `tests/test_e2e_smoke.py`, and `tests/test_e2e_doubles.py` show the expected behavior. The parsed output format is consumed by `metamon/data/parsed_replay_dset.py` (PyTorch Dataset) and `metamon/env/metamon_battle.py` (online RL env), which both convert through `interface.py`'s `UniversalState`/`UniversalAction`.
+**Further reading:** The core pipeline entry point is `ReplayParser.parse_replay()` in `metamon/backend/replay_parser/parse_replays.py` — read this first for the big picture. Then trace into `forward.forward_fill()` → `SimProtocol.interpret_message()`, and `backward.backward_fill()` → `POVReplay`. The new text format is fully specified in `docs/new_parser_format_spec.md`. Tests in `tests/test_forward_actions.py`, `tests/test_backward_structure.py`, `tests/test_e2e_smoke.py`, and `tests/test_e2e_doubles.py` show the expected behavior.
 
 # Parsed-replay text format (v2)
 
@@ -342,7 +344,7 @@ The new parser output is a **stateful text format** where each file is a sequenc
 
 # Team Preview — lead prediction model
 
-The `TeamPreviewModel` (`metamon/backend/team_preview/preview.py`) is a **Perceiver-style neural network** that predicts which Pokémon to lead with at the start of a battle. It consumes parsed replays (Universal format) for training and is used at inference time by the RL evaluation system.
+The `TeamPreviewModel` (`metamon/backend/team_preview/preview.py`) is a **Perceiver-style neural network** that predicts which Pokémon to lead with at the start of a battle. It consumes parsed replay JSON files in the legacy Universal format for training.
 
 ### Problem statement
 
@@ -416,7 +418,6 @@ Lead selection can use either **argmax** (deterministic) or **multinomial sampli
 
 | Consumer | How it uses TeamPreviewModel |
 |---|---|
-| **RL evaluation** (`metamon/rl/evaluate/__main__.py`) | At the start of each evaluation battle, the model predicts the lead from the team preview state |
 | **Standalone training** (`python -m metamon.backend.team_preview.preview`) | The module can be run directly with CLI arguments to train a new model |
 
 **Further reading:** The model definition and training loop are in `metamon/backend/team_preview/preview.py`. The `PokemonTokenizer` (which maps species/move/ability/item names to integer tokens) is defined in `metamon/tokenizer.py`. The `consistent_pokemon_order()` and `consistent_move_order()` sorting utilities are in `metamon/interface.py`. The `CrossAttentionBlock` and `SelfAttentionBlock` used by the model are in `metamon/il/model.py`.

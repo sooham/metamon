@@ -47,9 +47,10 @@ from metamon.data.download import (
 class MetamonDataset(Dataset):
     """Base dataset class for loading parsed Pokémon battle trajectories.
 
-    Parsed replays are records of Pokémon Showdown battles converted to the partially
-    observed point-of-view of a single player, matching the problem our agents face in
-    the RL environment. They are created by the `metamon.backend.replay_parser` module.
+    Parsed replays are legacy JSON records of Pokémon Showdown battles converted to
+    the partially observed point-of-view of a single player. This loader expects
+    UniversalState dictionaries plus UniversalAction integer indices; it does not
+    consume the newer stateful text parser output.
 
     This class auto-detects whether data is stored as:
         - Flat directories: {format}/*.json or {format}/*.json.lz4

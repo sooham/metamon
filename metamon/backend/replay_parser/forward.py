@@ -775,6 +775,7 @@ class SimProtocol:
                         if subturn.matches_slot(switch_team, switch_slot):
                             if subturn.unfilled:
                                 subturn.fill_turn(self.curr_turn.create_subturn(True))
+                            subturn.turn.is_force_revival = True
                             # hardcoded action type that gets converted to similar action idices to "switch"
                             subturn.action = Action(
                                 name="$Forced Revival$",

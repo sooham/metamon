@@ -1,11 +1,11 @@
-# LeJEPA v2 — model hyperparameters for battle-prefix encoding + action prediction.
+# LeJEPA v4 — paired-POV current-state belief + next-state rollout.
 #
 # Works for both gen1ou and gen9ou: the encoder is sized for Gen 9's longer
 # states (~200+ tokens with items, abilities, Tera types, field effects)
 # while still being efficient for Gen 1's ~80-token states.
 #
 # Training hyperparameters (lr, epochs, batch_size, etc.) are passed
-# via CLI flags to train.py and are NOT stored here.
+# via CLI flags to train_paired.py and are NOT stored here.
 
 model:
   # Vocabulary size (auto-detected from tokenizer if null).
@@ -78,22 +78,12 @@ model:
     hidden_dim: 512       # 2.7× latent_dim
     n_layers: 4
 
-  # ── State Predictor — AdaLN-zero conditional transformer ──────────
-  # Conditions on encoded player action + predicted opponent action.
-  predictor:
-    d_model: 256
-    n_heads: 8
-    n_layers: 6
-    d_ff: 1024           # 4× d_model
-    dropout: 0.1
-    max_seq_len: 64
-    gradient_checkpointing: false  # predictor is small
-
   # ── LeJEPA loss ───────────────────────────────────────────────────
-  # SIGReg on state latents (encoder outputs, context, next-state preds).
+  # SIGReg on state latents (current encoder outputs, true next-state targets,
+  # and history context). Predicted next-state latents are not regularized.
   # Gaussian prior is reasonable for continuous spatial state embeddings.
   lambda_sigreg_state: 0.1
-  # SIGReg on action latents (own, opponent, predicted opponent action).
+  # SIGReg on true action encoder outputs (own and opponent actions from both POVs).
   # Off by default: action distributions are power-law (common moves +
   # long tail), not Gaussian.  Forcing SIGReg on them can be harmful.
   lambda_sigreg_action: 0.0

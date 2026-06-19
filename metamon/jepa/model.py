@@ -1,36 +1,39 @@
-"""LeJEPA (Latent-Euclidean JEPA) model for world-model state learning.
+"""LeJEPA (Latent-Euclidean JEPA) model for paired-POV world-model learning.
 
-Architecture overview (v3 — block encoding + temporal action prediction)
--------------------------------------------------------------------------
+Architecture overview (v4 — paired current-state belief + next-state rollout)
+-----------------------------------------------------------------------------
 
-    Header/state blocks₀..N ──► JEPAEncoder per block ─┐
-    Historical player actions ─► JEPAActionEncoder ────┤
-    Historical opponent actions ─► JEPAActionEncoder ──┤
-                                                       ▼
-    [team, state₀, p_action₀, o_action₀, state₁, ...]
-                                                       │
-                                                       ▼
-                                             JEPATemporalEncoder ──► enc_N
-                                                       │
-                                                       ▼
-                                      JEPAActionPredictor ──► pred_o
-                                      (MLP, no conditioning)
+    POV state/header blocks through T ─► JEPAEncoder per block ─┐
+    Historical player actions ────────► JEPAActionEncoder ──────┤
+    Historical opponent actions ──────► JEPAActionEncoder ──────┤
+                                                                ▼
+    [team, state₀, p_action₀, o_action₀, state₁, ... state_{T-1}]
+                                                                │
+                                                                ▼
+                                            JEPATemporalEncoder ──► history ctx_T
 
-    Current player action ─► JEPAActionEncoder ─► actual_p_emb
-    Current opponent action ─► JEPAActionEncoder ─► actual_o_emb
+    Current visible state block T ─► JEPAEncoder ─► z_T
+    Next visible state block T+1 ──► JEPAEncoder ─► z_{T+1} target
 
-    enc_N + actual_p_emb + pred_o ─► JEPAPredictor ─► pred_enc_{N+1}
+    history ctx_T + z_T ─► JEPAOpponentBeliefPredictor shared backbone
+                         ├─ state head  ─► pred_opp_state_mu/logvar
+                         └─ action head ─► pred_opp_action_mu/logvar
 
-    Blocks₀..N+1 through the same block+temporal encoders ─► enc_{N+1} target
+    Current player action ───► JEPAActionEncoder ─► own_action
+    Current opponent action ─► JEPAActionEncoder ─► opponent_action target
 
-    ┌──────────────────────────────────────────────────────────────┐
-    │ LOSSES:                                                       │
-    │   MSE(pred_opp_mu, actual_opp)   — opponent state (on mean)   │
-    │   MSE(pred_oa_mu, actual_oa)     — opponent action (on mean)  │
-    │   MSE(pred_enc_{N+1}, enc_{N+1})  — state prediction          │
-    │   SIGReg(enc_N, enc_{N+1}, pred_enc_{N+1})  — state space     │
-    │   SIGReg(actual_p_emb, actual_o_emb) — action encoder outputs │
-    └──────────────────────────────────────────────────────────────┘
+    z_T + own_action + sampled opponent state/action beliefs
+        ─► JEPANextStatePredictor ─► pred_z_{T+1}_mu/logvar
+
+    ┌────────────────────────────────────────────────────────────────────┐
+    │ LOSSES:                                                             │
+    │   MSE(pred_opp_state_mu, z_opp_T)      — opponent state mean        │
+    │   MSE(pred_opp_action_mu, action_opp)  — opponent action mean       │
+    │   MSE(pred_z_{T+1}_mu, z_{T+1})        — next current-state latent  │
+    │   Bradley-Terry rank loss from battle outcome                       │
+    │   SIGReg on current, next-target, and history-context state latents │
+    │   Optional SIGReg on true action encoder outputs                    │
+    └────────────────────────────────────────────────────────────────────┘
 
 Modules:
 
@@ -41,37 +44,46 @@ Modules:
    (e.g. "<chosen_move>blizzard<end_chosen_move>").  Shares the token embedding
    matrix with JEPAEncoder.  Attention pool → MLP → action_latent_dim.
 
-3. **JEPATemporalEncoder τ** — transformer over interleaved block embeddings:
-   [team, state_0, player_action_0, opponent_action_0, state_1, ...] → enc_N.
+3. **JEPATemporalEncoder τ** — transformer over interleaved historical block
+   embeddings.  The current state block is dropped from this history before
+   temporal encoding, so the output is a prior context rather than a
+   next-state target.
 
-4. **JEPAActionPredictor α** — small MLP: enc_N → pred_o_emb.
+4. **JEPAOpponentBeliefPredictor β** — shared MLP backbone over
+   (history_context, current_state_z), with separate Gaussian heads for the
+   opponent current-state latent and opponent next-action latent.
 
-5. **JEPAPredictor μ** — AdaLN-zero conditional transformer:
-   (enc_N, actual_p_emb, pred_o_emb) → pred_enc_{N+1}.  Conditioning uses the
-   chosen player action plus the predicted opponent action.
+5. **JEPANextStatePredictor μ** — diagonal-Gaussian MLP:
+   (current_state_z, own_action, sampled/predicted opponent state,
+   sampled/predicted opponent action) → next current-state latent.
 
 Losses
 ------
 
-*State MSE* — MSE between target prefix embedding and predictor estimate::
+*Next-state MSE* — MSE between the target next current-state block latent and
+the next-state predictor mean::
 
-    L_state = || enc_{N+1} - predictor(enc_N, actual_p_emb, pred_o_emb) ||²
+    L_next = || z_{T+1} - pred_z_{T+1}_mu ||²
 
 *Opponent state MSE* — MSE on predicted mean vs target opponent latent::
 
-    L_os = || enc_opp_T - pred_opp_mu ||²
+    L_os = || z_opp_T - pred_opp_state_mu ||²
 
 *Action MSE* — MSE on predicted mean vs target action latent::
 
-    L_oa = || actual_oa_emb - pred_oa_mu ||²
+    L_oa = || actual_opp_action - pred_opp_action_mu ||²
 
-*SIGReg* — on encoder outputs (enc_N, enc_{N+1}, pred_enc_{N+1}) and
-action encoder outputs (actual_p_emb, actual_o_emb).  NOT on
-JEPAActionPredictor outputs.
+*SIGReg* — on current-state encoder outputs, next-state target encoder
+outputs, and history-context outputs.  Action SIGReg is configurable and is off
+by default; predicted Gaussian samples are not regularized.
+
+*Rank loss* — Bradley-Terry/logistic loss from the p1 outcome label, evaluated
+on true current-state pairs, current belief pairs, and next-state belief pairs.
 
 Total::
 
-    L = L_state + L_oa + λ · L_sigreg
+    L = λ_os L_os + λ_oa L_oa + λ_next L_next + λ_rank L_rank
+        + λ_sigreg_state L_sigreg_state + λ_sigreg_action L_sigreg_action
 """
 
 import math
@@ -551,7 +563,7 @@ class JEPAActionEncoder(nn.Module):
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# JEPATemporalEncoder — interleaved block embeddings → prefix embedding
+# JEPATemporalEncoder — interleaved historical block embeddings → context
 # ═════════════════════════════════════════════════════════════════════════
 
 class JEPATemporalEncoder(nn.Module):
@@ -1286,11 +1298,18 @@ def pairwise_rank_loss(
     p1_score: torch.Tensor,
     p2_score: torch.Tensor,
     p1_won: torch.Tensor,
+    rank_valid: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Bradley-Terry/logistic ranking loss from the p1 outcome label."""
     sign = p1_won.to(dtype=p1_score.dtype).mul(2.0).sub(1.0)
     margin = p1_score - p2_score
-    return F.softplus(-sign * margin).mean()
+    loss = F.softplus(-sign * margin)
+    if rank_valid is None:
+        return loss.mean()
+    valid = rank_valid.to(device=loss.device, dtype=torch.bool)
+    if not bool(valid.any()):
+        return loss.new_tensor(0.0)
+    return loss[valid].mean()
 
 
 def compute_paired_losses(
@@ -1354,23 +1373,33 @@ def compute_paired_losses(
 
     if "p1_won" in outputs:
         p1_won = outputs["p1_won"].to(device=enc_p1_T.device)
+        if "rank_valid" in outputs:
+            rank_valid = outputs["rank_valid"].to(device=enc_p1_T.device)
+        elif "p2_won" in outputs:
+            rank_valid = p1_won.bool() ^ outputs["p2_won"].to(device=enc_p1_T.device).bool()
+        else:
+            rank_valid = torch.ones_like(p1_won, dtype=torch.bool, device=enc_p1_T.device)
         rank_loss_teacher = pairwise_rank_loss(
             outputs["rank_p1_teacher"],
             outputs["rank_p2_teacher"],
             p1_won,
+            rank_valid,
         )
         rank_loss_belief = pairwise_rank_loss(
             outputs["rank_p1_belief"],
             outputs["rank_p2_belief"],
             p1_won,
+            rank_valid,
         )
         rank_loss_next = pairwise_rank_loss(
             outputs["rank_p1_next_belief"],
             outputs["rank_p2_next_belief"],
             p1_won,
+            rank_valid,
         )
         rank_loss = (rank_loss_teacher + rank_loss_belief + rank_loss_next) / 3
     else:
+        rank_valid = torch.zeros(enc_p1_T.shape[0], dtype=torch.bool, device=enc_p1_T.device)
         rank_loss_teacher = enc_p1_T.new_tensor(0.0)
         rank_loss_belief = enc_p1_T.new_tensor(0.0)
         rank_loss_next = enc_p1_T.new_tensor(0.0)
@@ -1432,6 +1461,7 @@ def compute_paired_losses(
         "rank_loss_teacher": rank_loss_teacher.item(),
         "rank_loss_belief": rank_loss_belief.item(),
         "rank_loss_next": rank_loss_next.item(),
+        "rank_valid": float(rank_valid.float().mean().item()),
         "pred_loss": pred_loss.item(),
         "sigreg_current": sigreg_current.item(),
         "sigreg_next_true": sigreg_next_true.item(),

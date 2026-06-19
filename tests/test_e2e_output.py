@@ -51,9 +51,9 @@ class TestE2EOutput:
     def test_tags_are_balanced(self, parsed_texts):
         """Each opening tag has matching closing tag count.
 
-        Accounts for self-closing variants: ``<conditions_empty>`` replaces
-        ``<conditions>...</end_conditions>``, ``<you_empty>`` replaces
-        ``<you>...</end_you>``, etc.
+        Accounts for self-closing variants: ``<you_empty>`` replaces
+        ``<you>...</end_you>``, etc. Empty arena conditions use the standalone
+        ``<empty_conditions>`` sentinel and are validated separately.
         """
         # (open_pattern, close_tag, self_closing_tag_or_None)
         _PAIRED = [
@@ -64,8 +64,7 @@ class TestE2EOutput:
             (r"<arena>", r"<end_arena>", None),
             (r"<begin_moves>", r"<end_moves>", None),
             (r"<bench>", r"<end_bench>", None),
-            # <conditions_empty> replaces an entire <conditions>...</end_conditions> pair
-            (r"<conditions>", r"<end_conditions>", "<conditions_empty>"),
+            (r"<conditions>", r"<end_conditions>", None),
             (r"<you>", r"<end_you>", None),
             (r"<active>", r"<end_active>", None),
             (r"<opponent>", r"<end_opponent>", None),
@@ -89,6 +88,20 @@ class TestE2EOutput:
                     + (f" + {self_close}" if self_close else "")
                     + f" ({close_count})"
                 )
+
+    def test_each_state_has_one_conditions_representation(self, parsed_texts):
+        """Each state has either <empty_conditions> or a paired populated block."""
+        for text in parsed_texts:
+            assert "<conditions_empty>" not in text
+            for block in re.findall(r"<bos>(.*?)<eos>", text, re.DOTALL):
+                has_empty = "<empty_conditions>" in block
+                condition_open_count = block.count("<conditions>")
+                assert int(has_empty) + condition_open_count == 1
+                if has_empty:
+                    assert "<end_conditions>" not in block
+                else:
+                    assert condition_open_count == 1
+                    assert block.count("<end_conditions>") == 1
 
     # -- State-action count consistency ------------------------------------
 

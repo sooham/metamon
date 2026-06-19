@@ -201,8 +201,7 @@ class TestDoublesTextOutput:
         (r"<opponent2>", "<end_opponent2>", None),
         (r"<begin_moves", "<end_moves>", None),
         (r"<bench>", "<end_bench>", None),
-        # <conditions_empty> replaces an entire <conditions>...</end_conditions> pair
-        (r"<conditions>", "<end_conditions>", "<conditions_empty>"),
+        (r"<conditions>", "<end_conditions>", None),
         (r"<you>", "<end_you>", None),
         (r"<move>", "<end_move>", None),
         (r"<chosen_move", "<end_chosen_move>", None),
@@ -224,6 +223,20 @@ class TestDoublesTextOutput:
                     + (f" + {self_close}" if self_close else "")
                     + f" ({close_count})"
                 )
+
+    def test_each_state_has_one_conditions_representation(self, doubles_pov_texts):
+        """Each state has either <empty_conditions> or a paired populated block."""
+        for text in doubles_pov_texts:
+            assert "<conditions_empty>" not in text
+            for block in re.findall(r"<bos>(.*?)<eos>", text, re.DOTALL):
+                has_empty = "<empty_conditions>" in block
+                condition_open_count = block.count("<conditions>")
+                assert int(has_empty) + condition_open_count == 1
+                if has_empty:
+                    assert "<end_conditions>" not in block
+                else:
+                    assert condition_open_count == 1
+                    assert block.count("<end_conditions>") == 1
 
     def test_states_and_actions_count(self, doubles_pov_texts):
         """states = actions + 1 (terminal state has no action)."""

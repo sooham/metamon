@@ -198,6 +198,10 @@ def format_pretty(tokens: list[str]) -> str:
                 break
 
     # ── Conditions ──
+    if peek(1) == ["<empty_conditions>"] or peek(1) == ["<conditions_empty>"]:
+        take(1)
+        lines.append("  ┌─ Conditions ──────────────────────────────────────")
+        lines.append("  │   empty")
     if peek(1) == ["<conditions>"]:
         take(1)
         weather = take(1)[0]

@@ -19,8 +19,8 @@ _BLOCK_STARTERS = frozenset({
     "<opponent>", "<end_opponent>",
     "<begin_moves>", "<end_moves>", "<move>", "<end_move>",
     "<bench>", "<end_bench>",
-    "<conditions>", "<end_conditions>",
-    "<you>", "<end_you>",
+    "<conditions>", "<end_conditions>", "<empty_conditions>", "<conditions_empty>",
+    "<you>", "<end_you>", "<you_empty>", "<opponent_empty>",
     "<boosts>", "<end_boosts>",
     "<chosen_move>", "<end_chosen_move>",
     "<opponent_chosen_move>", "<end_opponent_chosen_move>",
@@ -189,6 +189,10 @@ def format_pretty(tokens: list[str]) -> str:
                     take()
 
             # conditions
+            if peek(1) and peek(1)[0] in ("<empty_conditions>", "<conditions_empty>"):
+                take()
+                lines.append(f"│ conditions: empty")
+
             if peek(1) and peek(1)[0] == "<conditions>":
                 take()
                 weather = take() or "?"
@@ -196,7 +200,13 @@ def format_pretty(tokens: list[str]) -> str:
                 lines.append(f"│   weather: {weather}")
 
                 # optional battle field
-                if peek(1) and peek(1)[0] not in ("<you>",):
+                if peek(1) and peek(1)[0] not in (
+                    "<you>",
+                    "<you_empty>",
+                    "<opponent>",
+                    "<opponent_empty>",
+                    "<end_conditions>",
+                ):
                     bf = take()
                     lines.append(f"│   field: {bf}")
 
@@ -208,6 +218,8 @@ def format_pretty(tokens: list[str]) -> str:
                         take()
                     if you_parts:
                         lines.append(f"│   you: {' '.join(you_parts)}")
+                elif peek(1) and peek(1)[0] == "<you_empty>":
+                    take()
 
                 # opponent
                 if peek(1) and peek(1)[0] == "<opponent>":
@@ -217,6 +229,8 @@ def format_pretty(tokens: list[str]) -> str:
                         take()
                     if opp_parts:
                         lines.append(f"│   opponent: {' '.join(opp_parts)}")
+                elif peek(1) and peek(1)[0] == "<opponent_empty>":
+                    take()
 
                 if peek(1) and peek(1)[0] == "<end_conditions>":
                     take()

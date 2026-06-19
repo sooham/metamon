@@ -3,7 +3,6 @@
 Usage:
     uv run python -m metamon.jepa.compete_baseline \\
         --checkpoint /path/to/paired_best.pt \\
-        --tokenizer_path /path/to/tokenizer.json \\
         --format gen1ou \\
         --baseline Gen1BossAI \\
         --n_battles 10
@@ -13,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import random
 import string
 
@@ -27,9 +25,9 @@ from poke_env.ps_client.server_configuration import (
 
 from metamon.baselines import get_baseline
 from metamon.env import get_metamon_teams
-from metamon.jepa.model import PairedJEPAModel
 from metamon.jepa.baseline import register_jepa_baseline
-from metamon.tokenizer import PokemonTokenizer
+from metamon.jepa.checkpointing import require_tokenizer_from_checkpoint
+from metamon.jepa.model import PairedJEPAModel
 
 
 def main():
@@ -65,26 +63,15 @@ def main():
     else:
         device = torch.device("cpu")
 
-    # ── Load tokenizer from checkpoint (preferred) ──
+    # ── Load tokenizer from checkpoint ──
     ckpt = torch.load(args.checkpoint, map_location=device)
     model_cfg = ckpt.get("config")
     if not model_cfg:
         with open(args.config, "r", encoding="utf-8") as f:
             model_cfg = yaml.safe_load(f)["model"]
 
-    from metamon.data.download import METAMON_CACHE_DIR
-
-    tokenizer_state = ckpt.get("tokenizer_state")
-    if tokenizer_state is not None:
-        tokenizer = PokemonTokenizer.from_state(tokenizer_state)
-        print(f"Loaded tokenizer from checkpoint (vocab={len(tokenizer)})")
-    else:
-        default_tok = os.path.join(METAMON_CACHE_DIR, "tokenizers",
-                                   "WorldModelObservationSpace-v1.json")
-        print(f"WARNING: checkpoint has no tokenizer_state — "
-              f"loading from {default_tok}")
-        tokenizer = PokemonTokenizer()
-        tokenizer.load_tokens_from_disk(default_tok)
+    tokenizer = require_tokenizer_from_checkpoint(ckpt, args.checkpoint)
+    print(f"Loaded tokenizer from checkpoint (vocab={len(tokenizer)}, name={tokenizer.name})")
 
     vocab_size = ckpt.get("vocab_size", len(tokenizer))
     pad_id = tokenizer.pad_token_id

@@ -1139,6 +1139,7 @@ class Turn:
     replacements_2: List[Replacement] = field(default_factory=list)
     turn_number: int = None
     is_force_switch: bool = False
+    is_force_revival: bool = False
     subturns: List = field(default_factory=list)
     can_tera_1: bool = False
     can_tera_2: bool = False
@@ -1173,6 +1174,7 @@ class Turn:
         new.weather = self.weather
         new.turn_number = self.turn_number
         new.is_force_switch = self.is_force_switch
+        new.is_force_revival = self.is_force_revival
         new.can_tera_1 = self.can_tera_1
         new.can_tera_2 = self.can_tera_2
         # ── simple dicts (enum→int, values immutable) ───────────────
@@ -1320,6 +1322,8 @@ class Turn:
         next_turn.choices_2 = [None, None]
         next_turn.subturns = []
         next_turn.turn_number += 1
+        next_turn.is_force_switch = False
+        next_turn.is_force_revival = False
         next_turn.replacements_1 = []
         next_turn.replacements_2 = []
         # Clear transient per-turn state on all Pokémon in the new turn.
@@ -1644,8 +1648,9 @@ class ReplayState:
     * :class:`POVReplay` — generates ``ReplayState`` objects for the WIN and
       LOSS trajectories.
     * :meth:`UniversalState.from_ReplayState` — converts to the universal format.
-    * :class:`~metamon.data.parsed_replay_dset.ParsedReplayDataset` — loads
-      these from disk as (state, action) pairs.
+    * Legacy JSON export paths can convert this through
+      :meth:`UniversalState.from_ReplayState`; the new parser text output is
+      serialized directly from ``POVReplay``.
 
     Fields are one-sided: ``active_pokemon`` is the player's, ``opponent_active_pokemon``
     is the enemy's.  Bench, fainted, and team preview follow the same convention.
