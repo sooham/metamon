@@ -63,6 +63,41 @@ class PokemonTokenizer:
         with open(path, "wb") as f:
             f.write(orjson.dumps({**self._initial_ids, **self._new_ids}))
 
+    # ── checkpoint serialization (full state, not just IDs) ──────────
+
+    def to_state(self) -> dict:
+        """Return a JSON-serialisable dict of the full tokenizer state.
+
+        Includes the complete token→ID mapping, special-token IDs, and name.
+        Safe to store inside a PyTorch checkpoint.
+        """
+        return {
+            "initial_ids": dict(self._initial_ids),
+            "new_ids": dict(self._new_ids),
+            "unknown_token_id": self.unknown_token_id,
+            "pad_token_id": self.pad_token_id,
+            "name": self.name,
+        }
+
+    @classmethod
+    def from_state(cls, state: dict) -> "PokemonTokenizer":
+        """Restore a full tokenizer from a ``to_state()`` dict.
+
+        Special tokens that may have been added after the original build
+        (e.g. structural tokens, action tokens) are re-ensured.
+        """
+        tokenizer = cls()
+        tokenizer._initial_ids = state["initial_ids"]
+        tokenizer._new_ids = state.get("new_ids", {})
+        tokenizer.unknown_token_id = state.get("unknown_token_id", 0)
+        tokenizer.pad_token_id = state.get("pad_token_id", 0)
+        tokenizer.name = state.get("name", "custom")
+        tokenizer._reverse_ids = None
+        tokenizer._frozen = False
+        tokenizer._ensure_special_tokens()
+        tokenizer._frozen = True
+        return tokenizer
+
     def load_tokens_from_disk(self, path: str) -> "PokemonTokenizer":
         with open(path, "rb") as f:
             ids = orjson.loads(f.read())

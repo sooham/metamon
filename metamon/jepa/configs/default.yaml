@@ -59,10 +59,10 @@ model:
   #   - state head:  mu/logvar for opponent current-state latent
   #   - action head: mu/logvar for opponent next-action latent
   # Replaces the old separate opponent_state_predictor and paired_action_predictor.
-  # Hidden dim is larger than the old individual predictors (768 vs 512) because
-  # the backbone serves two heads instead of one.
+  # Hidden dim 640 is ~25% wider than the old individual predictors (512)
+  # since the backbone serves two heads instead of one.
   opponent_belief_predictor:
-    hidden_dim: 768       # 4× latent_dim (wider for shared backbone)
+    hidden_dim: 640       # 3.3× latent_dim (wider for shared backbone)
     n_layers: 4
 
   # ── Paired-POV next-state predictor — stochastic (mu+logvar) ──────

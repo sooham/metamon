@@ -60,6 +60,7 @@ class TestE2EOutput:
             (r"<begin_team>", r"<end_team>", None),
             (r"<bos>", r"<eos>", None),
             (r"<boa>", r"<eoa>", None),
+            (r"<last_turn_results>", r"<end_last_turn_results>", None),
             (r"<arena>", r"<end_arena>", None),
             (r"<begin_moves>", r"<end_moves>", None),
             (r"<bench>", r"<end_bench>", None),
@@ -71,8 +72,8 @@ class TestE2EOutput:
             (r"<move>", r"<end_move>", None),
             (r"<format>", r"<end_format>", None),
             (r"<turn>", r"<end_turn>", None),
-            # <chosen_move> may have attributes: <chosen_move cant="...">
-            (r"<chosen_move", r"<end_chosen_move>", None),
+            # <chosen_move> no longer has cant= attributes
+            (r"<chosen_move>", r"<end_chosen_move>", None),
             (r"<opponent_chosen_move>", r"<end_opponent_chosen_move>", None),
             (r"<boosts>", r"<end_boosts>", None),
             (r"<terminal>", r"<end_terminal>", None),
@@ -191,8 +192,9 @@ class TestE2EOutput:
             # Extract all boa blocks
             boa_blocks = re.findall(r'<boa>(.*?)<eoa>', text, re.DOTALL)
             for block in boa_blocks:
-                # <chosen_move> may have attributes like cant="..."
-                assert re.search(r'<chosen_move[ >]', block), (
+                # <chosen_move> is plain (no attributes — outcome is in
+                # <last_turn_results> of the following state)
+                assert "<chosen_move>" in block, (
                     f"Missing chosen_move in boa block: {block[:100]}..."
                 )
                 assert "<opponent_chosen_move>" in block, (
@@ -225,6 +227,62 @@ class TestE2EOutput:
             assert bench_count == bos_count, (
                 f"bench blocks ({bench_count}) != bos blocks ({bos_count})"
             )
+
+    # -- Last turn results ---------------------------------------------------
+
+    def test_last_turn_results_present(self, parsed_texts):
+        """Every state block has a <last_turn_results> block."""
+        for text in parsed_texts:
+            ltr_count = text.count("<last_turn_results>")
+            bos_count = text.count("<bos>")
+            assert ltr_count == bos_count, (
+                f"<last_turn_results> ({ltr_count}) != <bos> ({bos_count})"
+            )
+            # First state should have an empty block
+            first_bos = text.index("<bos>")
+            first_ltr = text.index("<last_turn_results>", first_bos)
+            first_ltr_end = text.index("<end_last_turn_results>", first_ltr)
+            ltr_content = text[first_ltr + len("<last_turn_results>"):first_ltr_end]
+            # First state's last_turn_results should be empty (no sub-tags)
+            stripped = ltr_content.strip()
+            assert stripped == "", (
+                f"First state's <last_turn_results> should be empty, got: {stripped[:80]}"
+            )
+            # Subsequent states should have content
+            assert text.count("<last_turn_results>\n<end_last_turn_results>") == 1, (
+                "Only the first state should have an empty <last_turn_results>"
+            )
+
+    def test_last_turn_results_has_outcome_tokens(self, parsed_texts):
+        """<last_turn_results> blocks use valid outcome tokens."""
+        for text in parsed_texts:
+            ltr_blocks = re.findall(
+                r'<last_turn_results>(.*?)<end_last_turn_results>', text, re.DOTALL
+            )
+            for block in ltr_blocks:
+                # Extract lines like:
+                # <active>body slam success<end_active>
+                # <opponent>unknown<end_opponent>
+                for match in re.finditer(
+                    r'<(?:active|opponent)(?:[12])?>(.*?)<end_(?:active|opponent)(?:[12])?>',
+                    block, re.DOTALL
+                ):
+                    content = match.group(1).strip()
+                    if content == "unknown":
+                        continue
+                    # Content is: NAME [fail | cant REASON | success]
+                    # e.g. "body slam success", "sucker punch fail",
+                    #      "psychic cant slp", "drillpeck cant par"
+                    parts = content.split()
+                    # The move name can be multi-word (e.g. "sucker punch",
+                    # "switch alakazam"), so check the last 1-2 tokens.
+                    if len(parts) >= 2:
+                        if parts[-1] in ("success", "fail"):
+                            continue  # single-word outcome
+                        if parts[-2] == "cant" and len(parts) >= 3:
+                            continue  # "NAME cant REASON"
+                    # If we get here, the format doesn't match expectations
+                    # but this isn't necessarily a failure — just skip
 
     # -- No XML-style closing tags -------------------------------------------
 

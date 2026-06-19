@@ -8,7 +8,7 @@ else
 METAMON_CACHE_DIR ?= /workspace/poke-datasets
 endif
 RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/raw-replays
-FORMAT ?= gen1ou gen9ou
+FORMAT ?= gen1ou
 FORMATS ?= $(FORMAT)
 
 .PHONY: parse-no-pred parse parse-all-no-pred parse-all battle battle-inspect inspect-replay \
@@ -254,7 +254,7 @@ JEPA_PREFETCH_FACTOR ?= 4
 JEPA_PRINT_INTERVAL ?= 10
 JEPA_CONFIG ?= metamon/jepa/configs/default.yaml
 JEPA_COMPILE ?= true
-JEPA_MAX_HISTORY ?= 32
+JEPA_MAX_HISTORY ?= 0
 
 # Train the paired-POV JEPA model on paired_shard_*.npz files.
 # Requires paired data generated with scripts/generate_world_model_data.py --paired_pov.
@@ -269,9 +269,9 @@ JEPA_MAX_HISTORY ?= 32
 #   make train-jepa FORMATS=gen1ou JEPA_MAX_HISTORY=0  # full battle history
 JEPA_PAIRED_BATCH_SIZE ?= 200
 JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 2
-JEPA_PAIRED_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best.pt
+JEPA_PAIRED_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best_stochastic.pt
 JEPA_PAIRED_MAX_STEPS ?= 0
-JEPA_PAIRED_VAL_INTERVAL ?= 200
+JEPA_PAIRED_VAL_INTERVAL ?= 500
 JEPA_PAIRED_VAL_MAX_BATCHES ?= 10
 JEPA_PAIRED_PRINT_INTERVAL ?= 50
 JEPA_PAIRED_LOG_INTERVAL ?= 20
@@ -347,7 +347,6 @@ _train-jepa-inner:
 #   R = raw protocol logs    P = state/action blocks
 #   V = toggle verbose       O = battle overview    Q = quit REPL
 JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best.pt
-JEPA_PLAY_TOKENIZER ?= $(JEPA_TOKENIZER)
 JEPA_PLAY_FORMAT ?= gen1ou
 JEPA_PLAY_USERNAME ?= jepabot
 JEPA_PLAY_TEAM_SET ?= competitive
@@ -363,14 +362,8 @@ play-jepa:
 		echo "  Train first: make train-jepa FORMATS=$(JEPA_PLAY_FORMAT)"; \
 		exit 1; \
 	fi
-	@if [ ! -f "$(JEPA_PLAY_TOKENIZER)" ]; then \
-		echo "ERROR: Tokenizer not found at $(JEPA_PLAY_TOKENIZER)."; \
-		echo "  Run: make wm-tokenizer FORMATS=\"$(JEPA_PLAY_FORMAT)\" first."; \
-		exit 1; \
-	fi
 	uv run python -m metamon.jepa.play \
 		--checkpoint $(JEPA_PLAY_CHECKPOINT) \
-		--tokenizer_path $(JEPA_PLAY_TOKENIZER) \
 		--format $(JEPA_PLAY_FORMAT) \
 		--username $(JEPA_PLAY_USERNAME) \
 		--team_set $(JEPA_PLAY_TEAM_SET) \
@@ -404,7 +397,6 @@ test-jepa-baseline: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure-show
 	fi
 	uv run python -m metamon.jepa.compete_baseline \
 		--checkpoint $(JEPA_PLAY_CHECKPOINT) \
-		--tokenizer_path $(JEPA_PLAY_TOKENIZER) \
 		--format $(JEPA_BASELINE_FORMAT) \
 		--baseline $(JEPA_BASELINE) \
 		--n_battles $(JEPA_BASELINE_N_BATTLES) \
@@ -423,7 +415,6 @@ test-jepa-all-baselines: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure
 	fi
 	uv run python -m metamon.jepa.compete_baseline \
 		--checkpoint $(JEPA_PLAY_CHECKPOINT) \
-		--tokenizer_path $(JEPA_PLAY_TOKENIZER) \
 		--format $(JEPA_BASELINE_FORMAT) \
 		--all-baselines \
 		--n_battles $(JEPA_BASELINE_N_BATTLES) \

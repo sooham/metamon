@@ -193,6 +193,7 @@ class TestDoublesTextOutput:
         (r"<begin_opponent_team>", "<end_opponent_team>", None),
         (r"<bos>", "<eos>", None),
         (r"<boa>", "<eoa>", None),
+        (r"<last_turn_results>", "<end_last_turn_results>", None),
         (r"<arena>", "<end_arena>", None),
         (r"<active1>", "<end_active1>", None),
         (r"<active2>", "<end_active2>", None),
@@ -255,39 +256,39 @@ class TestDoublesTextOutput:
             )
 
     def test_per_slot_moves_blocks(self, doubles_pov_texts):
-        """Each state has two <begin_moves slot=\"N\"> blocks."""
+        """Each state has two <begin_moves:N> blocks (colon-format slots)."""
         for text in doubles_pov_texts:
             bos_blocks = re.findall(r"<bos>(.*?)<eos>", text, re.DOTALL)
             for block in bos_blocks:
-                slot1 = len(re.findall(r'<begin_moves slot="1">', block))
-                slot2 = len(re.findall(r'<begin_moves slot="2">', block))
+                slot1 = len(re.findall(r'<begin_moves:1>', block))
+                slot2 = len(re.findall(r'<begin_moves:2>', block))
                 # Every state should have slot 1 moves; slot 2 may be absent
                 # if that active fainted before the turn started
                 assert slot1 >= 0  # at least not negative
 
     def test_per_slot_action_entries(self, doubles_pov_texts):
-        """Each action block has chosen_move and opponent_chosen_move with slot attribute."""
+        """Each action block has chosen_move and opponent_chosen_move with colon-format slots."""
         for text in doubles_pov_texts:
             boa_blocks = re.findall(r"<boa>(.*?)<eoa>", text, re.DOTALL)
             for block in boa_blocks:
-                # Must have slot="1" and slot="2" chosen_move entries
-                assert re.search(r'<chosen_move slot="1"', block), (
-                    f"Missing chosen_move slot=1: {block[:100]}"
+                # Must have :1 and :2 chosen_move entries
+                assert re.search(r'<chosen_move:1>', block), (
+                    f"Missing chosen_move:1: {block[:100]}"
                 )
-                assert re.search(r'<chosen_move slot="2"', block), (
-                    f"Missing chosen_move slot=2: {block[:100]}"
+                assert re.search(r'<chosen_move:2>', block), (
+                    f"Missing chosen_move:2: {block[:100]}"
                 )
-                assert re.search(r'<opponent_chosen_move slot="1"', block), (
-                    f"Missing opponent_chosen_move slot=1"
+                assert re.search(r'<opponent_chosen_move:1>', block), (
+                    f"Missing opponent_chosen_move:1"
                 )
-                assert re.search(r'<opponent_chosen_move slot="2"', block), (
-                    f"Missing opponent_chosen_move slot=2"
+                assert re.search(r'<opponent_chosen_move:2>', block), (
+                    f"Missing opponent_chosen_move:2"
                 )
 
     def test_terminal_tag_present(self, doubles_pov_texts):
-        """Output has a valid terminal tag."""
+        """Output has a valid terminal tag (multi-line format)."""
         for text in doubles_pov_texts:
-            assert re.search(r"<terminal>(won|lost|tie|forfeit)<end_terminal>", text), (
+            assert re.search(r"<terminal>\s*(won|lost|tie|forfeit)\s*<end_terminal>", text, re.DOTALL), (
                 "No valid terminal tag found"
             )
 
@@ -355,6 +356,6 @@ class TestDoublesFullPipeline:
             # Doubles-specific checks
             assert "<active1>" in text
             assert "<active2>" in text
-            assert 'slot="1"' in text
-            assert 'slot="2"' in text
+            assert "<chosen_move:1>" in text
+            assert "<chosen_move:2>" in text
             assert "<terminal>" in text

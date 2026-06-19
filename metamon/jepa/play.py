@@ -39,10 +39,6 @@ from metamon.tui import TuiMixin
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Play Showdown with JEPA diagnostics.")
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument(
-        "--tokenizer_path",
-        default=os.path.join(METAMON_CACHE_DIR, "tokenizers", "WorldModelObservationSpace-v1.json"),
-    )
     parser.add_argument("--format", type=str, default="gen1ou",
                         help="Battle format (default: gen1ou).")
     parser.add_argument("--username", default="JEPABot")
@@ -81,20 +77,42 @@ async def main() -> None:
     else:
         device = torch.device("cpu")
 
-    tokenizer = PokemonTokenizer()
-    tokenizer.load_tokens_from_disk(args.tokenizer_path)
-
     ckpt = torch.load(args.checkpoint, map_location=device)
     model_cfg = ckpt.get("config")
     if not model_cfg:
         with open(args.config, "r", encoding="utf-8") as f:
             model_cfg = yaml.safe_load(f)["model"]
 
+    # ── Load tokenizer from checkpoint (preferred) ──
+    tokenizer_state = ckpt.get("tokenizer_state")
+    if tokenizer_state is not None:
+        tokenizer = PokemonTokenizer.from_state(tokenizer_state)
+        print(f"Loaded tokenizer from checkpoint (vocab={len(tokenizer)}, name={tokenizer.name})")
+    else:
+        # Backward compat: old checkpoints lack tokenizer_state.
+        default_tok = os.path.join(METAMON_CACHE_DIR, "tokenizers",
+                                   "WorldModelObservationSpace-v1.json")
+        print(f"WARNING: checkpoint has no tokenizer_state — "
+              f"loading from {default_tok}")
+        tokenizer = PokemonTokenizer()
+        tokenizer.load_tokens_from_disk(default_tok)
+
+    # All token IDs derived from the loaded tokenizer.
+    vocab_size = ckpt.get("vocab_size", len(tokenizer))
+    pad_id = tokenizer.pad_token_id
+    bos_id = tokenizer["<bos>"]
+    eos_id = tokenizer["<eos>"]
+
+    # Extract training-time windowing parameter (0 = unlimited).
+    max_history_blocks = ckpt.get("max_history_blocks", 0)
+    if max_history_blocks:
+        print(f"Using max_history_blocks={max_history_blocks} from checkpoint")
+
     model = PairedJEPAModel(
-        vocab_size=ckpt.get("vocab_size", len(tokenizer)),
-        pad_id=tokenizer.pad_token_id,
-        bos_id=tokenizer["<bos>"],
-        eos_id=tokenizer["<eos>"],
+        vocab_size=vocab_size,
+        pad_id=pad_id,
+        bos_id=bos_id,
+        eos_id=eos_id,
         latent_dim=model_cfg.get("latent_dim", 192),
         action_latent_dim=model_cfg.get("action_latent_dim", 32),
         encoder_cfg=model_cfg.get("encoder", {}),
@@ -156,6 +174,7 @@ async def main() -> None:
         heuristic=args.heuristic,
         verbose=not args.quiet,
         verbose_blocks=args.verbose_blocks,
+        max_history_blocks=max_history_blocks,
         account_configuration=AccountConfiguration(username, args.password),
         server_configuration=server_config,
         battle_format="gen1ou",
@@ -170,6 +189,7 @@ async def main() -> None:
         heuristic=args.heuristic,
         verbose=not args.quiet,
         verbose_blocks=args.verbose_blocks,
+        max_history_blocks=max_history_blocks,
         account_configuration=AccountConfiguration(username_rb, args.password),
         server_configuration=server_config,
         battle_format="gen1randombattle",

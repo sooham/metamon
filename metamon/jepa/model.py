@@ -1437,6 +1437,8 @@ def compute_paired_losses(
         "sigreg_next_true": sigreg_next_true.item(),
         "sigreg_context": sigreg_context.item(),
         "sigreg_action_true": sigreg_action_true.item(),
+        "sigreg_action_own": (sigreg(outputs["p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain) + sigreg(outputs["p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)).item() / 2,
+        "sigreg_action_opponent": (sigreg(outputs["actual_p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain) + sigreg(outputs["actual_p1_action_from_p2_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)).item() / 2,
         "sigreg_enc": ((sigreg_current + sigreg_next_true + sigreg_context) / 3).item(),
         "sigreg_state_loss": sigreg_state_loss.item(),
         "sigreg_action_loss": sigreg_action_loss.item(),

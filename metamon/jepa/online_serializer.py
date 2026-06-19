@@ -383,6 +383,10 @@ def state_words(
     is_force_switch: bool = False,
     override_active=None,
     is_terminal: bool = False,
+    last_turn_player_action: Optional[str] = None,
+    last_turn_player_outcome: Optional[str] = None,
+    last_turn_opponent_action: Optional[str] = None,
+    last_turn_opponent_outcome: Optional[str] = None,
 ) -> list[str]:
     gen = generation_from_format(fmt, getattr(battle, "gen", 1))
     active = override_active if override_active is not None else getattr(battle, "active_pokemon", None)
@@ -392,8 +396,34 @@ def state_words(
         "<bos>",
         "<format>", fmt, "<end_format>",
         "<turn>", str(max(1, int(getattr(battle, "turn", 1) or 1))), "<end_turn>",
-        "<arena>",
     ]
+
+    # ── last_turn_results ──
+    words.append("<last_turn_results>")
+    if last_turn_player_action is not None or last_turn_opponent_action is not None:
+        # Active
+        words.append("<active>")
+        if last_turn_player_action is not None:
+            words.append(last_turn_player_action)
+            if last_turn_player_outcome is not None:
+                words.append(last_turn_player_outcome)
+        else:
+            words.append("unknown")
+        words.append("<end_active>")
+        # Opponent
+        words.append("<opponent>")
+        if last_turn_opponent_action is not None:
+            words.append(last_turn_opponent_action)
+            if last_turn_opponent_outcome is not None:
+                words.append(last_turn_opponent_outcome)
+        else:
+            words.append("unknown")
+        words.append("<end_opponent>")
+    words.append("<end_last_turn_results>")
+
+    words.extend([
+        "<arena>",
+    ])
 
     if active is not None:
         words.append("<active>")
@@ -497,6 +527,10 @@ def state_block(
     is_force_switch: bool = False,
     override_active=None,
     is_terminal: bool = False,
+    last_turn_player_action: Optional[str] = None,
+    last_turn_player_outcome: Optional[str] = None,
+    last_turn_opponent_action: Optional[str] = None,
+    last_turn_opponent_outcome: Optional[str] = None,
 ) -> np.ndarray:
     return tokenize_words(
         tokenizer,
@@ -506,5 +540,9 @@ def state_block(
             is_force_switch=is_force_switch,
             override_active=override_active,
             is_terminal=is_terminal,
+            last_turn_player_action=last_turn_player_action,
+            last_turn_player_outcome=last_turn_player_outcome,
+            last_turn_opponent_action=last_turn_opponent_action,
+            last_turn_opponent_outcome=last_turn_opponent_outcome,
         ),
     )

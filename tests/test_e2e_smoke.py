@@ -67,6 +67,7 @@ class TestE2ESmoke:
             assert "<eos>" in text, f"Missing <eos> in {f}"
             assert "<boa>" in text, f"Missing <boa> in {f}"
             assert "<eoa>" in text, f"Missing <eoa> in {f}"
+            assert "<last_turn_results>" in text, f"Missing <last_turn_results> in {f}"
             assert "<terminal>" in text, f"Missing <terminal> in {f}"
 
             # Count state-action pairs: bos count should equal eos count,
@@ -124,6 +125,11 @@ class TestE2ESmoke:
 
             # Must have conditions
             assert "<conditions>" in text, f"Missing <conditions> in {f}"
+
+            # Must have last_turn_results in every state
+            ltr_count = text.count("<last_turn_results>")
+            eos_count = text.count("<eos>")
+            assert ltr_count == eos_count, f"<last_turn_results>=({ltr_count}) != <eos>=({eos_count})"
 
             # Must have a terminal marker
             assert "<terminal>" in text, f"Missing <terminal> in {f}"

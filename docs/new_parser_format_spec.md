@@ -217,6 +217,10 @@ Every state is a snapshot of what the POV player can observe at one timestep.
 <bos>
 <format>gen1ou<end_format>
 <turn>1<end_turn>
+<last_turn_results>
+<active>movename [fail|cant reason|success]<end_active>
+<opponent>movename [fail|cant reason|success]<end_opponent>
+<end_last_turn_results>
 <arena>
 <active>
 <species> <hp> <type1> <type2> [<item>] [<ability>] <effect> <status> [tera:<type>] <boosts_section>
@@ -258,6 +262,65 @@ pre-battle state (team preview / lead selection).  On one line:
 ```
 <turn>1<end_turn>
 ```
+
+### 4.3b `<last_turn_results>` — Previous Action Outcomes
+
+Describes the outcome of the action(s) that transitioned the battle from the
+previous state into this one.  The **first state** (turn 0 or turn 1) has an
+empty block with no sub-tags:
+```
+<last_turn_results>
+<end_last_turn_results>
+```
+
+For all subsequent states, each sub-block shows the action name followed by
+an outcome token:
+
+| Outcome | Meaning |
+|---------|---------|
+| `success` | The move executed normally (or was a switch / recharge). |
+| `fail` | The move was attempted but had no effect (Sucker Punch whiff, stat boost at max, Reflect used twice, etc.). |
+| `cant <reason>` | The Pokémon couldn't execute its chosen move due to a condition (paralysis, sleep, freeze, flinch, etc.). |
+
+#### Singles
+```
+<last_turn_results>
+<active>body slam success<end_active>
+<opponent>hyper beam success<end_opponent>
+<end_last_turn_results>
+```
+
+#### Doubles
+```
+<last_turn_results>
+<active1>earthquake success<end_active1>
+<active2>protect success<end_active2>
+<opponent1>surf success<end_opponent1>
+<opponent2>swords dance success<end_opponent2>
+<end_last_turn_results>
+```
+
+**`cant` examples:**
+```
+<active>drillpeck cant par<end_active>
+<opponent>thunderbolt cant slp<end_opponent>
+```
+
+**`fail` example (Sucker Punch whiff):**
+```
+<active>sucker punch fail<end_active>
+<opponent>nasty plot success<end_opponent>
+```
+
+**Opponent action unknown:**
+```
+<active>body slam success<end_active>
+<opponent>unknown<end_opponent>
+```
+
+Note: the `<chosen_move>` and `<opponent_chosen_move>` blocks in the action
+section (§5) contain only the chosen move name (no outcome).  The outcome
+lives here, in the *following* state, separating choice from result.
 
 ### 4.4 `<arena>` — Active Pokémon
 
@@ -551,8 +614,8 @@ One action block between every pair of states (except after the terminal state).
 ```
 <boa>
 <turn>1<end_turn>
-<chosen_move>[switch] <name> [cant=<reason>]<end_chosen_move>
-<opponent_chosen_move>[switch] <name> [cant=<reason>]|unknown<end_opponent_chosen_move>
+<chosen_move>[switch] <name><end_chosen_move>
+<opponent_chosen_move>[switch] <name>|unknown<end_opponent_chosen_move>
 <eoa>
 ```
 
@@ -579,12 +642,21 @@ One action block between every pair of states (except after the terminal state).
 ```
 
 **Moves with `cant` (player chose the move but couldn't execute):**
+The `cant` outcome is recorded in the *following* state's `<last_turn_results>`
+block, not in the action block.  The action block still shows the chosen move:
 ```
 <boa>
 <turn>2<end_turn>
-<chosen_move>lovelykiss cant=par<end_chosen_move>
+<chosen_move>lovelykiss<end_chosen_move>
 <opponent_chosen_move>unknown<end_opponent_chosen_move>
 <eoa>
+```
+And the next state shows:
+```
+<last_turn_results>
+<active>lovelykiss cant par<end_active>
+<opponent>unknown<end_opponent>
+<end_last_turn_results>
 ```
 
 **Opponent moves with `cant` (opponent chose the move but couldn't execute):**
@@ -592,8 +664,15 @@ One action block between every pair of states (except after the terminal state).
 <boa>
 <turn>3<end_turn>
 <chosen_move>blizzard<end_chosen_move>
-<opponent_chosen_move>thunderbolt cant=par<end_opponent_chosen_move>
+<opponent_chosen_move>thunderbolt<end_opponent_chosen_move>
 <eoa>
+```
+Next state:
+```
+<last_turn_results>
+<active>blizzard success<end_active>
+<opponent>thunderbolt cant par<end_opponent>
+<end_last_turn_results>
 ```
 
 **Switches:**
@@ -623,7 +702,13 @@ One action block between every pair of states (except after the terminal state).
 <eoa>
 ```
 
-### 5.3 `cant` attribute
+### 5.3 `cant` and `fail` outcomes (in `<last_turn_results>`, §4.3b)
+
+The outcome of each action is recorded in the **next state's**
+`<last_turn_results>` block, not in the action block.  This separates the
+chosen move (what the player intended) from the result (what actually happened).
+
+**`cant` reasons:**
 
 | Reason | Meaning |
 |--------|---------|
@@ -637,9 +722,13 @@ One action block between every pair of states (except after the terminal state).
 | `ability: Truant` | Truant "loafing around" turn |
 | *(other reasons from `|cant|`)* | |
 
-When the `|choice|` message exists, we use the exact chosen move + `cant`
-reason.  When `|choice|` is absent, we randomly pick a valid move from the
-active Pokémon's available moveset and attach the `cant` reason.
+**`fail`** is set when `|-fail|` fires in the raw protocol (e.g. Sucker Punch
+whiff, stat boost at max, Reflect used twice, flinch/trap move used on a
+substitute, etc.).
+
+When the `|choice|` message exists, we use the exact chosen move.  When
+`|choice|` is absent, we randomly pick a valid move from the active Pokémon's
+available moveset and attach the outcome reason.
 
 ### 5.4 Move inference for opponent
 
@@ -808,14 +897,33 @@ On switch-out, Mimic is restored. Track via `move_change_to_from`.
 
 When the player's Pokémon is paralysed, asleep, frozen, flinched, etc.:
 
-- **If `|choice|` message exists:** use the exact chosen move with `cant` attribute.
+- **If `|choice|` message exists:** use the exact chosen move.  The `cant`
+  outcome appears in the *next* state's `<last_turn_results>`.
 - **If no `|choice|`:** randomly pick a valid move from the active Pokémon's
-  available moveset. Attach the `cant` reason attribute.
+  available moveset.  The `cant` outcome appears in the *next* state's
+  `<last_turn_results>`.
 - **Opponent `|cant|`:** same as player — use the opponent's known or randomly-chosen
-  move with the `cant` reason attribute, e.g.
-  `<opponent_chosen_move> blizzard cant=par <end_opponent_chosen_move>`.
-  If the opponent's move is completely unknown (no reveals, no moveset info),
-  output `<opponent_chosen_move>unknown<end_opponent_chosen_move>`.
+  move.  The `cant` outcome appears in `<last_turn_results>`.  If the opponent's
+  move is completely unknown (no reveals, no moveset info), the action block
+  shows `<opponent_chosen_move>unknown<end_opponent_chosen_move>` and
+  `<last_turn_results>` shows `<opponent>unknown<end_opponent>`.
+
+### 7.5b `|-fail|` — Move Fails
+
+When a move is attempted but fails (Sucker Punch on a non-attacking opponent,
+stat boost at max, Reflect used twice, move blocked by Substitute, etc.), the
+raw protocol emits `|-fail|POKEMON`.  The parser records the failure on the
+action object, and the text serializer outputs `fail` in the next state's
+`<last_turn_results>`:
+```
+<last_turn_results>
+<active>sucker punch fail<end_active>
+<opponent>nasty plot success<end_opponent>
+<end_last_turn_results>
+```
+
+This allows downstream consumers (including the JEPA action encoder) to
+separate the chosen action from its outcome.
 
 ### 7.6 Self-KO Moves (Self-Destruct, Explosion, Destiny Bond)
 
@@ -899,11 +1007,11 @@ ROM hacks or custom formats.)
 ### Structural tags (always paired `<foo>`…`<end_foo>`)
 `<begin_team>` `<end_team>` `<pokeN>` `<end_pokeN>` `<begin_moves>` `<end_moves>`
 `<move>` `<end_move>` `<begin_opponent_team>` `<end_opponent_team>` `<bos>` `<eos>`
-`<boa>` `<eoa>` `<arena>` `<end_arena>` `<active>` `<end_active>` `<active1>`
-`<end_active1>` `<active2>` `<end_active2>` `<opponent>` `<end_opponent>`
-`<opponent1>` `<end_opponent1>` `<opponent2>` `<end_opponent2>` `<bench>`
-`<end_bench>` `<conditions>` `<end_conditions>` `<you>` `<end_you>` `<boosts>`
-`<end_boosts>` `<chosen_move>` `<end_chosen_move>` `<opponent_chosen_move>`
+`<boa>` `<eoa>` `<last_turn_results>` `<end_last_turn_results>` `<arena>` `<end_arena>`
+`<active>` `<end_active>` `<active1>` `<end_active1>` `<active2>` `<end_active2>`
+`<opponent>` `<end_opponent>` `<opponent1>` `<end_opponent1>` `<opponent2>` `<end_opponent2>`
+`<bench>` `<end_bench>` `<conditions>` `<end_conditions>` `<you>` `<end_you>`
+`<boosts>` `<end_boosts>` `<chosen_move>` `<end_chosen_move>` `<opponent_chosen_move>`
 `<end_opponent_chosen_move>` `<format>` `<end_format>` `<turn>` `<end_turn>`
 `<terminal>` `<end_terminal>`
 
