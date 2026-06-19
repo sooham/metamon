@@ -526,10 +526,6 @@ def _paired_sigreg_breakdown(
         sigreg(outputs["ctx_p1_T"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["ctx_p2_T"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 2
-    state_next_pred = (
-        sigreg(outputs["pred_p1_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["pred_p2_T1"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    ) / 2
     action_own = (
         sigreg(outputs["p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
@@ -538,23 +534,17 @@ def _paired_sigreg_breakdown(
         sigreg(outputs["actual_p2_action_from_p1_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(outputs["actual_p1_action_from_p2_perspective"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
     ) / 2
-    action_pred = (
-        sigreg(outputs["pred_p2_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-        + sigreg(outputs["pred_p1_action"], sigreg_num_slices, sigreg_num_points, sigreg_domain)
-    ) / 2
     return {
         "sigreg_state_current": state_current.item(),
         "sigreg_state_next": state_next_true.item(),
         "sigreg_state_context": state_context.item(),
-        "sigreg_state_next_pred": state_next_pred.item(),
         "sigreg_action_own": action_own.item(),
         "sigreg_action_opponent": action_opponent.item(),
-        "sigreg_action_pred": action_pred.item(),
-        "sigreg_state_loss": (state_current + state_next_true + state_context + state_next_pred).item(),
-        "sigreg_action_loss": (action_own + action_opponent + action_pred).item(),
+        "sigreg_state_loss": (state_current + state_next_true + state_context).item(),
+        "sigreg_action_loss": (action_own + action_opponent).item(),
         "sigreg_total_detail": (
-            state_current + state_next_true + state_context + state_next_pred
-            + action_own + action_opponent + action_pred
+            state_current + state_next_true + state_context
+            + action_own + action_opponent
         ).item(),
     }
 
@@ -614,6 +604,16 @@ def train(args: argparse.Namespace) -> None:
     lambda_sigreg = args.lambda_sigreg
     if lambda_sigreg is None:
         lambda_sigreg = model_cfg.get("lambda_sigreg", 0.1)
+    lambda_sigreg_state = args.lambda_sigreg_state
+    if lambda_sigreg_state is None:
+        lambda_sigreg_state = model_cfg.get("lambda_sigreg_state")
+        if lambda_sigreg_state is None:
+            lambda_sigreg_state = lambda_sigreg  # backward-compat fallback
+    lambda_sigreg_action = args.lambda_sigreg_action
+    if lambda_sigreg_action is None:
+        lambda_sigreg_action = model_cfg.get("lambda_sigreg_action")
+        if lambda_sigreg_action is None:
+            lambda_sigreg_action = lambda_sigreg  # backward-compat fallback
     lambda_rank = args.lambda_rank
     if lambda_rank is None:
         lambda_rank = model_cfg.get("lambda_rank", 1.0)
@@ -671,8 +671,10 @@ def train(args: argparse.Namespace) -> None:
         encoder_cfg=model_cfg.get("encoder", {}),
         temporal_encoder_cfg=model_cfg.get("temporal_encoder", {}),
         action_encoder_cfg=model_cfg.get("action_encoder", {}),
-        opponent_state_predictor_cfg=model_cfg.get("opponent_state_predictor", {}),
-        action_predictor_cfg=model_cfg.get("paired_action_predictor", model_cfg.get("action_predictor", {})),
+        opponent_belief_predictor_cfg=model_cfg.get(
+            "opponent_belief_predictor",
+            model_cfg.get("opponent_state_predictor", {})
+        ),
         next_state_predictor_cfg=model_cfg.get("next_state_predictor", {}),
         rank_head_cfg=model_cfg.get("rank_head", {}),
     ).to(device)
@@ -764,6 +766,8 @@ def train(args: argparse.Namespace) -> None:
                 "context_length": context_length,
                 "max_history_blocks": args.max_history_blocks,
                 "lambda_sigreg": lambda_sigreg,
+                "lambda_sigreg_state": lambda_sigreg_state,
+                "lambda_sigreg_action": lambda_sigreg_action,
                 "lambda_opponent_state": args.lambda_opponent_state,
                 "lambda_action": args.lambda_action,
                 "lambda_next_state": args.lambda_next_state,
@@ -777,7 +781,8 @@ def train(args: argparse.Namespace) -> None:
     def loss_from_outputs(outputs: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict[str, float]]:
         return compute_paired_losses(
             outputs,
-            lambda_sigreg=lambda_sigreg,
+            lambda_sigreg_state=lambda_sigreg_state,
+            lambda_sigreg_action=lambda_sigreg_action,
             lambda_opponent_state=args.lambda_opponent_state,
             lambda_action=args.lambda_action,
             lambda_next_state=args.lambda_next_state,
@@ -896,13 +901,15 @@ def train(args: argparse.Namespace) -> None:
                     "train/rank_loss_belief": metrics["rank_loss_belief"],
                     "train/rank_loss_next": metrics["rank_loss_next"],
                     "train/sigreg_loss": metrics["sigreg_loss"],
+                    "train/sigreg_state_loss": metrics["sigreg_state_loss"],
+                    "train/sigreg_action_loss": metrics["sigreg_action_loss"],
                     "train/sigreg_state_current": diagnostics["sigreg_state_current"],
                     "train/sigreg_state_next": diagnostics["sigreg_state_next"],
                     "train/sigreg_state_context": diagnostics["sigreg_state_context"],
-                    "train/sigreg_state_next_pred": diagnostics["sigreg_state_next_pred"],
                     "train/sigreg_action_own": diagnostics["sigreg_action_own"],
                     "train/sigreg_action_opponent": diagnostics["sigreg_action_opponent"],
-                    "train/sigreg_action_pred": diagnostics["sigreg_action_pred"],
+                    "train/next_state_logvar_p1": metrics["next_state_logvar_p1"],
+                    "train/next_state_logvar_p2": metrics["next_state_logvar_p2"],
                     "train/lr": optimizer.param_groups[0]["lr"],
                     "epoch": epoch,
                     "global_step": global_step,
@@ -938,14 +945,14 @@ def train(args: argparse.Namespace) -> None:
                     f"[teacher {metrics['rank_loss_teacher']:.4f}, "
                     f"belief {metrics['rank_loss_belief']:.4f}, "
                     f"next {metrics['rank_loss_next']:.4f}] | "
-                    f"sigreg {metrics['sigreg_loss']:.4f} "
-                    f"[state_cur {diagnostics['sigreg_state_current']:.4f}, "
-                    f"state_next {diagnostics['sigreg_state_next']:.4f}, "
-                    f"ctx {diagnostics['sigreg_state_context']:.4f}, "
-                    f"pred_next {diagnostics['sigreg_state_next_pred']:.4f}, "
-                    f"action_own {diagnostics['sigreg_action_own']:.4f}, "
-                    f"action_opp {diagnostics['sigreg_action_opponent']:.4f}, "
-                    f"action_pred {diagnostics['sigreg_action_pred']:.4f}]"
+                    f"sigreg_state {metrics['sigreg_state_loss']:.4f} "
+                    f"[cur {diagnostics['sigreg_state_current']:.4f}, "
+                    f"next {diagnostics['sigreg_state_next']:.4f}, "
+                    f"ctx {diagnostics['sigreg_state_context']:.4f}] | "
+                    f"sigreg_action {metrics['sigreg_action_loss']:.4f} "
+                    f"[own {diagnostics['sigreg_action_own']:.4f}, "
+                    f"opp {diagnostics['sigreg_action_opponent']:.4f}] | "
+                    f"logvar_next {metrics['next_state_logvar_p1']:.3f}/{metrics['next_state_logvar_p2']:.3f}"
                 )
 
             if args.val_interval > 0 and global_step % args.val_interval == 0:
@@ -958,14 +965,8 @@ def train(args: argparse.Namespace) -> None:
                         f"action {val_metrics['val_action_loss']:.4f} | "
                         f"next {val_metrics['val_next_state_loss']:.4f} | "
                         f"rank {val_metrics.get('val_rank_loss', 0.0):.4f} | "
-                        f"sigreg {val_metrics.get('val_sigreg_loss', 0.0):.4f} | "
-                        f"state_cur {val_metrics.get('val_sigreg_state_current', 0.0):.4f} | "
-                        f"state_next {val_metrics.get('val_sigreg_state_next', 0.0):.4f} | "
-                        f"ctx {val_metrics.get('val_sigreg_state_context', 0.0):.4f} | "
-                        f"pred_next {val_metrics.get('val_sigreg_state_next_pred', 0.0):.4f} | "
-                        f"action_own {val_metrics.get('val_sigreg_action_own', 0.0):.4f} | "
-                        f"action_opp {val_metrics.get('val_sigreg_action_opponent', 0.0):.4f} | "
-                        f"action_pred {val_metrics.get('val_sigreg_action_pred', 0.0):.4f}"
+                        f"sigreg_state {val_metrics.get('val_sigreg_state_loss', 0.0):.4f} | "
+                        f"sigreg_action {val_metrics.get('val_sigreg_action_loss', 0.0):.4f}"
                     )
                     if wandb_run:
                         wandb_run.log({
@@ -975,13 +976,8 @@ def train(args: argparse.Namespace) -> None:
                             "val/next_state_loss": val_metrics["val_next_state_loss"],
                             "val/rank_loss": val_metrics.get("val_rank_loss", 0.0),
                             "val/sigreg_loss": val_metrics.get("val_sigreg_loss", 0.0),
-                            "val/sigreg_state_current": val_metrics.get("val_sigreg_state_current", 0.0),
-                            "val/sigreg_state_next": val_metrics.get("val_sigreg_state_next", 0.0),
-                            "val/sigreg_state_context": val_metrics.get("val_sigreg_state_context", 0.0),
-                            "val/sigreg_state_next_pred": val_metrics.get("val_sigreg_state_next_pred", 0.0),
-                            "val/sigreg_action_own": val_metrics.get("val_sigreg_action_own", 0.0),
-                            "val/sigreg_action_opponent": val_metrics.get("val_sigreg_action_opponent", 0.0),
-                            "val/sigreg_action_pred": val_metrics.get("val_sigreg_action_pred", 0.0),
+                            "val/sigreg_state_loss": val_metrics.get("val_sigreg_state_loss", 0.0),
+                            "val/sigreg_action_loss": val_metrics.get("val_sigreg_action_loss", 0.0),
                             "epoch": epoch,
                             "global_step": global_step,
                             "samples_seen": args.batch_size * global_step,
@@ -1014,12 +1010,14 @@ def train(args: argparse.Namespace) -> None:
             f"action {avg.get('action_loss', 0.0):.4f} | "
             f"next {avg.get('next_state_loss', 0.0):.4f} | "
             f"rank {avg.get('rank_loss', 0.0):.4f} | "
-            f"sigreg {avg.get('sigreg_loss', 0.0):.4f}"
+            f"sigreg_state {avg.get('sigreg_state_loss', 0.0):.4f} | "
+            f"sigreg_action {avg.get('sigreg_action_loss', 0.0):.4f}"
         )
         if val_metrics:
             msg += (
                 f" | val loss {val_metrics.get('val_loss', 0.0):.4f}"
-                f" | val sigreg {val_metrics.get('val_sigreg_loss', 0.0):.4f}"
+                f" | val sigreg_state {val_metrics.get('val_sigreg_state_loss', 0.0):.4f}"
+                f" | val sigreg_action {val_metrics.get('val_sigreg_action_loss', 0.0):.4f}"
             )
         print(msg + " ===")
 
@@ -1030,7 +1028,8 @@ def train(args: argparse.Namespace) -> None:
                 "epoch/train_action_loss": avg.get("action_loss", 0.0),
                 "epoch/train_next_state_loss": avg.get("next_state_loss", 0.0),
                 "epoch/train_rank_loss": avg.get("rank_loss", 0.0),
-                "epoch/train_sigreg_loss": avg.get("sigreg_loss", 0.0),
+                "epoch/train_sigreg_state_loss": avg.get("sigreg_state_loss", 0.0),
+                "epoch/train_sigreg_action_loss": avg.get("sigreg_action_loss", 0.0),
                 "epoch/val_loss": val_metrics.get("val_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_opponent_state_loss": val_metrics.get("val_opponent_state_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_action_loss": val_metrics.get("val_action_loss", 0.0) if val_metrics else 0.0,
@@ -1086,7 +1085,12 @@ if __name__ == "__main__":
     parser.add_argument("--prefetch_factor", type=int, default=2)
     parser.add_argument("--val_interval", type=int, default=100)
     parser.add_argument("--val_max_batches", type=int, default=10)
-    parser.add_argument("--lambda_sigreg", type=float, default=None)
+    parser.add_argument("--lambda_sigreg", type=float, default=None,
+                        help="Deprecated: backward-compat fallback for lambda_sigreg_state and lambda_sigreg_action.")
+    parser.add_argument("--lambda_sigreg_state", type=float, default=None,
+                        help="SIGReg weight on state latents (encoder, context, next-state preds). Default from config or 0.1.")
+    parser.add_argument("--lambda_sigreg_action", type=float, default=None,
+                        help="SIGReg weight on action latents (own, opponent, predicted). Default from config or 0.0 (off).")
     parser.add_argument("--lambda_opponent_state", type=float, default=1.0)
     parser.add_argument("--lambda_action", type=float, default=1.0)
     parser.add_argument("--lambda_next_state", type=float, default=1.0)
