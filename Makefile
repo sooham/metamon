@@ -423,18 +423,19 @@ test-jepa-all-baselines: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure
 
 # ── Checkpoint backup ───────────────────────────────────────────────
 
-# Copy all world-model checkpoints (SL + JEPA) to a timestamped backup
-# directory under the metamon cache dir.  The original checkpoints in
-# train save-dirs are left untouched.
+# Copy all world-model checkpoints (JEPA) to a timestamped backup
+# directory under the project root so they can be committed to git.
+# The original checkpoints in train save-dirs are left untouched.
 #
 # Usage:
 #   make save-checkpoints
 #   make save-checkpoints BACKUP_NAME=experiment-v2
+SAVE_CHECKPOINTS_DIR ?= checkpoints
 BACKUP_NAME ?=
 save-checkpoints:
 	@now=$$(date +%Y-%m-%d_%H%M%S); \
-	if [ -n "$(BACKUP_NAME)" ]; then dest="$(METAMON_CACHE_DIR)/checkpoints-backups/$(BACKUP_NAME)_$${now}"; \
-	else dest="$(METAMON_CACHE_DIR)/checkpoints-backups/$${now}"; fi; \
+	if [ -n "$(BACKUP_NAME)" ]; then dest="$(SAVE_CHECKPOINTS_DIR)/$(BACKUP_NAME)_$${now}"; \
+	else dest="$(SAVE_CHECKPOINTS_DIR)/$${now}"; fi; \
 	mkdir -p "$$dest"; \
 	echo "Backing up checkpoints to $$dest"; \
 	copied=0; \
