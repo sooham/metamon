@@ -17,7 +17,6 @@ __pycache__/
 !tools/
 !tools/*.sh
 *.csv
-*.pt
 
 # Distribution / packaging
 .Python
