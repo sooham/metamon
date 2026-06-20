@@ -1405,6 +1405,10 @@ def compute_paired_losses(
         rank_loss_next = enc_p1_T.new_tensor(0.0)
         rank_loss = enc_p1_T.new_tensor(0.0)
 
+    # SIGReg on current-state latents: enc_p1_T and enc_p2_T are the JEPAEncoder
+    # outputs (deterministic state embeddings, latent_dim=192) for each player at
+    # the current time step T.  This is the "ground truth" latent of the visible board
+    # state — a single μ vector, NOT the predicted Gaussian distribution.
     sigreg_current = (
         sigreg(enc_p1_T, sigreg_num_slices, sigreg_num_points, sigreg_domain)
         + sigreg(enc_p2_T, sigreg_num_slices, sigreg_num_points, sigreg_domain)
