@@ -36,14 +36,20 @@ from metamon.backend.replay_parser.str_parsing import clean_name
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
-def _hp_str(hp: int, max_hp: int) -> str:
-    """Format HP as a fixed-point 0.00–1.00 string.
+def _hp_str(hp: int, max_hp: int, *, full_hp: bool = True) -> str:
+    """Format HP as a "percentage current_hp max_hp" string.
 
-    Returns "unknown" if hp or max_hp is None.
+    When *full_hp* is True (default), outputs all three values:
+    ``"1.00 355 355"``.  When *full_hp* is False, outputs only the
+    fixed-point ``X.XX`` string for backward compatibility.
+
+    Returns ``"unknown"`` if *hp* or *max_hp* is None.
     """
     if hp is None or max_hp is None or max_hp == 0:
         return "unknown"
     pct = hp / max_hp
+    if full_hp:
+        return f"{pct:.2f} {hp} {max_hp}"
     return f"{pct:.2f}"
 
 
@@ -297,9 +303,17 @@ def _write_team_header(pov: POVReplay) -> list[str]:
     for i, poke in enumerate(valid_pokes):
         lines.append(f"<poke{i + 1}>")
 
-        # species + types
+        # species
         species = clean_name(poke.name)
-        line_parts = [species] + _type_str(poke.type)
+        line_parts = [species]
+
+        # max HP (after species, before types — matches bench ordering)
+        max_hp_val = poke.max_hp
+        if max_hp_val is not None:
+            line_parts.append(str(max_hp_val))
+
+        # types
+        line_parts.extend(_type_str(poke.type))
 
         # item (Gen 2+)
         item = _item_str(poke, gen, is_opponent=False)

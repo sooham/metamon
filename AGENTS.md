@@ -349,8 +349,9 @@ For doubles formats, `POVReplayDoubles` (a subclass of `POVReplay`) handles two 
 The new parser output is a **stateful text format** where each file is a sequence of state blocks (`<bos>`…`<eos>`) and action blocks (`<boa>`…`<eoa>`) interleaved.  See `docs/new_parser_format_spec.md` for the authoritative specification.  Key differences from the old JSON `{"states": [...], "actions": [...]}` format:
 
 - **Actions use explicit names**, not integer indices.  Moves: `<chosen_move>move blizzard<end_chosen_move>`.  Switches: `<chosen_move>switch alakazam<end_chosen_move>`.  Unknown/missing: `<chosen_move>unknown unknown<end_chosen_move>`.  When a Pokémon is fully paralyzed / asleep and can't execute its move, the action block still shows the chosen action and the `cant` outcome appears in the following state's `<last_turn_results>`.
-- **States show only current battlefield info** — active Pokémon (HP, status, boosts, effects), weather, side conditions, and the POV player's bench.  Opponent bench is NOT shown (the model infers it from the state sequence).
-- **Team header** at the top of the file shows the POV player's full backward-filled team (all 6 species, types, items, abilities, gender, full 4-move movesets).
+- **States show only current battlefield info** — active Pokémon (HP as percentage + raw current/max HP, status, boosts, effects), weather, side conditions, and the POV player's bench.  Opponent bench is NOT shown (the model infers it from the state sequence).
+- **Team header** at the top of the file shows the POV player's full backward-filled team (all 6 species, types, max HP, items, abilities, gender, full 4-move movesets).
+- **HP format** — arena/bench entries output ``<percentage> <current_hp> <max_hp>`` (e.g. ``1.00 355 355``), team header entries output only the integer max HP after species and before types (e.g. ``alakazam 313 psychic``).  Unknown HP (edge case) is just ``unknown``.
 - **Opponent team preview** (Gen 5+ only) shows opponent species at file start.
 - **Turn numbering** starts at 1 (the pre-battle lead-selection state is "turn 1").
 - **Doubles** uses `<active1>`/`<active2>`/`<opponent1>`/`<opponent2>`, per-slot moves and actions.

@@ -341,10 +341,14 @@ class TestDoublesTextOutput:
             )
 
     def test_hp_format(self, doubles_pov_texts):
-        """HP values are in X.XX format."""
+        """HP percentage values are in X.XX format with raw current/max HP."""
         for text in doubles_pov_texts:
             hp_vals = re.findall(r"\b\d\.\d{2}\b", text)
-            assert len(hp_vals) > 0, "No HP values in output"
+            assert len(hp_vals) > 0, "No HP percentage values in output"
+            # Verify full HP triples are present
+            hp_triple = re.compile(r"\b\d\.\d{2}\s+(\d+)\s+(\d+)\b")
+            triple_matches = hp_triple.findall(text)
+            assert len(triple_matches) > 0, "No full HP triples found"
 
     def test_no_xml_style_closers(self, doubles_pov_texts):
         """No </foo> closers — only <end_foo>."""
