@@ -19,8 +19,8 @@ Architecture overview (v4 — paired current-state belief + next-state rollout)
                          ├─ state head  ─► pred_opp_state_mu/logvar
                          └─ action head ─► pred_opp_action_mu/logvar
 
-    Current player action ───► JEPAActionEncoder ─► own_action
-    Current opponent action ─► JEPAActionEncoder ─► opponent_action target
+    Current player action text ───► JEPAActionEncoder ─► own_action
+    Current opponent action text ─► JEPAActionEncoder ─► opponent_action target
 
     z_T + own_action + sampled opponent state/action beliefs
         ─► JEPANextStatePredictor ─► pred_z_{T+1}_mu/logvar
@@ -40,9 +40,10 @@ Modules:
 1. **JEPAEncoder φ** — bidirectional transformer over one team-header or state
    block. Attention pools over non-pad tokens → state/header block embedding.
 
-2. **JEPAActionEncoder ψ** — smaller bidirectional transformer over action text
-   (e.g. "<chosen_move>blizzard<end_chosen_move>").  Shares the token embedding
-   matrix with JEPAEncoder.  Attention pool → MLP → action_latent_dim.
+2. **JEPAActionEncoder ψ** — smaller bidirectional transformer over canonical
+   action text content (e.g. "move blizzard" or "switch alakazam", with no
+   player/opponent delimiter tokens).  Shares the token embedding matrix with
+   JEPAEncoder.  Attention pool → MLP → action_latent_dim.
 
 3. **JEPATemporalEncoder τ** — transformer over interleaved historical block
    embeddings.  The current state block is dropped from this history before
@@ -436,9 +437,10 @@ class JEPAActionEncoder(nn.Module):
     """Small bidirectional transformer that encodes action text to a fixed-size
     action embedding.
 
-    Action text includes structural delimiters:
-      - Player:   ``<chosen_move> blizzard <end_chosen_move>``
-      - Opponent: ``<opponent_chosen_move> lovelykiss <end_opponent_chosen_move>``
+    Action text is canonicalized before encoding and does not include
+    player/opponent role delimiters. The temporal encoder receives separate
+    type embeddings for player vs opponent history blocks, and the next-state
+    predictor receives own/opponent action embeddings in distinct input slots.
 
     Shares the token embedding matrix with ``JEPAEncoder`` via an input
     projection from the main encoder's ``d_model`` to a (typically smaller)
@@ -998,6 +1000,26 @@ class PairedJEPAModel(nn.Module):
         opponent_hist_tokens: torch.Tensor,
         opponent_hist_valid: torch.Tensor,
     ) -> torch.Tensor:
+        if state_tokens.ndim == 4:
+            B, K, S, T = state_tokens.shape
+            _, _, A, AT = player_hist_tokens.shape
+            _, _, OA, OAT = opponent_hist_tokens.shape
+            flat_state_tokens = state_tokens.reshape(B * K, S, T)
+            flat_state_valid = state_valid.reshape(B * K, S)
+            flat_player_tokens = player_hist_tokens.reshape(B * K, A, AT)
+            flat_player_valid = player_hist_valid.reshape(B * K, A)
+            flat_opponent_tokens = opponent_hist_tokens.reshape(B * K, OA, OAT)
+            flat_opponent_valid = opponent_hist_valid.reshape(B * K, OA)
+            encoded = self.encode_history(
+                flat_state_tokens,
+                flat_state_valid,
+                flat_player_tokens,
+                flat_player_valid,
+                flat_opponent_tokens,
+                flat_opponent_valid,
+            )
+            return encoded.reshape(B, K, self.latent_dim)
+
         state_embs = self._encode_state_blocks(state_tokens, state_valid)
         player_embs = self._encode_action_blocks(player_hist_tokens, player_hist_valid)
         opponent_embs = self._encode_action_blocks(opponent_hist_tokens, opponent_hist_valid)
@@ -1043,6 +1065,13 @@ class PairedJEPAModel(nn.Module):
         state_valid: torch.Tensor,
     ) -> torch.Tensor:
         """Encode only the last valid state block, not the whole POV history."""
+        if state_tokens.ndim == 4:
+            B, K, S, T = state_tokens.shape
+            flat_tokens = state_tokens.reshape(B * K, S, T)
+            flat_valid = state_valid.reshape(B * K, S)
+            encoded = self.encode_current_state(flat_tokens, flat_valid)
+            return encoded.reshape(B, K, self.latent_dim)
+
         B = state_tokens.shape[0]
         idx = self._last_valid_indices(state_valid)
         rows = torch.arange(B, device=state_tokens.device)
@@ -1058,14 +1087,28 @@ class PairedJEPAModel(nn.Module):
         opponent_hist_valid: torch.Tensor,
     ) -> torch.Tensor:
         """Encode prior POV context separately from the current state block."""
+        if state_valid.ndim == 3:
+            B, K, S = state_valid.shape
+            flat_valid = state_valid.reshape(B * K, S)
+            hist_valid = self._drop_current_state_from_history(flat_valid).reshape(B, K, S)
+        else:
+            hist_valid = self._drop_current_state_from_history(state_valid)
         return self.encode_history(
             state_tokens,
-            self._drop_current_state_from_history(state_valid),
+            hist_valid,
             player_hist_tokens,
             player_hist_valid,
             opponent_hist_tokens,
             opponent_hist_valid,
         )
+
+    def encode_action_tokens(self, action_tokens: torch.Tensor) -> torch.Tensor:
+        """Encode action text, preserving an optional rollout dimension."""
+        if action_tokens.ndim == 3:
+            B, K, T = action_tokens.shape
+            encoded = self.action_encoder(action_tokens.reshape(B * K, T))
+            return encoded.reshape(B, K, self.action_latent_dim)
+        return self.action_encoder(action_tokens)
 
     def forward(
         self,
@@ -1127,12 +1170,12 @@ class PairedJEPAModel(nn.Module):
         pred_p2_action = self.reparameterize(pred_p2_action_mu, pred_p2_action_logvar, sample)
         pred_p1_action = self.reparameterize(pred_p1_action_mu, pred_p1_action_logvar, sample)
 
-        p1_action = self.action_encoder(p1_action_tokens)
-        p2_action = self.action_encoder(p2_action_tokens)
-        actual_p2_action_from_p1_perspective = self.action_encoder(
+        p1_action = self.encode_action_tokens(p1_action_tokens)
+        p2_action = self.encode_action_tokens(p2_action_tokens)
+        actual_p2_action_from_p1_perspective = self.encode_action_tokens(
             actual_p2_action_from_p1_perspective_tokens
         )
-        actual_p1_action_from_p2_perspective = self.action_encoder(
+        actual_p1_action_from_p2_perspective = self.encode_action_tokens(
             actual_p1_action_from_p2_perspective_tokens
         )
 
@@ -1257,7 +1300,7 @@ def sigreg(
     """
     # Characteristic-function math is sensitive enough that bf16 trig/exp adds
     # avoidable noise. Keep gradients, but run SIGReg itself in fp32.
-    embeddings = embeddings.float()
+    embeddings = embeddings.float().reshape(-1, embeddings.shape[-1])
     B, D = embeddings.shape
     device = embeddings.device
 
@@ -1399,7 +1442,7 @@ def compute_paired_losses(
         )
         rank_loss = (rank_loss_teacher + rank_loss_belief + rank_loss_next) / 3
     else:
-        rank_valid = torch.zeros(enc_p1_T.shape[0], dtype=torch.bool, device=enc_p1_T.device)
+        rank_valid = torch.zeros(enc_p1_T.shape[:-1], dtype=torch.bool, device=enc_p1_T.device)
         rank_loss_teacher = enc_p1_T.new_tensor(0.0)
         rank_loss_belief = enc_p1_T.new_tensor(0.0)
         rank_loss_next = enc_p1_T.new_tensor(0.0)

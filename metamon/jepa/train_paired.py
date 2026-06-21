@@ -2,10 +2,10 @@
 
 This trainer consumes ``paired_shard_*.npz`` files produced by:
 
-    uv run python scripts/generate_world_model_data.py --paired_pov ...
+    uv run python scripts/generate_world_model_data.py --rollout_len K ...
 
-For each transition, the dataset provides both player perspectives through
-state T and T+1. The model learns:
+For each K-step rollout sample, the dataset provides both player perspectives
+through state T and T+1 at every rollout step. The model learns:
 
 1. history context + visible POV latent -> hidden opponent POV latent
 2. the same shared opponent-belief backbone -> opponent action latent
@@ -54,12 +54,12 @@ from metamon.jepa.model import (
 
 
 class PairedJEPADataset(torch.utils.data.IterableDataset):
-    """Iterable paired-POV transition dataset with pre-computed action blocks.
+    """Iterable paired-POV rollout dataset with pre-computed action blocks.
 
     On first access each shard is loaded into RAM and action blocks are
-    pre-concatenated with their delimiters.  The hot iterator path then
-    yields raw numpy arrays with zero allocations — collation handles
-    padding and dtype conversion.
+    canonicalized without player/opponent role delimiters.  The hot iterator
+    path then yields K-step rollout samples as raw numpy views — collation
+    handles padding and dtype conversion.
     """
 
     def __init__(
@@ -108,7 +108,11 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         total = 0
         for path in shard_paths:
             data = np.load(path)
-            total += int(len(data["state_idx"]))
+            idx = data["state_idx"]
+            if idx.ndim == 1:
+                total += int(len(idx))
+            else:
+                total += int(idx.shape[0] * idx.shape[1])
         return total
 
     @staticmethod
@@ -130,33 +134,37 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         return state_start, action_start, action_end
 
     @staticmethod
-    def _preprocess_actions(
+    def _canonicalize_actions(
         flat: np.ndarray,
         offsets: np.ndarray,
         lengths: np.ndarray,
-        start_token: int,
-        end_token: int,
+        unknown_token: int | None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return (combined_flat, combined_offsets, combined_lengths)
-        with delimiter tokens baked in.  The combined_flat array holds
-        [start, block..., end] for each action block contiguously."""
+        """Return action content blocks with no role-specific delimiters.
+
+        World-model shards already store only the content inside the action
+        tags.  Empty/missing actions are canonicalized to ``unknown`` when the
+        tokenizer id is available so the action encoder never sees an all-pad
+        sequence for those blocks.
+        """
         n = len(offsets)
-        new_lengths = lengths + 2  # prefix + suffix
+        new_lengths = lengths.astype(np.int32, copy=True)
+        if unknown_token is not None:
+            new_lengths[new_lengths == 0] = 1
         new_offsets = np.zeros(n + 1, dtype=np.int64)
         np.cumsum(new_lengths, out=new_offsets[1:])
         total = int(new_offsets[-1])
         combined = np.empty(total, dtype=np.int16)
-        # Fill in bulk using vectorized indexing where possible
-        combined[:] = 0  # safety
+        combined[:] = 0
         for i in range(n):
             off = int(offsets[i])
             length = int(lengths[i])
             dest = int(new_offsets[i])
-            combined[dest] = start_token
             if length > 0:
-                combined[dest + 1 : dest + 1 + length] = flat[off : off + length]
-            combined[dest + 1 + length] = end_token
-        return combined, new_offsets, new_lengths.astype(np.int32, copy=False)
+                combined[dest : dest + length] = flat[off : off + length]
+            elif unknown_token is not None:
+                combined[dest] = unknown_token
+        return combined, new_offsets, new_lengths
 
     # Module-level cache: survives across epochs within a worker process.
     # Keyed by (path, mtime) so the cache self-invalidates when data changes.
@@ -175,21 +183,21 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         return data
 
     @staticmethod
-    def _ensure_combined(data: dict, cm: int, ecm: int, ocm: int, eocm: int) -> dict:
-        """Idempotently add pre-combined action arrays to a loaded shard."""
+    def _ensure_combined(data: dict, unknown_token: int | None = None) -> dict:
+        """Idempotently add canonical delimiter-free action arrays to a shard."""
         if "p1_actions_combined" in data:
             return data  # already combined
-        for key, sid, eid in [
-            ("p1_actions", cm, ecm),
-            ("p1_opponent_actions", ocm, eocm),
-            ("p2_actions", cm, ecm),
-            ("p2_opponent_actions", ocm, eocm),
+        for key in [
+            "p1_actions",
+            "p1_opponent_actions",
+            "p2_actions",
+            "p2_opponent_actions",
         ]:
             # .npz keys use singular "action": p1_action_offsets, p1_action_lengths
             offs_key = key[:-1] + "_offsets"   # p1_actions → p1_action_offsets
             lens_key = key[:-1] + "_lengths"    # p1_actions → p1_action_lengths
-            combined, offs, lens = PairedJEPADataset._preprocess_actions(
-                data[key], data[offs_key], data[lens_key], sid, eid
+            combined, offs, lens = PairedJEPADataset._canonicalize_actions(
+                data[key], data[offs_key], data[lens_key], unknown_token
             )
             data[f"{key}_combined"] = combined
             data[f"{key}_combined_offsets"] = offs
@@ -227,64 +235,95 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         )
 
     @staticmethod
-    def _iter_shard(data: dict, cm: int, ecm: int, ocm: int, eocm: int,
+    def _rollout_index_matrix(data: dict, key: str, fallback: str | None = None) -> np.ndarray:
+        arr = data[key] if key in data else data[fallback]  # type: ignore[index]
+        arr = np.asarray(arr)
+        if arr.ndim == 1:
+            return arr[:, None]
+        if arr.ndim != 2:
+            raise ValueError(f"{key} must be a 1D legacy array or 2D rollout matrix, got {arr.shape}")
+        return arr
+
+    @staticmethod
+    def _iter_shard(data: dict, unknown_token: int | None,
                     shuffle_transitions: bool, max_hist: int) -> Iterator[dict]:
-        n = len(data["state_idx"])
+        p1_state_idx = PairedJEPADataset._rollout_index_matrix(data, "p1_state_idx", "state_idx")
+        p1_next_state_idx = PairedJEPADataset._rollout_index_matrix(data, "p1_next_state_idx", "next_state_idx")
+        p1_action_idx = PairedJEPADataset._rollout_index_matrix(data, "p1_action_idx", "action_idx")
+        p2_state_idx = PairedJEPADataset._rollout_index_matrix(data, "p2_state_idx", "state_idx")
+        p2_next_state_idx = PairedJEPADataset._rollout_index_matrix(data, "p2_next_state_idx", "next_state_idx")
+        p2_action_idx = PairedJEPADataset._rollout_index_matrix(data, "p2_action_idx", "action_idx")
+
+        n, rollout_len = p1_state_idx.shape
+        for name, arr in [
+            ("p1_next_state_idx", p1_next_state_idx),
+            ("p1_action_idx", p1_action_idx),
+            ("p2_state_idx", p2_state_idx),
+            ("p2_next_state_idx", p2_next_state_idx),
+            ("p2_action_idx", p2_action_idx),
+        ]:
+            if arr.shape != (n, rollout_len):
+                raise ValueError(f"{name} shape {arr.shape} does not match p1_state_idx {(n, rollout_len)}")
+
         order = np.arange(n)
         if shuffle_transitions:
             np.random.default_rng().shuffle(order)
 
         # Pre-combine action blocks once
-        data = PairedJEPADataset._ensure_combined(data, cm, ecm, ocm, eocm)
+        data = PairedJEPADataset._ensure_combined(data, unknown_token)
 
         for row in order:
             battle_id = int(data["battle_id"][row])
-            p1_si = int(data["p1_state_idx"][row]) if "p1_state_idx" in data else int(data["state_idx"][row])
-            p1_nsi = int(data["p1_next_state_idx"][row]) if "p1_next_state_idx" in data else int(data["next_state_idx"][row])
-            p1_ai = int(data["p1_action_idx"][row]) if "p1_action_idx" in data else int(data["action_idx"][row])
-            p2_si = int(data["p2_state_idx"][row]) if "p2_state_idx" in data else int(data["state_idx"][row])
-            p2_nsi = int(data["p2_next_state_idx"][row]) if "p2_next_state_idx" in data else int(data["next_state_idx"][row])
-            p2_ai = int(data["p2_action_idx"][row]) if "p2_action_idx" in data else int(data["action_idx"][row])
-
             p1_bs = int(data["p1_battle_start"][battle_id]) if "p1_battle_start" in data else int(data["battle_start"][battle_id])
             p2_bs = int(data["p2_battle_start"][battle_id]) if "p2_battle_start" in data else int(data["battle_start"][battle_id])
             p1_as = int(data["p1_battle_action_start"][battle_id]) if "p1_battle_action_start" in data else int(data["battle_action_start"][battle_id])
             p2_as = int(data["p2_battle_action_start"][battle_id]) if "p2_battle_action_start" in data else int(data["battle_action_start"][battle_id])
 
             w = PairedJEPADataset._resolve_window
-            p1_sT_s, p1_aT_s, p1_aT_e = w(p1_bs, p1_si + 1, p1_as, max_hist)
-            p1_sT1_s, p1_aT1_s, p1_aT1_e = w(p1_bs, p1_nsi + 1, p1_as, max_hist)
-            p2_sT_s, p2_aT_s, p2_aT_e = w(p2_bs, p2_si + 1, p2_as, max_hist)
-            p2_sT1_s, p2_aT1_s, p2_aT1_e = w(p2_bs, p2_nsi + 1, p2_as, max_hist)
-
             sv = PairedJEPADataset._slice_view
             ssv = PairedJEPADataset._slice_state_window
 
-            sample: dict = {
-                "p1_state_T": ssv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_bs, p1_sT_s, p1_si + 1),
-                "p1_state_T1": ssv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_bs, p1_sT1_s, p1_nsi + 1),
-                "p2_state_T": ssv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_bs, p2_sT_s, p2_si + 1),
-                "p2_state_T1": ssv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_bs, p2_sT1_s, p2_nsi + 1),
-                "p1_player_hist_T": sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_aT_s, p1_aT_e),
-                "p1_opponent_hist_T": sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_aT_s, p1_aT_e),
-                "p1_player_hist_T1": sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_aT1_s, p1_aT1_e),
-                "p1_opponent_hist_T1": sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_aT1_s, p1_aT1_e),
-                "p2_player_hist_T": sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_aT_s, p2_aT_e),
-                "p2_opponent_hist_T": sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_aT_s, p2_aT_e),
-                "p2_player_hist_T1": sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_aT1_s, p2_aT1_e),
-                "p2_opponent_hist_T1": sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_aT1_s, p2_aT1_e),
-                "p1_action": sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_ai, p1_ai + 1)[0],
-                "p2_action": sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_ai, p2_ai + 1)[0],
-                "actual_p2_action_from_p1_perspective": sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_ai, p1_ai + 1)[0],
-                "actual_p1_action_from_p2_perspective": sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_ai, p2_ai + 1)[0],
-                "p1_won": bool(data["p1_won"][battle_id]),
-                "p2_won": bool(data["p2_won"][battle_id]),
-                "rank_valid": (
-                    bool(data["rank_valid"][battle_id])
-                    if "rank_valid" in data
-                    else bool(data["p1_won"][battle_id]) != bool(data["p2_won"][battle_id])
-                ),
-            }
+            sample: dict[str, list] = {key: [] for key in (*BLOCK_KEYS, *ACTION_KEYS, *SCALAR_KEYS)}
+            p1_won = bool(data["p1_won"][battle_id])
+            p2_won = bool(data["p2_won"][battle_id])
+            rank_valid = (
+                bool(data["rank_valid"][battle_id])
+                if "rank_valid" in data
+                else p1_won != p2_won
+            )
+
+            for step in range(rollout_len):
+                p1_si = int(p1_state_idx[row, step])
+                p1_nsi = int(p1_next_state_idx[row, step])
+                p1_ai = int(p1_action_idx[row, step])
+                p2_si = int(p2_state_idx[row, step])
+                p2_nsi = int(p2_next_state_idx[row, step])
+                p2_ai = int(p2_action_idx[row, step])
+
+                p1_sT_s, p1_aT_s, p1_aT_e = w(p1_bs, p1_si + 1, p1_as, max_hist)
+                p1_sT1_s, p1_aT1_s, p1_aT1_e = w(p1_bs, p1_nsi + 1, p1_as, max_hist)
+                p2_sT_s, p2_aT_s, p2_aT_e = w(p2_bs, p2_si + 1, p2_as, max_hist)
+                p2_sT1_s, p2_aT1_s, p2_aT1_e = w(p2_bs, p2_nsi + 1, p2_as, max_hist)
+
+                sample["p1_state_T"].append(ssv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_bs, p1_sT_s, p1_si + 1))
+                sample["p1_state_T1"].append(ssv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_bs, p1_sT1_s, p1_nsi + 1))
+                sample["p2_state_T"].append(ssv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_bs, p2_sT_s, p2_si + 1))
+                sample["p2_state_T1"].append(ssv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_bs, p2_sT1_s, p2_nsi + 1))
+                sample["p1_player_hist_T"].append(sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_aT_s, p1_aT_e))
+                sample["p1_opponent_hist_T"].append(sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_aT_s, p1_aT_e))
+                sample["p1_player_hist_T1"].append(sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_aT1_s, p1_aT1_e))
+                sample["p1_opponent_hist_T1"].append(sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_aT1_s, p1_aT1_e))
+                sample["p2_player_hist_T"].append(sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_aT_s, p2_aT_e))
+                sample["p2_opponent_hist_T"].append(sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_aT_s, p2_aT_e))
+                sample["p2_player_hist_T1"].append(sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_aT1_s, p2_aT1_e))
+                sample["p2_opponent_hist_T1"].append(sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_aT1_s, p2_aT1_e))
+                sample["p1_action"].append(sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_ai, p1_ai + 1)[0])
+                sample["p2_action"].append(sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_ai, p2_ai + 1)[0])
+                sample["actual_p2_action_from_p1_perspective"].append(sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_ai, p1_ai + 1)[0])
+                sample["actual_p1_action_from_p2_perspective"].append(sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_ai, p2_ai + 1)[0])
+                sample["p1_won"].append(p1_won)
+                sample["p2_won"].append(p2_won)
+                sample["rank_valid"].append(rank_valid)
             yield sample
 
     def __iter__(self) -> Iterator[dict[str, object]]:
@@ -295,16 +334,13 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         if worker_info is not None:
             paths = paths[worker_info.id :: worker_info.num_workers]
 
-        cm = self.structural["chosen_move"]
-        ecm = self.structural["end_chosen_move"]
-        ocm = self.structural["opponent_chosen_move"]
-        eocm = self.structural["end_opponent_chosen_move"]
+        unknown_token = self.structural.get("unknown")
 
         for path in paths:
             # Load once per worker (OS page cache makes repeated loads fast)
             data = self._get_shard(path)
             yield from self._iter_shard(
-                data, cm, ecm, ocm, eocm,
+                data, unknown_token,
                 self.shuffle_transitions, self.max_history_blocks,
             )
 
@@ -340,42 +376,60 @@ def collate_paired_fn(
     batch: list[dict[str, object]],
     pad_id: int,
 ) -> dict[str, torch.Tensor]:
-    def pad_block_lists(block_lists: list[list[np.ndarray]]) -> tuple[torch.Tensor, torch.Tensor]:
-        max_blocks = max((len(blocks) for blocks in block_lists), default=0)
+    rollout_lengths = {
+        len(item["p1_state_T"])  # type: ignore[arg-type,index]
+        for item in batch
+    }
+    if len(rollout_lengths) != 1:
+        raise ValueError(f"Mixed rollout lengths in one batch: {sorted(rollout_lengths)}")
+    rollout_len = next(iter(rollout_lengths))
+
+    def pad_block_rollouts(
+        block_rollouts: list[list[list[np.ndarray]]],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        max_blocks = max(
+            (len(blocks) for rollout in block_rollouts for blocks in rollout),
+            default=0,
+        )
         max_tokens = max(
-            (len(block) for blocks in block_lists for block in blocks),
+            (len(block) for rollout in block_rollouts for blocks in rollout for block in blocks),
             default=1,
         )
         padded = torch.full(
-            (len(block_lists), max_blocks, max_tokens),
+            (len(block_rollouts), rollout_len, max_blocks, max_tokens),
             pad_id,
             dtype=torch.long,
         )
-        valid = torch.zeros((len(block_lists), max_blocks), dtype=torch.bool)
-        for batch_idx, blocks in enumerate(block_lists):
-            for block_idx, block in enumerate(blocks):
-                tokens = torch.from_numpy(block.astype(np.int64, copy=False))
-                padded[batch_idx, block_idx, :len(tokens)] = tokens
-                valid[batch_idx, block_idx] = True
+        valid = torch.zeros((len(block_rollouts), rollout_len, max_blocks), dtype=torch.bool)
+        for batch_idx, rollout in enumerate(block_rollouts):
+            for step_idx, blocks in enumerate(rollout):
+                for block_idx, block in enumerate(blocks):
+                    tokens = torch.from_numpy(block.astype(np.int64, copy=False))
+                    padded[batch_idx, step_idx, block_idx, :len(tokens)] = tokens
+                    valid[batch_idx, step_idx, block_idx] = True
         return padded, valid
 
-    def pad_actions(actions: list[np.ndarray]) -> torch.Tensor:
-        max_tokens = max((len(action) for action in actions), default=1)
-        padded = torch.full((len(actions), max_tokens), pad_id, dtype=torch.long)
-        for batch_idx, action in enumerate(actions):
-            tokens = torch.from_numpy(action.astype(np.int64, copy=False))
-            padded[batch_idx, :len(tokens)] = tokens
+    def pad_action_rollouts(actions: list[list[np.ndarray]]) -> torch.Tensor:
+        max_tokens = max(
+            (len(action) for rollout in actions for action in rollout),
+            default=1,
+        )
+        padded = torch.full((len(actions), rollout_len, max_tokens), pad_id, dtype=torch.long)
+        for batch_idx, rollout in enumerate(actions):
+            for step_idx, action in enumerate(rollout):
+                tokens = torch.from_numpy(action.astype(np.int64, copy=False))
+                padded[batch_idx, step_idx, :len(tokens)] = tokens
         return padded
 
     out: dict[str, torch.Tensor] = {}
     for key in BLOCK_KEYS:
-        blocks, valid = pad_block_lists([item[key] for item in batch])  # type: ignore[index]
+        blocks, valid = pad_block_rollouts([item[key] for item in batch])  # type: ignore[index]
         out[key] = blocks
         out[f"{key}_valid"] = valid
     for key in ACTION_KEYS:
-        out[key] = pad_actions([item[key] for item in batch])  # type: ignore[index]
+        out[key] = pad_action_rollouts([item[key] for item in batch])  # type: ignore[index]
     for key in SCALAR_KEYS:
-        out[key] = torch.tensor([bool(item[key]) for item in batch], dtype=torch.bool)
+        out[key] = torch.tensor([item[key] for item in batch], dtype=torch.bool)
     return out
 
 
@@ -567,10 +621,7 @@ def train(args: argparse.Namespace) -> None:
     bos_id = tokenizer["<bos>"]
     eos_id = tokenizer["<eos>"]
     structural_ids = {
-        "chosen_move": tokenizer["<chosen_move>"],
-        "end_chosen_move": tokenizer["<end_chosen_move>"],
-        "opponent_chosen_move": tokenizer["<opponent_chosen_move>"],
-        "end_opponent_chosen_move": tokenizer["<end_opponent_chosen_move>"],
+        "unknown": tokenizer["unknown"],
     }
 
     latent_dim = model_cfg.get("latent_dim", LATENT_DIM)

@@ -325,8 +325,9 @@ an outcome token:
 ```
 
 Note: the `<chosen_move>` and `<opponent_chosen_move>` blocks in the action
-section (§5) contain only the chosen move name (no outcome).  The outcome
-lives here, in the *following* state, separating choice from result.
+section (§5) contain canonical choice text (`move NAME`, `switch NAME`, or
+`unknown unknown`) with no outcome.  The outcome lives here, in the *following*
+state, separating choice from result.
 
 ### 4.4 `<arena>` — Active Pokémon
 
@@ -672,8 +673,8 @@ One action block between every pair of states (except after the terminal state).
 ```
 <boa>
 <turn>1<end_turn>
-<chosen_move>[switch] <name><end_chosen_move>
-<opponent_chosen_move>[switch] <name>|unknown<end_opponent_chosen_move>
+<chosen_move>move <move_name>|switch <pokemon_name>|unknown unknown<end_chosen_move>
+<opponent_chosen_move>move <move_name>|switch <pokemon_name>|unknown unknown<end_opponent_chosen_move>
 <eoa>
 ```
 
@@ -681,10 +682,10 @@ One action block between every pair of states (except after the terminal state).
 ```
 <boa>
 <turn>1<end_turn>
-<chosen_move slot="1">[switch] <name><end_chosen_move>
-<chosen_move slot="2">[switch] <name><end_chosen_move>
-<opponent_chosen_move slot="1">…<end_opponent_chosen_move>
-<opponent_chosen_move slot="2">…<end_opponent_chosen_move>
+<chosen_move:1>move <move_name>|switch <pokemon_name>|unknown unknown<end_chosen_move>
+<chosen_move:2>move <move_name>|switch <pokemon_name>|unknown unknown<end_chosen_move>
+<opponent_chosen_move:1>move <move_name>|switch <pokemon_name>|unknown unknown<end_opponent_chosen_move>
+<opponent_chosen_move:2>move <move_name>|switch <pokemon_name>|unknown unknown<end_opponent_chosen_move>
 <eoa>
 ```
 
@@ -694,8 +695,8 @@ One action block between every pair of states (except after the terminal state).
 ```
 <boa>
 <turn>3<end_turn>
-<chosen_move>blizzard<end_chosen_move>
-<opponent_chosen_move>thunderbolt<end_opponent_chosen_move>
+<chosen_move>move blizzard<end_chosen_move>
+<opponent_chosen_move>move thunderbolt<end_opponent_chosen_move>
 <eoa>
 ```
 
@@ -705,8 +706,8 @@ block, not in the action block.  The action block still shows the chosen move:
 ```
 <boa>
 <turn>2<end_turn>
-<chosen_move>lovelykiss<end_chosen_move>
-<opponent_chosen_move>unknown<end_opponent_chosen_move>
+<chosen_move>move lovelykiss<end_chosen_move>
+<opponent_chosen_move>unknown unknown<end_opponent_chosen_move>
 <eoa>
 ```
 And the next state shows:
@@ -721,8 +722,8 @@ And the next state shows:
 ```
 <boa>
 <turn>3<end_turn>
-<chosen_move>blizzard<end_chosen_move>
-<opponent_chosen_move>thunderbolt<end_opponent_chosen_move>
+<chosen_move>move blizzard<end_chosen_move>
+<opponent_chosen_move>move thunderbolt<end_opponent_chosen_move>
 <eoa>
 ```
 Next state:
@@ -746,8 +747,8 @@ Next state:
 ```
 <boa>
 <turn>35<end_turn>
-<chosen_move>recharge<end_chosen_move>
-<opponent_chosen_move>blizzard<end_opponent_chosen_move>
+<chosen_move>move recharge<end_chosen_move>
+<opponent_chosen_move>move blizzard<end_opponent_chosen_move>
 <eoa>
 ```
 
@@ -755,8 +756,8 @@ Next state:
 ```
 <boa>
 <turn>2<end_turn>
-<chosen_move>lovelykiss<end_chosen_move>
-<opponent_chosen_move>unknown<end_opponent_chosen_move>
+<chosen_move>move lovelykiss<end_chosen_move>
+<opponent_chosen_move>unknown unknown<end_opponent_chosen_move>
 <eoa>
 ```
 
@@ -829,8 +830,8 @@ ferrothorn 0.45 grass steel leftovers ironbarbs clean
 
 <boa>
 <turn>5<end_turn>
-<chosen_move>uturn<end_chosen_move>
-<opponent_chosen_move>unknown<end_opponent_chosen_move>
+<chosen_move>move uturn<end_chosen_move>
+<opponent_chosen_move>unknown unknown<end_opponent_chosen_move>
 <eoa>
 
 <bos>
@@ -856,7 +857,7 @@ noweather
 <boa>
 <turn>5<end_turn>
 <chosen_move>switch rotom-wash<end_chosen_move>
-<opponent_chosen_move>unknown<end_opponent_chosen_move>
+<opponent_chosen_move>unknown unknown<end_opponent_chosen_move>
 <eoa>
 
 <bos>
@@ -939,13 +940,13 @@ On switch-out, Mimic is restored. Track via `move_change_to_from`.
 ### 7.4 Consecutive / Multi-turn Moves (Outrage, Thrash, Hyper Beam)
 
 - **Outrage / Thrash / Petal Dance (2–3 turn lock-in):** `<chosen_move>` shows
-  the move name on each turn. The `<begin_moves>` shows only that one move
+  `move NAME` on each turn. The `<begin_moves>` shows only that one move
   available (the player is locked in).
-- **Hyper Beam recharge:** `<chosen_move>recharge<end_chosen_move>`. The
+- **Hyper Beam recharge:** `<chosen_move>move recharge<end_chosen_move>`. The
   `<begin_moves>` shows only `recharge`.
 - **Charge moves (Fly, Dig, Solar Beam):** Turn 1 shows
-  `<chosen_move>fly<end_chosen_move>` (charge turn). Turn 2 also shows
-  `<chosen_move>fly<end_chosen_move>` (attack turn).  Track internally via
+  `<chosen_move>move fly<end_chosen_move>` (charge turn). Turn 2 also shows
+  `<chosen_move>move fly<end_chosen_move>` (attack turn).  Track internally via
   `charge_move` flag + `[still]` in the protocol messages.
 
 ### 7.5 `|cant|` — Player Unable to Move
@@ -960,7 +961,7 @@ When the player's Pokémon is paralysed, asleep, frozen, flinched, etc.:
 - **Opponent `|cant|`:** same as player — use the opponent's known or randomly-chosen
   move.  The `cant` outcome appears in `<last_turn_results>`.  If the opponent's
   move is completely unknown (no reveals, no moveset info), the action block
-  shows `<opponent_chosen_move>unknown<end_opponent_chosen_move>` and
+  shows `<opponent_chosen_move>unknown unknown<end_opponent_chosen_move>` and
   `<last_turn_results>` shows `<opponent>unknown<end_opponent>`.
 
 ### 7.5b `|-fail|` — Move Fails
@@ -1087,7 +1088,7 @@ Standalone sentinel tags:
 
 ### Special markers (bare words)
 `clean` `forceswitch` `forcedrevival` `cantera` `unknown` `unknownitem`
-`unknownability` `nofield` `switch` `recharge` `tera:`
+`unknownability` `nofield` `move` `switch` `recharge` `tera:`
 
 ### Boost tokens (bare words)
 `atk+N` `def+N` `spa+N` `spd+N` `spe+N` `accuracy+N` `evasion+N`
@@ -1118,3 +1119,7 @@ This is analogous to the current `WorldModelObservationSpace` text format but
 with the new tag syntax.  The UniversalState variant is a **separate output
 stage** built on top of the POVReplay, not part of the raw→parsed pipeline
 itself.
+
+For the tokenized paired-POV rollout shards consumed by JEPA training, including
+`--rollout_len K`, split/shuffle behavior, and `PairedJEPADataset` batch shapes,
+see `docs/world_model_data_format.md`.

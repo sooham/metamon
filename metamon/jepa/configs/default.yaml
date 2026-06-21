@@ -41,7 +41,7 @@ model:
 
   # ── Action Encoder — small bidirectional transformer → action embedding ─
   # Shares token embedding with the main encoder.  Encodes action text with
-  # structural delimiters (e.g. "<chosen_move>blizzard<end_chosen_move>").
+  # canonical content only (e.g. "move blizzard", "switch alakazam").
   action_encoder:
     d_model: 128
     n_heads: 4

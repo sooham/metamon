@@ -61,6 +61,23 @@ def _status_str(status) -> Optional[str]:
     return None
 
 
+def _action_choice_text(action: Optional[Action], *, reveal_noop: bool) -> str:
+    """Return canonical action-block content with a fixed two-token minimum."""
+    if action is None:
+        return "unknown unknown"
+    if action.is_switch or action.is_revival:
+        target_name = clean_name(action.target.name) if action.target else "unknown"
+        return f"switch {target_name}"
+    if action.is_noop:
+        return "move recharge" if reveal_noop else "unknown unknown"
+    if action.name is None:
+        return "unknown unknown"
+    action_name = clean_name(action.name)
+    if not action_name or action_name == "unknown":
+        return "unknown unknown"
+    return f"move {action_name}"
+
+
 def _effect_str(effects: dict) -> str:
     """Return the primary volatile effect token.
 
@@ -640,47 +657,14 @@ def _write_action_block(
     lines.append(str(turn_num))
     lines.append("<end_turn>")
 
-    # player action — outcome now lives in <last_turn_results> of the next state
-    if player_action is not None:
-        if player_action.is_switch or player_action.is_revival:
-            target_name = clean_name(player_action.target.name) if player_action.target else "unknown"
-            lines.append("<chosen_move>")
-            lines.append(f"switch {target_name}")
-            lines.append("<end_chosen_move>")
-        elif player_action.is_noop or player_action.name is None:
-            lines.append("<chosen_move>")
-            lines.append("recharge" if player_action.is_noop else "unknown")
-            lines.append("<end_chosen_move>")
-        else:
-            name = clean_name(player_action.name)
-            lines.append("<chosen_move>")
-            lines.append(name)
-            lines.append("<end_chosen_move>")
-    else:
-        lines.append("<chosen_move>")
-        lines.append("unknown")
-        lines.append("<end_chosen_move>")
+    # Outcomes live in <last_turn_results> of the next state.
+    lines.append("<chosen_move>")
+    lines.append(_action_choice_text(player_action, reveal_noop=True))
+    lines.append("<end_chosen_move>")
 
-    # opponent action — outcome now lives in <last_turn_results> of the next state
-    if opponent_action is not None:
-        if opponent_action.is_switch:
-            target_name = clean_name(opponent_action.target.name) if opponent_action.target else "unknown"
-            lines.append("<opponent_chosen_move>")
-            lines.append(f"switch {target_name}")
-            lines.append("<end_opponent_chosen_move>")
-        elif opponent_action.is_noop or opponent_action.name is None:
-            lines.append("<opponent_chosen_move>")
-            lines.append("unknown")
-            lines.append("<end_opponent_chosen_move>")
-        else:
-            name = clean_name(opponent_action.name)
-            lines.append("<opponent_chosen_move>")
-            lines.append(name)
-            lines.append("<end_opponent_chosen_move>")
-    else:
-        lines.append("<opponent_chosen_move>")
-        lines.append("unknown")
-        lines.append("<end_opponent_chosen_move>")
+    lines.append("<opponent_chosen_move>")
+    lines.append(_action_choice_text(opponent_action, reveal_noop=False))
+    lines.append("<end_opponent_chosen_move>")
 
     lines.append("<eoa>")
     return lines
@@ -1017,47 +1001,15 @@ def _write_action_block_doubles(
 
         # player action for this slot — outcome now in <last_turn_results> of next state
         pa = player_actions[slot_idx] if slot_idx < len(player_actions) else None
-        if pa is not None:
-            if pa.is_switch or pa.is_revival:
-                target_name = clean_name(pa.target.name) if pa.target else "unknown"
-                lines.append(f"<chosen_move:{slot}>")
-                lines.append(f"switch {target_name}")
-                lines.append("<end_chosen_move>")
-            elif pa.is_noop:
-                lines.append(f"<chosen_move:{slot}>")
-                lines.append("recharge")
-                lines.append("<end_chosen_move>")
-            else:
-                name = clean_name(pa.name)
-                lines.append(f"<chosen_move:{slot}>")
-                lines.append(name)
-                lines.append("<end_chosen_move>")
-        else:
-            lines.append(f"<chosen_move:{slot}>")
-            lines.append("unknown")
-            lines.append("<end_chosen_move>")
+        lines.append(f"<chosen_move:{slot}>")
+        lines.append(_action_choice_text(pa, reveal_noop=True))
+        lines.append("<end_chosen_move>")
 
         # opponent action for this slot — outcome now in <last_turn_results> of next state
         oa = opponent_actions[slot_idx] if slot_idx < len(opponent_actions) else None
-        if oa is not None:
-            if oa.is_switch:
-                target_name = clean_name(oa.target.name) if oa.target else "unknown"
-                lines.append(f"<opponent_chosen_move:{slot}>")
-                lines.append(f"switch {target_name}")
-                lines.append("<end_opponent_chosen_move>")
-            elif oa.is_noop:
-                lines.append(f"<opponent_chosen_move:{slot}>")
-                lines.append("unknown")
-                lines.append("<end_opponent_chosen_move>")
-            else:
-                name = clean_name(oa.name)
-                lines.append(f"<opponent_chosen_move:{slot}>")
-                lines.append(name)
-                lines.append("<end_opponent_chosen_move>")
-        else:
-            lines.append(f"<opponent_chosen_move:{slot}>")
-            lines.append("unknown")
-            lines.append("<end_opponent_chosen_move>")
+        lines.append(f"<opponent_chosen_move:{slot}>")
+        lines.append(_action_choice_text(oa, reveal_noop=False))
+        lines.append("<end_opponent_chosen_move>")
 
     lines.append("<eoa>")
     return lines

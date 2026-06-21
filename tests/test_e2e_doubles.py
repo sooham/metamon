@@ -34,6 +34,18 @@ DOUBLES_REPLAY_URL = (
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+def _assert_canonical_action_content(content: str) -> None:
+    parts = content.split()
+    assert len(parts) >= 2, f"Action content must have kind and value: {content!r}"
+    assert parts[0] in {"move", "switch", "unknown"}, (
+        f"Action content must start with move/switch/unknown: {content!r}"
+    )
+    if parts[0] == "unknown":
+        assert parts == ["unknown", "unknown"], (
+            f"Unknown action content must be 'unknown unknown': {content!r}"
+        )
+
+
 def _download_replay(url: str, dest: str) -> dict:
     """Download a replay JSON, cache to *dest*, return parsed dict."""
     if os.path.exists(dest):
@@ -297,6 +309,20 @@ class TestDoublesTextOutput:
                 assert re.search(r'<opponent_chosen_move:2>', block), (
                     f"Missing opponent_chosen_move:2"
                 )
+                for tag, end_tag in (
+                    ("chosen_move", "end_chosen_move"),
+                    ("opponent_chosen_move", "end_opponent_chosen_move"),
+                ):
+                    for slot in (1, 2):
+                        match = re.search(
+                            rf"<{tag}:{slot}>\s*(.*?)\s*<{end_tag}>",
+                            block,
+                            re.DOTALL,
+                        )
+                        assert match is not None, (
+                            f"Missing {tag}:{slot} content: {block[:100]}"
+                        )
+                        _assert_canonical_action_content(match.group(1))
 
     def test_terminal_tag_present(self, doubles_pov_texts):
         """Output has a valid terminal tag (multi-line format)."""

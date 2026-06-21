@@ -305,6 +305,16 @@ def format_action_text(action_name: str) -> str:
     return clean_name(action_name) or "unknown"
 
 
+def format_action_choice_text(action_name: str) -> str:
+    """Format action-block content to match parsed replay text."""
+    action_text = format_action_text(action_name)
+    if action_text == "unknown":
+        return "unknown unknown"
+    if action_text.startswith("switch "):
+        return action_text
+    return f"move {action_text}"
+
+
 def action_words(action_text: str, *, opponent: bool) -> list[str]:
     if opponent:
         start = "<opponent_chosen_move>"
@@ -312,7 +322,7 @@ def action_words(action_text: str, *, opponent: bool) -> list[str]:
     else:
         start = "<chosen_move>"
         end = "<end_chosen_move>"
-    return [start, *format_action_text(action_text).split(), end]
+    return [start, *format_action_choice_text(action_text).split(), end]
 
 
 def action_block(tokenizer: PokemonTokenizer, action_text: str, *, opponent: bool) -> np.ndarray:
