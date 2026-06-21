@@ -171,7 +171,14 @@ def test_action_words_use_training_action_tags():
     ]
     assert action_words("opponent move: Body Slam", opponent=True) == [
         "<opponent_chosen_move>",
+        "move",
         "bodyslam",
+        "<end_opponent_chosen_move>",
+    ]
+    assert action_words("unknown", opponent=True) == [
+        "<opponent_chosen_move>",
+        "unknown",
+        "unknown",
         "<end_opponent_chosen_move>",
     ]
 

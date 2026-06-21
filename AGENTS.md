@@ -47,7 +47,18 @@ z + z_opp                    ─► JEPAPairwiseRankHead ─► scalar advantage
 
 ### Training (`train_paired.py`)
 
-Consumes `paired_shard_*.npz` files produced by `scripts/generate_world_model_data.py --paired_pov ...`.
+Consumes `paired_shard_*.npz` files produced by `scripts/generate_world_model_data.py`.
+
+```bash
+uv run python scripts/generate_world_model_data.py \
+    --parsed_replay_root $METAMON_CACHE_DIR/parsed-replays \
+    --tokenizer_path $METAMON_CACHE_DIR/tokenizers/WorldModelObservationSpace-v1.json \
+    --output_dir $METAMON_CACHE_DIR/world-model-samples \
+    --formats gen1ou \
+    --battles_per_shard 1000 \
+    --rollout_len 1 \
+    --processes 8
+```
 
 ```bash
 uv run python -m metamon.jepa.train_paired \
@@ -67,7 +78,7 @@ Key training flags:
 - `--checkpoint` — path for both warm-start loading AND best-checkpoint saving
 - `--no-wandb` — disable Weights & Biases logging. W&B is enabled by default when the `wandb` package is installed; `--wandb` is accepted but redundant.
 
-Training uses bf16 on CUDA, SIGReg resampled per step, and micro-batched encoding (max 65536 tokens per encoder call). The temporal encoder's `max_seq_len` defaults to 6144 to accommodate full-battle histories.
+Training uses bf16 on CUDA, SIGReg resampled per step, and micro-batched encoding (max 65536 tokens per encoder call). The temporal encoder's `max_seq_len` defaults to 6144 to accommodate full-battle histories. The paired dataset and model preserve an explicit rollout axis: state/history tensors are `[B, K, blocks, tokens]`, action tensors are `[B, K, tokens]`, and losses reduce over both batch and rollout steps.
 
 ### Config (`metamon/jepa/configs/default.yaml`)
 
@@ -81,7 +92,9 @@ Training uses bf16 on CUDA, SIGReg resampled per step, and micro-batched encodin
 
 ### Data format (paired shards)
 
-Paired shards contain both POVs' state arrays side-by-side: `p1_states` / `p2_states`, `p1_actions` / `p2_actions`, `p1_opponent_actions` / `p2_opponent_actions`, plus per-battle outcome labels (`p1_won`, `p2_won`). Each transition row has `p1_state_idx`, `p1_next_state_idx`, `p1_action_idx` (and `p2_*` equivalents). The dataset loader pre-combines action tokens with their `<chosen_move>`/`<end_chosen_move>` delimiters on first access and caches them at the process level.
+Paired shards contain both POVs' state arrays side-by-side: `p1_states` / `p2_states`, `p1_actions` / `p2_actions`, `p1_opponent_actions` / `p2_opponent_actions`, plus per-battle outcome labels (`p1_won`, `p2_won`). Action arrays store canonical action content without role delimiters: moves start with `move`, switches start with `switch`, and missing actions are `unknown unknown`.
+
+`--rollout_len K` controls the experience-replay sample length. Each sample row stores `K` contiguous aligned transitions from one raw battle using `(num_samples, K)` index matrices such as `p1_state_idx`, `p1_next_state_idx`, and `p1_action_idx` (with matching `p2_*` arrays). Battles with fewer than `K` aligned action steps, or no contiguous K-step windows, are skipped with warning counts during generation. The train/validation split is by raw battle key, so both POV files for a battle stay in the same split. After the split, battle keys and rollout rows are shuffled to reduce batch correlation. See `docs/world_model_data_format.md` for the complete shard schema and `PairedJEPADataset` sample shape.
 
 ### Online play (`play.py`)
 
@@ -314,9 +327,9 @@ After the forward pass, a "final turn" is appended with both full teams filled i
 
 The result is serialized to a **stateful text format** and saved as two `.txt` files per raw replay — e.g. `gen1ou-370249571_Unrated_uturn10423_vs_tintedlens67414_02-23-2024_WIN.txt` and the corresponding LOSS file.
 
-The text format is **not Markovian** — each state shows only the current battlefield (active Pokémon, HP, status, weather, side conditions) plus the POV player's bench.  The model derives cumulative knowledge by reading the state sequence from beginning to end.  Actions use explicit move names and Pokémon names (e.g. `<chosen_move>blizzard</chosen_move>`, `<chosen_move>switch alakazam</chosen_move>`) rather than integer indices.  See `docs/new_parser_format_spec.md` for the full specification.
+The text format is **not Markovian** — each state shows only the current battlefield (active Pokémon, HP, status, weather, side conditions) plus the POV player's bench.  The model derives cumulative knowledge by reading the state sequence from beginning to end.  Actions use explicit move names and Pokémon names with a canonical action kind (e.g. `<chosen_move>move blizzard<end_chosen_move>`, `<chosen_move>switch alakazam<end_chosen_move>`) rather than integer indices.  See `docs/new_parser_format_spec.md` for the full specification.
 
-For doubles formats, `POVReplayDoubles` (a subclass of `POVReplay`) handles two active Pokémon per side.  The text output uses `<active1>`/`<active2>`/`<opponent1>`/`<opponent2>` tags, per-slot `<begin_moves slot="1">` blocks, and per-slot action entries with `slot="1"`/`slot="2"` attributes.  See `docs/doubles_implementation_plan.md`.
+For doubles formats, `POVReplayDoubles` (a subclass of `POVReplay`) handles two active Pokémon per side.  The text output uses `<active1>`/`<active2>`/`<opponent1>`/`<opponent2>` tags, per-slot `<begin_moves:1>` blocks, and per-slot action entries like `<chosen_move:1>`.  See `docs/doubles_implementation_plan.md`.
 
 ### Key classes in the pipeline
 - `ParsedReplay` / `Turn` / `Pokemon` / `Move` / `Action` (`replay_state.py`) — the in-memory battle state during parsing
@@ -332,7 +345,7 @@ For doubles formats, `POVReplayDoubles` (a subclass of `POVReplay`) handles two 
 
 The new parser output is a **stateful text format** where each file is a sequence of state blocks (`<bos>`…`<eos>`) and action blocks (`<boa>`…`<eoa>`) interleaved.  See `docs/new_parser_format_spec.md` for the authoritative specification.  Key differences from the old JSON `{"states": [...], "actions": [...]}` format:
 
-- **Actions use explicit names**, not integer indices.  Moves: `<chosen_move>blizzard</chosen_move>`.  Switches: `<chosen_move>switch alakazam</chosen_move>`.  Unknown/missing: `<chosen_move>unknown</chosen_move>`.  When a Pokémon is fully paralyzed / asleep and can't execute its move: `<chosen_move cant="par">lovelykiss</chosen_move>`.
+- **Actions use explicit names**, not integer indices.  Moves: `<chosen_move>move blizzard<end_chosen_move>`.  Switches: `<chosen_move>switch alakazam<end_chosen_move>`.  Unknown/missing: `<chosen_move>unknown unknown<end_chosen_move>`.  When a Pokémon is fully paralyzed / asleep and can't execute its move, the action block still shows the chosen action and the `cant` outcome appears in the following state's `<last_turn_results>`.
 - **States show only current battlefield info** — active Pokémon (HP, status, boosts, effects), weather, side conditions, and the POV player's bench.  Opponent bench is NOT shown (the model infers it from the state sequence).
 - **Team header** at the top of the file shows the POV player's full backward-filled team (all 6 species, types, items, abilities, gender, full 4-move movesets).
 - **Opponent team preview** (Gen 5+ only) shows opponent species at file start.

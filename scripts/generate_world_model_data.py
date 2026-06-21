@@ -5,43 +5,38 @@ Parses each ``.txt`` file (``docs/new_parser_format_spec.md``), tokenizes the te
 header, each state block, and each action block, then packs everything into
 uncompressed NumPy ``.npz`` shards.
 
-**Storage layout per shard** (``seq_shard_0000.npz``)::
+**Storage layout per shard** (``paired_shard_0000.npz``)::
 
-    states                  (total_tokens,)    int16  — all state + header tokens concatenated
-    state_offsets           (num_states,)      int64  — start index of each state in states[]
-    state_lengths           (num_states,)      int32  — token count per state
+    p1_states / p2_states                  (total_tokens,)       int16
+    p1_state_offsets / p2_state_offsets    (num_states,)         int64
+    p1_state_lengths / p2_state_lengths    (num_states,)         int32
 
-    player_actions          (total_pa_tokens,) int16  — all player-action content tokens
-    player_action_offsets   (num_actions,)     int64  — start index per action
-    player_action_lengths   (num_actions,)     int32  — token count per action
+    p1_actions / p2_actions                (total_action_tokens,) int16
+    p1_action_offsets / p2_action_offsets  (num_actions,)         int64
+    p1_action_lengths / p2_action_lengths  (num_actions,)         int32
+    p1_opponent_actions / p2_opponent_actions and offsets/lengths mirror these.
 
-    opponent_actions        (total_oa_tokens,) int16  — all opponent-action content tokens
-    opponent_action_offsets (num_actions,)     int64  — start index per action
-    opponent_action_lengths (num_actions,)     int32  — token count per action
+    p1_state_idx / p2_state_idx            (num_samples, K) int32
+    p1_next_state_idx / p2_next_state_idx  (num_samples, K) int32
+    p1_action_idx / p2_action_idx          (num_samples, K) int32
 
-    prev_state_idx          (num_transitions,) int32  — local state index for state[t]
-    next_state_idx          (num_transitions,) int32  — local state index for state[t+1]
-    battle_id               (num_transitions,) int32  — local battle index in this shard
-    turn_idx                (num_transitions,) int32  — transition index within battle
-    format_id               (num_transitions,) int16  — integer id from metadata
+    battle_id                              (num_samples,)    int32
+    turn_idx / turn_number / subturn_idx   (num_samples, K) int32/int16
+    format_id                              (num_samples, K) int16
+    rollout_len                            scalar int16
 
     battle_start            (num_battles+1,)   int64  — cumulative local state index
     battle_action_start     (num_battles+1,)   int64  — cumulative local action index
-    won                     (num_battles,)     bool   — whether POV won
+    p1_won / p2_won         (num_battles,)     bool
     raw_battle_key          (num_battles,)     object — battle ID strings
 
     format_name             scalar unicode            — battle format string
     format_id_value         scalar int16              — id for format_name
 
-**Transition indexing:**
-    prev_state_idx[t] points to the state *before* the action pair.
-    next_state_idx[t] points to the state *after* the action pair.
-    These are local state indices (0..N-1 within the battle).
-
-    For a battle with N states and N-1 action pairs, transitions 0..N-2
-    represent the natural state→action→state progression.  Subturns add
-    extra states/actions but are indexed the same way — the training code
-    can filter or skip them using the turn_idx / battle metadata.
+**Rollout indexing:**
+    Each sample row contains K contiguous aligned transitions from one battle.
+    Step j in a row points to state[t+j], action[t+j], and state[t+j+1].
+    Windows with skipped POV subturn gaps are not emitted.
 
 **Validation split** is by raw battle key (both WIN and LOSS files always in
 the same split), so no battle leaks between train and val.
@@ -54,6 +49,7 @@ the same split), so no battle leaks between train and val.
         --output_dir /path/to/world-model-samples \\
         --formats gen1ou gen9ou \\
         --battles_per_shard 1000 \\
+        --rollout_len 1 \\
         --processes 8
 """
 
@@ -81,26 +77,16 @@ from metamon.tokenizer.tokenizer import PokemonTokenizer
 _TOKENIZER: PokemonTokenizer | None = None
 _BOS_ID: int = -1
 _EOS_ID: int = -1
-_CHOSEN_MOVE_START_ID: int = -1
-_END_CHOSEN_MOVE_ID: int = -1
-_OPPONENT_CHOSEN_MOVE_START_ID: int = -1
-_END_OPPONENT_CHOSEN_MOVE_ID: int = -1
 _UNKNOWN_ID: int = -1
 
 
 def _init_worker(tokenizer_path: str) -> None:
     global _TOKENIZER, _BOS_ID, _EOS_ID, _UNKNOWN_ID
-    global _CHOSEN_MOVE_START_ID, _END_CHOSEN_MOVE_ID
-    global _OPPONENT_CHOSEN_MOVE_START_ID, _END_OPPONENT_CHOSEN_MOVE_ID
     tokenizer = PokemonTokenizer()
     tokenizer.load_tokens_from_disk(tokenizer_path)
     _TOKENIZER = tokenizer
     _BOS_ID = tokenizer["<bos>"]
     _EOS_ID = tokenizer["<eos>"]
-    _CHOSEN_MOVE_START_ID = tokenizer["<chosen_move>"]
-    _END_CHOSEN_MOVE_ID = tokenizer["<end_chosen_move>"]
-    _OPPONENT_CHOSEN_MOVE_START_ID = tokenizer["<opponent_chosen_move>"]
-    _END_OPPONENT_CHOSEN_MOVE_ID = tokenizer["<end_opponent_chosen_move>"]
     _UNKNOWN_ID = tokenizer["unknown"]
 
 
@@ -146,7 +132,7 @@ def _tokenize_action_text(text: str) -> np.ndarray:
     """
     text = text.strip()
     if not text:
-        return np.array([], dtype=np.int16)
+        return np.array([_UNKNOWN_ID], dtype=np.int16)
     return np.array(
         [_TOKENIZER[word] for word in text.split()], dtype=np.int16
     )
@@ -218,14 +204,14 @@ def _parse_single_battle_file_detailed(filepath: str) -> TokenizedPOV | None:
         if cm_match:
             player_action_arrays.append(_tokenize_action_text(cm_match.group(1)))
         else:
-            player_action_arrays.append(np.array([], dtype=np.int16))
+            player_action_arrays.append(np.array([_UNKNOWN_ID], dtype=np.int16))
 
         # Opponent action
         om_match = _OPPONENT_CHOSEN_MOVE_RE.search(action_block)
         if om_match:
             opponent_action_arrays.append(_tokenize_action_text(om_match.group(1)))
         else:
-            opponent_action_arrays.append(np.array([], dtype=np.int16))
+            opponent_action_arrays.append(np.array([_UNKNOWN_ID], dtype=np.int16))
 
     # ── extract terminal outcome ───────────────────────────────────
     terminal_match = _TERMINAL_RE.search(text)
@@ -268,6 +254,7 @@ class PairedBattle:
     p1: TokenizedPOV
     p2: TokenizedPOV
     aligned_rows: list["PairedTransitionRow"]
+    rollout_windows: list[list["PairedTransitionRow"]]
 
 
 @dataclass(frozen=True)
@@ -349,31 +336,70 @@ def _paired_transition_rows(
     return rows
 
 
-def _validate_paired_battle(key: str, p1: TokenizedPOV, p2: TokenizedPOV) -> str | None:
+def _rows_are_contiguous(left: PairedTransitionRow, right: PairedTransitionRow) -> bool:
+    return (
+        left.p1_next_state_idx == right.p1_state_idx
+        and left.p2_next_state_idx == right.p2_state_idx
+        and left.p1_action_idx + 1 == right.p1_action_idx
+        and left.p2_action_idx + 1 == right.p2_action_idx
+    )
+
+
+def _contiguous_rollout_windows(
+    rows: list[PairedTransitionRow],
+    rollout_len: int,
+) -> list[list[PairedTransitionRow]]:
+    """Return all K-step windows with no skipped transition gaps."""
+    if rollout_len < 1:
+        raise ValueError("rollout_len must be >= 1")
+    if len(rows) < rollout_len:
+        return []
+
+    windows: list[list[PairedTransitionRow]] = []
+    for start in range(0, len(rows) - rollout_len + 1):
+        window = rows[start : start + rollout_len]
+        if all(_rows_are_contiguous(a, b) for a, b in zip(window, window[1:])):
+            windows.append(window)
+    return windows
+
+
+def _validate_paired_battle(
+    key: str,
+    p1: TokenizedPOV,
+    p2: TokenizedPOV,
+    rollout_len: int,
+) -> tuple[str | None, list[PairedTransitionRow], list[list[PairedTransitionRow]]]:
     n_states_1 = len(p1.state_token_arrays)
     n_states_2 = len(p2.state_token_arrays)
     n_actions_1 = len(p1.player_action_arrays)
     n_actions_2 = len(p2.player_action_arrays)
     if len(p1.opponent_action_arrays) != n_actions_1 or len(p2.opponent_action_arrays) != n_actions_2:
-        return "opponent_action_count_mismatch"
+        return "opponent_action_count_mismatch", [], []
 
     expected_actions = n_states_1 - 2  # header + (T+1 states) -> T transitions
     if n_actions_1 != expected_actions:
-        return f"p1_state_action_mismatch:{n_states_1}_states/{n_actions_1}_actions"
+        return f"p1_state_action_mismatch:{n_states_1}_states/{n_actions_1}_actions", [], []
     expected_actions = n_states_2 - 2
     if n_actions_2 != expected_actions:
-        return f"p2_state_action_mismatch:{n_states_2}_states/{n_actions_2}_actions"
+        return f"p2_state_action_mismatch:{n_states_2}_states/{n_actions_2}_actions", [], []
+
+    if min(n_actions_1, n_actions_2) < rollout_len:
+        return f"too_short_for_rollout_len_{rollout_len}", [], []
 
     rows = _paired_transition_rows(p1, p2)
     if not rows:
-        return "no_aligned_transitions"
+        return "no_aligned_transitions", [], []
 
-    return None
+    windows = _contiguous_rollout_windows(rows, rollout_len)
+    if not windows:
+        return f"no_contiguous_rollout_windows_{rollout_len}", rows, []
+
+    return None, rows, windows
 
 
-def tokenize_battle_pair(args: tuple[str, list[str], str]) -> tuple[PairedBattle | None, str | None]:
+def tokenize_battle_pair(args: tuple[str, list[str], str, int]) -> tuple[PairedBattle | None, str | None]:
     """Tokenize and validate one raw-battle group containing both POV files."""
-    key, paths, tokenizer_path = args
+    key, paths, tokenizer_path, rollout_len = args
     global _TOKENIZER
     if _TOKENIZER is None:
         _init_worker(tokenizer_path)
@@ -386,23 +412,25 @@ def tokenize_battle_pair(args: tuple[str, list[str], str]) -> tuple[PairedBattle
     if p1 is None or p2 is None:
         return None, "parse_failed"
 
-    reason = _validate_paired_battle(key, p1, p2)
+    reason, rows, windows = _validate_paired_battle(key, p1, p2, rollout_len)
     if reason is not None:
         return None, reason
     return PairedBattle(
         raw_battle_key=key,
         p1=p1,
         p2=p2,
-        aligned_rows=_paired_transition_rows(p1, p2),
+        aligned_rows=rows,
+        rollout_windows=windows,
     ), None
 
 
 @dataclass
 class PairedShardAccumulator:
-    """Packs paired-POV battles into transition-indexed paired shards."""
+    """Packs paired-POV battles into K-step rollout-window shards."""
 
     fmt: str
     fmt_id: int
+    rollout_len: int = 1
 
     p1_states_flat: list[np.ndarray] = field(default_factory=list)
     p1_state_offsets: list[int] = field(default_factory=lambda: [0])
@@ -424,12 +452,12 @@ class PairedShardAccumulator:
     p2_opponent_action_offsets: list[int] = field(default_factory=lambda: [0])
     p2_opponent_action_lengths: list[int] = field(default_factory=list)
 
-    p1_state_idx: list[int] = field(default_factory=list)
-    p1_next_state_idx: list[int] = field(default_factory=list)
-    p1_action_idx: list[int] = field(default_factory=list)
-    p2_state_idx: list[int] = field(default_factory=list)
-    p2_next_state_idx: list[int] = field(default_factory=list)
-    p2_action_idx: list[int] = field(default_factory=list)
+    p1_state_idx: list[np.ndarray] = field(default_factory=list)
+    p1_next_state_idx: list[np.ndarray] = field(default_factory=list)
+    p1_action_idx: list[np.ndarray] = field(default_factory=list)
+    p2_state_idx: list[np.ndarray] = field(default_factory=list)
+    p2_next_state_idx: list[np.ndarray] = field(default_factory=list)
+    p2_action_idx: list[np.ndarray] = field(default_factory=list)
     battle_ids: list[np.ndarray] = field(default_factory=list)
     turn_idx: list[np.ndarray] = field(default_factory=list)
     turn_number: list[np.ndarray] = field(default_factory=list)
@@ -470,13 +498,15 @@ class PairedShardAccumulator:
         return len(self.p1_action_lengths)
 
     def append(self, battle: PairedBattle) -> None:
+        if any(len(window) != self.rollout_len for window in battle.rollout_windows):
+            raise ValueError("rollout window length does not match accumulator rollout_len")
         battle_id = len(self.raw_battle_keys)
         p1_state_base = len(self.p1_state_lengths)
         p2_state_base = len(self.p2_state_lengths)
         p1_action_base = len(self.p1_action_lengths)
         p2_action_base = len(self.p2_action_lengths)
 
-        n_transitions = len(battle.aligned_rows)
+        n_rollout_samples = len(battle.rollout_windows)
 
         battle_token_count = (
             sum(len(a) for a in battle.p1.state_token_arrays)
@@ -539,34 +569,60 @@ class PairedShardAccumulator:
                 self.p2_opponent_action_offsets[-1] + len(tok_arr)
             )
 
-        if n_transitions > 0:
-            self.p1_state_idx.extend(
-                p1_state_base + row.p1_state_idx for row in battle.aligned_rows
-            )
-            self.p1_next_state_idx.extend(
-                p1_state_base + row.p1_next_state_idx for row in battle.aligned_rows
-            )
-            self.p1_action_idx.extend(
-                p1_action_base + row.p1_action_idx for row in battle.aligned_rows
-            )
-            self.p2_state_idx.extend(
-                p2_state_base + row.p2_state_idx for row in battle.aligned_rows
-            )
-            self.p2_next_state_idx.extend(
-                p2_state_base + row.p2_next_state_idx for row in battle.aligned_rows
-            )
-            self.p2_action_idx.extend(
-                p2_action_base + row.p2_action_idx for row in battle.aligned_rows
-            )
-            self.battle_ids.append(np.full(n_transitions, battle_id, dtype=np.int32))
-            self.turn_idx.append(np.arange(n_transitions, dtype=np.int32))
-            self.turn_number.append(
-                np.array([row.turn_number for row in battle.aligned_rows], dtype=np.int32)
-            )
-            self.subturn_idx.append(
-                np.array([row.subturn_idx for row in battle.aligned_rows], dtype=np.int16)
-            )
-            self.format_ids.append(np.full(n_transitions, self.fmt_id, dtype=np.int16))
+        if n_rollout_samples > 0:
+            row_ordinal = {id(row): idx for idx, row in enumerate(battle.aligned_rows)}
+
+            self.p1_state_idx.append(np.array(
+                [[p1_state_base + row.p1_state_idx for row in window]
+                 for window in battle.rollout_windows],
+                dtype=np.int32,
+            ))
+            self.p1_next_state_idx.append(np.array(
+                [[p1_state_base + row.p1_next_state_idx for row in window]
+                 for window in battle.rollout_windows],
+                dtype=np.int32,
+            ))
+            self.p1_action_idx.append(np.array(
+                [[p1_action_base + row.p1_action_idx for row in window]
+                 for window in battle.rollout_windows],
+                dtype=np.int32,
+            ))
+            self.p2_state_idx.append(np.array(
+                [[p2_state_base + row.p2_state_idx for row in window]
+                 for window in battle.rollout_windows],
+                dtype=np.int32,
+            ))
+            self.p2_next_state_idx.append(np.array(
+                [[p2_state_base + row.p2_next_state_idx for row in window]
+                 for window in battle.rollout_windows],
+                dtype=np.int32,
+            ))
+            self.p2_action_idx.append(np.array(
+                [[p2_action_base + row.p2_action_idx for row in window]
+                 for window in battle.rollout_windows],
+                dtype=np.int32,
+            ))
+            self.battle_ids.append(np.full(n_rollout_samples, battle_id, dtype=np.int32))
+            self.turn_idx.append(np.array(
+                [[row_ordinal[id(row)] for row in window]
+                 for window in battle.rollout_windows],
+                dtype=np.int32,
+            ))
+            self.turn_number.append(np.array(
+                [[row.turn_number for row in window]
+                 for window in battle.rollout_windows],
+                dtype=np.int32,
+            ))
+            self.subturn_idx.append(np.array(
+                [[row.subturn_idx for row in window]
+                 for window in battle.rollout_windows],
+                dtype=np.int16,
+            ))
+            self.format_ids.append(np.full(
+                (n_rollout_samples, self.rollout_len),
+                self.fmt_id,
+                dtype=np.int16,
+            ))
 
         self.p1_won.append(battle.p1.won)
         self.p2_won.append(battle.p2.won)
@@ -599,12 +655,12 @@ class PairedShardAccumulator:
         p2_actions = np.concatenate(self.p2_actions_flat, axis=0).astype(np.int16)
         p2_opponent_actions = np.concatenate(self.p2_opponent_actions_flat, axis=0).astype(np.int16)
 
-        p1_state_idx_arr = np.array(self.p1_state_idx, dtype=np.int32)
-        p1_next_state_idx_arr = np.array(self.p1_next_state_idx, dtype=np.int32)
-        p1_action_idx_arr = np.array(self.p1_action_idx, dtype=np.int32)
-        p2_state_idx_arr = np.array(self.p2_state_idx, dtype=np.int32)
-        p2_next_state_idx_arr = np.array(self.p2_next_state_idx, dtype=np.int32)
-        p2_action_idx_arr = np.array(self.p2_action_idx, dtype=np.int32)
+        p1_state_idx_arr = np.concatenate(self.p1_state_idx, axis=0).astype(np.int32)
+        p1_next_state_idx_arr = np.concatenate(self.p1_next_state_idx, axis=0).astype(np.int32)
+        p1_action_idx_arr = np.concatenate(self.p1_action_idx, axis=0).astype(np.int32)
+        p2_state_idx_arr = np.concatenate(self.p2_state_idx, axis=0).astype(np.int32)
+        p2_next_state_idx_arr = np.concatenate(self.p2_next_state_idx, axis=0).astype(np.int32)
+        p2_action_idx_arr = np.concatenate(self.p2_action_idx, axis=0).astype(np.int32)
         battle_id_arr = np.concatenate(self.battle_ids, axis=0).astype(np.int32)
         turn_idx_arr = np.concatenate(self.turn_idx, axis=0).astype(np.int32)
         turn_number_arr = np.concatenate(self.turn_number, axis=0).astype(np.int32)
@@ -673,14 +729,19 @@ class PairedShardAccumulator:
             p2_battle_action_start=np.array(self.p2_battle_action_start, dtype=np.int64),
             format_name=np.array(self.fmt),
             format_id_value=np.array(self.fmt_id, dtype=np.int16),
+            rollout_len=np.array(self.rollout_len, dtype=np.int16),
         )
 
-        transitions = len(p1_state_idx_arr)
+        rollout_samples = len(p1_state_idx_arr)
+        transition_steps = rollout_samples * self.rollout_len
         return {
             "battles": len(self),
             "states": len(self.p1_state_lengths),
             "actions": len(self.p1_action_lengths),
-            "transitions": transitions,
+            "rollout_samples": rollout_samples,
+            "transition_steps": transition_steps,
+            "transitions": transition_steps,
+            "rollout_len": self.rollout_len,
             "max_battle_len": self.max_battle_len,
             "uncompressed_mb": (
                 p1_states.nbytes
@@ -778,6 +839,7 @@ def iter_tokenized_battle_pairs(
     groups: dict[str, list[str]],
     keys: list[str],
     tokenizer_path: str,
+    rollout_len: int,
     processes: int,
     desc: str,
 ) -> Iterable[tuple[str, PairedBattle | None, str | None]]:
@@ -785,7 +847,7 @@ def iter_tokenized_battle_pairs(
 
     Yields ``(raw_battle_key, paired_battle_or_none, skip_reason_or_none)``.
     """
-    work = [(key, groups[key], tokenizer_path) for key in keys]
+    work = [(key, groups[key], tokenizer_path, rollout_len) for key in keys]
     if processes > 1:
         with Pool(
             processes, initializer=_init_worker, initargs=(tokenizer_path,)
@@ -817,6 +879,7 @@ def write_paired_split_shards(
     tokenizer_path: str,
     processes: int,
     battles_per_shard: int,
+    rollout_len: int,
     out_dir: str,
     rng: np.random.Generator,
 ) -> tuple[dict, int, int]:
@@ -830,6 +893,7 @@ def write_paired_split_shards(
         "total_states": 0,
         "total_actions": 0,
         "total_transitions": 0,
+        "total_rollout_samples": 0,
         "failed": 0,
         "skip_reasons": {},
     }
@@ -855,12 +919,13 @@ def write_paired_split_shards(
 
     shard_idx = 0
     max_battle_len = 0
-    acc = PairedShardAccumulator(fmt=fmt, fmt_id=fmt_id)
+    acc = PairedShardAccumulator(fmt=fmt, fmt_id=fmt_id, rollout_len=rollout_len)
 
     for _, battle, reason in iter_tokenized_battle_pairs(
         groups,
         group_keys,
         tokenizer_path,
+        rollout_len,
         processes,
         desc=f"  Pair-tokenizing {fmt}/{split_name}",
     ):
@@ -879,17 +944,19 @@ def write_paired_split_shards(
             totals["total_states"] = int(totals["total_states"]) + int(stats["states"])
             totals["total_actions"] = int(totals["total_actions"]) + int(stats["actions"])
             totals["total_transitions"] = int(totals["total_transitions"]) + int(stats["transitions"])
+            totals["total_rollout_samples"] = int(totals["total_rollout_samples"]) + int(stats["rollout_samples"])
             max_battle_len = max(max_battle_len, int(stats["max_battle_len"]))
             _aggregate_seq(stats, seq_agg)
             print(
                 f"  {split_name} paired shard {shard_idx:04d}: "
                 f"{stats['battles']} battle pairs, {stats['states']} states/side, "
-                f"{stats['transitions']} transitions, "
+                f"{stats['rollout_samples']} rollout samples x K={rollout_len} "
+                f"({stats['transitions']} transition steps), "
                 f"max battle {stats['max_battle_len']} tok, "
                 f"{stats['uncompressed_mb']:.0f} MB"
             )
             shard_idx += 1
-            acc = PairedShardAccumulator(fmt=fmt, fmt_id=fmt_id)
+            acc = PairedShardAccumulator(fmt=fmt, fmt_id=fmt_id, rollout_len=rollout_len)
 
     if len(acc) > 0:
         stats = acc.write(out_dir, shard_idx, rng=rng)
@@ -897,12 +964,14 @@ def write_paired_split_shards(
         totals["total_states"] = int(totals["total_states"]) + int(stats["states"])
         totals["total_actions"] = int(totals["total_actions"]) + int(stats["actions"])
         totals["total_transitions"] = int(totals["total_transitions"]) + int(stats["transitions"])
+        totals["total_rollout_samples"] = int(totals["total_rollout_samples"]) + int(stats["rollout_samples"])
         max_battle_len = max(max_battle_len, int(stats["max_battle_len"]))
         _aggregate_seq(stats, seq_agg)
         print(
             f"  {split_name} paired shard {shard_idx:04d}: "
             f"{stats['battles']} battle pairs, {stats['states']} states/side, "
-            f"{stats['transitions']} transitions, "
+            f"{stats['rollout_samples']} rollout samples x K={rollout_len} "
+            f"({stats['transitions']} transition steps), "
             f"max battle {stats['max_battle_len']} tok, "
             f"{stats['uncompressed_mb']:.0f} MB"
         )
@@ -927,6 +996,12 @@ def main() -> None:
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--formats", nargs="+", required=True)
     parser.add_argument("--battles_per_shard", type=int, default=1000)
+    parser.add_argument(
+        "--rollout_len",
+        type=int,
+        default=1,
+        help="Number of contiguous aligned transitions per experience-replay sample.",
+    )
     parser.add_argument("--processes", type=int, default=1)
     parser.add_argument("--val_split", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
@@ -937,17 +1012,18 @@ def main() -> None:
         help="Optional cap on raw battle groups per format, useful for smoke data generation.",
     )
     args = parser.parse_args()
+    if args.rollout_len < 1:
+        raise ValueError("--rollout_len must be >= 1")
 
     # Load tokenizer to verify it has required tokens
     tokenizer = PokemonTokenizer()
     tokenizer.load_tokens_from_disk(args.tokenizer_path)
     print(f"Loaded tokenizer with {len(tokenizer)} tokens")
-    for tok in ["<bos>", "<eos>", "<chosen_move>", "<end_chosen_move>",
-                "<opponent_chosen_move>", "<end_opponent_chosen_move>"]:
+    for tok in ["<bos>", "<eos>", "unknown"]:
         tid = tokenizer[tok]
         if tid == tokenizer.unknown_token_id:
             raise ValueError(f"Tokenizer must contain '{tok}' token")
-    print("Required structural tokens present ✓")
+    print("Required world-model tokens present ✓")
 
     format_id_map = {fmt: i for i, fmt in enumerate(args.formats)}
 
@@ -1022,6 +1098,7 @@ def main() -> None:
             tokenizer_path=args.tokenizer_path,
             processes=args.processes,
             battles_per_shard=args.battles_per_shard,
+            rollout_len=args.rollout_len,
             out_dir=os.path.join(out_dir, "train"),
             rng=shard_rng,
         )
@@ -1034,6 +1111,7 @@ def main() -> None:
             tokenizer_path=args.tokenizer_path,
             processes=args.processes,
             battles_per_shard=args.battles_per_shard,
+            rollout_len=args.rollout_len,
             out_dir=os.path.join(out_dir, "val"),
             rng=shard_rng,
         )
@@ -1044,20 +1122,28 @@ def main() -> None:
         total_battles = train_totals["num_battles"] + val_totals["num_battles"]
         total_states = train_totals["total_states"] + val_totals["total_states"]
         total_transitions = train_totals["total_transitions"] + val_totals["total_transitions"]
+        total_rollout_samples = train_totals["total_rollout_samples"] + val_totals["total_rollout_samples"]
         total_shards = train_totals["num_shards"] + val_totals["num_shards"]
 
         if failed:
             print(f"  {failed} files failed to tokenize")
+            for split_name, split_totals in (("train", train_totals), ("val", val_totals)):
+                skip_reasons = split_totals.get("skip_reasons", {})
+                if skip_reasons:
+                    print(f"  WARNING: {fmt}/{split_name} skipped battle groups:")
+                    for reason, count in sorted(skip_reasons.items()):
+                        print(f"    {reason}: {count}")
 
         tokenizer_version = os.path.splitext(os.path.basename(args.tokenizer_path))[0]
         metadata = {
-            "schema_version": "paired_pov_v1",
+            "schema_version": "paired_pov_rollout_v2",
             "tokenizer_version": tokenizer_version,
             "format": fmt,
             "format_id": format_id_map[fmt],
             "format_id_map": format_id_map,
             "split_mode": "raw_battle_group",
             "paired_pov": True,
+            "rollout_len": args.rollout_len,
             "seed": args.seed,
             "val_split": args.val_split,
             "max_groups": args.max_groups,
@@ -1073,11 +1159,15 @@ def main() -> None:
             "val_num_battles": val_totals["num_battles"],
             "train_num_shards": train_totals["num_shards"],
             "val_num_shards": val_totals["num_shards"],
+            "train_rollout_samples": train_totals["total_rollout_samples"],
+            "val_rollout_samples": val_totals["total_rollout_samples"],
             "battles_per_shard": args.battles_per_shard,
             "total_states": total_states,
             "total_transitions": total_transitions,
+            "total_transition_steps": total_transitions,
+            "total_rollout_samples": total_rollout_samples,
             "max_battle_len": fmt_battle_max,
-            "storage": "paired_pov_transition_indexed_variable_length_v1",
+            "storage": "paired_pov_rollout_indexed_variable_length_v2",
             "compressed": False,
             "train_skip_reasons": train_totals.get("skip_reasons", {}),
             "val_skip_reasons": val_totals.get("skip_reasons", {}),
@@ -1157,7 +1247,8 @@ def main() -> None:
 
         print(
             f"  Total: {total_battles} battles, {total_states} states, "
-            f"{total_transitions} transitions, {total_shards} shards, "
+            f"{total_rollout_samples} rollout samples x K={args.rollout_len} "
+            f"({total_transitions} transition steps), {total_shards} shards, "
             f"max battle {fmt_battle_max} tokens"
         )
 

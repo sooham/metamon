@@ -16,6 +16,18 @@ from metamon.backend.team_prediction.predictor import NaiveUsagePredictor
 from tests.helpers import find_random_replay_files
 
 
+def _assert_canonical_action_content(content: str) -> None:
+    parts = content.split()
+    assert len(parts) >= 2, f"Action content must have kind and value: {content!r}"
+    assert parts[0] in {"move", "switch", "unknown"}, (
+        f"Action content must start with move/switch/unknown: {content!r}"
+    )
+    if parts[0] == "unknown":
+        assert parts == ["unknown", "unknown"], (
+            f"Unknown action content must be 'unknown unknown': {content!r}"
+        )
+
+
 class TestE2EOutput:
     """Validate the structure of text output files."""
 
@@ -213,6 +225,13 @@ class TestE2EOutput:
                 assert "<opponent_chosen_move>" in block, (
                     f"Missing opponent_chosen_move in boa block: {block[:100]}..."
                 )
+                for tag, end_tag in (
+                    ("chosen_move", "end_chosen_move"),
+                    ("opponent_chosen_move", "end_opponent_chosen_move"),
+                ):
+                    match = re.search(rf"<{tag}>\s*(.*?)\s*<{end_tag}>", block, re.DOTALL)
+                    assert match is not None, f"Missing {tag} content: {block[:100]}..."
+                    _assert_canonical_action_content(match.group(1))
 
     # -- Weather ------------------------------------------------------------
 
