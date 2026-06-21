@@ -22,14 +22,14 @@ Architecture overview (v4 — paired current-state belief + next-state rollout)
     Current player action text ───► JEPAActionEncoder ─► own_action
     Current opponent action text ─► JEPAActionEncoder ─► opponent_action target
 
-    z_T + own_action + sampled opponent state/action beliefs
+    z_T + own_action + actual opponent state/action
         ─► JEPANextStatePredictor ─► pred_z_{T+1}_mu/logvar
 
     ┌────────────────────────────────────────────────────────────────────┐
     │ LOSSES:                                                             │
-    │   MSE(pred_opp_state_mu, z_opp_T)      — opponent state mean        │
-    │   MSE(pred_opp_action_mu, action_opp)  — opponent action mean       │
-    │   MSE(pred_z_{T+1}_mu, z_{T+1})        — next current-state latent  │
+    │   Gaussian NLL(z_opp_T | pred_opp_state_mu/logvar) — opponent state │
+    │   Gaussian NLL(action_opp | pred_opp_action_mu/logvar) — action     │
+    │   Gaussian NLL(z_{T+1} | pred_z_{T+1}_mu/logvar) — next state       │
     │   Bradley-Terry rank loss from battle outcome                       │
     │   SIGReg on current, next-target, and history-context state latents │
     │   Optional SIGReg on true action encoder outputs                    │
@@ -55,24 +55,28 @@ Modules:
    opponent current-state latent and opponent next-action latent.
 
 5. **JEPANextStatePredictor μ** — diagonal-Gaussian MLP:
-   (current_state_z, own_action, sampled/predicted opponent state,
-   sampled/predicted opponent action) → next current-state latent.
+   (current_state_z, own_action, opponent_state, opponent_action) → next
+   current-state latent. During paired supervised training, opponent state and
+   opponent action are teacher-forced from the actual paired POV/action.
 
 Losses
 ------
 
-*Next-state MSE* — MSE between the target next current-state block latent and
-the next-state predictor mean::
+*Next-state NLL* — constant-free diagonal Gaussian negative log likelihood of
+the target next current-state block latent under the next-state predictor
+distribution::
 
-    L_next = || z_{T+1} - pred_z_{T+1}_mu ||²
+    L_next = 0.5 * mean(logvar_next + ||z_{T+1} - mu_next||² / exp(logvar_next))
 
-*Opponent state MSE* — MSE on predicted mean vs target opponent latent::
+*Opponent state NLL* — constant-free diagonal Gaussian negative log likelihood
+of the target opponent latent under the belief predictor distribution::
 
-    L_os = || z_opp_T - pred_opp_state_mu ||²
+    L_os = 0.5 * mean(logvar_opp + ||z_opp_T - mu_opp||² / exp(logvar_opp))
 
-*Action MSE* — MSE on predicted mean vs target action latent::
+*Action NLL* — constant-free diagonal Gaussian negative log likelihood of the
+target opponent action latent under the belief predictor action distribution::
 
-    L_oa = || actual_opp_action - pred_opp_action_mu ||²
+    L_oa = 0.5 * mean(logvar_action + ||actual_opp_action - mu_action||² / exp(logvar_action))
 
 *SIGReg* — on current-state encoder outputs, next-state target encoder
 outputs, and history-context outputs.  Action SIGReg is configurable and is off
@@ -691,9 +695,9 @@ class JEPAOpponentBeliefPredictor(nn.Module):
       - State head:  diagonal Gaussian over opponent current-state latent
       - Action head: diagonal Gaussian over opponent next-action latent
 
-    Both means are trained via MSE against their respective targets; the
-    variances are trained only via downstream gradients through reparameterized
-    samples (and, for the action head, through the next-state predictor).
+    Both heads are trained with diagonal Gaussian NLL against their respective
+    targets. Their reparameterized samples also feed downstream prediction and
+    ranking losses.
 
     Merging replaces the separate ``JEPAOpponentStatePredictor`` and
     ``JEPAPairedActionPredictor`` with a single module that learns a shared
@@ -751,14 +755,15 @@ class JEPAOpponentBeliefPredictor(nn.Module):
 class JEPANextStatePredictor(nn.Module):
     """Diagonal-Gaussian predictor for the next self-POV state latent.
 
-    Takes current self-state, own action, predicted opponent state, and
-    predicted opponent action — all of which feed through a small MLP that
-    outputs mu and logvar for the next-state latent.
+    Takes current self-state, own action, opponent state, and an opponent action
+    embedding — all of which feed through a small MLP that outputs mu and logvar
+    for the next-state latent. During paired supervised training, the opponent
+    state/action inputs are teacher-forced from the actual paired POV state and
+    the actual action taken between the current and next states.
 
     The world is stochastic (damage rolls, status effects, speed ties, …),
-    so a deterministic predictor would be misspecified.  The mean is trained
-    via MSE against the target encoder latent; the variance is trained only
-    via downstream gradients through reparameterized samples.
+    so a deterministic predictor would be misspecified. The output distribution
+    is trained with diagonal Gaussian NLL against the target encoder latent.
     """
 
     def __init__(
@@ -1181,10 +1186,10 @@ class PairedJEPAModel(nn.Module):
 
         # ── Predict next visible state (stochastic) ──
         pred_p1_T1_mu, pred_p1_T1_logvar = self.next_state_predictor(
-            z_p1_T, p1_action, pred_p2_T, pred_p2_action
+            z_p1_T, p1_action, z_p2_T, actual_p2_action_from_p1_perspective
         )
         pred_p2_T1_mu, pred_p2_T1_logvar = self.next_state_predictor(
-            z_p2_T, p2_action, pred_p1_T, pred_p1_action
+            z_p2_T, p2_action, z_p1_T, actual_p1_action_from_p2_perspective
         )
         pred_p1_T1 = self.reparameterize(pred_p1_T1_mu, pred_p1_T1_logvar, sample)
         pred_p2_T1 = self.reparameterize(pred_p2_T1_mu, pred_p2_T1_logvar, sample)
@@ -1332,7 +1337,7 @@ def gaussian_nll(
     min_logvar: float = -8.0,
     max_logvar: float = 6.0,
 ) -> torch.Tensor:
-    """Diagonal Gaussian negative log likelihood, averaged over batch/dim."""
+    """Constant-free diagonal Gaussian NLL, averaged over batch/dim."""
     logvar = logvar.clamp(min=min_logvar, max=max_logvar)
     return 0.5 * (logvar + (target - mu).square() * torch.exp(-logvar)).mean()
 
@@ -1371,9 +1376,9 @@ def compute_paired_losses(
     """Compute paired-POV JEPA losses.
 
     Loss terms:
-      - opponent_state_loss: MSE between predicted mu and target latent
-      - action_loss: MSE between predicted mu and target action latent
-      - next_state_loss: MSE between predicted next-state mu and target latent
+      - opponent_state_loss: diagonal Gaussian NLL of target opponent latent
+      - action_loss: diagonal Gaussian NLL of target opponent action latent
+      - next_state_loss: diagonal Gaussian NLL of target next-state latent
         (the next-state predictor is stochastic — mu+logvar — because the
         world has inherent randomness: damage rolls, status, speed ties, …)
       - rank_loss: pairwise ranking from the winner label
@@ -1393,26 +1398,44 @@ def compute_paired_losses(
     enc_p1_T1 = outputs["enc_p1_T1"]
     enc_p2_T1 = outputs["enc_p2_T1"]
 
-    opponent_state_loss_p1_to_p2 = F.mse_loss(outputs["pred_p2_T_mu"], enc_p2_T)
-    opponent_state_loss_p2_to_p1 = F.mse_loss(outputs["pred_p1_T_mu"], enc_p1_T)
+    opponent_state_loss_p1_to_p2 = gaussian_nll(
+        enc_p2_T,
+        outputs["pred_p2_T_mu"],
+        outputs["pred_p2_T_logvar"],
+    )
+    opponent_state_loss_p2_to_p1 = gaussian_nll(
+        enc_p1_T,
+        outputs["pred_p1_T_mu"],
+        outputs["pred_p1_T_logvar"],
+    )
     opponent_state_loss = 0.5 * (opponent_state_loss_p1_to_p2 + opponent_state_loss_p2_to_p1)
 
-    action_loss_p1_to_p2 = F.mse_loss(
-        outputs["pred_p2_action_mu"],
+    action_loss_p1_to_p2 = gaussian_nll(
         outputs["actual_p2_action_from_p1_perspective"],
+        outputs["pred_p2_action_mu"],
+        outputs["pred_p2_action_logvar"],
     )
-    action_loss_p2_to_p1 = F.mse_loss(
-        outputs["pred_p1_action_mu"],
+    action_loss_p2_to_p1 = gaussian_nll(
         outputs["actual_p1_action_from_p2_perspective"],
+        outputs["pred_p1_action_mu"],
+        outputs["pred_p1_action_logvar"],
     )
     action_loss = 0.5 * (action_loss_p1_to_p2 + action_loss_p2_to_p1)
 
     next_state_loss = 0.5 * (
-        F.mse_loss(outputs["pred_p1_T1_mu"], enc_p1_T1)
-        + F.mse_loss(outputs["pred_p2_T1_mu"], enc_p2_T1)
+        gaussian_nll(enc_p1_T1, outputs["pred_p1_T1_mu"], outputs["pred_p1_T1_logvar"])
+        + gaussian_nll(enc_p2_T1, outputs["pred_p2_T1_mu"], outputs["pred_p2_T1_logvar"])
     )
-    next_state_loss_p1 = F.mse_loss(outputs["pred_p1_T1_mu"], enc_p1_T1)
-    next_state_loss_p2 = F.mse_loss(outputs["pred_p2_T1_mu"], enc_p2_T1)
+    next_state_loss_p1 = gaussian_nll(
+        enc_p1_T1,
+        outputs["pred_p1_T1_mu"],
+        outputs["pred_p1_T1_logvar"],
+    )
+    next_state_loss_p2 = gaussian_nll(
+        enc_p2_T1,
+        outputs["pred_p2_T1_mu"],
+        outputs["pred_p2_T1_logvar"],
+    )
 
     if "p1_won" in outputs:
         p1_won = outputs["p1_won"].to(device=enc_p1_T.device)

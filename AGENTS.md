@@ -43,7 +43,7 @@ z + z_opp                    ─► JEPAPairwiseRankHead ─► scalar advantage
 
 `JEPAOpponentBeliefPredictor` is the current code path and checkpoint module name; it replaces the older separate opponent-state and paired-action predictor modules with a shared representation plus two output heads.
 
-**Losses:** MSE for opponent state prediction, MSE for action prediction, MSE for next-state prediction, SIGReg (Epps-Pulley Gaussianity regularizer), and Bradley-Terry ranking loss from battle outcomes.
+**Losses:** diagonal Gaussian NLL for opponent state prediction, opponent action prediction, and next-state prediction; SIGReg (Epps-Pulley Gaussianity regularizer); and Bradley-Terry ranking loss from battle outcomes. During paired supervised training, the next-state predictor is conditioned on the actual paired opponent state and the actual opponent action taken between the current and next state.
 
 ### Training (`train_paired.py`)
 
