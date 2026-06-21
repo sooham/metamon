@@ -11,11 +11,11 @@ RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/raw-replays
 FORMAT ?= gen1ou
 FORMATS ?= $(FORMAT)
 
-.PHONY: parse-no-pred parse parse-all-no-pred parse-all battle battle-inspect inspect-replay \
-        wm-tokenizer parse-world-model inspect-wm-state \
-        wm-dataset inspect-wm-npz sample-inspect-wm-npz \
+.PHONY: parse parse-all show-battle show-rand-battle \
+        wm-tokenizer \
+        wm-dataset sample-inspect-wm-npz \
         test test-quick test-forward test-backward test-e2e \
-        clean show-tokenizer clean-tokenizer sample-inspect-wm-state \
+        clean show-tokenizer clean-tokenizer \
         train-jepa _train-jepa-inner play-jepa play-jepa-local showdown bash-completion
 
 # Start a local Pokemon Showdown server (no auth, port 8000)
@@ -36,9 +36,9 @@ ensure-showdown:
 	fi
 
 # Open a battle replay in browser + parsed output in Cursor
-# Usage: make battle BATTLE_ID=smogtours-gen1ou-694141
+# Usage: make show-battle BATTLE_ID=smogtours-gen1ou-694141
 BATTLE_ID ?=
-battle:
+show-battle:
 	@open https://replay.pokemonshowdown.com/$(BATTLE_ID)
 	@format=$$(echo $(BATTLE_ID) | sed -E 's/^(smogtours-)?//;s/-[0-9]+$$//'); \
 	dir="$(METAMON_CACHE_DIR)/parsed-replays/$$format"; \
@@ -48,34 +48,9 @@ battle:
 		echo "No parsed directory: $$dir"; \
 	fi
 
-# Inspect a replay using the interactive TUI
-# Usage: make inspect-replay <battleid>
-# Example: make inspect-replay gen4uu-184050323
-inspect-replay:
-	@battleid="$(word 2,$(MAKECMDGOALS))"; \
-	if [ -z "$$battleid" ]; then \
-		echo "Usage: make inspect-replay <battleid>"; \
-		echo "Example: make inspect-replay gen4uu-184050323"; \
-		exit 1; \
-	fi; \
-	echo "uv run python tools/inspect_replay.py $$battleid" --showdown; \
-	uv run python tools/inspect_replay.py "$$battleid" --showdown
-
 # Catch-all to prevent "No rule to make target" errors for positional arguments
 %:
 	@:
-
-# Parse one format with player-team-only prediction.
-# Player's own Pokemon get predicted moves/items/abilities from usage stats.
-# Opponent info is forward-observed only (no prediction, no backfill leak).
-# Now includes opponent_bench, fainted_pokemon, opponent_fainted.
-parse-no-pred:
-	uv run python -m metamon.backend.replay_parser \
-		--format $(FORMAT) \
-		--team_predictor NoPredictor \
-		--raw_replay_dir $(METAMON_CACHE_DIR)/raw-replays \
-		--output_dir $(METAMON_CACHE_DIR)/parsed-no-pred \
-		--processes $(N_THREADS) --no-compress --pretty
 
 # Parse one format with default NaiveUsagePredictor
 parse:
@@ -85,18 +60,7 @@ parse:
 		--output_dir $(METAMON_CACHE_DIR)/parsed-replays \
 		--processes $(N_THREADS) --no-compress --pretty
 
-# Parse all supported formats with NoPredictor
-parse-all-no-pred:
-	@for fmt in gen1ou gen1uu gen1nu gen1ubers \
-	            gen2ou gen2uu gen2nu gen2ubers \
-	            gen3ou gen3uu gen3nu gen3ubers \
-	            gen4ou gen4uu gen4nu gen4ubers \
-	            gen9ou; do \
-		echo "=== $$fmt ==="; \
-		$(MAKE) parse-no-pred FORMAT=$$fmt; \
-	done
-
-# Parse all supported formats with NoPredictor
+# Parse all supported formats
 parse-all:
 	@for fmt in gen1ou gen9ou; do \
 		echo "=== $$fmt ==="; \
@@ -104,8 +68,8 @@ parse-all:
 	done
 
 # Inspect a random sample of 5 parsed battles from a format (one at a time in Cursor + browser)
-# Usage: make battle-inspect FORMAT=gen1ou
-battle-inspect:
+# Usage: make show-rand-battle FORMAT=gen1ou
+show-rand-battle:
 	@dir="$(METAMON_CACHE_DIR)/parsed-replays/$(FORMAT)"; \
 	if [ ! -d "$$dir" ]; then \
 		echo "No parsed directory for format $(FORMAT): $$dir"; \
@@ -150,45 +114,6 @@ wm-tokenizer:
 		--num_workers $(NUM_WORKERS) \
 		--early_stop $(EARLY_STOP) \
 		--save_tokens $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
-
-# Parse and validate with WorldModelObservationSpace.
-# Runs the standard pred parse, then spot-checks 5 random replays per format.
-# Usage:
-#   make parse-world-model FORMATS=gen1ou
-#   make parse-world-model FORMATS="gen1ou gen9ou"
-parse-world-model:
-	@for fmt in $(FORMATS); do \
-		echo "=== Parsing $$fmt ==="; \
-		$(MAKE) parse FORMAT=$$fmt; \
-	done
-	@for fmt in $(FORMATS); do \
-		echo "=== Validating world-model format on 5 random $$fmt replays ==="; \
-		dir="$(METAMON_CACHE_DIR)/parsed-replays/$$fmt"; \
-		files=$$(find "$$dir" -name '*.txt' -type f 2>/dev/null | sort -R | head -5); \
-		if [ -n "$$files" ]; then \
-			uv run python scripts/validate_world_model.py $$files; \
-			echo "=== All $$fmt spot-checks passed ==="; \
-		else \
-			echo "=== No files found for $$fmt ==="; \
-		fi; \
-	done
-
-# Inspect a single parsed replay through the WorldModelObservationSpace.
-# Prints the tokenized text for states 0 and -1 (or specified indices).
-# Usage:
-#   make inspect-wm-state FILE=/path/to/replay.txt
-#   make inspect-wm-state FILE=/path/to/replay.txt INDICES='0 5 10'
-#   make inspect-wm-state FILE=/path/to/replay.txt FLAGS='--pretty'
-#   make inspect-wm-state FILE=/path/to/replay.txt FLAGS='--pretty --show-all'
-FILE ?=
-INDICES ?= 0 -1
-FLAGS ?=
-inspect-wm-state:
-	@if [ -z "$(FILE)" ]; then \
-		echo "Usage: make inspect-wm-state FILE=/path/to/replay.txt [INDICES='0 5 10'] [FLAGS='--pretty --show-all']"; \
-		exit 1; \
-	fi
-	uv run python scripts/inspect_world_model_state.py $(FILE) $(INDICES) $(FLAGS)
 
 # Generate world-model training data from parsed replays.
 # Automatically builds the WorldModel tokenizer if it doesn't exist yet.
@@ -496,34 +421,14 @@ clean:
 	fi
 
 show-tokenizer:
+ifeq ($(OS),Darwin)
 	cursor $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
+else
+	vim $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
+endif
 
 clean-tokenizer:
 	rm -rf $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
-
-sample-inspect-wm-state:
-	make inspect-wm-state FILE=$(METAMON_CACHE_DIR)/parsed-replays/gen1ou/smogtours-gen1ou-749168_Unrated_encore90411_vs_mindplate96156_02-23-2024_WIN.txt FORMAT=gen1ou FLAGS="--show-all"
-
-# ── World Model NPZ Inspection ─────────────────────────────────────
-
-WM_FORMAT ?= gen1ou
-WM_FLAGS ?=
-
-# Inspect a random battle from the world-model .npz training data.
-# Shows token IDs and detokenized text for selected states.
-# Pass all optional arguments through WM_FLAGS.
-# Usage:
-#   make inspect-wm-npz WM_FORMAT=gen1ou
-#   make inspect-wm-npz WM_FORMAT=gen1ou WM_FLAGS='--pretty --show-all --showdown'
-#   make inspect-wm-npz WM_FORMAT=gen1ou WM_FLAGS='--state-idx 0 5 10 --pretty'
-#   make inspect-wm-npz WM_FORMAT=gen1ou WM_FLAGS='--shard path/to/shard.npz --battle 3 --pretty'
-inspect-wm-npz:
-	uv run python scripts/inspect_wm_npz.py \
-		--wm_dir $(WM_OUTPUT_DIR) \
-		--tokenizer_path $(TOKENIZER_FILE) \
-		--format $(WM_FORMAT) \
-		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed-replays \
-		$(WM_FLAGS)
 
 # Convenience: inspect a random world-model npz battle with pretty output and Showdown link.
 # Usage:
