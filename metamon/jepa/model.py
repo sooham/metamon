@@ -25,12 +25,18 @@ Architecture overview (v4 — paired current-state belief + next-state rollout)
     z_T + own_action + actual opponent state/action
         ─► JEPANextStatePredictor ─► pred_z_{T+1}_mu/logvar
 
+    pred_opp_state_mu/logvar + z_T ─► JEPADecisionStateEncoder
+                                     ├─ JEPAValueHead ─► V_logit(s)
+                                     └─ JEPAActionValueHead(legal a) ─► Q_logit(s,a)
+
     ┌────────────────────────────────────────────────────────────────────┐
     │ LOSSES:                                                             │
     │   Gaussian NLL(z_opp_T | pred_opp_state_mu/logvar) — opponent state │
     │   Gaussian NLL(action_opp | pred_opp_action_mu/logvar) — action     │
     │   Gaussian NLL(z_{T+1} | pred_z_{T+1}_mu/logvar) — next state       │
-    │   Bradley-Terry rank loss from battle outcome                       │
+    │   BCE on V(s) and Q(s, chosen_action) vs POV terminal outcome       │
+    │   Masked CE over the acting player's legal Q logits                 │
+    │   Lower-weight V/Q teacher losses using actual paired opponent z    │
     │   SIGReg on current, next-target, and history-context state latents │
     │   Optional SIGReg on true action encoder outputs                    │
     └────────────────────────────────────────────────────────────────────┘
@@ -82,12 +88,14 @@ target opponent action latent under the belief predictor action distribution::
 outputs, and history-context outputs.  Action SIGReg is configurable and is off
 by default; predicted Gaussian samples are not regularized.
 
-*Rank loss* — Bradley-Terry/logistic loss from the p1 outcome label, evaluated
-on true current-state pairs, current belief pairs, and next-state belief pairs.
+*Value / action-value losses* — offline actor-critic style supervision from
+the terminal outcome of each POV.  V(s) is action-free; Q(s,a) scores only the
+acting player's legal candidates.  Opponent legal actions are never required.
 
 Total::
 
-    L = λ_os L_os + λ_oa L_oa + λ_next L_next + λ_rank L_rank
+    L = λ_os L_os + λ_oa L_oa + λ_next L_next
+        + λ_v L_v + λ_q L_q + λ_policy L_policy + λ_teacher L_teacher
         + λ_sigreg_state L_sigreg_state + λ_sigreg_action L_sigreg_action
 """
 
@@ -109,6 +117,9 @@ LATENT_DIM: int = 192
 
 # Latent dimension for action embeddings (output of JEPAActionEncoder).
 ACTION_LATENT_DIM: int = 32
+
+# Projected belief/action decision space used by V(s) and Q(s,a).
+DECISION_DIM: int = 384
 
 # ── SIGReg defaults ──────────────────────────────────────────────────────
 # Number of random projection directions for sketching (resampled each step).
@@ -855,6 +866,231 @@ class JEPAPairwiseRankHead(nn.Module):
         return self.net(x).squeeze(-1)
 
 
+class JEPAGatedResidualBlock(nn.Module):
+    """Small gated residual MLP block for decision-state refinement."""
+
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int | None = None,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        hidden_dim = hidden_dim or (2 * dim)
+        self.norm = nn.LayerNorm(dim)
+        self.ff = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+        )
+        self.gate = nn.Linear(dim, dim)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.norm(x)
+        return x + torch.sigmoid(self.gate(h)) * self.ff(h)
+
+
+class JEPADecisionStateEncoder(nn.Module):
+    """Fuse self state with predicted opponent Gaussian belief for decisions."""
+
+    def __init__(
+        self,
+        latent_dim: int = LATENT_DIM,
+        decision_dim: int = DECISION_DIM,
+        hidden_dim: int | None = None,
+        n_layers: int = 4,
+        dropout: float = 0.1,
+        min_logvar: float = -8.0,
+        max_logvar: float = 6.0,
+    ):
+        super().__init__()
+        hidden_dim = hidden_dim or (2 * decision_dim)
+        self.decision_dim = decision_dim
+        self.min_logvar = min_logvar
+        self.max_logvar = max_logvar
+
+        self.self_proj = nn.Sequential(
+            nn.Linear(latent_dim, decision_dim),
+            nn.LayerNorm(decision_dim),
+            nn.GELU(),
+        )
+        self.opp_mu_proj = nn.Sequential(
+            nn.Linear(latent_dim, decision_dim),
+            nn.LayerNorm(decision_dim),
+            nn.GELU(),
+        )
+        self.opp_logvar_proj = nn.Sequential(
+            nn.Linear(latent_dim, decision_dim),
+            nn.LayerNorm(decision_dim),
+            nn.GELU(),
+        )
+        self.fuse = nn.Sequential(
+            nn.Linear(5 * decision_dim, decision_dim),
+            nn.LayerNorm(decision_dim),
+            nn.GELU(),
+        )
+        self.blocks = nn.ModuleList([
+            JEPAGatedResidualBlock(decision_dim, hidden_dim=hidden_dim, dropout=dropout)
+            for _ in range(n_layers)
+        ])
+        self.out_norm = nn.LayerNorm(decision_dim)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    def forward(
+        self,
+        self_state: torch.Tensor,
+        opponent_state_mu: torch.Tensor,
+        opponent_state_logvar: torch.Tensor,
+    ) -> torch.Tensor:
+        self_h = self.self_proj(self_state)
+        mu_h = self.opp_mu_proj(opponent_state_mu)
+        logvar_h = self.opp_logvar_proj(
+            opponent_state_logvar.clamp(min=self.min_logvar, max=self.max_logvar)
+        )
+        x = self.fuse(torch.cat([
+            self_h,
+            mu_h,
+            logvar_h,
+            self_h - mu_h,
+            self_h * mu_h,
+        ], dim=-1))
+        for block in self.blocks:
+            x = block(x)
+        return self.out_norm(x)
+
+
+class JEPAValueHead(nn.Module):
+    """Action-free value critic V(s), returned as a terminal-outcome logit."""
+
+    def __init__(
+        self,
+        decision_dim: int = DECISION_DIM,
+        hidden_dim: int | None = None,
+        n_layers: int = 3,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        hidden_dim = hidden_dim or decision_dim
+        layers: list[nn.Module] = []
+        in_dim = decision_dim
+        for i in range(n_layers):
+            if i < n_layers - 1:
+                layers.extend([
+                    nn.Linear(in_dim, hidden_dim),
+                    nn.LayerNorm(hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                ])
+                in_dim = hidden_dim
+            else:
+                layers.append(nn.Linear(in_dim, 1))
+        self.net = nn.Sequential(*layers)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    def forward(self, decision_state: torch.Tensor) -> torch.Tensor:
+        return self.net(decision_state).squeeze(-1)
+
+
+class JEPAActionProjector(nn.Module):
+    """Project action encoder latents into the decision/Q space."""
+
+    def __init__(
+        self,
+        action_latent_dim: int = ACTION_LATENT_DIM,
+        decision_dim: int = DECISION_DIM,
+        hidden_dim: int | None = None,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        hidden_dim = hidden_dim or decision_dim
+        self.net = nn.Sequential(
+            nn.Linear(action_latent_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, decision_dim),
+            nn.LayerNorm(decision_dim),
+            nn.GELU(),
+        )
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    def forward(self, action_latent: torch.Tensor) -> torch.Tensor:
+        return self.net(action_latent)
+
+
+class JEPAActionValueHead(nn.Module):
+    """Q(s,a) scorer over current-player legal action candidates."""
+
+    def __init__(
+        self,
+        decision_dim: int = DECISION_DIM,
+        hidden_dim: int | None = None,
+        n_layers: int = 3,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        hidden_dim = hidden_dim or (2 * decision_dim)
+        self.bilinear = nn.Bilinear(decision_dim, decision_dim, 1, bias=False)
+        layers: list[nn.Module] = []
+        in_dim = 4 * decision_dim
+        for i in range(n_layers):
+            if i < n_layers - 1:
+                layers.extend([
+                    nn.Linear(in_dim, hidden_dim),
+                    nn.LayerNorm(hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                ])
+                in_dim = hidden_dim
+            else:
+                layers.append(nn.Linear(in_dim, 1))
+        self.joint = nn.Sequential(*layers)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, (nn.Linear, nn.Bilinear)):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if getattr(module, "bias", None) is not None:
+                nn.init.zeros_(module.bias)
+
+    def forward(self, decision_state: torch.Tensor, action_state: torch.Tensor) -> torch.Tensor:
+        if action_state.ndim == decision_state.ndim + 1:
+            decision_state = decision_state.unsqueeze(-2).expand_as(action_state)
+        x = torch.cat([
+            decision_state,
+            action_state,
+            decision_state - action_state,
+            decision_state * action_state,
+        ], dim=-1)
+        return (self.bilinear(decision_state, action_state) + self.joint(x)).squeeze(-1)
+
+
 class PairedJEPAModel(nn.Module):
     """JEPA trained from both synchronized player perspectives of one battle.
 
@@ -879,6 +1115,10 @@ class PairedJEPAModel(nn.Module):
         next_state_predictor_cfg: Optional[dict] = None,
         rank_head_cfg: Optional[dict] = None,
         opponent_belief_predictor_cfg: Optional[dict] = None,
+        decision_state_encoder_cfg: Optional[dict] = None,
+        value_head_cfg: Optional[dict] = None,
+        action_projector_cfg: Optional[dict] = None,
+        action_value_head_cfg: Optional[dict] = None,
         **kwargs,
     ):
         super().__init__()
@@ -930,6 +1170,25 @@ class PairedJEPAModel(nn.Module):
         self.rank_head = JEPAPairwiseRankHead(
             latent_dim=latent_dim,
             **(rank_head_cfg or {}),
+        )
+        decision_cfg = decision_state_encoder_cfg or {}
+        self.decision_state_encoder = JEPADecisionStateEncoder(
+            latent_dim=latent_dim,
+            **decision_cfg,
+        )
+        decision_dim = decision_cfg.get("decision_dim", DECISION_DIM)
+        self.value_head = JEPAValueHead(
+            decision_dim=decision_dim,
+            **(value_head_cfg or {}),
+        )
+        self.action_projector = JEPAActionProjector(
+            action_latent_dim=action_latent_dim,
+            decision_dim=decision_dim,
+            **(action_projector_cfg or {}),
+        )
+        self.action_value_head = JEPAActionValueHead(
+            decision_dim=decision_dim,
+            **(action_value_head_cfg or {}),
         )
 
     def _encode_state_blocks(
@@ -1115,6 +1374,55 @@ class PairedJEPAModel(nn.Module):
             return encoded.reshape(B, K, self.action_latent_dim)
         return self.action_encoder(action_tokens)
 
+    def encode_action_candidates(
+        self,
+        action_tokens: torch.Tensor,
+        action_mask: torch.Tensor | None = None,
+        max_chunk_blocks: int = 512,
+    ) -> torch.Tensor:
+        """Encode legal action candidate text with optional candidate masks."""
+        if action_tokens.ndim not in {3, 4}:
+            raise ValueError(
+                f"action candidate tokens must be [B,C,T] or [B,K,C,T], got {action_tokens.shape}"
+            )
+        out_shape = (*action_tokens.shape[:-1], self.action_latent_dim)
+        out = self.encoder.token_embedding.weight.new_zeros(out_shape)
+        flat_tokens = action_tokens.reshape(-1, action_tokens.shape[-1])
+        if action_mask is None:
+            flat_valid = (flat_tokens != self.pad_id).any(dim=-1)
+        else:
+            flat_valid = action_mask.reshape(-1).to(device=action_tokens.device, dtype=torch.bool)
+        if not bool(flat_valid.any()):
+            return out
+        valid_idx = flat_valid.nonzero(as_tuple=True)[0]
+        flat_out = out.reshape(-1, self.action_latent_dim)
+        for start in range(0, len(valid_idx), max_chunk_blocks):
+            chunk_idx = valid_idx[start:start + max_chunk_blocks]
+            flat_out[chunk_idx] = self.action_encoder(flat_tokens[chunk_idx])
+        return out
+
+    @staticmethod
+    def _singleton_candidate_tokens(action_tokens: torch.Tensor) -> torch.Tensor:
+        if action_tokens.ndim == 3:
+            return action_tokens.unsqueeze(2)
+        return action_tokens.unsqueeze(1)
+
+    @staticmethod
+    def _singleton_candidate_mask(action_tokens: torch.Tensor) -> torch.Tensor:
+        return torch.ones(
+            (*action_tokens.shape[:-1], 1),
+            dtype=torch.bool,
+            device=action_tokens.device,
+        )
+
+    @staticmethod
+    def _zero_chosen_indices(action_tokens: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(
+            action_tokens.shape[:-1],
+            dtype=torch.long,
+            device=action_tokens.device,
+        )
+
     def forward(
         self,
         p1_state_T: torch.Tensor,
@@ -1145,6 +1453,12 @@ class PairedJEPAModel(nn.Module):
         p2_action_tokens: torch.Tensor,
         actual_p2_action_from_p1_perspective_tokens: torch.Tensor,
         actual_p1_action_from_p2_perspective_tokens: torch.Tensor,
+        p1_legal_action_tokens: torch.Tensor | None = None,
+        p1_legal_action_mask: torch.Tensor | None = None,
+        p1_chosen_legal_action_idx: torch.Tensor | None = None,
+        p2_legal_action_tokens: torch.Tensor | None = None,
+        p2_legal_action_mask: torch.Tensor | None = None,
+        p2_chosen_legal_action_idx: torch.Tensor | None = None,
         sample_beliefs: Optional[bool] = None,
     ) -> dict[str, torch.Tensor]:
         sample = self.training if sample_beliefs is None else sample_beliefs
@@ -1194,12 +1508,59 @@ class PairedJEPAModel(nn.Module):
         pred_p1_T1 = self.reparameterize(pred_p1_T1_mu, pred_p1_T1_logvar, sample)
         pred_p2_T1 = self.reparameterize(pred_p2_T1_mu, pred_p2_T1_logvar, sample)
 
-        rank_p1_teacher = self.rank_head(z_p1_T, z_p2_T)
-        rank_p2_teacher = self.rank_head(z_p2_T, z_p1_T)
-        rank_p1_belief = self.rank_head(z_p1_T, pred_p2_T)
-        rank_p2_belief = self.rank_head(z_p2_T, pred_p1_T)
-        rank_p1_next_belief = self.rank_head(pred_p1_T1, pred_p2_T)
-        rank_p2_next_belief = self.rank_head(pred_p2_T1, pred_p1_T)
+        if p1_legal_action_tokens is None:
+            p1_legal_action_tokens = self._singleton_candidate_tokens(p1_action_tokens)
+        if p1_legal_action_mask is None:
+            p1_legal_action_mask = self._singleton_candidate_mask(p1_action_tokens)
+        if p1_chosen_legal_action_idx is None:
+            p1_chosen_legal_action_idx = self._zero_chosen_indices(p1_action_tokens)
+        if p2_legal_action_tokens is None:
+            p2_legal_action_tokens = self._singleton_candidate_tokens(p2_action_tokens)
+        if p2_legal_action_mask is None:
+            p2_legal_action_mask = self._singleton_candidate_mask(p2_action_tokens)
+        if p2_chosen_legal_action_idx is None:
+            p2_chosen_legal_action_idx = self._zero_chosen_indices(p2_action_tokens)
+
+        p1_decision_state = self.decision_state_encoder(
+            z_p1_T, pred_p2_T_mu, pred_p2_T_logvar
+        )
+        p2_decision_state = self.decision_state_encoder(
+            z_p2_T, pred_p1_T_mu, pred_p1_T_logvar
+        )
+        zero_p2_logvar = torch.zeros_like(z_p2_T)
+        zero_p1_logvar = torch.zeros_like(z_p1_T)
+        p1_decision_state_teacher = self.decision_state_encoder(
+            z_p1_T, z_p2_T, zero_p2_logvar
+        )
+        p2_decision_state_teacher = self.decision_state_encoder(
+            z_p2_T, z_p1_T, zero_p1_logvar
+        )
+
+        p1_value_logit = self.value_head(p1_decision_state)
+        p2_value_logit = self.value_head(p2_decision_state)
+        p1_value_teacher_logit = self.value_head(p1_decision_state_teacher)
+        p2_value_teacher_logit = self.value_head(p2_decision_state_teacher)
+
+        p1_legal_action = self.encode_action_candidates(
+            p1_legal_action_tokens,
+            p1_legal_action_mask,
+        )
+        p2_legal_action = self.encode_action_candidates(
+            p2_legal_action_tokens,
+            p2_legal_action_mask,
+        )
+        p1_legal_action_h = self.action_projector(p1_legal_action)
+        p2_legal_action_h = self.action_projector(p2_legal_action)
+        p1_q_logits = self.action_value_head(p1_decision_state, p1_legal_action_h)
+        p2_q_logits = self.action_value_head(p2_decision_state, p2_legal_action_h)
+        p1_q_teacher_logits = self.action_value_head(
+            p1_decision_state_teacher,
+            p1_legal_action_h,
+        )
+        p2_q_teacher_logits = self.action_value_head(
+            p2_decision_state_teacher,
+            p2_legal_action_h,
+        )
 
         return {
             "enc_p1_T": z_p1_T,
@@ -1230,12 +1591,24 @@ class PairedJEPAModel(nn.Module):
             "pred_p2_T1_logvar": pred_p2_T1_logvar,
             "pred_p1_T1": pred_p1_T1,
             "pred_p2_T1": pred_p2_T1,
-            "rank_p1_teacher": rank_p1_teacher,
-            "rank_p2_teacher": rank_p2_teacher,
-            "rank_p1_belief": rank_p1_belief,
-            "rank_p2_belief": rank_p2_belief,
-            "rank_p1_next_belief": rank_p1_next_belief,
-            "rank_p2_next_belief": rank_p2_next_belief,
+            "p1_decision_state": p1_decision_state,
+            "p2_decision_state": p2_decision_state,
+            "p1_decision_state_teacher": p1_decision_state_teacher,
+            "p2_decision_state_teacher": p2_decision_state_teacher,
+            "p1_value_logit": p1_value_logit,
+            "p2_value_logit": p2_value_logit,
+            "p1_value_teacher_logit": p1_value_teacher_logit,
+            "p2_value_teacher_logit": p2_value_teacher_logit,
+            "p1_legal_action": p1_legal_action,
+            "p2_legal_action": p2_legal_action,
+            "p1_legal_action_mask": p1_legal_action_mask,
+            "p2_legal_action_mask": p2_legal_action_mask,
+            "p1_chosen_legal_action_idx": p1_chosen_legal_action_idx,
+            "p2_chosen_legal_action_idx": p2_chosen_legal_action_idx,
+            "p1_q_logits": p1_q_logits,
+            "p2_q_logits": p2_q_logits,
+            "p1_q_teacher_logits": p1_q_teacher_logits,
+            "p2_q_teacher_logits": p2_q_teacher_logits,
         }
 
     def save_checkpoint(self, path: str, **extra) -> None:
@@ -1360,6 +1733,112 @@ def pairwise_rank_loss(
     return loss[valid].mean()
 
 
+def _zero_like_loss(reference: torch.Tensor) -> torch.Tensor:
+    return reference.sum() * 0.0
+
+
+def _outcome_targets_and_valid(outputs: dict[str, torch.Tensor], reference: torch.Tensor) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    device = reference.device
+    if "p1_won" not in outputs or "p2_won" not in outputs:
+        shape = reference.shape[:-1] if reference.ndim > 0 else reference.shape
+        valid = torch.zeros(shape, dtype=torch.bool, device=device)
+        target = torch.zeros(shape, dtype=reference.dtype, device=device)
+        return target, target, valid
+
+    p1_won = outputs["p1_won"].to(device=device, dtype=reference.dtype)
+    p2_won = outputs["p2_won"].to(device=device, dtype=reference.dtype)
+    if "rank_valid" in outputs:
+        valid = outputs["rank_valid"].to(device=device, dtype=torch.bool)
+    else:
+        valid = p1_won.bool() ^ p2_won.bool()
+    return p1_won, p2_won, valid
+
+
+def _masked_bce_with_logits(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    valid: torch.Tensor,
+    weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    valid = valid.to(device=logits.device, dtype=torch.bool)
+    target = target.to(device=logits.device, dtype=logits.dtype)
+    while target.ndim < logits.ndim:
+        target = target.unsqueeze(-1)
+    target = target.expand_as(logits)
+    while valid.ndim < logits.ndim:
+        valid = valid.unsqueeze(-1)
+    valid = valid.expand_as(logits)
+    if not bool(valid.any()):
+        return _zero_like_loss(logits)
+    loss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+    if weight is not None:
+        weight = weight.to(device=logits.device, dtype=logits.dtype)
+        while weight.ndim < logits.ndim:
+            weight = weight.unsqueeze(-1)
+        loss = loss * weight.expand_as(logits)
+    return loss[valid].mean()
+
+
+def _chosen_action_logits(
+    logits: torch.Tensor,
+    chosen_idx: torch.Tensor,
+) -> torch.Tensor:
+    idx = chosen_idx.to(device=logits.device, dtype=torch.long).clamp(
+        min=0,
+        max=max(logits.shape[-1] - 1, 0),
+    )
+    return logits.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
+
+
+def _masked_policy_cross_entropy(
+    logits: torch.Tensor,
+    legal_mask: torch.Tensor,
+    chosen_idx: torch.Tensor,
+    valid: torch.Tensor,
+    weight: torch.Tensor | None = None,
+) -> torch.Tensor:
+    legal_mask = legal_mask.to(device=logits.device, dtype=torch.bool)
+    chosen_idx = chosen_idx.to(device=logits.device, dtype=torch.long)
+    valid = valid.to(device=logits.device, dtype=torch.bool)
+    chosen_in_range = (chosen_idx >= 0) & (chosen_idx < logits.shape[-1])
+    safe_idx = chosen_idx.clamp(min=0, max=max(logits.shape[-1] - 1, 0))
+    chosen_legal = legal_mask.gather(-1, safe_idx.unsqueeze(-1)).squeeze(-1)
+    sample_valid = valid & legal_mask.any(dim=-1) & chosen_in_range & chosen_legal
+    if not bool(sample_valid.any()):
+        return _zero_like_loss(logits)
+
+    masked_logits = logits.masked_fill(~legal_mask, torch.finfo(logits.dtype).min)
+    flat_logits = masked_logits.reshape(-1, masked_logits.shape[-1])
+    flat_target = safe_idx.reshape(-1)
+    flat_valid = sample_valid.reshape(-1)
+    loss = F.cross_entropy(flat_logits[flat_valid], flat_target[flat_valid], reduction="none")
+    if weight is not None:
+        flat_weight = weight.to(device=logits.device, dtype=logits.dtype).reshape(-1)
+        loss = loss * flat_weight[flat_valid]
+    return loss.mean()
+
+
+def _advantage_weights(
+    value_logit: torch.Tensor,
+    outcome: torch.Tensor,
+    valid: torch.Tensor,
+    temperature: float | None,
+    clamp_min: float,
+    clamp_max: float,
+) -> torch.Tensor | None:
+    if temperature is None or temperature <= 0:
+        return None
+    outcome = outcome.to(device=value_logit.device, dtype=value_logit.dtype)
+    value = torch.sigmoid(value_logit).detach()
+    weight = torch.exp((outcome - value) / float(temperature))
+    weight = weight.clamp(min=clamp_min, max=clamp_max)
+    return torch.where(valid.to(device=value_logit.device, dtype=torch.bool), weight, torch.ones_like(weight))
+
+
 def compute_paired_losses(
     outputs: dict[str, torch.Tensor],
     lambda_sigreg: float = 0.1,
@@ -1369,6 +1848,14 @@ def compute_paired_losses(
     lambda_action: float = 1.0,
     lambda_next_state: float = 1.0,
     lambda_rank: float = 1.0,
+    lambda_value: float = 1.0,
+    lambda_q_value: float = 1.0,
+    lambda_policy: float = 1.0,
+    lambda_value_teacher: float = 0.25,
+    lambda_q_teacher: float = 0.25,
+    advantage_temperature: float | None = None,
+    advantage_weight_min: float = 0.1,
+    advantage_weight_max: float = 10.0,
     sigreg_num_slices: int = SIGREG_NUM_SLICES,
     sigreg_num_points: int = SIGREG_NUM_POINTS,
     sigreg_domain: float = SIGREG_DOMAIN,
@@ -1381,7 +1868,9 @@ def compute_paired_losses(
       - next_state_loss: diagonal Gaussian NLL of target next-state latent
         (the next-state predictor is stochastic — mu+logvar — because the
         world has inherent randomness: damage rolls, status, speed ties, …)
-      - rank_loss: pairwise ranking from the winner label
+      - value_loss: BCE(V(s), terminal_outcome) per POV
+      - q_value_loss: BCE(Q(s, chosen_action), terminal_outcome) per POV
+      - policy_loss: masked CE over only that POV's legal action candidates
       - SIGReg on state encoder outputs (current, next, context).
         Predicted next-state latents are NOT regularised — they are Gaussian
         samples (mu + ε·σ) by construction.
@@ -1437,39 +1926,126 @@ def compute_paired_losses(
         outputs["pred_p2_T1_logvar"],
     )
 
-    if "p1_won" in outputs:
-        p1_won = outputs["p1_won"].to(device=enc_p1_T.device)
-        if "rank_valid" in outputs:
-            rank_valid = outputs["rank_valid"].to(device=enc_p1_T.device)
-        elif "p2_won" in outputs:
-            rank_valid = p1_won.bool() ^ outputs["p2_won"].to(device=enc_p1_T.device).bool()
-        else:
-            rank_valid = torch.ones_like(p1_won, dtype=torch.bool, device=enc_p1_T.device)
-        rank_loss_teacher = pairwise_rank_loss(
-            outputs["rank_p1_teacher"],
-            outputs["rank_p2_teacher"],
-            p1_won,
-            rank_valid,
+    p1_outcome, p2_outcome, outcome_valid = _outcome_targets_and_valid(outputs, enc_p1_T)
+    rank_valid = outcome_valid
+    rank_loss_teacher = enc_p1_T.new_tensor(0.0)
+    rank_loss_belief = enc_p1_T.new_tensor(0.0)
+    rank_loss_next = enc_p1_T.new_tensor(0.0)
+    rank_loss = enc_p1_T.new_tensor(0.0)
+
+    if "p1_value_logit" in outputs and "p2_value_logit" in outputs:
+        value_loss_p1 = _masked_bce_with_logits(
+            outputs["p1_value_logit"],
+            p1_outcome,
+            outcome_valid,
         )
-        rank_loss_belief = pairwise_rank_loss(
-            outputs["rank_p1_belief"],
-            outputs["rank_p2_belief"],
-            p1_won,
-            rank_valid,
+        value_loss_p2 = _masked_bce_with_logits(
+            outputs["p2_value_logit"],
+            p2_outcome,
+            outcome_valid,
         )
-        rank_loss_next = pairwise_rank_loss(
-            outputs["rank_p1_next_belief"],
-            outputs["rank_p2_next_belief"],
-            p1_won,
-            rank_valid,
-        )
-        rank_loss = (rank_loss_teacher + rank_loss_belief + rank_loss_next) / 3
+        value_loss = 0.5 * (value_loss_p1 + value_loss_p2)
     else:
-        rank_valid = torch.zeros(enc_p1_T.shape[:-1], dtype=torch.bool, device=enc_p1_T.device)
-        rank_loss_teacher = enc_p1_T.new_tensor(0.0)
-        rank_loss_belief = enc_p1_T.new_tensor(0.0)
-        rank_loss_next = enc_p1_T.new_tensor(0.0)
-        rank_loss = enc_p1_T.new_tensor(0.0)
+        value_loss_p1 = value_loss_p2 = value_loss = enc_p1_T.new_tensor(0.0)
+
+    if "p1_q_logits" in outputs and "p2_q_logits" in outputs:
+        p1_chosen_q = _chosen_action_logits(
+            outputs["p1_q_logits"],
+            outputs["p1_chosen_legal_action_idx"],
+        )
+        p2_chosen_q = _chosen_action_logits(
+            outputs["p2_q_logits"],
+            outputs["p2_chosen_legal_action_idx"],
+        )
+        p1_adv_weight = _advantage_weights(
+            outputs.get("p1_value_logit", p1_chosen_q),
+            p1_outcome,
+            outcome_valid,
+            advantage_temperature,
+            advantage_weight_min,
+            advantage_weight_max,
+        )
+        p2_adv_weight = _advantage_weights(
+            outputs.get("p2_value_logit", p2_chosen_q),
+            p2_outcome,
+            outcome_valid,
+            advantage_temperature,
+            advantage_weight_min,
+            advantage_weight_max,
+        )
+        q_value_loss_p1 = _masked_bce_with_logits(
+            p1_chosen_q,
+            p1_outcome,
+            outcome_valid,
+            p1_adv_weight,
+        )
+        q_value_loss_p2 = _masked_bce_with_logits(
+            p2_chosen_q,
+            p2_outcome,
+            outcome_valid,
+            p2_adv_weight,
+        )
+        q_value_loss = 0.5 * (q_value_loss_p1 + q_value_loss_p2)
+        policy_loss_p1 = _masked_policy_cross_entropy(
+            outputs["p1_q_logits"],
+            outputs["p1_legal_action_mask"],
+            outputs["p1_chosen_legal_action_idx"],
+            outcome_valid,
+            p1_adv_weight,
+        )
+        policy_loss_p2 = _masked_policy_cross_entropy(
+            outputs["p2_q_logits"],
+            outputs["p2_legal_action_mask"],
+            outputs["p2_chosen_legal_action_idx"],
+            outcome_valid,
+            p2_adv_weight,
+        )
+        policy_loss = 0.5 * (policy_loss_p1 + policy_loss_p2)
+    else:
+        p1_chosen_q = p2_chosen_q = enc_p1_T.new_zeros(enc_p1_T.shape[:-1])
+        q_value_loss_p1 = q_value_loss_p2 = q_value_loss = enc_p1_T.new_tensor(0.0)
+        policy_loss_p1 = policy_loss_p2 = policy_loss = enc_p1_T.new_tensor(0.0)
+        p1_adv_weight = p2_adv_weight = None
+
+    if "p1_value_teacher_logit" in outputs and "p2_value_teacher_logit" in outputs:
+        value_teacher_loss_p1 = _masked_bce_with_logits(
+            outputs["p1_value_teacher_logit"],
+            p1_outcome,
+            outcome_valid,
+        )
+        value_teacher_loss_p2 = _masked_bce_with_logits(
+            outputs["p2_value_teacher_logit"],
+            p2_outcome,
+            outcome_valid,
+        )
+        value_teacher_loss = 0.5 * (value_teacher_loss_p1 + value_teacher_loss_p2)
+    else:
+        value_teacher_loss_p1 = value_teacher_loss_p2 = value_teacher_loss = enc_p1_T.new_tensor(0.0)
+
+    if "p1_q_teacher_logits" in outputs and "p2_q_teacher_logits" in outputs:
+        p1_teacher_q = _chosen_action_logits(
+            outputs["p1_q_teacher_logits"],
+            outputs["p1_chosen_legal_action_idx"],
+        )
+        p2_teacher_q = _chosen_action_logits(
+            outputs["p2_q_teacher_logits"],
+            outputs["p2_chosen_legal_action_idx"],
+        )
+        q_teacher_loss_p1 = _masked_bce_with_logits(
+            p1_teacher_q,
+            p1_outcome,
+            outcome_valid,
+            p1_adv_weight,
+        )
+        q_teacher_loss_p2 = _masked_bce_with_logits(
+            p2_teacher_q,
+            p2_outcome,
+            outcome_valid,
+            p2_adv_weight,
+        )
+        q_teacher_loss = 0.5 * (q_teacher_loss_p1 + q_teacher_loss_p2)
+    else:
+        q_teacher_loss_p1 = q_teacher_loss_p2 = q_teacher_loss = enc_p1_T.new_tensor(0.0)
 
     # SIGReg on current-state latents: enc_p1_T and enc_p2_T are the JEPAEncoder
     # outputs (deterministic state embeddings, latent_dim=192) for each player at
@@ -1508,7 +2084,11 @@ def compute_paired_losses(
         lambda_opponent_state * opponent_state_loss
         + lambda_action * action_loss
         + lambda_next_state * next_state_loss
-        + lambda_rank * rank_loss
+        + lambda_value * value_loss
+        + lambda_q_value * q_value_loss
+        + lambda_policy * policy_loss
+        + lambda_value_teacher * value_teacher_loss
+        + lambda_q_teacher * q_teacher_loss
     )
     total_loss = (
         pred_loss
@@ -1532,6 +2112,41 @@ def compute_paired_losses(
         "rank_loss_belief": rank_loss_belief.item(),
         "rank_loss_next": rank_loss_next.item(),
         "rank_valid": float(rank_valid.float().mean().item()),
+        "value_loss": value_loss.item(),
+        "value_loss_p1": value_loss_p1.item(),
+        "value_loss_p2": value_loss_p2.item(),
+        "q_value_loss": q_value_loss.item(),
+        "q_value_loss_p1": q_value_loss_p1.item(),
+        "q_value_loss_p2": q_value_loss_p2.item(),
+        "policy_loss": policy_loss.item(),
+        "policy_loss_p1": policy_loss_p1.item(),
+        "policy_loss_p2": policy_loss_p2.item(),
+        "value_teacher_loss": value_teacher_loss.item(),
+        "value_teacher_loss_p1": value_teacher_loss_p1.item(),
+        "value_teacher_loss_p2": value_teacher_loss_p2.item(),
+        "q_teacher_loss": q_teacher_loss.item(),
+        "q_teacher_loss_p1": q_teacher_loss_p1.item(),
+        "q_teacher_loss_p2": q_teacher_loss_p2.item(),
+        "p1_value_prob": (
+            torch.sigmoid(outputs["p1_value_logit"]).detach().float()[outcome_valid].mean().item()
+            if "p1_value_logit" in outputs and bool(outcome_valid.any())
+            else 0.0
+        ),
+        "p2_value_prob": (
+            torch.sigmoid(outputs["p2_value_logit"]).detach().float()[outcome_valid].mean().item()
+            if "p2_value_logit" in outputs and bool(outcome_valid.any())
+            else 0.0
+        ),
+        "p1_chosen_q": (
+            p1_chosen_q.detach().float()[outcome_valid].mean().item()
+            if bool(outcome_valid.any())
+            else 0.0
+        ),
+        "p2_chosen_q": (
+            p2_chosen_q.detach().float()[outcome_valid].mean().item()
+            if bool(outcome_valid.any())
+            else 0.0
+        ),
         "pred_loss": pred_loss.item(),
         "sigreg_current": sigreg_current.item(),
         "sigreg_next_true": sigreg_next_true.item(),

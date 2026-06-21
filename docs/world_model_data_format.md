@@ -56,6 +56,9 @@ Each shard stores variable-length token arrays plus index matrices:
 | `p1_actions`, `p2_actions` | `(total_action_tokens,)` | Flattened canonical own-action content |
 | `p1_opponent_actions`, `p2_opponent_actions` | `(total_action_tokens,)` | Flattened canonical opponent-action content from that POV |
 | `*_action_offsets`, `*_action_lengths` | `(num_actions,)` | Offsets and lengths for each action row |
+| `p1_legal_actions`, `p2_legal_actions` | `(num_actions, max_legal, max_action_tokens)` | Dense acting-player legal candidates for each own action row |
+| `p1_legal_action_mask`, `p2_legal_action_mask` | `(num_actions, max_legal)` | True for real legal candidates, false for padding |
+| `p1_chosen_legal_action_idx`, `p2_chosen_legal_action_idx` | `(num_actions,)` | Index of the replay-chosen action within that POV's legal candidates |
 | `p1_state_idx`, `p2_state_idx` | `(num_samples, K)` | Current state indices per rollout step |
 | `p1_next_state_idx`, `p2_next_state_idx` | `(num_samples, K)` | Next state indices per rollout step |
 | `p1_action_idx`, `p2_action_idx` | `(num_samples, K)` | Action indices per rollout step |
@@ -89,6 +92,11 @@ opponent's action. In a correctly aligned paired battle, `p2_action` and
 text. The separate names are retained so histories remain perspective-local and
 the JEPA losses can name the target they supervise.
 
+For actor-critic training, shards also store legal action candidates for the
+acting POV only. They are inferred from that POV state's available-move, bench,
+force-switch, and force-revival text, and the replay-chosen action is always
+included. Opponent legal candidates are not generated or required.
+
 ## Dataset Sample
 
 `PairedJEPADataset` yields one rollout sample at a time. Before collation, each
@@ -114,6 +122,12 @@ value is a list of length `K`:
     "p2_action": [p2_action_0, ..., p2_action_K_minus_1],
     "actual_p2_action_from_p1_perspective": [...],
     "actual_p1_action_from_p2_perspective": [...],
+    "p1_legal_actions": [p1_legal_candidates_0, ...],
+    "p1_legal_action_mask": [p1_legal_mask_0, ...],
+    "p1_chosen_legal_action_idx": [idx_0, ...],
+    "p2_legal_actions": [p2_legal_candidates_0, ...],
+    "p2_legal_action_mask": [p2_legal_mask_0, ...],
+    "p2_chosen_legal_action_idx": [idx_0, ...],
     "p1_won": [bool, ..., bool],
     "p2_won": [bool, ..., bool],
     "rank_valid": [bool, ..., bool],
@@ -127,6 +141,9 @@ value is a list of length `K`:
 | State/history block tensors | `[B, K, max_blocks, max_tokens]` |
 | State/history valid masks | `[B, K, max_blocks]` |
 | Action tensors | `[B, K, max_action_tokens]` |
+| Legal action tensors | `[B, K, max_legal, max_action_tokens]` |
+| Legal action masks | `[B, K, max_legal]` |
+| Chosen legal action indices | `[B, K]` |
 | `p1_won`, `p2_won`, `rank_valid` | `[B, K]` |
 
 `max_history_blocks=0` keeps full history. A positive value keeps the team

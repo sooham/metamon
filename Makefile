@@ -351,7 +351,6 @@ JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best.pt
 JEPA_PLAY_FORMAT ?= gen1ou
 JEPA_PLAY_USERNAME ?= jepabot
 JEPA_PLAY_TEAM_SET ?= competitive
-JEPA_PLAY_HEURISTIC ?= max-rank
 JEPA_PLAY_NUM_BATTLES ?= 30
 JEPA_PLAY_LADDER ?=
 JEPA_PLAY_VERBOSE_BLOCKS ?=
@@ -368,7 +367,6 @@ play-jepa:
 		--format $(JEPA_PLAY_FORMAT) \
 		--username $(JEPA_PLAY_USERNAME) \
 		--team_set $(JEPA_PLAY_TEAM_SET) \
-		--heuristic $(JEPA_PLAY_HEURISTIC) \
 		--num_battles $(JEPA_PLAY_NUM_BATTLES) \
 		$(if $(JEPA_PLAY_LADDER),--ladder) \
 		$(if $(JEPA_PLAY_VERBOSE_BLOCKS),--verbose_blocks) \
@@ -402,7 +400,6 @@ test-jepa-baseline: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure-show
 		--baseline $(JEPA_BASELINE) \
 		--n_battles $(JEPA_BASELINE_N_BATTLES) \
 		--team_set $(JEPA_PLAY_TEAM_SET) \
-		--heuristic $(JEPA_PLAY_HEURISTIC) \
 		--server $(JEPA_BASELINE_SERVER)
 
 # Run JEPA against *all* registered baselines for the format.
@@ -420,7 +417,6 @@ test-jepa-all-baselines: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure
 		--all-baselines \
 		--n_battles $(JEPA_BASELINE_N_BATTLES) \
 		--team_set $(JEPA_PLAY_TEAM_SET) \
-		--heuristic $(JEPA_PLAY_HEURISTIC) \
 		--server $(JEPA_BASELINE_SERVER)
 
 # ── Checkpoint backup ───────────────────────────────────────────────

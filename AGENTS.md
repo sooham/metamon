@@ -38,12 +38,16 @@ c + current_state_z ─► JEPAOpponentBeliefPredictor shared backbone
                     ├─ state head  ─► predicted opponent state z_opp (Gaussian)
                     └─ action head ─► predicted opponent action a_opp (Gaussian)
 z + own_action + z_opp + a_opp ─► JEPANextStatePredictor ─► predicted next state z_next
-z + z_opp                    ─► JEPAPairwiseRankHead ─► scalar advantage score
+z + predicted_opp_mu/logvar ─► JEPADecisionStateEncoder ─► fused belief state h
+h                          ─► JEPAValueHead ─► V_logit(s)
+h + legal own action       ─► JEPAActionValueHead ─► Q_logit(s,a)
 ```
 
 `JEPAOpponentBeliefPredictor` is the current code path and checkpoint module name; it replaces the older separate opponent-state and paired-action predictor modules with a shared representation plus two output heads.
 
-**Losses:** diagonal Gaussian NLL for opponent state prediction, opponent action prediction, and next-state prediction; SIGReg (Epps-Pulley Gaussianity regularizer); and Bradley-Terry ranking loss from battle outcomes. During paired supervised training, the next-state predictor is conditioned on the actual paired opponent state and the actual opponent action taken between the current and next state.
+**Decision heads:** `JEPADecisionStateEncoder` projects `z_self`, predicted opponent state mean, and clamped opponent state log-variance into `decision_dim=384`, then fuses `[self_h, mu_h, logvar_h, self_h - mu_h, self_h * mu_h]` through gated residual blocks. `JEPAValueHead` consumes only this fused belief state and returns `V_logit(s)`. `JEPAActionProjector` maps action latents into the same decision space, and `JEPAActionValueHead` scores current-player legal candidates as `Q_logit(s,a)`.
+
+**Losses:** diagonal Gaussian NLL for opponent state prediction, opponent action prediction, and next-state prediction; SIGReg (Epps-Pulley Gaussianity regularizer); BCE losses for `V(s)` and chosen `Q(s,a)` against the POV terminal outcome; masked cross-entropy over that POV's legal action Q logits; and lower-weight teacher value/Q supervision using the actual paired opponent latent. During paired supervised training, the next-state predictor is conditioned on the actual paired opponent state and the actual opponent action taken between the current and next state. The old Bradley-Terry rank loss is inactive; `--lambda_rank` is accepted only as a deprecated no-op warning.
 
 ### Training (`train_paired.py`)
 
@@ -73,7 +77,9 @@ uv run python -m metamon.jepa.train_paired \
 
 Key training flags:
 - `--max_history_blocks N` — window to last N state blocks (0 = unlimited, the **default**). The team header is always retained. Lower values reduce memory and speed up training.
-- `--lambda_rank 0` — disable ranking loss (e.g. when outcome labels are unreliable)
+- `--lambda_value`, `--lambda_q_value`, `--lambda_policy`, `--lambda_value_teacher`, `--lambda_q_teacher` — actor-critic outcome-supervision weights. Set these to `0` to disable outcome heads when labels are unreliable.
+- `--advantage_temperature` — optional advantage weighting for Q/policy losses using `exp((outcome - sigmoid(V).detach()) / temperature)` with configured clamps.
+- `--lambda_rank` — deprecated/no-op; accepted temporarily with a warning for old scripts.
 - `--compile` — enable `torch.compile` on encoder + action encoder (CUDA only)
 - `--checkpoint` — path for both warm-start loading AND best-checkpoint saving
 - `--no-wandb` — disable Weights & Biases logging. W&B is enabled by default when the `wandb` package is installed; `--wandb` is accepted but redundant.
@@ -87,12 +93,18 @@ Training uses bf16 on CUDA, SIGReg resampled per step, and micro-batched encodin
 | `encoder` | d_model=384, n_heads=6, n_layers=6, d_ff=1536, max_seq_len=256, gradient_checkpointing=true |
 | `temporal_encoder` | n_heads=6, n_layers=4, d_ff=768, max_seq_len=6144 |
 | `action_encoder` | d_model=128, n_heads=4, n_layers=3, d_ff=512, max_seq_len=64 |
+| `decision_state_encoder` | decision_dim=384, n_layers=4, hidden_dim=768 |
+| `value_head` | hidden_dim=384, n_layers=3 |
+| `action_projector` | action_latent_dim → decision_dim |
+| `action_value_head` | hidden_dim=768, n_layers=3 |
 | Latents | `latent_dim: 192`, `action_latent_dim: 32` |
-| Loss weights | `lambda_sigreg_state: 0.1`, `lambda_sigreg_action: 0.0`, `lambda_rank: 1.0`; deprecated fallback `lambda_sigreg: 0.1` |
+| Loss weights | `lambda_sigreg_state: 0.1`, `lambda_sigreg_action: 0.0`, `lambda_value: 1.0`, `lambda_q_value: 1.0`, `lambda_policy: 1.0`, `lambda_value_teacher: 0.25`, `lambda_q_teacher: 0.25`; deprecated fallbacks `lambda_sigreg: 0.1`, `lambda_rank: 0.0` |
 
 ### Data format (paired shards)
 
-Paired shards contain both POVs' state arrays side-by-side: `p1_states` / `p2_states`, `p1_actions` / `p2_actions`, `p1_opponent_actions` / `p2_opponent_actions`, plus per-battle outcome labels (`p1_won`, `p2_won`). Action arrays store canonical action content without role delimiters: moves start with `move`, switches start with `switch`, and missing actions are `unknown unknown`.
+Paired shards contain both POVs' state arrays side-by-side: `p1_states` / `p2_states`, `p1_actions` / `p2_actions`, `p1_opponent_actions` / `p2_opponent_actions`, acting-player legal candidates (`p1_legal_actions`, `p1_legal_action_mask`, `p1_chosen_legal_action_idx`, with matching `p2_*` arrays), plus per-battle outcome labels (`p1_won`, `p2_won`). Action arrays store canonical action content without role delimiters: moves start with `move`, switches start with `switch`, and missing actions are `unknown unknown`.
+
+Legal-action candidates are generated only for the acting POV from that POV state's `<begin_moves>`, `<bench>`, `forceswitch`, and `forcedrevival` text. Opponent legal candidates are not generated or required. The replay-chosen action is always included, even if the state-derived legal list misses it.
 
 `--rollout_len K` controls the experience-replay sample length. Each sample row stores `K` contiguous aligned transitions from one raw battle using `(num_samples, K)` index matrices such as `p1_state_idx`, `p1_next_state_idx`, and `p1_action_idx` (with matching `p2_*` arrays). Battles with fewer than `K` aligned action steps, or no contiguous K-step windows, are skipped with warning counts during generation. The train/validation split is by raw battle key, so both POV files for a battle stay in the same split. After the split, battle keys and rollout rows are shuffled to reduce batch correlation. See `docs/world_model_data_format.md` for the complete shard schema and `PairedJEPADataset` sample shape.
 
@@ -113,7 +125,6 @@ uv run python -m metamon.jepa.play \
     --format gen1ou \
     --username JEPABot \
     --num_battles 5 \
-    --heuristic max-rank \
     --server localhost
 ```
 
@@ -141,7 +152,6 @@ uv run python -m metamon.jepa.play \
     --username YourBotName \
     --password your_password \
     --num_battles 30 \
-    --heuristic max-rank \
     --server showdown \
     --ladder
 ```
@@ -159,21 +169,15 @@ Then another player challenges with:
 /challenge YourBotName, gen1ou
 ```
 
-#### Heuristics (action selection)
+#### Action selection
 
-The `--heuristic` flag controls how the bot scores legal actions from JEPA latent rollouts:
-
-| Heuristic | What it maximizes |
-|---|---|
-| `max-rank` (default) | `rank_head(z_next, z_opp)` — predicted advantage after the action |
-| `max-self-state-delta` | `‖z_next − z_current‖` — how much the board state changes |
-| `max-opponent-state-delta` | `‖predicted_opp_next − predicted_opp_current‖` — disruption to the opponent |
+Online actor-critic inference predicts the opponent belief from the current bot POV, encodes only the bot's legal Showdown actions, computes `Q_logit(s,a)` with `JEPAActionValueHead`, and chooses the best current-player action. It never requires opponent legal actions.
 
 #### Interactive REPL (keyboard shortcuts during battle)
 
 Press these keys in the terminal while battles are running:
 - **R** — show last 40 raw protocol messages (`|move|`, `|switch|`, etc.)
-- **P** — show all state/action blocks + last JEPA diagnostics (latent norms, logvar, belief rank)
+- **P** — show all state/action blocks + last JEPA diagnostics (latent norms, logvar, value/Q scores)
 - **V** — toggle verbose block printing on/off
 - **O** — overview of all active battles (turn count, Pokémon, HP)
 - **Q** — stop the REPL key listener
@@ -182,13 +186,13 @@ Press these keys in the terminal while battles are running:
 
 When `--verbose` (default on), each turn prints:
 ```
-── JEPA turn 5 (battle-gen1ou-12345) [max-rank] ──
+── JEPA turn 5 (battle-gen1ou-12345) [actor-critic] ──
   vs: opponent_name  |  replay: https://replay.pokemonshowdown.com/battle-gen1ou-12345
   active: Snorlax hp=0.87
   opponent: Chansey hp=0.65
   legal actions:
-      0 move: body slam           delta=  0.234
-      1 move: earthquake           delta=  0.112
+      0 move: body slam           Q= +0.234  Pwin=0.558
+      1 move: earthquake           Q= +0.112  Pwin=0.528
     ...
   chosen: move: body slam
 ```
@@ -206,7 +210,6 @@ uv run python -m metamon.jepa.play \
     --team_set SET                    # default: competitive (options: competitive, random, etc.)
     --server {localhost|showdown}     # default: localhost
     --password PASS                   # required for --server showdown
-    --heuristic {max-rank|max-self-state-delta|max-opponent-state-delta}  # default: max-rank
     --ladder                          # search ladder instead of waiting for challenges
     --quiet                           # suppress per-turn verbose output
     --verbose_blocks                  # print full tokenized blocks each turn

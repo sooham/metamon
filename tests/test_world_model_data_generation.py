@@ -6,7 +6,14 @@ import pytest
 import torch
 
 import scripts.generate_world_model_data as wm_data
-from metamon.jepa.model import PairedJEPAModel, compute_paired_losses
+from metamon.jepa.model import (
+    JEPAActionProjector,
+    JEPAActionValueHead,
+    JEPADecisionStateEncoder,
+    JEPAValueHead,
+    PairedJEPAModel,
+    compute_paired_losses,
+)
 
 from scripts.generate_world_model_data import (
     PairedBattle,
@@ -135,6 +142,10 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     np.testing.assert_array_equal(data["p1_battle_action_start"], np.array([0, 3], dtype=np.int64))
     np.testing.assert_array_equal(data["p2_battle_action_start"], np.array([0, 4], dtype=np.int64))
     np.testing.assert_array_equal(data["rank_valid"], np.array([True], dtype=bool))
+    assert data["p1_legal_actions"].shape[:2] == (3, 1)
+    assert data["p2_legal_actions"].shape[:2] == (4, 1)
+    np.testing.assert_array_equal(data["p1_chosen_legal_action_idx"], np.zeros(3, dtype=np.int16))
+    np.testing.assert_array_equal(data["p2_chosen_legal_action_idx"], np.zeros(4, dtype=np.int16))
 
     struct_ids = {
         "unknown": 99,
@@ -190,6 +201,9 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     assert batch["p1_state_T"].ndim == 4
     assert batch["p1_state_T"].shape[:2] == (2, 1)
     assert batch["p1_action"].shape[:2] == (2, 1)
+    assert batch["p1_legal_actions"].shape[:3] == (2, 1, 1)
+    assert batch["p1_legal_action_mask"].shape == (2, 1, 1)
+    assert batch["p1_chosen_legal_action_idx"].shape == (2, 1)
     assert batch["rank_valid"].shape == (2, 1)
 
     capped_dataset = PairedJEPADataset(
@@ -363,6 +377,74 @@ def test_action_canonicalization_uses_no_role_delimiters_and_fills_unknown():
     np.testing.assert_array_equal(combined, np.array([10, 11, 99, 12], dtype=np.int16))
 
 
+def test_legal_action_texts_use_only_acting_player_state():
+    state_text = """
+<bos>
+<conditions>
+noweather
+<you> cantera <end_you>
+<opponent> <end_opponent>
+<end_conditions>
+<begin_moves>
+<move> blizzard ice special <end_move>
+<move> recover normal status <end_move>
+<end_moves>
+<bench>
+<poke1>
+alakazam 1.00 psychic
+<end_poke1>
+<poke2>
+chansey 0.00 normal fnt
+<end_poke2>
+<end_bench>
+<eos>
+"""
+
+    legal, chosen_idx = wm_data._legal_action_texts_from_state(state_text, "move recover")
+
+    assert legal == ["move blizzard", "move recover", "switch alakazam"]
+    assert chosen_idx == 1
+
+    force_state = state_text.replace("<you> cantera <end_you>", "<you> forceswitch <end_you>")
+    legal, chosen_idx = wm_data._legal_action_texts_from_state(force_state, "move recover")
+
+    assert legal == ["switch alakazam", "move recover"]
+    assert chosen_idx == 1
+
+
+def test_decision_value_and_action_value_heads_preserve_rollout_shapes():
+    encoder = JEPADecisionStateEncoder(
+        latent_dim=4,
+        decision_dim=6,
+        hidden_dim=8,
+        n_layers=2,
+        dropout=0.0,
+    )
+    value_head = JEPAValueHead(decision_dim=6, hidden_dim=8, n_layers=2, dropout=0.0)
+    action_projector = JEPAActionProjector(
+        action_latent_dim=3,
+        decision_dim=6,
+        hidden_dim=8,
+        dropout=0.0,
+    )
+    q_head = JEPAActionValueHead(decision_dim=6, hidden_dim=8, n_layers=2, dropout=0.0)
+
+    self_state = torch.randn(2, 3, 4)
+    opp_mu = torch.randn(2, 3, 4)
+    opp_logvar = torch.randn(2, 3, 4)
+    legal_actions = torch.randn(2, 3, 5, 3)
+
+    decision_state = encoder(self_state, opp_mu, opp_logvar)
+    value_logits = value_head(decision_state)
+    action_state = action_projector(legal_actions)
+    q_logits = q_head(decision_state, action_state)
+
+    assert decision_state.shape == (2, 3, 6)
+    assert value_logits.shape == (2, 3)
+    assert action_state.shape == (2, 3, 5, 6)
+    assert q_logits.shape == (2, 3, 5)
+
+
 def test_compute_paired_losses_targets_predicted_opponent_actions():
     state = torch.zeros((1, 2))
     action = torch.zeros((1, 2))
@@ -500,17 +582,40 @@ def test_paired_jepa_forward_teacher_forces_actual_opponent_state_and_actions_fo
             ))
             return torch.zeros_like(current_state), torch.zeros_like(current_state)
 
+    class FakeDecisionStateEncoder:
+        def __call__(self, self_state, opponent_state_mu, opponent_state_logvar):
+            return self_state + opponent_state_mu * 0.0 + opponent_state_logvar * 0.0
+
+    class ZeroValueHead:
+        def __call__(self, decision_state):
+            return torch.zeros(decision_state.shape[:-1], device=decision_state.device)
+
+    class FakeActionProjector:
+        def __call__(self, action_latent):
+            return action_latent
+
+    class ZeroActionValueHead:
+        def __call__(self, decision_state, action_state):
+            return torch.zeros(action_state.shape[:-1], device=action_state.device)
+
     class ZeroRankHead:
         def __call__(self, self_state, opponent_state):
             return torch.zeros(self_state.shape[:-1], device=self_state.device)
 
     class FakeModel:
         training = False
+        _singleton_candidate_tokens = staticmethod(PairedJEPAModel._singleton_candidate_tokens)
+        _singleton_candidate_mask = staticmethod(PairedJEPAModel._singleton_candidate_mask)
+        _zero_chosen_indices = staticmethod(PairedJEPAModel._zero_chosen_indices)
 
         def __init__(self):
             self.opponent_belief_predictor = FakeBeliefPredictor()
             self.next_state_predictor = RecordingNextStatePredictor()
             self.rank_head = ZeroRankHead()
+            self.decision_state_encoder = FakeDecisionStateEncoder()
+            self.value_head = ZeroValueHead()
+            self.action_projector = FakeActionProjector()
+            self.action_value_head = ZeroActionValueHead()
 
         def encode_current_state(self, state_tokens, state_valid):
             return state_tokens.float()
@@ -527,6 +632,9 @@ def test_paired_jepa_forward_teacher_forces_actual_opponent_state_and_actions_fo
             return torch.zeros_like(state_tokens.float())
 
         def encode_action_tokens(self, action_tokens):
+            return action_tokens.float()
+
+        def encode_action_candidates(self, action_tokens, action_mask=None):
             return action_tokens.float()
 
         def reparameterize(self, mu, logvar, sample):
@@ -573,9 +681,12 @@ def test_paired_jepa_forward_teacher_forces_actual_opponent_state_and_actions_fo
     torch.testing.assert_close(p2_next_call[3], actual_p1_action)
 
 
-def test_compute_paired_losses_supports_gaussian_beliefs_and_rank():
+def test_compute_paired_losses_uses_value_q_and_policy_heads():
     state = torch.zeros((2, 2))
     action = torch.zeros((2, 2))
+    q_logits = torch.tensor([[0.0, 2.0], [2.0, 0.0]])
+    legal_mask = torch.ones((2, 2), dtype=torch.bool)
+    chosen_idx = torch.tensor([1, 0])
     outputs = {
         "enc_p1_T": state,
         "enc_p2_T": state,
@@ -605,31 +716,54 @@ def test_compute_paired_losses_supports_gaussian_beliefs_and_rank():
         "pred_p2_T1_logvar": state,
         "pred_p1_T1": state,
         "pred_p2_T1": state,
-        "rank_p1_teacher": torch.tensor([1.0, 0.0]),
-        "rank_p2_teacher": torch.tensor([0.0, 1.0]),
-        "rank_p1_belief": torch.tensor([1.0, 0.0]),
-        "rank_p2_belief": torch.tensor([0.0, 1.0]),
-        "rank_p1_next_belief": torch.tensor([1.0, 0.0]),
-        "rank_p2_next_belief": torch.tensor([0.0, 1.0]),
-        "p1_won": torch.tensor([True, False]),
+        "p1_value_logit": torch.zeros(2),
+        "p2_value_logit": torch.zeros(2),
+        "p1_q_logits": q_logits,
+        "p2_q_logits": q_logits,
+        "p1_legal_action_mask": legal_mask,
+        "p2_legal_action_mask": legal_mask,
+        "p1_chosen_legal_action_idx": chosen_idx,
+        "p2_chosen_legal_action_idx": chosen_idx,
+        "p1_won": torch.tensor([True, True]),
+        "p2_won": torch.tensor([False, False]),
+        "rank_valid": torch.tensor([True, True]),
     }
 
     loss, metrics = compute_paired_losses(
         outputs,
         lambda_sigreg=0.0,
-        lambda_opponent_state=1.0,
-        lambda_action=1.0,
-        lambda_next_state=1.0,
+        lambda_opponent_state=0.0,
+        lambda_action=0.0,
+        lambda_next_state=0.0,
         lambda_rank=1.0,
+        lambda_value=1.0,
+        lambda_q_value=1.0,
+        lambda_policy=1.0,
+        lambda_value_teacher=0.0,
+        lambda_q_teacher=0.0,
         sigreg_num_slices=1,
         sigreg_num_points=2,
     )
 
-    assert metrics["opponent_state_loss"] == pytest.approx(0.0)
-    assert metrics["action_loss"] == pytest.approx(0.0)
-    assert metrics["next_state_loss"] == pytest.approx(0.0)
-    assert metrics["rank_loss"] == pytest.approx(torch.nn.functional.softplus(torch.tensor(-1.0)).item())
-    assert loss.item() == pytest.approx(metrics["rank_loss"])
+    expected_value = torch.nn.functional.binary_cross_entropy_with_logits(
+        torch.zeros(2), torch.ones(2)
+    ).item() * 0.5 + torch.nn.functional.binary_cross_entropy_with_logits(
+        torch.zeros(2), torch.zeros(2)
+    ).item() * 0.5
+    expected_q = 0.5 * (
+        torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([2.0, 2.0]), torch.ones(2))
+        + torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([2.0, 2.0]), torch.zeros(2))
+    ).item()
+    expected_policy = torch.nn.functional.cross_entropy(
+        q_logits,
+        chosen_idx,
+    ).item()
+
+    assert metrics["rank_loss"] == pytest.approx(0.0)
+    assert metrics["value_loss"] == pytest.approx(expected_value)
+    assert metrics["q_value_loss"] == pytest.approx(expected_q)
+    assert metrics["policy_loss"] == pytest.approx(expected_policy)
+    assert loss.item() == pytest.approx(expected_value + expected_q + expected_policy)
 
 
 def test_compute_paired_losses_accepts_rollout_axis():
@@ -664,12 +798,14 @@ def test_compute_paired_losses_accepts_rollout_axis():
         "pred_p2_T1_logvar": state,
         "pred_p1_T1": state,
         "pred_p2_T1": state,
-        "rank_p1_teacher": torch.ones((2, 3)),
-        "rank_p2_teacher": torch.zeros((2, 3)),
-        "rank_p1_belief": torch.ones((2, 3)),
-        "rank_p2_belief": torch.zeros((2, 3)),
-        "rank_p1_next_belief": torch.ones((2, 3)),
-        "rank_p2_next_belief": torch.zeros((2, 3)),
+        "p1_value_logit": torch.zeros((2, 3)),
+        "p2_value_logit": torch.zeros((2, 3)),
+        "p1_q_logits": torch.zeros((2, 3, 2)),
+        "p2_q_logits": torch.zeros((2, 3, 2)),
+        "p1_legal_action_mask": torch.ones((2, 3, 2), dtype=torch.bool),
+        "p2_legal_action_mask": torch.ones((2, 3, 2), dtype=torch.bool),
+        "p1_chosen_legal_action_idx": torch.zeros((2, 3), dtype=torch.long),
+        "p2_chosen_legal_action_idx": torch.zeros((2, 3), dtype=torch.long),
         "p1_won": torch.ones((2, 3), dtype=torch.bool),
         "p2_won": torch.zeros((2, 3), dtype=torch.bool),
         "rank_valid": torch.ones((2, 3), dtype=torch.bool),
@@ -682,6 +818,11 @@ def test_compute_paired_losses_accepts_rollout_axis():
         lambda_action=1.0,
         lambda_next_state=1.0,
         lambda_rank=1.0,
+        lambda_value=1.0,
+        lambda_q_value=1.0,
+        lambda_policy=1.0,
+        lambda_value_teacher=0.0,
+        lambda_q_teacher=0.0,
         sigreg_num_slices=1,
         sigreg_num_points=2,
     )
@@ -690,10 +831,12 @@ def test_compute_paired_losses_accepts_rollout_axis():
     assert metrics["action_loss"] == pytest.approx(0.0)
     assert metrics["next_state_loss"] == pytest.approx(0.0)
     assert metrics["rank_valid"] == pytest.approx(1.0)
+    assert metrics["rank_loss"] == pytest.approx(0.0)
+    assert metrics["value_loss"] == pytest.approx(torch.nn.functional.softplus(torch.tensor(0.0)).item())
     assert torch.isfinite(loss)
 
 
-def test_compute_paired_losses_ignores_rank_invalid_ties():
+def test_compute_paired_losses_ignores_invalid_outcomes_for_value_q_policy():
     state = torch.zeros((2, 2))
     action = torch.zeros((2, 2))
     outputs = {
@@ -725,12 +868,14 @@ def test_compute_paired_losses_ignores_rank_invalid_ties():
         "pred_p2_T1_logvar": state,
         "pred_p1_T1": state,
         "pred_p2_T1": state,
-        "rank_p1_teacher": torch.tensor([1.0, -10.0]),
-        "rank_p2_teacher": torch.tensor([0.0, 10.0]),
-        "rank_p1_belief": torch.tensor([1.0, -10.0]),
-        "rank_p2_belief": torch.tensor([0.0, 10.0]),
-        "rank_p1_next_belief": torch.tensor([1.0, -10.0]),
-        "rank_p2_next_belief": torch.tensor([0.0, 10.0]),
+        "p1_value_logit": torch.tensor([1.0, -10.0]),
+        "p2_value_logit": torch.tensor([0.0, 10.0]),
+        "p1_q_logits": torch.tensor([[1.0, 0.0], [-10.0, 10.0]]),
+        "p2_q_logits": torch.tensor([[0.0, 1.0], [10.0, -10.0]]),
+        "p1_legal_action_mask": torch.ones((2, 2), dtype=torch.bool),
+        "p2_legal_action_mask": torch.ones((2, 2), dtype=torch.bool),
+        "p1_chosen_legal_action_idx": torch.zeros(2, dtype=torch.long),
+        "p2_chosen_legal_action_idx": torch.zeros(2, dtype=torch.long),
         "p1_won": torch.tensor([True, False]),
         "p2_won": torch.tensor([False, False]),
         "rank_valid": torch.tensor([True, False]),
@@ -743,11 +888,30 @@ def test_compute_paired_losses_ignores_rank_invalid_ties():
         lambda_action=0.0,
         lambda_next_state=0.0,
         lambda_rank=1.0,
+        lambda_value=1.0,
+        lambda_q_value=1.0,
+        lambda_policy=1.0,
+        lambda_value_teacher=0.0,
+        lambda_q_teacher=0.0,
         sigreg_num_slices=1,
         sigreg_num_points=2,
     )
 
-    expected = torch.nn.functional.softplus(torch.tensor(-1.0)).item()
-    assert metrics["rank_loss"] == pytest.approx(expected)
+    expected_value = 0.5 * (
+        torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([1.0]), torch.tensor([1.0]))
+        + torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([0.0]), torch.tensor([0.0]))
+    ).item()
+    expected_q = 0.5 * (
+        torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([1.0]), torch.tensor([1.0]))
+        + torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([0.0]), torch.tensor([0.0]))
+    ).item()
+    expected_policy = 0.5 * (
+        torch.nn.functional.cross_entropy(torch.tensor([[1.0, 0.0]]), torch.tensor([0]))
+        + torch.nn.functional.cross_entropy(torch.tensor([[0.0, 1.0]]), torch.tensor([0]))
+    ).item()
+    assert metrics["rank_loss"] == pytest.approx(0.0)
     assert metrics["rank_valid"] == pytest.approx(0.5)
-    assert loss.item() == pytest.approx(expected)
+    assert metrics["value_loss"] == pytest.approx(expected_value)
+    assert metrics["q_value_loss"] == pytest.approx(expected_q)
+    assert metrics["policy_loss"] == pytest.approx(expected_policy)
+    assert loss.item() == pytest.approx(expected_value + expected_q + expected_policy)

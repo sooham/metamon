@@ -56,12 +56,40 @@ model:
     hidden_dim: null
     n_layers: 2
 
+  decision_state_encoder:
+    decision_dim: 384
+    hidden_dim: null
+    n_layers: 3
+    dropout: 0.1
+
+  value_head:
+    hidden_dim: null
+    n_layers: 2
+    dropout: 0.1
+
+  action_projector:
+    hidden_dim: null
+    dropout: 0.1
+
+  action_value_head:
+    hidden_dim: null
+    n_layers: 2
+    dropout: 0.1
+
   rank_head:
     hidden_dim: null
     n_layers: 2
 
   lambda_sigreg: 0.05
-  lambda_rank: 1.0
+  lambda_value: 1.0
+  lambda_q_value: 1.0
+  lambda_policy: 1.0
+  lambda_value_teacher: 0.25
+  lambda_q_teacher: 0.25
+  advantage_temperature: null
+  advantage_weight_min: 0.1
+  advantage_weight_max: 10.0
+  lambda_rank: 0.0
 
   sigreg_num_slices: 128
   sigreg_num_points: 17

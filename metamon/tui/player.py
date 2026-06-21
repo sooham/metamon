@@ -60,7 +60,7 @@ class TurnContext:
     active_hp: str
     opponent_species: str
     opponent_hp: str
-    heuristic: str
+    scorer: str
     forced_switch: bool = False
     num_state_blocks: int = 0
     num_player_actions: int = 0
@@ -463,7 +463,7 @@ class TuiMixin:
             diag = hist.turn_diagnostics[t_idx]
             marker = ">>>" if t_idx == sel else "   "
             line = (f"  {marker} turn {ctx.turn} ({ctx.battle_tag})"
-                    f" [{ctx.heuristic}] — {diag.chosen_label}")
+                    f" [{ctx.scorer}] — {diag.chosen_label}")
             if t_idx == sel:
                 print(f"{sel_bg}{line}{nc}")
             else:
@@ -473,7 +473,7 @@ class TuiMixin:
         ctx = hist.turn_contexts[sel]
         diag = hist.turn_diagnostics[sel]
 
-        print(f"\n  ── turn {ctx.turn} ({ctx.battle_tag}) [{ctx.heuristic}] ──")
+        print(f"\n  ── turn {ctx.turn} ({ctx.battle_tag}) [{ctx.scorer}] ──")
         print(f"    vs: {ctx.opponent_name}")
         print(f"    active: {ctx.active_species} hp={ctx.active_hp}")
         print(f"    opponent: {ctx.opponent_species} hp={ctx.opponent_hp}")

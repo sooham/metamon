@@ -283,7 +283,17 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
             sv = PairedJEPADataset._slice_view
             ssv = PairedJEPADataset._slice_state_window
 
-            sample: dict[str, list] = {key: [] for key in (*BLOCK_KEYS, *ACTION_KEYS, *SCALAR_KEYS)}
+            sample: dict[str, list] = {
+                key: []
+                for key in (
+                    *BLOCK_KEYS,
+                    *ACTION_KEYS,
+                    *LEGAL_ACTION_KEYS,
+                    *LEGAL_MASK_KEYS,
+                    *LEGAL_INDEX_KEYS,
+                    *SCALAR_KEYS,
+                )
+            }
             p1_won = bool(data["p1_won"][battle_id])
             p2_won = bool(data["p2_won"][battle_id])
             rank_valid = (
@@ -321,6 +331,22 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
                 sample["p2_action"].append(sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_ai, p2_ai + 1)[0])
                 sample["actual_p2_action_from_p1_perspective"].append(sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_ai, p1_ai + 1)[0])
                 sample["actual_p1_action_from_p2_perspective"].append(sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_ai, p2_ai + 1)[0])
+                if "p1_legal_actions" in data:
+                    sample["p1_legal_actions"].append(data["p1_legal_actions"][p1_ai])
+                    sample["p1_legal_action_mask"].append(data["p1_legal_action_mask"][p1_ai])
+                    sample["p1_chosen_legal_action_idx"].append(int(data["p1_chosen_legal_action_idx"][p1_ai]))
+                else:
+                    sample["p1_legal_actions"].append(sample["p1_action"][-1][None, :])
+                    sample["p1_legal_action_mask"].append(np.array([True], dtype=bool))
+                    sample["p1_chosen_legal_action_idx"].append(0)
+                if "p2_legal_actions" in data:
+                    sample["p2_legal_actions"].append(data["p2_legal_actions"][p2_ai])
+                    sample["p2_legal_action_mask"].append(data["p2_legal_action_mask"][p2_ai])
+                    sample["p2_chosen_legal_action_idx"].append(int(data["p2_chosen_legal_action_idx"][p2_ai]))
+                else:
+                    sample["p2_legal_actions"].append(sample["p2_action"][-1][None, :])
+                    sample["p2_legal_action_mask"].append(np.array([True], dtype=bool))
+                    sample["p2_chosen_legal_action_idx"].append(0)
                 sample["p1_won"].append(p1_won)
                 sample["p2_won"].append(p2_won)
                 sample["rank_valid"].append(rank_valid)
@@ -364,6 +390,18 @@ ACTION_KEYS = (
     "p2_action",
     "actual_p2_action_from_p1_perspective",
     "actual_p1_action_from_p2_perspective",
+)
+LEGAL_ACTION_KEYS = (
+    "p1_legal_actions",
+    "p2_legal_actions",
+)
+LEGAL_MASK_KEYS = (
+    "p1_legal_action_mask",
+    "p2_legal_action_mask",
+)
+LEGAL_INDEX_KEYS = (
+    "p1_chosen_legal_action_idx",
+    "p2_chosen_legal_action_idx",
 )
 SCALAR_KEYS = (
     "p1_won",
@@ -421,6 +459,39 @@ def collate_paired_fn(
                 padded[batch_idx, step_idx, :len(tokens)] = tokens
         return padded
 
+    def pad_legal_action_rollouts(
+        actions: list[list[np.ndarray]],
+        masks: list[list[np.ndarray]],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        max_candidates = max(
+            (legal.shape[0] for rollout in actions for legal in rollout),
+            default=1,
+        )
+        max_tokens = max(
+            (legal.shape[1] for rollout in actions for legal in rollout),
+            default=1,
+        )
+        padded = torch.full(
+            (len(actions), rollout_len, max_candidates, max_tokens),
+            pad_id,
+            dtype=torch.long,
+        )
+        out_mask = torch.zeros(
+            (len(actions), rollout_len, max_candidates),
+            dtype=torch.bool,
+        )
+        for batch_idx, (rollout, rollout_masks) in enumerate(zip(actions, masks)):
+            for step_idx, (legal, legal_mask) in enumerate(zip(rollout, rollout_masks)):
+                candidate_count = int(legal.shape[0])
+                token_count = int(legal.shape[1]) if legal.ndim == 2 else 0
+                if candidate_count <= 0 or token_count <= 0:
+                    continue
+                tokens = torch.from_numpy(legal.astype(np.int64, copy=False))
+                mask = torch.from_numpy(legal_mask.astype(bool, copy=False))
+                padded[batch_idx, step_idx, :candidate_count, :token_count] = tokens
+                out_mask[batch_idx, step_idx, :candidate_count] = mask[:candidate_count]
+        return padded, out_mask
+
     out: dict[str, torch.Tensor] = {}
     for key in BLOCK_KEYS:
         blocks, valid = pad_block_rollouts([item[key] for item in batch])  # type: ignore[index]
@@ -428,6 +499,15 @@ def collate_paired_fn(
         out[f"{key}_valid"] = valid
     for key in ACTION_KEYS:
         out[key] = pad_action_rollouts([item[key] for item in batch])  # type: ignore[index]
+    for action_key, mask_key in zip(LEGAL_ACTION_KEYS, LEGAL_MASK_KEYS):
+        legal, mask = pad_legal_action_rollouts(
+            [item[action_key] for item in batch],  # type: ignore[index]
+            [item[mask_key] for item in batch],  # type: ignore[index]
+        )
+        out[action_key] = legal
+        out[mask_key] = mask
+    for key in LEGAL_INDEX_KEYS:
+        out[key] = torch.tensor([item[key] for item in batch], dtype=torch.long)
     for key in SCALAR_KEYS:
         out[key] = torch.tensor([item[key] for item in batch], dtype=torch.bool)
     return out
@@ -521,7 +601,7 @@ def _paired_outcome_stats(shard_paths: list[str]) -> dict[str, int]:
     return stats
 
 
-def _validate_paired_outcomes_for_rank(shard_paths: list[str], lambda_rank: float) -> dict[str, int]:
+def _validate_paired_outcomes(shard_paths: list[str], outcome_loss_weight: float) -> dict[str, int]:
     stats = _paired_outcome_stats(shard_paths)
     if stats["battles"] <= 0:
         return stats
@@ -531,21 +611,22 @@ def _validate_paired_outcomes_for_rank(shard_paths: list[str], lambda_rank: floa
         f"battles={stats['battles']:,} "
         f"p1_won={stats['p1_won']:,} "
         f"p2_won={stats['p2_won']:,} "
-        f"rank_valid={stats['rank_valid']:,} "
+        f"outcome_valid={stats['rank_valid']:,} "
         f"both_lost={stats['both_lost']:,} "
         f"both_won={stats['both_won']:,}"
     )
     invalid_fraction = invalid / max(stats["battles"], 1)
-    if lambda_rank > 0 and stats["missing"] > 0:
+    if outcome_loss_weight > 0 and stats["missing"] > 0:
         raise RuntimeError(
-            "Paired JEPA shards are missing p1_won/p2_won labels for rank training. "
+            "Paired JEPA shards are missing p1_won/p2_won labels for value/Q training. "
             "Regenerate paired shards with the patched scripts/generate_world_model_data.py, "
-            "or temporarily train without ranking via --lambda_rank 0."
+            "or temporarily disable outcome heads via --lambda_value 0 --lambda_q_value 0 "
+            "--lambda_policy 0 --lambda_value_teacher 0 --lambda_q_teacher 0."
         )
     if invalid > 0:
         print(
-            "WARNING: Some paired outcome labels are invalid for ranking "
-            f"({invalid_fraction:.2%}); these battles will be ignored by rank loss."
+            "WARNING: Some paired outcome labels are invalid for value/Q supervision "
+            f"({invalid_fraction:.2%}); these battles will be ignored by outcome losses."
         )
     return stats
 
@@ -568,6 +649,12 @@ def _forward_paired(model: PairedJEPAModel, batch: dict[str, torch.Tensor]) -> d
         batch["p2_action"],
         batch["actual_p2_action_from_p1_perspective"],
         batch["actual_p1_action_from_p2_perspective"],
+        batch["p1_legal_actions"],
+        batch["p1_legal_action_mask"],
+        batch["p1_chosen_legal_action_idx"],
+        batch["p2_legal_actions"],
+        batch["p2_legal_action_mask"],
+        batch["p2_chosen_legal_action_idx"],
     )
     outputs["p1_won"] = batch["p1_won"]
     outputs["p2_won"] = batch["p2_won"]
@@ -639,9 +726,30 @@ def train(args: argparse.Namespace) -> None:
         lambda_sigreg_action = model_cfg.get("lambda_sigreg_action")
         if lambda_sigreg_action is None:
             lambda_sigreg_action = lambda_sigreg  # backward-compat fallback
-    lambda_rank = args.lambda_rank
-    if lambda_rank is None:
-        lambda_rank = model_cfg.get("lambda_rank", 1.0)
+    config_lambda_rank = model_cfg.get("lambda_rank", 0.0)
+    if args.lambda_rank is not None or float(config_lambda_rank or 0.0) != 0.0:
+        print("WARNING: lambda_rank is deprecated and ignored; actor-critic value/Q losses are used instead.")
+    lambda_rank = 0.0
+    lambda_value = args.lambda_value
+    if lambda_value is None:
+        lambda_value = model_cfg.get("lambda_value", 1.0)
+    lambda_q_value = args.lambda_q_value
+    if lambda_q_value is None:
+        lambda_q_value = model_cfg.get("lambda_q_value", 1.0)
+    lambda_policy = args.lambda_policy
+    if lambda_policy is None:
+        lambda_policy = model_cfg.get("lambda_policy", 1.0)
+    lambda_value_teacher = args.lambda_value_teacher
+    if lambda_value_teacher is None:
+        lambda_value_teacher = model_cfg.get("lambda_value_teacher", 0.25)
+    lambda_q_teacher = args.lambda_q_teacher
+    if lambda_q_teacher is None:
+        lambda_q_teacher = model_cfg.get("lambda_q_teacher", 0.25)
+    advantage_temperature = args.advantage_temperature
+    if advantage_temperature is None:
+        advantage_temperature = model_cfg.get("advantage_temperature", None)
+    advantage_weight_min = model_cfg.get("advantage_weight_min", 0.1)
+    advantage_weight_max = model_cfg.get("advantage_weight_max", 10.0)
     sigreg_num_slices = model_cfg.get("sigreg_num_slices", SIGREG_NUM_SLICES)
     sigreg_num_points = model_cfg.get("sigreg_num_points", SIGREG_NUM_POINTS)
     sigreg_domain = model_cfg.get("sigreg_domain", SIGREG_DOMAIN)
@@ -694,7 +802,14 @@ def train(args: argparse.Namespace) -> None:
     val_shards = PairedJEPADataset.discover(
         args.data_root, args.formats, "val", required=False
     )
-    _validate_paired_outcomes_for_rank(train_shards, float(lambda_rank))
+    outcome_loss_weight = (
+        float(lambda_value)
+        + float(lambda_q_value)
+        + float(lambda_policy)
+        + float(lambda_value_teacher)
+        + float(lambda_q_teacher)
+    )
+    _validate_paired_outcomes(train_shards, outcome_loss_weight)
     train_dataset = PairedJEPADataset(
         train_shards, structural_ids, shuffle_shards=True,
         max_history_blocks=args.max_history_blocks,
@@ -739,6 +854,10 @@ def train(args: argparse.Namespace) -> None:
         ),
         next_state_predictor_cfg=model_cfg.get("next_state_predictor", {}),
         rank_head_cfg=model_cfg.get("rank_head", {}),
+        decision_state_encoder_cfg=model_cfg.get("decision_state_encoder", {}),
+        value_head_cfg=model_cfg.get("value_head", {}),
+        action_projector_cfg=model_cfg.get("action_projector", {}),
+        action_value_head_cfg=model_cfg.get("action_value_head", {}),
     ).to(device)
 
     if device.type == "cuda":
@@ -833,7 +952,12 @@ def train(args: argparse.Namespace) -> None:
                 "lambda_opponent_state": args.lambda_opponent_state,
                 "lambda_action": args.lambda_action,
                 "lambda_next_state": args.lambda_next_state,
-                "lambda_rank": lambda_rank,
+                "lambda_value": lambda_value,
+                "lambda_q_value": lambda_q_value,
+                "lambda_policy": lambda_policy,
+                "lambda_value_teacher": lambda_value_teacher,
+                "lambda_q_teacher": lambda_q_teacher,
+                "advantage_temperature": advantage_temperature,
                 "checkpoint": args.checkpoint,
             },
         )
@@ -849,6 +973,14 @@ def train(args: argparse.Namespace) -> None:
             lambda_action=args.lambda_action,
             lambda_next_state=args.lambda_next_state,
             lambda_rank=lambda_rank,
+            lambda_value=lambda_value,
+            lambda_q_value=lambda_q_value,
+            lambda_policy=lambda_policy,
+            lambda_value_teacher=lambda_value_teacher,
+            lambda_q_teacher=lambda_q_teacher,
+            advantage_temperature=advantage_temperature,
+            advantage_weight_min=advantage_weight_min,
+            advantage_weight_max=advantage_weight_max,
             sigreg_num_slices=sigreg_num_slices,
             sigreg_num_points=sigreg_num_points,
             sigreg_domain=sigreg_domain,
@@ -921,7 +1053,8 @@ def train(args: argparse.Namespace) -> None:
             batch_tokens = 0
             for key in ("p1_state_T", "p2_state_T", "p1_state_T1", "p2_state_T1",
                         "p1_action", "p2_action", "actual_p2_action_from_p1_perspective",
-                        "actual_p1_action_from_p2_perspective"):
+                        "actual_p1_action_from_p2_perspective",
+                        "p1_legal_actions", "p2_legal_actions"):
                 batch_tokens += int((batch[key] != pad_id).sum().item())
             tokens_since_print += batch_tokens
             tokens_since_wandb += batch_tokens
@@ -945,10 +1078,11 @@ def train(args: argparse.Namespace) -> None:
                     "train/next_state_loss": metrics["next_state_loss"],
                     "train/next_state_loss_p1": metrics["next_state_loss_p1"],
                     "train/next_state_loss_p2": metrics["next_state_loss_p2"],
-                    "train/rank_loss": metrics["rank_loss"],
-                    "train/rank_loss_teacher": metrics["rank_loss_teacher"],
-                    "train/rank_loss_belief": metrics["rank_loss_belief"],
-                    "train/rank_loss_next": metrics["rank_loss_next"],
+                    "train/value_loss": metrics["value_loss"],
+                    "train/q_value_loss": metrics["q_value_loss"],
+                    "train/policy_loss": metrics["policy_loss"],
+                    "train/value_teacher_loss": metrics["value_teacher_loss"],
+                    "train/q_teacher_loss": metrics["q_teacher_loss"],
                     "train/sigreg_loss": metrics["sigreg_loss"],
                     "train/sigreg_state_loss": metrics["sigreg_state_loss"],
                     "train/sigreg_action_loss": metrics["sigreg_action_loss"],
@@ -984,10 +1118,10 @@ def train(args: argparse.Namespace) -> None:
                     f"next {metrics['next_state_loss']:.4f} "
                     f"[p1 {metrics['next_state_loss_p1']:.4f}, "
                     f"p2 {metrics['next_state_loss_p2']:.4f}] | "
-                    f"rank {metrics['rank_loss']:.4f} "
-                    f"[teacher {metrics['rank_loss_teacher']:.4f}, "
-                    f"belief {metrics['rank_loss_belief']:.4f}, "
-                    f"next {metrics['rank_loss_next']:.4f}] | "
+                    f"value {metrics['value_loss']:.4f} | "
+                    f"q {metrics['q_value_loss']:.4f} | "
+                    f"policy {metrics['policy_loss']:.4f} | "
+                    f"teacher {metrics['value_teacher_loss']:.4f}/{metrics['q_teacher_loss']:.4f} | "
                     f"sigreg_state {metrics['sigreg_state_loss']:.4f} "
                     f"[cur {metrics['sigreg_current']:.4f}, "
                     f"next {metrics['sigreg_next_true']:.4f}, "
@@ -1007,7 +1141,9 @@ def train(args: argparse.Namespace) -> None:
                         f"opp_state {val_metrics['val_opponent_state_loss']:.4f} | "
                         f"action {val_metrics['val_action_loss']:.4f} | "
                         f"next {val_metrics['val_next_state_loss']:.4f} | "
-                        f"rank {val_metrics.get('val_rank_loss', 0.0):.4f} | "
+                        f"value {val_metrics.get('val_value_loss', 0.0):.4f} | "
+                        f"q {val_metrics.get('val_q_value_loss', 0.0):.4f} | "
+                        f"policy {val_metrics.get('val_policy_loss', 0.0):.4f} | "
                         f"sigreg_state {val_metrics.get('val_sigreg_state_loss', 0.0):.4f} | "
                         f"sigreg_action {val_metrics.get('val_sigreg_action_loss', 0.0):.4f}"
                     )
@@ -1017,7 +1153,9 @@ def train(args: argparse.Namespace) -> None:
                             "val/opponent_state_loss": val_metrics["val_opponent_state_loss"],
                             "val/action_loss": val_metrics["val_action_loss"],
                             "val/next_state_loss": val_metrics["val_next_state_loss"],
-                            "val/rank_loss": val_metrics.get("val_rank_loss", 0.0),
+                            "val/value_loss": val_metrics.get("val_value_loss", 0.0),
+                            "val/q_value_loss": val_metrics.get("val_q_value_loss", 0.0),
+                            "val/policy_loss": val_metrics.get("val_policy_loss", 0.0),
                             "val/sigreg_loss": val_metrics.get("val_sigreg_loss", 0.0),
                             "val/sigreg_state_loss": val_metrics.get("val_sigreg_state_loss", 0.0),
                             "val/sigreg_action_loss": val_metrics.get("val_sigreg_action_loss", 0.0),
@@ -1055,7 +1193,9 @@ def train(args: argparse.Namespace) -> None:
             f"opp_state {avg.get('opponent_state_loss', 0.0):.4f} | "
             f"action {avg.get('action_loss', 0.0):.4f} | "
             f"next {avg.get('next_state_loss', 0.0):.4f} | "
-            f"rank {avg.get('rank_loss', 0.0):.4f} | "
+            f"value {avg.get('value_loss', 0.0):.4f} | "
+            f"q {avg.get('q_value_loss', 0.0):.4f} | "
+            f"policy {avg.get('policy_loss', 0.0):.4f} | "
             f"sigreg_state {avg.get('sigreg_state_loss', 0.0):.4f} | "
             f"sigreg_action {avg.get('sigreg_action_loss', 0.0):.4f}"
         )
@@ -1073,14 +1213,18 @@ def train(args: argparse.Namespace) -> None:
                 "epoch/train_opponent_state_loss": avg.get("opponent_state_loss", 0.0),
                 "epoch/train_action_loss": avg.get("action_loss", 0.0),
                 "epoch/train_next_state_loss": avg.get("next_state_loss", 0.0),
-                "epoch/train_rank_loss": avg.get("rank_loss", 0.0),
+                "epoch/train_value_loss": avg.get("value_loss", 0.0),
+                "epoch/train_q_value_loss": avg.get("q_value_loss", 0.0),
+                "epoch/train_policy_loss": avg.get("policy_loss", 0.0),
                 "epoch/train_sigreg_state_loss": avg.get("sigreg_state_loss", 0.0),
                 "epoch/train_sigreg_action_loss": avg.get("sigreg_action_loss", 0.0),
                 "epoch/val_loss": val_metrics.get("val_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_opponent_state_loss": val_metrics.get("val_opponent_state_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_action_loss": val_metrics.get("val_action_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_next_state_loss": val_metrics.get("val_next_state_loss", 0.0) if val_metrics else 0.0,
-                "epoch/val_rank_loss": val_metrics.get("val_rank_loss", 0.0) if val_metrics else 0.0,
+                "epoch/val_value_loss": val_metrics.get("val_value_loss", 0.0) if val_metrics else 0.0,
+                "epoch/val_q_value_loss": val_metrics.get("val_q_value_loss", 0.0) if val_metrics else 0.0,
+                "epoch/val_policy_loss": val_metrics.get("val_policy_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_sigreg_loss": val_metrics.get("val_sigreg_loss", 0.0) if val_metrics else 0.0,
                 "epoch": epoch,
                 "samples_seen": args.batch_size * global_step,
@@ -1146,7 +1290,15 @@ if __name__ == "__main__":
     parser.add_argument("--lambda_opponent_state", type=float, default=1.0)
     parser.add_argument("--lambda_action", type=float, default=1.0)
     parser.add_argument("--lambda_next_state", type=float, default=1.0)
-    parser.add_argument("--lambda_rank", type=float, default=None)
+    parser.add_argument("--lambda_rank", type=float, default=None,
+                        help="Deprecated/no-op: ranking loss has been replaced by value/Q losses.")
+    parser.add_argument("--lambda_value", type=float, default=None)
+    parser.add_argument("--lambda_q_value", type=float, default=None)
+    parser.add_argument("--lambda_policy", type=float, default=None)
+    parser.add_argument("--lambda_value_teacher", type=float, default=None)
+    parser.add_argument("--lambda_q_teacher", type=float, default=None)
+    parser.add_argument("--advantage_temperature", type=float, default=None,
+                        help="Optional advantage-weighting temperature for Q/policy losses. Disabled when unset.")
     parser.add_argument("--print_interval", type=int, default=10)
     parser.add_argument("--log_interval", type=int, default=0,
                         help="Log every N training steps to wandb (0 = same as print_interval).")

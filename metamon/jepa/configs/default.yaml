@@ -73,7 +73,28 @@ model:
     hidden_dim: 512       # 2.7× latent_dim
     n_layers: 4
 
-  # ── Pairwise ranking head — RankHead(z_self, z_opp) → scalar advantage ──
+  # ── Decision heads — actor-critic offline outcome supervision ─────
+  decision_state_encoder:
+    decision_dim: 384
+    hidden_dim: 768
+    n_layers: 4
+    dropout: 0.1
+
+  value_head:
+    hidden_dim: 384
+    n_layers: 3
+    dropout: 0.1
+
+  action_projector:
+    hidden_dim: 384
+    dropout: 0.1
+
+  action_value_head:
+    hidden_dim: 768
+    n_layers: 3
+    dropout: 0.1
+
+  # Deprecated compatibility module. Active training uses V/Q heads above.
   rank_head:
     hidden_dim: 512       # 2.7× latent_dim
     n_layers: 4
@@ -90,7 +111,16 @@ model:
   # Deprecated — kept for backward compat.  If lambda_sigreg_state or
   # lambda_sigreg_action are unset, they fall back to this value.
   lambda_sigreg: 0.1
-  lambda_rank: 1.0
+  lambda_value: 1.0
+  lambda_q_value: 1.0
+  lambda_policy: 1.0
+  lambda_value_teacher: 0.25
+  lambda_q_teacher: 0.25
+  advantage_temperature: null
+  advantage_weight_min: 0.1
+  advantage_weight_max: 10.0
+  # Deprecated/no-op — accepted by train_paired.py with a warning.
+  lambda_rank: 0.0
 
   # ── SIGReg hyperparameters ────────────────────────────────────────
   sigreg_num_slices: 128
