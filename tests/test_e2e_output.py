@@ -186,14 +186,30 @@ class TestE2EOutput:
     # -- HP values -----------------------------------------------------------
 
     def test_hp_values_are_fixed_point(self, parsed_texts):
-        """HP values appear in X.XX format."""
+        """HP percentage values appear in X.XX format within [0.00, 1.00]."""
         for text in parsed_texts:
+            # Match HP percentage tokens: X.XX bounded by whitespace or tags
             hp_pattern = re.compile(r'\b\d\.\d{2}\b')
             matches = hp_pattern.findall(text)
-            assert len(matches) > 0, "No HP values found"
+            assert len(matches) > 0, "No HP percentage values found"
             for hp in matches:
                 val = float(hp)
-                assert 0.0 <= val <= 1.0, f"HP {hp} out of range [0.00, 1.00]"
+                assert 0.0 <= val <= 1.0, f"HP percentage {hp} out of range [0.00, 1.00]"
+
+    def test_full_hp_values_present(self, parsed_texts):
+        """Arena and bench entries include raw current_hp and max_hp integers."""
+        for text in parsed_texts:
+            # Find active/opponent/bench lines that contain HP triples
+            # Pattern: species 0.XX NNN NNN ... (percentage + two integers)
+            hp_triple = re.compile(
+                r'\b\d\.\d{2}\s+(\d+)\s+(\d+)\b'
+            )
+            matches = hp_triple.findall(text)
+            assert len(matches) > 0, "No full HP triples (pct cur max) found in text"
+            for cur_str, max_str in matches:
+                cur = int(cur_str)
+                max_hp = int(max_str)
+                assert cur <= max_hp, f"current_hp {cur} > max_hp {max_hp}"
 
     # -- Status tokens -------------------------------------------------------
 

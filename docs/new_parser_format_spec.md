@@ -79,7 +79,7 @@ canonical (cleaned) species name, matching `consistent_pokemon_order()`.
 
 ```
 <pokeN>
-<species> <type1> <type2> [<item>] [<ability>] [<gender>]
+<species> <max_hp> <type1> <type2> [<item>] [<ability>] [<gender>]
 <begin_moves>
 <move>move1<end_move>
 <move>move2<end_move>
@@ -92,6 +92,7 @@ canonical (cleaned) species name, matching `consistent_pokemon_order()`.
 | Field | Gen 1 | Gen 2 | Gen 3+ | Notes |
 |-------|-------|-------|--------|-------|
 | `species` | ✓ | ✓ | ✓ | canonical dex name |
+| `max_hp` | ✓ | ✓ | ✓ | integer, e.g. `313`; the Pokémon's maximum HP, after species before types |
 | `type1` | ✓ | ✓ | ✓ | e.g. `water` |
 | `type2` | ✓ | ✓ | ✓ | omitted if single-typed |
 | `item` | ✗ | ✓ | ✓ | e.g. `leftovers`; omitted in Gen 1 |
@@ -106,7 +107,7 @@ appear in the per-state `<begin_moves>` blocks).
 ```
 <begin_team>
 <poke1>
-alakazam psychic
+alakazam 313 psychic
 <begin_moves>
 <move>psychic<end_move>
 <move>recover<end_move>
@@ -115,7 +116,7 @@ alakazam psychic
 <end_moves>
 <end_poke1>
 <poke2>
-chansey normal
+chansey 703 normal
 <begin_moves>
 <move>counter<end_move>
 <move>icebeam<end_move>
@@ -124,7 +125,7 @@ chansey normal
 <end_moves>
 <end_poke2>
 <poke3>
-jinx ice psychic
+jinx 333 ice psychic
 <begin_moves>
 <move>blizzard<end_move>
 <move>bodyslam<end_move>
@@ -133,7 +134,7 @@ jinx ice psychic
 <end_moves>
 <end_poke3>
 <poke4>
-snorlax normal
+snorlax 523 normal
 <begin_moves>
 <move>bodyslam<end_move>
 <move>hyperbeam<end_move>
@@ -142,7 +143,7 @@ snorlax normal
 <end_moves>
 <end_poke4>
 <poke5>
-starmie psychic water
+starmie 323 psychic water
 <begin_moves>
 <move>psychic<end_move>
 <move>recover<end_move>
@@ -151,7 +152,7 @@ starmie psychic water
 <end_moves>
 <end_poke5>
 <poke6>
-tauros normal
+tauros 353 normal
 <begin_moves>
 <move>blizzard<end_move>
 <move>bodyslam<end_move>
@@ -166,7 +167,7 @@ tauros normal
 ```
 <begin_team>
 <poke1>
-gholdengo steel ghost leftovers goodasgold N
+gholdengo 324 steel ghost leftovers goodasgold N
 <begin_moves>
 <move>focusblast<end_move>
 <move>makeitrain<end_move>
@@ -175,7 +176,7 @@ gholdengo steel ghost leftovers goodasgold N
 <end_moves>
 <end_poke1>
 <poke2>
-greattusk ground fighting heavy-dutyboots protosynthesis M
+greattusk 345 ground fighting heavy-dutyboots protosynthesis M
 <begin_moves>
 <move>earthquake<end_move>
 <move>headlongrush<end_move>
@@ -371,6 +372,8 @@ OR
 |----------|---------|----------|-------|
 | `species` | Canonical dex name | `snorlax`, `rotom-wash` | For Transform: `ditto snorlax` (actual-species transformed-species); for Zoroark from own POV: real species shown |
 | `hp` | Fixed-point `X.XX` | `1.00`, `0.63`, `0.00` | Two decimals always. `unknown` only before first sighting (edge case). |
+| `current_hp` | Integer | `355`, `146` | Raw HP value from the battle log. Immediately follows the percentage. |
+| `max_hp` | Integer | `355`, `523` | Maximum HP value. Immediately follows `current_hp`. |
 | `type1` / `type2` | Type names | `fire`, `water` | second type omitted for single-typed Pokémon |
 | `item` | Item name or `unknownitem` | `leftovers`, `lifeorb`, `unknownitem` | For POV player: always known. For opponent: `unknownitem` until revealed. Omitted in Gen 1. |
 | `ability` | Ability name or `unknownability` | `intimidate`, `levitate`, `unknownability` | Omitted Gen 1–2. For opponent: `unknownability` until revealed. |
@@ -390,10 +393,10 @@ OR
 ```
 <arena>
 <active>
-jinx 1.00 ice psychic par noboosts
+jinx 1.00 333 333 ice psychic par noboosts
 <end_active>
 <opponent>
-starmie 1.00 psychic water slp
+starmie 1.00 323 323 psychic water slp
 <end_opponent>
 <empty_conditions>
 <end_arena>
@@ -403,10 +406,10 @@ starmie 1.00 psychic water slp
 ```
 <arena>
 <active>
-garganacl 0.72 rock leftovers purifying salt clean tera:rock <boosts> def+2 spd+1 <end_boosts>
+garganacl 0.72 248 344 rock leftovers purifying salt clean tera:rock <boosts> def+2 spd+1 <end_boosts>
 <end_active>
 <opponent>
-greattusk 0.45 ground fighting unknownitem unknownability clean
+greattusk 0.45 155 345 ground fighting unknownitem unknownability clean
 <end_opponent>
 <empty_conditions>
 <end_arena>
@@ -416,10 +419,10 @@ greattusk 0.45 ground fighting unknownitem unknownability clean
 ```
 <arena>
 <active>
-rotom-wash 0.88 electric water leftovers levitate clean
+rotom-wash 0.88 268 304 electric water leftovers levitate clean
 <end_active>
 <opponent>
-ferrothorn 0.45 grass steel leftovers ironbarbs clean
+ferrothorn 0.45 158 352 grass steel leftovers ironbarbs clean
 <end_opponent>
 <conditions>
 raindance
@@ -483,7 +486,7 @@ fainted Pokémon (marked with `fnt` status and `0.00` HP).  Ordered by
 ```
 <bench>
 <pokeN>
-<species> <hp> <type1> <type2> [<item>] [<ability>] [<gender>] [<status>]
+<species> <hp> <current_hp> <max_hp> <type1> <type2> [<item>] [<ability>] [<gender>] [<status>]
 <end_pokeN>
 …
 <end_bench>
@@ -493,6 +496,8 @@ fainted Pokémon (marked with `fnt` status and `0.00` HP).  Ordered by
 |----------|-------|
 | `species` | Canonical name |
 | `hp` | Fixed-point `X.XX`. Preserved across switch-outs. `0.00` for fainted. |
+| `current_hp` | Integer raw HP. Immediately follows the percentage. |
+| `max_hp` | Integer max HP. Immediately follows `current_hp`. |
 | `type1`/`type2` | Always known (from dex). |
 | `item` | Omitted Gen 1. Always known for own Pokémon. |
 | `ability` | Omitted Gen 1–2. Always known for own Pokémon. |
@@ -510,19 +515,19 @@ fainted Pokémon (marked with `fnt` status and `0.00` HP).  Ordered by
 ```
 <bench>
 <poke1>
-alakazam 0.50 psychic par
+alakazam 0.50 156 313 psychic par
 <end_poke1>
 <poke2>
-chansey 1.00 normal
+chansey 1.00 703 703 normal
 <end_poke2>
 <poke3>
-jinx 0.00 ice psychic fnt
+jinx 0.00 0 333 ice psychic fnt
 <end_poke3>
 <poke4>
-snorlax 1.00 normal
+snorlax 1.00 523 523 normal
 <end_poke4>
 <poke5>
-starmie 0.00 psychic water fnt
+starmie 0.00 0 323 psychic water fnt
 <end_poke5>
 <end_bench>
 ```
@@ -531,10 +536,10 @@ starmie 0.00 psychic water fnt
 ```
 <bench>
 <poke1>
-tyranitar 0.80 rock dark leftovers sandstream F
+tyranitar 0.80 272 340 rock dark leftovers sandstream F
 <end_poke1>
 <poke2>
-blissey 1.00 normal lefties naturalcure N
+blissey 1.00 714 714 normal lefties naturalcure N
 <end_poke2>
 <end_bench>
 ```
@@ -1116,7 +1121,11 @@ Standalone sentinel tags:
 Integer, e.g. `0`, `1`, `47`
 
 ### HP format
-Fixed-point with two decimals: `1.00`, `0.63`, `0.00`.
+For arena and bench entries: ``<percentage> <current_hp> <max_hp>`` —
+percentage is fixed-point with two decimals (``1.00``, ``0.63``, ``0.00``),
+followed by integer current HP and integer max HP.
+
+For team header entries: integer max HP only, after species and before types.
 
 ---
 

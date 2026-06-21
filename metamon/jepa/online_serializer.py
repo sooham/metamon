@@ -86,17 +86,19 @@ def _pokemon_species(pokemon) -> str:
 
 
 def _hp_token(pokemon) -> str:
+    """Return HP as "percentage current_hp max_hp" string."""
     if pokemon is None:
         return "unknown"
     current_hp = getattr(pokemon, "current_hp", None)
     max_hp = getattr(pokemon, "max_hp", None)
     if current_hp is not None and max_hp:
         pct = float(current_hp) / float(max_hp)
-        return f"{max(0.0, min(1.0, pct)):.2f}"
+        pct_str = f"{max(0.0, min(1.0, pct)):.2f}"
+        return f"{pct_str} {int(current_hp)} {int(max_hp)}"
     hp_fraction = getattr(pokemon, "current_hp_fraction", None)
-    if hp_fraction is None:
-        return "unknown"
-    return f"{max(0.0, min(1.0, float(hp_fraction))):.2f}"
+    if hp_fraction is not None:
+        return f"{max(0.0, min(1.0, float(hp_fraction))):.2f}"
+    return "unknown"
 
 
 def _status_token(pokemon) -> Optional[str]:
@@ -334,7 +336,12 @@ def team_context_words(battle, fmt: str) -> list[str]:
     words = ["<begin_team>"]
     for idx, pokemon in enumerate(_team_pokemon(battle)[:6], start=1):
         words.append(f"<poke{idx}>")
-        words.extend([_pokemon_species(pokemon), *_type_tokens(pokemon)])
+        words.append(_pokemon_species(pokemon))
+        # max HP (after species, before types — matches bench ordering)
+        max_hp = getattr(pokemon, "max_hp", None)
+        if max_hp is not None:
+            words.append(str(int(max_hp)))
+        words.extend(_type_tokens(pokemon))
         item = _item_token(pokemon, gen, is_opponent=False)
         if item is not None:
             words.append(item)
