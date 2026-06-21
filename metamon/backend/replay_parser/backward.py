@@ -109,16 +109,9 @@ def fill_missing_team_info(
             if match is None and None in poke_list:
                 idx = poke_list.index(None)
                 match = Pokemon(name=species, lvl=entry["level"], gen=gen)
-                match.current_hp = 100
-                match.max_hp = 100
                 poke_list[idx] = match
             if match is None:
                 continue
-            # Ensure basic stats are set (new or never-seen mons may lack them)
-            if match.current_hp is None:
-                match.current_hp = 100
-            if match.max_hp is None:
-                match.max_hp = 100
             # Apply ground-truth data
             if entry["item"]:
                 match.had_item = entry["item"]
@@ -138,13 +131,6 @@ def fill_missing_team_info(
                         f"showteam: could not add move {mn!r} for "
                         f"{match.name}: {e}"
                     )
-        # Ensure all Pokemon have basic HP set (new or never-seen mons may lack it)
-        for p in poke_list:
-            if p is not None:
-                if p.current_hp is None:
-                    p.current_hp = 100
-                if p.max_hp is None:
-                    p.max_hp = 100
         # Build a minimal revealed_team for the return signature
         converted_poke = [PokemonSet.from_ReplayPokemon(p, gen=gen) for p in poke_list]
         revealed_team = TeamSet(
@@ -608,6 +594,22 @@ def add_filled_final_turn(
         showteam_packed=showteam_2,
     )
     replay.turnlist.append(filled_turn)
+
+    # If the HP Percentage Mod is active, compute theoretical max HP for
+    # any Pokémon that never appeared in battle (their HP was never set
+    # by a |switch| or |-damage| message).
+    if replay._hp_percentage_mod:
+        for team in (filled_turn.pokemon_1, filled_turn.pokemon_2):
+            for p in team:
+                if p is not None and p.base_stats:
+                    real_max = Pokemon.compute_max_hp(
+                        p.base_stats.get("hp", 0), p.lvl, replay.gen
+                    )
+                    if p.max_hp is None or p.max_hp <= 100:
+                        p.max_hp = real_max
+                        if p.current_hp is not None and p.current_hp <= 100:
+                            p.current_hp = real_max
+
     return replay, (revealed_team_1, revealed_team_2)
 
 
@@ -637,15 +639,31 @@ def backward_fill(
                     prev_pokemon.backfill_info(pokemon, gameid=replay.gameid)
                 else:
                     # pokemon discovered in turn_t1 enters turn_t "fresh"
+                    fresh = pokemon.fresh_like()
+                    # Immediately backfill from the discovered Pokémon so
+                    # that real HP / items / abilities chain backward
+                    # through the next iterations.
+                    fresh.backfill_info(pokemon, gameid=replay.gameid)
                     if None not in prev_team:
                         # _parse_poke may have appended extra slots mid-battle
                         # (team grew beyond 6).  Match that here.
-                        prev_team.append(pokemon.fresh_like())
+                        prev_team.append(fresh)
                     else:
-                        prev_team[prev_team.index(None)] = pokemon.fresh_like()
+                        prev_team[prev_team.index(None)] = fresh
 
     # chop off the extra filled turn
     replay_filled.turnlist = replay_filled.turnlist[:-1]
+
+    # Fill any remaining None HP values with 100 (for Pokémon that never
+    # appeared in battle — fresh_like copies start with None so
+    # backfill_info can propagate real values).
+    for turn in replay_filled.flattened_turnlist:
+        for p in turn.all_pokemon:
+            if p is not None and p.max_hp is None:
+                p.max_hp = 100
+            if p is not None and p.current_hp is None:
+                p.current_hp = 100
+
     if team_predictor.fills_missing_info:
         checks.check_info_filled(replay_filled)
     # Each POV needs its own copy of the original replay because
@@ -815,10 +833,12 @@ def backward_fill_doubles(
                     prev_pokemon = prev_ids[pokemon.unique_id]
                     prev_pokemon.backfill_info(pokemon, gameid=replay.gameid)
                 else:
+                    fresh = pokemon.fresh_like()
+                    fresh.backfill_info(pokemon, gameid=replay.gameid)
                     if None not in prev_team:
-                        prev_team.append(pokemon.fresh_like())
+                        prev_team.append(fresh)
                     else:
-                        prev_team[prev_team.index(None)] = pokemon.fresh_like()
+                        prev_team[prev_team.index(None)] = fresh
 
     replay_filled.turnlist = replay_filled.turnlist[:-1]
     if team_predictor.fills_missing_info:

@@ -489,6 +489,13 @@ class SimProtocol:
         if poke.status == PEStatus.FNT:
             self.replay.add_warning(WarningFlags.ZOROARK)
         cur_hp, max_hp = parse_hp_fraction(args[2])
+        if self.replay._hp_percentage_mod and poke.base_stats:
+            real_max = Pokemon.compute_max_hp(
+                poke.base_stats.get("hp", 0), poke.lvl, self.replay.gen
+            )
+            if real_max > 0 and max_hp <= 100:
+                cur_hp = int(cur_hp / max_hp * real_max) if max_hp > 0 else real_max
+                max_hp = real_max
         poke.max_hp = max_hp
         poke.current_hp = cur_hp
 
@@ -841,8 +848,16 @@ class SimProtocol:
             if "/" not in args[1]:
                 raise UnfinishedMessageException([name] + args)
             cur_hp, max_hp = parse_hp_fraction(args[1])
+            if self.replay._hp_percentage_mod and pokemon.base_stats:
+                real_max = Pokemon.compute_max_hp(
+                    pokemon.base_stats.get("hp", 0), pokemon.lvl, self.replay.gen
+                )
+                if real_max > 0 and max_hp <= 100:
+                    cur_hp = int(cur_hp / max_hp * real_max) if max_hp > 0 else real_max
+                    max_hp = real_max
             pokemon.current_hp = cur_hp
-            pokemon.max_hp = max_hp
+            if not self.replay._hp_percentage_mod:
+                pokemon.max_hp = max_hp
 
     def _parse_sethp(self, args: List[str]):
         """
@@ -851,8 +866,17 @@ class SimProtocol:
         pokemon = self.curr_turn.get_pokemon_from_str(args[0])
         assert pokemon is not None
         cur_hp, max_hp = parse_hp_fraction(args[1])
+        if self.replay._hp_percentage_mod and pokemon.base_stats:
+            real_max = Pokemon.compute_max_hp(
+                pokemon.base_stats.get("hp", 0), pokemon.lvl, self.replay.gen
+            )
+            if real_max > 0 and max_hp <= 100:
+                cur_hp = int(cur_hp / max_hp * real_max) if max_hp > 0 else real_max
+                max_hp = real_max
         if pokemon.max_hp:
-            assert max_hp == pokemon.max_hp
+            assert max_hp == pokemon.max_hp, (
+                f"sethp max_hp mismatch: {max_hp} != {pokemon.max_hp} for {pokemon.name}"
+            )
         pokemon.current_hp = cur_hp
 
     def _parse_faint(self, args: List[str]):
@@ -1548,6 +1572,8 @@ class SimProtocol:
         |rule|RULE: DESCRIPTION
         """
         self.replay.rules.append(args[0])
+        if "HP Percentage Mod" in args[0]:
+            self.replay._hp_percentage_mod = True
 
     def _parse_showteam(self, args: List[str]):
         """
