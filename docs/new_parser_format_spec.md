@@ -789,6 +789,24 @@ When the `|choice|` message exists, we use the exact chosen move.  When
 `|choice|` is absent, we randomly pick a valid move from the active Pokémon's
 available moveset and attach the outcome reason.
 
+### 5.3b Legal action candidates for world-model shards
+
+The parsed text format does not store an explicit legal-action list.  For JEPA
+world-model shards, `scripts/generate_world_model_data.py` derives acting-POV
+legal candidates from the current state:
+
+- `<begin_moves>` supplies currently available move actions.
+- `<bench>` supplies switch targets, excluding fainted Pokémon except during
+  `forcedrevival`.
+- `<you> forceswitch <end_you>` restricts candidates to switches.
+- `<you> forcedrevival <end_you>` restricts candidates to revivable fainted
+  bench Pokémon.
+
+The replay's `<chosen_move>` is always appended if it is missing from the
+state-derived candidate list.  This candidate generation is current-player
+only; opponent legal candidates are not serialized, generated, or required by
+actor-critic JEPA training.
+
 ### 5.4 Move inference for opponent
 
 When `|choice|` messages are absent (common), we infer the opponent's action:

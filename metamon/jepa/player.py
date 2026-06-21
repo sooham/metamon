@@ -21,8 +21,7 @@ from metamon.env.metamon_player import MetamonPlayer
 from metamon.interface import UniversalAction, UniversalState, consistent_move_order, consistent_pokemon_order
 from metamon.jepa.model import PairedJEPAModel
 from metamon.jepa.online_serializer import (
-    action_block,
-    action_words,
+    format_action_choice_text,
     format_action_text,
     is_force_switch_state,
     state_block,
@@ -93,7 +92,6 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         model: PairedJEPAModel,
         tokenizer: PokemonTokenizer,
         fmt: str,
-        heuristic: str = "max-self-state-delta",
         verbose: bool = True,
         verbose_blocks: bool = False,
         max_history_blocks: int = 0,
@@ -103,7 +101,6 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         self._jepa = model
         self._tokenizer = tokenizer
         self._fmt = fmt
-        self._heuristic = heuristic
         self._verbose = verbose
         self._max_history_blocks = max_history_blocks  # 0 = unlimited
         TuiMixin._repl_verbose_blocks = verbose_blocks
@@ -409,7 +406,10 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         tokens.  Outcomes (success / fail / cant <reason>) now live in
         ``<last_turn_results>`` inside the *following* state block.
         """
-        words = action_words(action_text, opponent=True)
+        return self._action_content_block(action_text)
+
+    def _action_content_block(self, action_text: str) -> np.ndarray:
+        words = format_action_choice_text(action_text).split()
         return tokenize_words(self._tokenizer, words, warn_unknown=False)
 
     # ═══════════════════════════════════════════════════════════════════
@@ -525,30 +525,40 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         pred_action_norm = torch.norm(pred_opponent_action, dim=-1).item()
         pred_state_logvar_mean = pred_opponent_state_logvar.mean().item()
         pred_action_logvar_mean = pred_opponent_action_logvar.mean().item()
-        current_rank = self._jepa.rank_head(z_self, pred_opponent_state).item()
+        decision_state = self._jepa.decision_state_encoder(
+            z_self,
+            pred_opponent_state_mu,
+            pred_opponent_state_logvar,
+        )
+        value_logit_t = self._jepa.value_head(decision_state)
+        value_logit = value_logit_t.item()
+        value_prob = torch.sigmoid(value_logit_t).item()
 
         rows = []
         for idx, name in action_names.items():
-            pa = action_block(self._tokenizer, name, opponent=False)
+            pa = self._action_content_block(name)
             pa_tensor = torch.from_numpy(pa.astype(np.int64)).unsqueeze(0).to(device)
             own_action = self._jepa.action_encoder(pa_tensor)
+            action_h = self._jepa.action_projector(own_action)
+            q_logit_t = self._jepa.action_value_head(decision_state, action_h)
+            q_logit = q_logit_t.item()
+            q_prob = torch.sigmoid(q_logit_t).item()
             pred_next, _ = self._jepa.next_state_predictor(
                 z_self, own_action, pred_opponent_state, pred_opponent_action,
             )
             next_norm = torch.norm(pred_next, dim=-1).item()
             state_delta = torch.norm(pred_next - z_self, dim=-1).item()
             action_norm = torch.norm(own_action, dim=-1).item()
-            if self._heuristic == "max-rank":
-                rank_score = self._jepa.rank_head(pred_next, pred_opponent_state).item()
-                delta = rank_score
-            elif self._heuristic == "max-opponent-state-delta":
-                next_pred_opponent, _ = self._jepa.opponent_belief_predictor(c_self, pred_next)[:2]
-                delta = torch.norm(next_pred_opponent - pred_opponent_state, dim=-1).item()
-                rank_score = None
-            else:
-                delta = torch.norm(pred_next - z_self, dim=-1).item()
-                rank_score = None
-            rows.append((idx, name, delta, rank_score, next_norm, state_delta, action_norm))
+            rows.append({
+                "idx": idx,
+                "name": name,
+                "score": q_logit,
+                "q_logit": q_logit,
+                "q_prob": q_prob,
+                "next_norm": next_norm,
+                "state_delta": state_delta,
+                "action_norm": action_norm,
+            })
 
         return {
             "z_self_norm": z_self_norm,
@@ -557,7 +567,8 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
             "pred_action_norm": pred_action_norm,
             "pred_state_logvar_mean": pred_state_logvar_mean,
             "pred_action_logvar_mean": pred_action_logvar_mean,
-            "current_rank": current_rank,
+            "value_logit": value_logit,
+            "value_prob": value_prob,
             "rows": rows,
         }
 
@@ -591,7 +602,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
             active_hp=_display_hp(getattr(battle.active_pokemon, "current_hp_fraction", None)),
             opponent_species=_display_species(battle.opponent_active_pokemon),
             opponent_hp=_display_hp(getattr(battle.opponent_active_pokemon, "current_hp_fraction", None)),
-            heuristic=self._heuristic,
+            scorer="actor-critic",
             forced_switch=hist.current_forced_switch,
             num_state_blocks=len(hist.state_blocks),
             num_player_actions=len(hist.player_actions),
@@ -599,22 +610,24 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         )
 
         rows = diag["rows"]
-        best_idx = max(rows, key=lambda row: row[2])[0]
+        best_row = max(rows, key=lambda row: row["score"])
+        best_idx = best_row["idx"]
 
         # Build TuiDiagnostic from JEPA‑specific output.
-        if self._heuristic == "max-rank":
-            columns = ["action", "name", "rank", "Δrank", "|z_next|", "|Δz|", "|a|"]
-            str_rows: list[list[str]] = [
-                [str(idx), name, f"{rank:+8.4f}", f"{rank - diag['current_rank']:+8.4f}",
-                 f"{next_n:8.4f}", f"{state_d:8.4f}", f"{act_n:8.4f}"]
-                for idx, name, rank, _, next_n, state_d, act_n in rows
+        columns = ["action", "name", "Q", "Pwin", "V", "|z_next|", "|Δz|", "|a|"]
+        str_rows: list[list[str]] = [
+            [
+                str(row["idx"]),
+                row["name"],
+                f"{row['q_logit']:+8.4f}",
+                f"{row['q_prob']:.4f}",
+                f"{diag['value_prob']:.4f}",
+                f"{row['next_norm']:8.4f}",
+                f"{row['state_delta']:8.4f}",
+                f"{row['action_norm']:8.4f}",
             ]
-        else:
-            columns = ["action", "name", "delta"]
-            str_rows = [
-                [str(idx), name, f"{delta:+.4f}"]
-                for idx, name, delta, *_ in rows
-            ]
+            for row in rows
+        ]
 
         diagnostic = TuiDiagnostic(
             columns=columns,
@@ -623,7 +636,8 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
             chosen_label=action_names.get(best_idx, "?"),
             context_lines=[
                 f"z_self: {diag['z_self_norm']:.4f}  pred_opp: {diag['pred_state_norm']:.4f}  "
-                f"delta: {diag['pred_state_delta']:.4f}  rank: {diag['current_rank']:+.4f}",
+                f"delta: {diag['pred_state_delta']:.4f}  V: {diag['value_logit']:+.4f} "
+                f"Pwin: {diag['value_prob']:.4f}",
                 f"opp-state logvar: {diag['pred_state_logvar_mean']:.4f}  "
                 f"opp-action logvar: {diag['pred_action_logvar_mean']:.4f}",
             ],
@@ -641,7 +655,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         if order is None:
             return self.choose_random_move(battle)
 
-        hist.pending_player_action = action_block(self._tokenizer, action_names[best_idx], opponent=False)
+        hist.pending_player_action = self._action_content_block(action_names[best_idx])
         hist.pending_player_action_text = action_names[best_idx]
         hist.pending_forced_switch = hist.current_forced_switch
         hist.pending_raw_message_start = len(hist.raw_messages)

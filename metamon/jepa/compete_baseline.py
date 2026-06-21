@@ -47,8 +47,6 @@ def main():
                         help="Compete against every registered baseline for this format")
     parser.add_argument("--n_battles", type=int, default=10, help="Number of battles (default: 10)")
     parser.add_argument("--team_set", default="competitive", help="Team set to use (default: competitive)")
-    parser.add_argument("--heuristic", default="max-rank",
-                        choices=["max-rank", "max-self-state-delta", "max-opponent-state-delta"])
     parser.add_argument("--server", default="localhost",
                         choices=["localhost", "showdown"],
                         help="Server to use (default: localhost)")
@@ -107,6 +105,10 @@ def main():
         ),
         next_state_predictor_cfg=model_cfg.get("next_state_predictor", {}),
         rank_head_cfg=model_cfg.get("rank_head", {}),
+        decision_state_encoder_cfg=model_cfg.get("decision_state_encoder", {}),
+        value_head_cfg=model_cfg.get("value_head", {}),
+        action_projector_cfg=model_cfg.get("action_projector", {}),
+        action_value_head_cfg=model_cfg.get("action_value_head", {}),
     ).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     if device.type == "cuda":
@@ -135,7 +137,7 @@ def main():
         baseline_user = f"baseline-{args.baseline}"
 
     # ── Register JEPA as a baseline (uses shared model) ──
-    register_jepa_baseline(model, tokenizer, fmt=args.format, heuristic=args.heuristic,
+    register_jepa_baseline(model, tokenizer, fmt=args.format,
                           max_history_blocks=max_history_blocks)
 
     # ── Create the JEPA player via the baseline registry ──

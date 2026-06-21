@@ -77,9 +77,6 @@ async def main() -> None:
                         help="Server to connect to (default: localhost).")
     parser.add_argument("--password", default=None,
                         help="Showdown password (required for real server).")
-    parser.add_argument("--heuristic", default="max-rank",
-                        choices=["max-rank", "max-self-state-delta", "max-opponent-state-delta"],
-                        help="Action selection heuristic (default: max-rank).")
     parser.add_argument("--save-raw-replay", action="store_true", default=None,
                         help="Save raw replays (default: on for showdown, off for localhost).")
     parser.add_argument("--no-save-raw-replay", dest="save_raw_replay",
@@ -137,6 +134,10 @@ async def main() -> None:
         ),
         next_state_predictor_cfg=model_cfg.get("next_state_predictor", {}),
         rank_head_cfg=model_cfg.get("rank_head", {}),
+        decision_state_encoder_cfg=model_cfg.get("decision_state_encoder", {}),
+        value_head_cfg=model_cfg.get("value_head", {}),
+        action_projector_cfg=model_cfg.get("action_projector", {}),
+        action_value_head_cfg=model_cfg.get("action_value_head", {}),
     ).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     if device.type == "cuda":
@@ -184,7 +185,6 @@ async def main() -> None:
         model=model,
         tokenizer=tokenizer,
         fmt=main_format,
-        heuristic=args.heuristic,
         verbose=not args.quiet,
         verbose_blocks=args.verbose_blocks,
         max_history_blocks=max_history_blocks,
@@ -199,7 +199,6 @@ async def main() -> None:
         model=model,
         tokenizer=tokenizer,
         fmt=random_format,
-        heuristic=args.heuristic,
         verbose=not args.quiet,
         verbose_blocks=args.verbose_blocks,
         max_history_blocks=max_history_blocks,

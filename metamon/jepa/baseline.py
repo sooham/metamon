@@ -5,7 +5,7 @@ Usage:
     from metamon.jepa.model import PairedJEPAModel
 
     model = PairedJEPAModel(...).eval()
-    register_jepa_baseline(model, tokenizer, fmt="gen1ou", heuristic="max-rank")
+    register_jepa_baseline(model, tokenizer, fmt="gen1ou")
 
     # Now JEPA is in ALL_BASELINES and can be used like any baseline:
     from metamon.baselines import get_baseline
@@ -32,7 +32,6 @@ from metamon.tokenizer import PokemonTokenizer
 _shared_model: Optional[PairedJEPAModel] = None
 _shared_tokenizer: Optional[PokemonTokenizer] = None
 _shared_fmt: str = "gen1ou"
-_shared_heuristic: str = "max-rank"
 _shared_max_history_blocks: int = 0
 _registered: bool = False
 
@@ -41,17 +40,14 @@ def register_jepa_baseline(
     model: PairedJEPAModel,
     tokenizer: PokemonTokenizer,
     fmt: str = "gen1ou",
-    heuristic: str = "max-rank",
     max_history_blocks: int = 0,
 ) -> None:
     """Register JEPA as a baseline so it can be used in head2head / compete."""
-    global _shared_model, _shared_tokenizer, _shared_fmt, _shared_heuristic
-    global _shared_max_history_blocks, _registered
+    global _shared_model, _shared_tokenizer, _shared_fmt, _shared_max_history_blocks, _registered
 
     _shared_model = model
     _shared_tokenizer = tokenizer
     _shared_fmt = fmt
-    _shared_heuristic = heuristic
     _shared_max_history_blocks = max_history_blocks
 
     if not _registered:
@@ -87,7 +83,6 @@ class JEPABaseline(Baseline):
             model=_shared_model,
             tokenizer=_shared_tokenizer,
             fmt=_shared_fmt,
-            heuristic=_shared_heuristic,
             verbose=False,
             verbose_blocks=False,
             max_history_blocks=_shared_max_history_blocks,
@@ -117,4 +112,3 @@ class JEPABaseline(Baseline):
     # wins/losses via the base Player mechanism.  The inner player is logic-only
     # and has no battle tracking, so we must NOT delegate these properties.
     # Removing the overrides lets the base Player counters work correctly.
-
