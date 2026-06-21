@@ -612,8 +612,8 @@ class Pokemon:
         fresh.boosts = Boosts()
         fresh.status = Nothing.NO_STATUS
         fresh.effects = {}
-        fresh.current_hp = 100
-        fresh.max_hp = 100
+        fresh.current_hp = None
+        fresh.max_hp = None
         fresh.transformed_into = None
         fresh.pending_foreign_move = None
         fresh._pending_foreign_charge_remaining = 0
@@ -632,6 +632,23 @@ class Pokemon:
         fresh.type = fresh.had_type
         fresh.on_end_of_turn()
         return fresh
+
+    @staticmethod
+    def compute_max_hp(base_hp: int, lvl: int, gen: int) -> int:
+        """Compute theoretical max HP for a competitive Pokémon at *lvl*.
+
+        Assumes max IVs/DVs and max EVs/Stat Exp (standard on Showdown).
+        """
+        if gen <= 2:
+            # Gen 1-2: max DV=15, max Stat Exp=65535
+            # HP = floor(((base + DV) * 2 + floor(sqrt(exp) / 4)) * lvl / 100) + lvl + 10
+            import math
+            stat_exp_term = int(math.floor(math.sqrt(65535) / 4))  # 63
+            return int(((base_hp + 15) * 2 + stat_exp_term) * lvl / 100) + lvl + 10
+        else:
+            # Gen 3+: max IV=31, max EV=252
+            # HP = floor((2 * base + IV + floor(EV / 4)) * lvl / 100) + lvl + 10
+            return int((2 * base_hp + 31 + 63) * lvl / 100) + lvl + 10
 
     def mimic(self, move_name: str) -> None:
         """
@@ -1545,6 +1562,9 @@ class ParsedReplay:
     # information into forward-fill training states.
     showteam_data: Optional[dict] = None
 
+    def __post_init__(self):
+        self._hp_percentage_mod: bool = False
+
     def __deepcopy__(self, memo: dict) -> "ParsedReplay":
         """Fast deepcopy that delegates to Turn.__deepcopy__ for the
         turnlist and shares immutable metadata fields."""
@@ -1561,6 +1581,7 @@ class ParsedReplay:
         new.players = self.players.copy()
         new.rules = self.rules.copy()
         new.check_warnings = self.check_warnings.copy()
+        new._hp_percentage_mod = self._hp_percentage_mod
         # ── turnlist — each Turn uses Turn.__deepcopy__ ────────────
         new.turnlist = [copy.deepcopy(t, memo) for t in self.turnlist]
         # ── showteam_data (nested dict of strings) ─────────────────
