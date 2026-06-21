@@ -66,9 +66,9 @@ model:
     n_layers: 4
 
   # ── Paired-POV next-state predictor — stochastic (mu+logvar) ──────
-  # Takes (current_state, own_action, predicted_opp_state, predicted_opp_action)
-  # through an MLP → mu/logvar for the next-state latent.  Sampled via
-  # reparameterization during training; MSE on mu for the loss.
+  # Takes (current_state, own_action, opponent_state, opponent_action) through
+  # an MLP → mu/logvar for the next-state latent. Paired training teacher-forces
+  # actual opponent state/action and uses Gaussian NLL.
   next_state_predictor:
     hidden_dim: 512       # 2.7× latent_dim
     n_layers: 4

@@ -6,7 +6,7 @@ import pytest
 import torch
 
 import scripts.generate_world_model_data as wm_data
-from metamon.jepa.model import compute_paired_losses
+from metamon.jepa.model import PairedJEPAModel, compute_paired_losses
 
 from scripts.generate_world_model_data import (
     PairedBattle,
@@ -409,6 +409,168 @@ def test_compute_paired_losses_targets_predicted_opponent_actions():
     assert metrics["action_loss"] == pytest.approx(0.0)
     assert metrics["action_loss_p1_to_p2"] == pytest.approx(0.0)
     assert metrics["action_loss_p2_to_p1"] == pytest.approx(0.0)
+
+
+def test_compute_paired_losses_uses_gaussian_nll_for_prediction_heads():
+    state_target = torch.tensor([[1.0, -1.0]])
+    state_mu = torch.tensor([[0.0, 1.0]])
+    state_logvar = torch.full_like(state_target, 1.3862944)  # log(4)
+    action_target = torch.tensor([[2.0, -2.0]])
+    action_mu = torch.tensor([[1.0, 0.0]])
+    action_logvar = torch.full_like(action_target, -0.6931472)  # log(0.5)
+    next_target = torch.tensor([[0.5, -0.5]])
+    next_mu = torch.tensor([[0.0, 0.0]])
+    next_logvar = torch.zeros_like(next_target)
+
+    outputs = {
+        "enc_p1_T": state_target,
+        "enc_p2_T": state_target,
+        "enc_p1_T1": next_target,
+        "enc_p2_T1": next_target,
+        "pred_p2_T_mu": state_mu,
+        "pred_p2_T_logvar": state_logvar,
+        "pred_p1_T_mu": state_mu,
+        "pred_p1_T_logvar": state_logvar,
+        "pred_p2_T": state_mu,
+        "pred_p1_T": state_mu,
+        "p1_action": torch.zeros_like(action_target),
+        "p2_action": torch.zeros_like(action_target),
+        "actual_p2_action_from_p1_perspective": action_target,
+        "actual_p1_action_from_p2_perspective": action_target,
+        "pred_p2_action_mu": action_mu,
+        "pred_p2_action_logvar": action_logvar,
+        "pred_p1_action_mu": action_mu,
+        "pred_p1_action_logvar": action_logvar,
+        "pred_p2_action": action_mu,
+        "pred_p1_action": action_mu,
+        "pred_p1_T1_mu": next_mu,
+        "pred_p1_T1_logvar": next_logvar,
+        "pred_p2_T1_mu": next_mu,
+        "pred_p2_T1_logvar": next_logvar,
+        "pred_p1_T1": next_mu,
+        "pred_p2_T1": next_mu,
+    }
+
+    loss, metrics = compute_paired_losses(
+        outputs,
+        lambda_sigreg=0.0,
+        lambda_opponent_state=1.0,
+        lambda_action=1.0,
+        lambda_next_state=1.0,
+        lambda_rank=0.0,
+        sigreg_num_slices=1,
+        sigreg_num_points=2,
+    )
+
+    expected_state = (
+        0.5 * (state_logvar + (state_target - state_mu).square() * torch.exp(-state_logvar))
+    ).mean().item()
+    expected_action = (
+        0.5 * (action_logvar + (action_target - action_mu).square() * torch.exp(-action_logvar))
+    ).mean().item()
+    expected_next = (
+        0.5 * (next_logvar + (next_target - next_mu).square() * torch.exp(-next_logvar))
+    ).mean().item()
+
+    assert metrics["opponent_state_loss"] == pytest.approx(expected_state)
+    assert metrics["action_loss"] == pytest.approx(expected_action)
+    assert metrics["next_state_loss"] == pytest.approx(expected_next)
+    assert loss.item() == pytest.approx(expected_state + expected_action + expected_next)
+
+
+def test_paired_jepa_forward_teacher_forces_actual_opponent_state_and_actions_for_next_state():
+    class FakeBeliefPredictor:
+        def __call__(self, history_context, current_state):
+            state_mu = current_state + 10.0
+            state_logvar = torch.zeros_like(current_state)
+            action_mu = torch.full_like(current_state, 99.0)
+            action_logvar = torch.zeros_like(current_state)
+            return state_mu, state_logvar, action_mu, action_logvar
+
+    class RecordingNextStatePredictor:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, current_state, own_action, opponent_state, opponent_action):
+            self.calls.append((
+                current_state.clone(),
+                own_action.clone(),
+                opponent_state.clone(),
+                opponent_action.clone(),
+            ))
+            return torch.zeros_like(current_state), torch.zeros_like(current_state)
+
+    class ZeroRankHead:
+        def __call__(self, self_state, opponent_state):
+            return torch.zeros(self_state.shape[:-1], device=self_state.device)
+
+    class FakeModel:
+        training = False
+
+        def __init__(self):
+            self.opponent_belief_predictor = FakeBeliefPredictor()
+            self.next_state_predictor = RecordingNextStatePredictor()
+            self.rank_head = ZeroRankHead()
+
+        def encode_current_state(self, state_tokens, state_valid):
+            return state_tokens.float()
+
+        def encode_history_context(
+            self,
+            state_tokens,
+            state_valid,
+            player_hist_tokens,
+            player_hist_valid,
+            opponent_hist_tokens,
+            opponent_hist_valid,
+        ):
+            return torch.zeros_like(state_tokens.float())
+
+        def encode_action_tokens(self, action_tokens):
+            return action_tokens.float()
+
+        def reparameterize(self, mu, logvar, sample):
+            return mu
+
+    fake = FakeModel()
+    valid = torch.ones((1,), dtype=torch.bool)
+    p1_state_T = torch.tensor([[1.0, 2.0]])
+    p2_state_T = torch.tensor([[3.0, 4.0]])
+    p1_state_T1 = torch.tensor([[5.0, 6.0]])
+    p2_state_T1 = torch.tensor([[7.0, 8.0]])
+    p1_action = torch.tensor([[11.0, 12.0]])
+    p2_action = torch.tensor([[21.0, 22.0]])
+    actual_p2_action = torch.tensor([[31.0, 32.0]])
+    actual_p1_action = torch.tensor([[41.0, 42.0]])
+
+    PairedJEPAModel.forward(
+        fake,
+        p1_state_T, valid,
+        p1_state_T1, valid,
+        p1_state_T, valid,
+        p1_state_T, valid,
+        p1_state_T1, valid,
+        p1_state_T1, valid,
+        p2_state_T, valid,
+        p2_state_T1, valid,
+        p2_state_T, valid,
+        p2_state_T, valid,
+        p2_state_T1, valid,
+        p2_state_T1, valid,
+        p1_action,
+        p2_action,
+        actual_p2_action,
+        actual_p1_action,
+    )
+
+    assert len(fake.next_state_predictor.calls) == 2
+    p1_next_call, p2_next_call = fake.next_state_predictor.calls
+    torch.testing.assert_close(p1_next_call[1], p1_action)
+    torch.testing.assert_close(p1_next_call[2], p2_state_T)
+    torch.testing.assert_close(p1_next_call[3], actual_p2_action)
+    torch.testing.assert_close(p2_next_call[1], p2_action)
+    torch.testing.assert_close(p2_next_call[2], p1_state_T)
+    torch.testing.assert_close(p2_next_call[3], actual_p1_action)
 
 
 def test_compute_paired_losses_supports_gaussian_beliefs_and_rank():
