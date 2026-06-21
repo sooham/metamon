@@ -13,7 +13,7 @@ FORMATS ?= $(FORMAT)
 
 .PHONY: parse parse-all show-battle show-rand-battle \
         wm-tokenizer \
-        wm-dataset sample-inspect-wm-npz \
+        wm-dataset \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer \
         train-jepa _train-jepa-inner play-jepa play-jepa-local showdown bash-completion
@@ -429,13 +429,6 @@ endif
 
 clean-tokenizer:
 	rm -rf $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
-
-# Convenience: inspect a random world-model npz battle with pretty output and Showdown link.
-# Usage:
-#   make sample-inspect-wm-npz
-#   make sample-inspect-wm-npz WM_FORMAT=gen1ou
-sample-inspect-wm-npz:
-	make inspect-wm-npz WM_FORMAT=$(WM_FORMAT) WM_FLAGS='--pretty --show-all --showdown'
 
 # ── Shell completion ─────────────────────────────────────────────────
 
