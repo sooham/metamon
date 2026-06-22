@@ -178,7 +178,7 @@ JEPA_PREFETCH_FACTOR ?= 4
 JEPA_PRINT_INTERVAL ?= 10
 JEPA_CONFIG ?= metamon/jepa/configs/default.yaml
 JEPA_COMPILE ?= true
-JEPA_MAX_HISTORY ?= 300
+JEPA_MAX_HISTORY ?= 100
 
 # Train the paired-POV JEPA model on paired_shard_*.npz files.
 # Requires paired data generated with scripts/generate_world_model_data.py --paired_pov.

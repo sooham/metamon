@@ -32,7 +32,7 @@ from metamon.tokenizer import PokemonTokenizer
 _shared_model: Optional[PairedJEPAModel] = None
 _shared_tokenizer: Optional[PokemonTokenizer] = None
 _shared_fmt: str = "gen1ou"
-_shared_max_history_blocks: int = 300
+_shared_max_history_blocks: int = 100
 _registered: bool = False
 
 
@@ -40,7 +40,7 @@ def register_jepa_baseline(
     model: PairedJEPAModel,
     tokenizer: PokemonTokenizer,
     fmt: str = "gen1ou",
-    max_history_blocks: int = 300,
+    max_history_blocks: int = 100,
 ) -> None:
     """Register JEPA as a baseline so it can be used in head2head / compete."""
     global _shared_model, _shared_tokenizer, _shared_fmt, _shared_max_history_blocks, _registered
