@@ -924,14 +924,13 @@ def train(args: argparse.Namespace) -> None:
     # ── Cap temporal max_seq_len by max_history_blocks ─────────────
     # The sequence_stats.json raw max assumes unlimited history (a 2006-block
     # battle produces 6016 positions).  With max_history_blocks=H the temporal
-    # layout is at most 1 + 3×(H−1) = 3H−2 positions.  Cap the auto-detected
-    # value (and the final effective length) so we never overallocate.
+    # layout is at most 1 + 3×H positions: the collation pads state blocks to
+    # H+1 (current state included then dropped), so max(S-1, A) = H.
     if args.max_history_blocks > 0:
-        max_temporal_from_history = 3 * args.max_history_blocks
+        max_temporal_from_history = 3 * args.max_history_blocks + 2
         if auto_temporal_max is not None and auto_temporal_max > max_temporal_from_history:
             auto_temporal_max = max_temporal_from_history
-            auto_temporal_raw = min(auto_temporal_raw, args.max_history_blocks * 3)
-        # Also cap the fallback if it exceeds what history allows.
+            auto_temporal_raw = min(auto_temporal_raw, max_temporal_from_history)
         if temporal_max_seq_len > max_temporal_from_history:
             temporal_max_seq_len = max_temporal_from_history
 
