@@ -309,7 +309,6 @@ if __name__ == "__main__":
     import tempfile
     from argparse import ArgumentParser
     import tqdm
-    import glob
 
     from metamon.config import SUPPORTED_BATTLE_FORMATS
     from metamon.backend.team_prediction.usage_stats import get_usage_stats
@@ -323,6 +322,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--formats", type=str, nargs="+", default=None,
         help="Formats to tokenize (e.g., gen1ou gen9ou).",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42,
+        help="Random seed for shuffling files across formats (default: 42).",
     )
     args = parser.parse_args()
 
@@ -390,13 +393,34 @@ if __name__ == "__main__":
     for token in WORLD_MODEL_ACTION_TOKENS:
         tokenizer.add_token_for(token, verbose=args.verbose)
 
-    # Collect all .txt filenames
+    # Collect all .txt filenames (recursive, matching wm-dataset generator)
     all_filenames = []
+    per_format_counts: dict[str, int] = {}
     for fmt in formats:
         fmt_dir = os.path.join(args.parsed_replay_root, fmt)
-        if os.path.isdir(fmt_dir):
-            all_filenames.extend(glob.glob(os.path.join(fmt_dir, "*.txt")))
-    print(f"Found {len(all_filenames)} parsed replay .txt files across {len(formats)} formats")
+        if not os.path.isdir(fmt_dir):
+            print(f"Skipping {fmt}: directory not found at {fmt_dir}")
+            continue
+        fmt_files: list[str] = []
+        for root, _, files in os.walk(fmt_dir):
+            for f in files:
+                if f.endswith(".txt"):
+                    fmt_files.append(os.path.join(root, f))
+        if fmt_files:
+            fmt_files.sort()
+            all_filenames.extend(fmt_files)
+            per_format_counts[fmt] = len(fmt_files)
+        else:
+            print(f"No .txt files found in {fmt_dir}")
+
+    # Shuffle files across formats so early stopping doesn't favour the
+    # first format and n-gram statistics are format-interleaved.
+    if len(formats) > 1 and all_filenames:
+        rng = np.random.default_rng(args.seed)
+        rng.shuffle(all_filenames)
+
+    fmt_detail = ", ".join(f"{fmt}: {n}" for fmt, n in sorted(per_format_counts.items()))
+    print(f"Found {len(all_filenames)} parsed replay .txt files across {len(formats)} formats ({fmt_detail})")
 
     total_battles = 0
     staleness = 0

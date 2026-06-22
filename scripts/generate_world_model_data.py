@@ -352,6 +352,7 @@ class PairedBattle:
     p2: TokenizedPOV
     aligned_rows: list["PairedTransitionRow"]
     rollout_windows: list[list["PairedTransitionRow"]]
+    fmt_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -504,9 +505,9 @@ def _validate_paired_battle(
     return None, rows, windows
 
 
-def tokenize_battle_pair(args: tuple[str, list[str], str, int]) -> tuple[PairedBattle | None, str | None]:
+def tokenize_battle_pair(args: tuple[str, list[str], str, int, int]) -> tuple[PairedBattle | None, str | None]:
     """Tokenize and validate one raw-battle group containing both POV files."""
-    key, paths, tokenizer_path, rollout_len = args
+    key, paths, tokenizer_path, rollout_len, fmt_id = args
     global _TOKENIZER
     if _TOKENIZER is None:
         _init_worker(tokenizer_path)
@@ -528,16 +529,31 @@ def tokenize_battle_pair(args: tuple[str, list[str], str, int]) -> tuple[PairedB
         p2=p2,
         aligned_rows=rows,
         rollout_windows=windows,
+        fmt_id=fmt_id,
     ), None
 
 
 @dataclass
 class PairedShardAccumulator:
-    """Packs paired-POV battles into K-step rollout-window shards."""
+    """Packs paired-POV battles into K-step rollout-window shards.
 
-    fmt: str
-    fmt_id: int
+    Backward-compat: ``fmt`` / ``fmt_id`` populate ``format_names``
+    automatically; new callers should pass ``format_names`` directly.
+    """
+
+    format_names: dict[int, str] = field(default_factory=dict)
     rollout_len: int = 1
+    _fmt_ids: set[int] = field(default_factory=set)
+    # Backward-compat: single-format callers pass these instead of format_names.
+    fmt: str | None = field(default=None, repr=False)
+    fmt_id: int | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.fmt is not None and self.fmt_id is not None:
+            if not self.format_names:
+                self.format_names = {self.fmt_id: self.fmt}
+            elif self.fmt_id not in self.format_names:
+                self.format_names[self.fmt_id] = self.fmt
 
     p1_states_flat: list[np.ndarray] = field(default_factory=list)
     p1_state_offsets: list[int] = field(default_factory=lambda: [0])
@@ -739,9 +755,10 @@ class PairedShardAccumulator:
             ))
             self.format_ids.append(np.full(
                 (n_rollout_samples, self.rollout_len),
-                self.fmt_id,
+                battle.fmt_id,
                 dtype=np.int16,
             ))
+            self._fmt_ids.add(battle.fmt_id)
 
         self.p1_won.append(battle.p1.won)
         self.p2_won.append(battle.p2.won)
@@ -886,8 +903,14 @@ class PairedShardAccumulator:
             p2_battle_start=np.array(self.p2_battle_start, dtype=np.int64),
             p1_battle_action_start=np.array(self.p1_battle_action_start, dtype=np.int64),
             p2_battle_action_start=np.array(self.p2_battle_action_start, dtype=np.int64),
-            format_name=np.array(self.fmt),
-            format_id_value=np.array(self.fmt_id, dtype=np.int16),
+            format_name=np.array(
+                ",".join(sorted(self.format_names.get(i, str(i)) for i in self._fmt_ids))
+                if self._fmt_ids else "unknown"
+            ),
+            format_id_value=np.array(
+                -1 if len(self._fmt_ids) != 1 else next(iter(self._fmt_ids)),
+                dtype=np.int16,
+            ),
             rollout_len=np.array(self.rollout_len, dtype=np.int16),
         )
 
@@ -1001,12 +1024,14 @@ def iter_tokenized_battle_pairs(
     rollout_len: int,
     processes: int,
     desc: str,
+    fmt_ids: dict[str, int] | None = None,
 ) -> Iterable[tuple[str, PairedBattle | None, str | None]]:
     """Multiprocess tokenize paired POV groups.
 
     Yields ``(raw_battle_key, paired_battle_or_none, skip_reason_or_none)``.
     """
-    work = [(key, groups[key], tokenizer_path, rollout_len) for key in keys]
+    _fmt_ids = fmt_ids or {}
+    work = [(key, groups[key], tokenizer_path, rollout_len, _fmt_ids.get(key, 0)) for key in keys]
     if processes > 1:
         with Pool(
             processes, initializer=_init_worker, initargs=(tokenizer_path,)
@@ -1030,8 +1055,6 @@ def iter_tokenized_battle_pairs(
 
 def write_paired_split_shards(
     *,
-    fmt: str,
-    fmt_id: int,
     split_name: str,
     groups: dict[str, list[str]],
     group_keys: list[str],
@@ -1041,6 +1064,10 @@ def write_paired_split_shards(
     rollout_len: int,
     out_dir: str,
     rng: np.random.Generator,
+    fmt: str | None = None,
+    fmt_id: int | None = None,
+    format_names: dict[int, str] | None = None,
+    fmt_ids: dict[str, int] | None = None,
 ) -> tuple[dict, int, int]:
     """Tokenize and write paired-POV shards for one split."""
     os.makedirs(out_dir, exist_ok=True)
@@ -1076,9 +1103,20 @@ def write_paired_split_shards(
             elif k.startswith("sum_") or k.startswith("count_"):
                 agg[k] += int(stats[k])
 
+    # Resolve format info: explicit multi-format args take precedence;
+    # single-format callers can still pass fmt/fmt_id for backward compat.
+    if fmt is not None and fmt_id is not None:
+        _format_names = format_names or {fmt_id: fmt}
+        _fmt_ids = fmt_ids or {k: fmt_id for k in group_keys}
+        _desc_fmt = f"{fmt}/{split_name}"
+    else:
+        _format_names = format_names or {}
+        _fmt_ids = fmt_ids or {}
+        _desc_fmt = f"multi/{split_name}"
+
     shard_idx = 0
     max_battle_len = 0
-    acc = PairedShardAccumulator(fmt=fmt, fmt_id=fmt_id, rollout_len=rollout_len)
+    acc = PairedShardAccumulator(format_names=_format_names, rollout_len=rollout_len)
 
     for _, battle, reason in iter_tokenized_battle_pairs(
         groups,
@@ -1086,7 +1124,8 @@ def write_paired_split_shards(
         tokenizer_path,
         rollout_len,
         processes,
-        desc=f"  Pair-tokenizing {fmt}/{split_name}",
+        desc=f"  Pair-tokenizing {_desc_fmt}",
+        fmt_ids=_fmt_ids,
     ):
         if battle is None:
             totals["failed"] = int(totals["failed"]) + 1
@@ -1115,7 +1154,7 @@ def write_paired_split_shards(
                 f"{stats['uncompressed_mb']:.0f} MB"
             )
             shard_idx += 1
-            acc = PairedShardAccumulator(fmt=fmt, fmt_id=fmt_id, rollout_len=rollout_len)
+            acc = PairedShardAccumulator(format_names=_format_names, rollout_len=rollout_len)
 
     if len(acc) > 0:
         stats = acc.write(out_dir, shard_idx, rng=rng)
@@ -1185,7 +1224,315 @@ def main() -> None:
     print("Required world-model tokens present ✓")
 
     format_id_map = {fmt: i for i, fmt in enumerate(args.formats)}
+    format_names = {v: k for k, v in format_id_map.items()}
 
+    # ───────────────────────────────────────────────────────────────
+    # Multi-format interleaved mode: gather battles from all formats
+    # into a single pool, shuffle, split train/val once, then write
+    # shards that mix formats together so each .npz contains battles
+    # from every format.
+    # ───────────────────────────────────────────────────────────────
+    if len(args.formats) > 1:
+        all_battle_groups: list[tuple[str, str, list[str], int]] = (
+            []
+        )  # (fmt_name, key, paths, fmt_id)
+        for fmt in args.formats:
+            fmt_dir = os.path.join(args.parsed_replay_root, fmt)
+            if not os.path.isdir(fmt_dir):
+                print(f"Skipping {fmt}: directory not found at {fmt_dir}")
+                continue
+            txt_files = iter_txt_files(fmt_dir)
+            if not txt_files:
+                print(f"No .txt files found in {fmt_dir}")
+                continue
+            groups = group_txt_files(txt_files)
+            incomplete = {k for k, v in groups.items() if len(v) < 2}
+            if incomplete:
+                for k in incomplete:
+                    del groups[k]
+                print(
+                    f"  [{fmt}] Dropped {len(incomplete)} battles"
+                    f" with only one POV file"
+                )
+            for key, paths in groups.items():
+                all_battle_groups.append(
+                    (fmt, key, paths, format_id_map[fmt])
+                )
+
+        if not all_battle_groups:
+            print("No valid battle pairs found across any format. Exiting.")
+            return
+
+        print(
+            f"\nCombined pool: {len(all_battle_groups)} battle pairs"
+            f" from {len(args.formats)} formats"
+        )
+
+        # ── shuffle combined pool ──────────────────────────────────
+        pool_rng = np.random.default_rng(args.seed)
+        indices = pool_rng.permutation(len(all_battle_groups))
+        all_battle_groups = [all_battle_groups[i] for i in indices]
+
+        # ── train / val split ──────────────────────────────────────
+        n_val = 0
+        if args.val_split > 0:
+            n_val = max(1, int(round(len(all_battle_groups) * args.val_split)))
+            if len(all_battle_groups) > 1:
+                n_val = min(n_val, len(all_battle_groups) - 1)
+
+        # ── apply max_groups cap ───────────────────────────────────
+        if args.max_groups > 0:
+            n_total = min(len(all_battle_groups), args.max_groups)
+            if args.val_split > 0 and n_total > 1:
+                n_val = max(1, int(round(n_total * args.val_split)))
+                n_val = min(n_val, n_total - 1)
+            else:
+                n_val = 0
+            all_battle_groups = all_battle_groups[:n_total]
+
+        val_groups_list = all_battle_groups[:n_val]
+        train_groups_list = all_battle_groups[n_val:]
+
+        print(
+            f"  Split: {len(train_groups_list)} train /"
+            f" {len(val_groups_list)} val battle pairs"
+        )
+
+        def _build_split(battle_list):
+            groups_dict = {g[1]: g[2] for g in battle_list}
+            fmt_ids_dict = {g[1]: g[3] for g in battle_list}
+            keys = [g[1] for g in battle_list]
+            return groups_dict, fmt_ids_dict, keys
+
+        # ── shuffle keys again per split (decorrelates within shard) ─
+        shard_rng = np.random.default_rng(args.seed + 1009)
+
+        train_groups_dict, train_fmt_ids, train_keys = _build_split(
+            train_groups_list
+        )
+        shard_rng.shuffle(train_keys)
+        val_groups_dict, val_fmt_ids, val_keys = _build_split(val_groups_list)
+        shard_rng.shuffle(val_keys)
+
+        # ── write train shards ─────────────────────────────────────
+        train_totals, train_btl_max, train_shard_count = (
+            write_paired_split_shards(
+                split_name="train",
+                groups=train_groups_dict,
+                group_keys=train_keys,
+                tokenizer_path=args.tokenizer_path,
+                processes=args.processes,
+                battles_per_shard=args.battles_per_shard,
+                rollout_len=args.rollout_len,
+                out_dir=os.path.join(args.output_dir, "train"),
+                rng=shard_rng,
+                format_names=format_names,
+                fmt_ids=train_fmt_ids,
+            )
+        )
+
+        # ── write val shards ───────────────────────────────────────
+        val_totals, val_btl_max, val_shard_count = (
+            write_paired_split_shards(
+                split_name="val",
+                groups=val_groups_dict,
+                group_keys=val_keys,
+                tokenizer_path=args.tokenizer_path,
+                processes=args.processes,
+                battles_per_shard=args.battles_per_shard,
+                rollout_len=args.rollout_len,
+                out_dir=os.path.join(args.output_dir, "val"),
+                rng=shard_rng,
+                format_names=format_names,
+                fmt_ids=val_fmt_ids,
+            )
+        )
+
+        fmt_battle_max = max(train_btl_max, val_btl_max)
+
+        failed = train_totals["failed"] + val_totals["failed"]
+        total_battles = (
+            train_totals["num_battles"] + val_totals["num_battles"]
+        )
+        total_states = (
+            train_totals["total_states"] + val_totals["total_states"]
+        )
+        total_transitions = (
+            train_totals["total_transitions"]
+            + val_totals["total_transitions"]
+        )
+        total_rollout_samples = (
+            train_totals["total_rollout_samples"]
+            + val_totals["total_rollout_samples"]
+        )
+        total_shards = train_shard_count + val_shard_count
+
+        if failed:
+            print(f"  {failed} files failed to tokenize")
+            for split_label, split_totals in (
+                ("train", train_totals),
+                ("val", val_totals),
+            ):
+                skip_reasons = split_totals.get("skip_reasons", {})
+                if skip_reasons:
+                    print(
+                        f"  WARNING: {split_label} skipped battle"
+                        f" groups:"
+                    )
+                    for reason, count in sorted(skip_reasons.items()):
+                        print(f"    {reason}: {count}")
+
+        # ── metadata ───────────────────────────────────────────────
+        tokenizer_version = os.path.splitext(
+            os.path.basename(args.tokenizer_path)
+        )[0]
+        metadata = {
+            "schema_version": "paired_pov_rollout_v2",
+            "tokenizer_version": tokenizer_version,
+            "format": ",".join(sorted(args.formats)),
+            "formats": sorted(args.formats),
+            "format_id_map": format_id_map,
+            "split_mode": "raw_battle_group_interleaved",
+            "paired_pov": True,
+            "rollout_len": args.rollout_len,
+            "seed": args.seed,
+            "val_split": args.val_split,
+            "max_groups": args.max_groups,
+            "num_raw_battle_groups": len(all_battle_groups),
+            "train_raw_battle_groups": len(train_groups_list),
+            "val_raw_battle_groups": len(val_groups_list),
+            "num_battles": total_battles,
+            "num_shards": total_shards,
+            "train_num_battles": train_totals["num_battles"],
+            "val_num_battles": val_totals["num_battles"],
+            "train_num_shards": train_shard_count,
+            "val_num_shards": val_shard_count,
+            "train_rollout_samples": train_totals[
+                "total_rollout_samples"
+            ],
+            "val_rollout_samples": val_totals["total_rollout_samples"],
+            "battles_per_shard": args.battles_per_shard,
+            "total_states": total_states,
+            "total_transitions": total_transitions,
+            "total_transition_steps": total_transitions,
+            "total_rollout_samples": total_rollout_samples,
+            "max_battle_len": fmt_battle_max,
+            "storage": "paired_pov_rollout_indexed_variable_length_v2",
+            "compressed": False,
+            "train_skip_reasons": train_totals.get("skip_reasons", {}),
+            "val_skip_reasons": val_totals.get("skip_reasons", {}),
+        }
+        os.makedirs(args.output_dir, exist_ok=True)
+        meta_path = os.path.join(args.output_dir, "metadata.json")
+        with open(meta_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+        print(f"  Wrote metadata → {meta_path}")
+
+        # ── aggregate sequence-length stats across train + val ─────
+        def _agg(a: dict, b: dict, key: str, how: str) -> int:
+            va = int(a.get(key, 0))
+            vb = int(b.get(key, 0))
+            if how == "max":
+                return max(va, vb)
+            if how == "min":
+                return (
+                    min(va, vb) if va and vb else (va or vb)
+                )
+            return va + vb  # sum / count
+
+        train_seq = train_totals.get("seq_agg", {})
+        val_seq = val_totals.get("seq_agg", {})
+        combined_seq: dict[str, int] = {}
+        for k in [
+            "max_state_block_len",
+            "min_state_block_len",
+            "sum_state_block_len",
+            "count_state_blocks",
+            "max_temporal_seq",
+            "min_temporal_seq",
+            "sum_temporal_seq",
+            "count_temporal_battles",
+        ]:
+            how = (
+                "max"
+                if k.startswith("max_")
+                else ("min" if k.startswith("min_") else "sum")
+            )
+            combined_seq[k] = _agg(train_seq, val_seq, k, how)
+
+        count_blocks = combined_seq["count_state_blocks"]
+        avg_state_block_len = (
+            combined_seq["sum_state_block_len"] / count_blocks
+            if count_blocks
+            else 0.0
+        )
+        count_temporal = combined_seq["count_temporal_battles"]
+        avg_temporal_seq = (
+            combined_seq["sum_temporal_seq"] / count_temporal
+            if count_temporal
+            else 0.0
+        )
+
+        SAFETY_MULTIPLIER = 1.2
+        state_block_raw_max = combined_seq["max_state_block_len"]
+        temporal_raw_max = combined_seq["max_temporal_seq"]
+        seq_stats = {
+            "safety_multiplier": SAFETY_MULTIPLIER,
+            "state_block_len": {
+                "max_raw": state_block_raw_max,
+                "max": int(
+                    math.floor(state_block_raw_max * SAFETY_MULTIPLIER)
+                ),
+                "min": combined_seq["min_state_block_len"],
+                "avg": round(avg_state_block_len, 2),
+                "count": count_blocks,
+            },
+            "temporal_sequence_len": {
+                "max_raw": temporal_raw_max,
+                "max": int(
+                    math.floor(temporal_raw_max * SAFETY_MULTIPLIER)
+                ),
+                "min": combined_seq["min_temporal_seq"],
+                "avg": round(avg_temporal_seq, 2),
+                "count": count_temporal,
+                "note": (
+                    "Interleaved blocks per POV history: 1 (header) +"
+                    " 3*(T) + 1 (current state). "
+                    "max = 3*num_state_blocks - 2 (matches"
+                    " JEPATemporalEncoder.forward max_seq)."
+                ),
+            },
+        }
+        seq_path = os.path.join(args.output_dir, "sequence_stats.json")
+        with open(seq_path, "w") as f:
+            json.dump(seq_stats, f, indent=2)
+        print(f"  Sequence stats → {seq_path}")
+        print(
+            f"    State block len (tokens): "
+            f"min={seq_stats['state_block_len']['min']}, "
+            f"avg={seq_stats['state_block_len']['avg']:.1f}, "
+            f"max={seq_stats['state_block_len']['max']}"
+        )
+        print(
+            f"    Temporal seq (blocks):   "
+            f"min={seq_stats['temporal_sequence_len']['min']}, "
+            f"avg={seq_stats['temporal_sequence_len']['avg']:.1f}, "
+            f"max={seq_stats['temporal_sequence_len']['max']}"
+        )
+
+        print(
+            f"  Total: {total_battles} battles, {total_states} states, "
+            f"{total_rollout_samples} rollout samples"
+            f" x K={args.rollout_len} "
+            f"({total_transitions} transition steps),"
+            f" {total_shards} shards, "
+            f"max battle {fmt_battle_max} tokens"
+        )
+
+        print(f"\nDone.")
+        return
+
+    # ── Single-format mode (backward compatible) ───────────────────
     for fmt in args.formats:
         fmt_dir = os.path.join(args.parsed_replay_root, fmt)
         if not os.path.isdir(fmt_dir):
