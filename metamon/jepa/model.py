@@ -1460,8 +1460,19 @@ class PairedJEPAModel(nn.Module):
         p2_legal_action_mask: torch.Tensor | None = None,
         p2_chosen_legal_action_idx: torch.Tensor | None = None,
         sample_beliefs: Optional[bool] = None,
+        *,
+        p1_next_legal_action_tokens: torch.Tensor | None = None,
+        p1_next_legal_action_mask: torch.Tensor | None = None,
+        p2_next_legal_action_tokens: torch.Tensor | None = None,
+        p2_next_legal_action_mask: torch.Tensor | None = None,
+        compute_td_bootstrap: bool | None = None,
     ) -> dict[str, torch.Tensor]:
         sample = self.training if sample_beliefs is None else sample_beliefs
+        if compute_td_bootstrap is None:
+            compute_td_bootstrap = (
+                p1_next_legal_action_tokens is not None
+                or p2_next_legal_action_tokens is not None
+            )
 
         z_p1_T = self.encode_current_state(p1_state_T, p1_state_T_valid)
         z_p2_T = self.encode_current_state(p2_state_T, p2_state_T_valid)
@@ -1562,7 +1573,75 @@ class PairedJEPAModel(nn.Module):
             p2_legal_action_h,
         )
 
-        return {
+        ctx_p1_T1 = None
+        ctx_p2_T1 = None
+        pred_p2_bootstrap_mu = None
+        pred_p2_bootstrap_logvar = None
+        pred_p1_bootstrap_mu = None
+        pred_p1_bootstrap_logvar = None
+        p1_next_decision_state = None
+        p2_next_decision_state = None
+        p1_next_value_logit = None
+        p2_next_value_logit = None
+        p1_next_q_logits = None
+        p2_next_q_logits = None
+        if compute_td_bootstrap:
+            with torch.no_grad():
+                ctx_p1_T1 = self.encode_history_context(
+                    p1_state_T1, p1_state_T1_valid,
+                    p1_player_hist_T1, p1_player_hist_T1_valid,
+                    p1_opponent_hist_T1, p1_opponent_hist_T1_valid,
+                )
+                ctx_p2_T1 = self.encode_history_context(
+                    p2_state_T1, p2_state_T1_valid,
+                    p2_player_hist_T1, p2_player_hist_T1_valid,
+                    p2_opponent_hist_T1, p2_opponent_hist_T1_valid,
+                )
+                # Bootstrap decision states for the actual T+1 states. These
+                # are semi-gradient TD targets, including at rollout-window
+                # boundaries where there is no k+1 row inside the same item.
+                (pred_p2_bootstrap_mu, pred_p2_bootstrap_logvar,
+                 _pred_p2_action_T1_mu, _pred_p2_action_T1_logvar) = self.opponent_belief_predictor(ctx_p1_T1, z_p1_T1)
+                (pred_p1_bootstrap_mu, pred_p1_bootstrap_logvar,
+                 _pred_p1_action_T1_mu, _pred_p1_action_T1_logvar) = self.opponent_belief_predictor(ctx_p2_T1, z_p2_T1)
+                p1_next_decision_state = self.decision_state_encoder(
+                    z_p1_T1, pred_p2_bootstrap_mu, pred_p2_bootstrap_logvar
+                )
+                p2_next_decision_state = self.decision_state_encoder(
+                    z_p2_T1, pred_p1_bootstrap_mu, pred_p1_bootstrap_logvar
+                )
+                p1_next_value_logit = self.value_head(p1_next_decision_state)
+                p2_next_value_logit = self.value_head(p2_next_decision_state)
+                if p1_next_legal_action_tokens is not None:
+                    if p1_next_legal_action_mask is None:
+                        p1_next_legal_action_mask = (
+                            p1_next_legal_action_tokens != self.pad_id
+                        ).any(dim=-1)
+                    p1_next_legal_action = self.encode_action_candidates(
+                        p1_next_legal_action_tokens,
+                        p1_next_legal_action_mask,
+                    )
+                    p1_next_legal_action_h = self.action_projector(p1_next_legal_action)
+                    p1_next_q_logits = self.action_value_head(
+                        p1_next_decision_state,
+                        p1_next_legal_action_h,
+                    )
+                if p2_next_legal_action_tokens is not None:
+                    if p2_next_legal_action_mask is None:
+                        p2_next_legal_action_mask = (
+                            p2_next_legal_action_tokens != self.pad_id
+                        ).any(dim=-1)
+                    p2_next_legal_action = self.encode_action_candidates(
+                        p2_next_legal_action_tokens,
+                        p2_next_legal_action_mask,
+                    )
+                    p2_next_legal_action_h = self.action_projector(p2_next_legal_action)
+                    p2_next_q_logits = self.action_value_head(
+                        p2_next_decision_state,
+                        p2_next_legal_action_h,
+                    )
+
+        outputs = {
             "enc_p1_T": z_p1_T,
             "enc_p2_T": z_p2_T,
             "enc_p1_T1": z_p1_T1,
@@ -1610,6 +1689,26 @@ class PairedJEPAModel(nn.Module):
             "p1_q_teacher_logits": p1_q_teacher_logits,
             "p2_q_teacher_logits": p2_q_teacher_logits,
         }
+        if p1_next_value_logit is not None and p2_next_value_logit is not None:
+            outputs.update({
+                "ctx_p1_T1": ctx_p1_T1,
+                "ctx_p2_T1": ctx_p2_T1,
+                "pred_p2_T1_belief_mu": pred_p2_bootstrap_mu,
+                "pred_p2_T1_belief_logvar": pred_p2_bootstrap_logvar,
+                "pred_p1_T1_belief_mu": pred_p1_bootstrap_mu,
+                "pred_p1_T1_belief_logvar": pred_p1_bootstrap_logvar,
+                "p1_next_decision_state": p1_next_decision_state,
+                "p2_next_decision_state": p2_next_decision_state,
+                "p1_next_value_logit": p1_next_value_logit,
+                "p2_next_value_logit": p2_next_value_logit,
+            })
+        if p1_next_q_logits is not None and p1_next_legal_action_mask is not None:
+            outputs["p1_next_q_logits"] = p1_next_q_logits
+            outputs["p1_next_legal_action_mask"] = p1_next_legal_action_mask
+        if p2_next_q_logits is not None and p2_next_legal_action_mask is not None:
+            outputs["p2_next_q_logits"] = p2_next_q_logits
+            outputs["p2_next_legal_action_mask"] = p2_next_legal_action_mask
+        return outputs
 
     def save_checkpoint(self, path: str, **extra) -> None:
         ckpt = {"model_state_dict": self.state_dict(), **extra}
@@ -1737,6 +1836,20 @@ def _zero_like_loss(reference: torch.Tensor) -> torch.Tensor:
     return reference.sum() * 0.0
 
 
+def _expand_to_reference(
+    tensor: torch.Tensor,
+    reference: torch.Tensor,
+    *,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    tensor = tensor.to(device=reference.device, dtype=dtype or reference.dtype)
+    while tensor.ndim > reference.ndim and tensor.shape[-1] == 1:
+        tensor = tensor.squeeze(-1)
+    while tensor.ndim < reference.ndim:
+        tensor = tensor.unsqueeze(-1)
+    return tensor.expand_as(reference)
+
+
 def _outcome_targets_and_valid(outputs: dict[str, torch.Tensor], reference: torch.Tensor) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -1764,22 +1877,14 @@ def _masked_bce_with_logits(
     valid: torch.Tensor,
     weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    valid = valid.to(device=logits.device, dtype=torch.bool)
-    target = target.to(device=logits.device, dtype=logits.dtype)
-    while target.ndim < logits.ndim:
-        target = target.unsqueeze(-1)
-    target = target.expand_as(logits)
-    while valid.ndim < logits.ndim:
-        valid = valid.unsqueeze(-1)
-    valid = valid.expand_as(logits)
+    valid = _expand_to_reference(valid, logits, dtype=torch.bool)
+    target = _expand_to_reference(target, logits, dtype=logits.dtype)
     if not bool(valid.any()):
         return _zero_like_loss(logits)
     loss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
     if weight is not None:
-        weight = weight.to(device=logits.device, dtype=logits.dtype)
-        while weight.ndim < logits.ndim:
-            weight = weight.unsqueeze(-1)
-        loss = loss * weight.expand_as(logits)
+        weight = _expand_to_reference(weight, logits, dtype=logits.dtype)
+        loss = loss * weight
     return loss[valid].mean()
 
 
@@ -1804,6 +1909,8 @@ def _masked_policy_cross_entropy(
     legal_mask = legal_mask.to(device=logits.device, dtype=torch.bool)
     chosen_idx = chosen_idx.to(device=logits.device, dtype=torch.long)
     valid = valid.to(device=logits.device, dtype=torch.bool)
+    while valid.ndim < legal_mask.ndim - 1:
+        valid = valid.unsqueeze(-1)
     chosen_in_range = (chosen_idx >= 0) & (chosen_idx < logits.shape[-1])
     safe_idx = chosen_idx.clamp(min=0, max=max(logits.shape[-1] - 1, 0))
     chosen_legal = legal_mask.gather(-1, safe_idx.unsqueeze(-1)).squeeze(-1)
@@ -1817,7 +1924,8 @@ def _masked_policy_cross_entropy(
     flat_valid = sample_valid.reshape(-1)
     loss = F.cross_entropy(flat_logits[flat_valid], flat_target[flat_valid], reduction="none")
     if weight is not None:
-        flat_weight = weight.to(device=logits.device, dtype=logits.dtype).reshape(-1)
+        weight = _expand_to_reference(weight, sample_valid, dtype=logits.dtype)
+        flat_weight = weight.reshape(-1)
         loss = loss * flat_weight[flat_valid]
     return loss.mean()
 
@@ -1832,11 +1940,12 @@ def _advantage_weights(
 ) -> torch.Tensor | None:
     if temperature is None or temperature <= 0:
         return None
-    outcome = outcome.to(device=value_logit.device, dtype=value_logit.dtype)
+    outcome = _expand_to_reference(outcome, value_logit, dtype=value_logit.dtype)
+    valid = _expand_to_reference(valid, value_logit, dtype=torch.bool)
     value = torch.sigmoid(value_logit).detach()
     weight = torch.exp((outcome - value) / float(temperature))
     weight = weight.clamp(min=clamp_min, max=clamp_max)
-    return torch.where(valid.to(device=value_logit.device, dtype=torch.bool), weight, torch.ones_like(weight))
+    return torch.where(valid, weight, torch.ones_like(weight))
 
 
 def compute_paired_losses(
@@ -1856,6 +1965,7 @@ def compute_paired_losses(
     advantage_temperature: float | None = None,
     advantage_weight_min: float = 0.1,
     advantage_weight_max: float = 10.0,
+    gamma: float = 1.0,
     sigreg_num_slices: int = SIGREG_NUM_SLICES,
     sigreg_num_points: int = SIGREG_NUM_POINTS,
     sigreg_domain: float = SIGREG_DOMAIN,
@@ -1868,8 +1978,13 @@ def compute_paired_losses(
       - next_state_loss: diagonal Gaussian NLL of target next-state latent
         (the next-state predictor is stochastic — mu+logvar — because the
         world has inherent randomness: damage rolls, status, speed ties, …)
-      - value_loss: BCE(V(s), terminal_outcome) per POV
-      - q_value_loss: BCE(Q(s, chosen_action), terminal_outcome) per POV
+      - value_loss: TD(0)-bootstrapped BCE on V(s) per POV.
+        Non-terminal steps use γ·σ(V(T+1)).detach() as a soft target;
+        true terminal steps use the binary outcome.  γ=1 keeps the previous
+        MC supervision path for backward compatibility.
+      - q_value_loss: TD(0)-bootstrapped BCE on Q(s, chosen_action) per POV.
+        Non-terminal steps use γ·σ(maxₐ Q(T+1,a)).detach(); true terminal
+        steps use the binary outcome.
       - policy_loss: masked CE over only that POV's legal action candidates
       - SIGReg on state encoder outputs (current, next, context).
         Predicted next-state latents are NOT regularised — they are Gaussian
@@ -1877,6 +1992,11 @@ def compute_paired_losses(
 
     If lambda_sigreg_state/lambda_sigreg_action are None, both fall back to
     lambda_sigreg for backward compatibility.
+
+    gamma controls TD discount. For backward compatibility, 1.0 disables TD
+    and uses the previous MC target for all steps. Typical TD values are
+    0.95–0.99. Bootstrapping is applied to non-terminal transitions, including
+    rollout-window boundaries; true terminal transitions use the battle outcome.
     """
     if lambda_sigreg_state is None:
         lambda_sigreg_state = lambda_sigreg
@@ -1933,15 +2053,149 @@ def compute_paired_losses(
     rank_loss_next = enc_p1_T.new_tensor(0.0)
     rank_loss = enc_p1_T.new_tensor(0.0)
 
+    # ── TD bootstrapping helpers ────────────────────────────────────
+    # True TD targets bootstrap from the actual T+1 state. The model emits
+    # next-state V/Q logits for that state, so rollout-window boundaries are
+    # not treated as environment terminals.
+    use_td = abs(float(gamma) - 1.0) > 1e-8  # skip TD construction when γ≈1
+
+    def _terminal_mask(name: str, reference: torch.Tensor) -> torch.Tensor:
+        mask = outputs.get(name)
+        if mask is None:
+            return torch.zeros_like(reference, dtype=torch.bool)
+        return _expand_to_reference(mask, reference, dtype=torch.bool)
+
+    def _next_value_logits(
+        current_logit: torch.Tensor,
+        next_key: str,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        next_logit = outputs.get(next_key)
+        if next_logit is not None:
+            return (
+                _expand_to_reference(next_logit, current_logit, dtype=current_logit.dtype),
+                torch.ones_like(current_logit, dtype=torch.bool),
+            )
+        # Backward-compatible fallback for unit tests/legacy callers that only
+        # provide current-step logits. The final rollout position is not
+        # bootstrappable in this fallback and will use the outcome target.
+        next_logit = torch.zeros_like(current_logit)
+        valid = torch.zeros_like(current_logit, dtype=torch.bool)
+        if current_logit.ndim >= 2 and current_logit.shape[-1] > 1:
+            next_logit[..., :-1] = current_logit[..., 1:]
+            valid[..., :-1] = True
+        return next_logit, valid
+
+    def _next_q_logits(
+        current_logits: torch.Tensor,
+        current_legal_mask: torch.Tensor,
+        next_logits_key: str,
+        next_mask_key: str,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        next_logits = outputs.get(next_logits_key)
+        next_mask = outputs.get(next_mask_key)
+        if next_logits is not None and next_mask is not None:
+            next_logits = next_logits.to(device=current_logits.device, dtype=current_logits.dtype)
+            next_mask = next_mask.to(device=current_logits.device, dtype=torch.bool)
+            return next_logits, next_mask
+        # Legacy fallback: bootstrap only interior rollout steps by shifting the
+        # current-step candidate scores. The final position has no valid next
+        # candidates and will use the outcome target.
+        next_logits = torch.zeros_like(current_logits)
+        next_mask = torch.zeros_like(current_legal_mask, dtype=torch.bool)
+        if current_logits.ndim >= 3 and current_logits.shape[-2] > 1:
+            next_logits[..., :-1, :] = current_logits[..., 1:, :]
+            next_mask[..., :-1, :] = current_legal_mask.to(
+                device=current_logits.device,
+                dtype=torch.bool,
+            )[..., 1:, :]
+        return next_logits, next_mask
+
+    def _td_target(
+        value_logit: torch.Tensor,   # [B, K]
+        next_value_logit: torch.Tensor,
+        outcome: torch.Tensor,       # [B] or [B, K]
+        is_terminal: torch.Tensor,   # [B, K]
+        bootstrap_valid: torch.Tensor,
+    ) -> torch.Tensor:
+        """Build TD(0)-bootstrapped soft target for V or Q logit.
+
+        Non-terminal:  γ · σ(V_{next}).detach()
+        Terminal:      outcome ∈ {0, 1}
+        """
+        if not use_td:
+            return outcome  # [B] — old MC behaviour, broadcast in BCE helper
+        next_value_logit = _expand_to_reference(
+            next_value_logit,
+            value_logit,
+            dtype=value_logit.dtype,
+        )
+        soft_target = float(gamma) * torch.sigmoid(next_value_logit).detach()
+        outcome_expanded = _expand_to_reference(outcome, value_logit, dtype=soft_target.dtype)
+        is_terminal = _expand_to_reference(is_terminal, value_logit, dtype=torch.bool)
+        bootstrap_valid = _expand_to_reference(bootstrap_valid, value_logit, dtype=torch.bool)
+        return torch.where(is_terminal | ~bootstrap_valid, outcome_expanded, soft_target)
+
+    def _td_q_target(
+        chosen_q: torch.Tensor,            # [B, K]
+        next_q_logits: torch.Tensor,       # [B, K, C]
+        next_legal_mask: torch.Tensor,     # [B, K, C]
+        outcome: torch.Tensor,             # [B] or [B, K]
+        is_terminal: torch.Tensor,         # [B, K]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Build TD(0)-bootstrapped soft target for Q logit.
+
+        Non-terminal:  γ · σ(max_candidates Q_{next}).detach()
+        Terminal:      outcome ∈ {0, 1}
+        """
+        if not use_td:
+            return outcome, torch.zeros_like(chosen_q, dtype=torch.bool)
+        device = chosen_q.device
+        next_q_logits = next_q_logits.to(device=device, dtype=chosen_q.dtype)
+        next_legal_mask = next_legal_mask.to(device=device, dtype=torch.bool)
+        # max over legal candidates at each step
+        bootstrap_valid = next_legal_mask.any(dim=-1)
+        masked = next_q_logits.masked_fill(
+            ~next_legal_mask,
+            torch.finfo(next_q_logits.dtype).min,
+        )
+        q_next_max = masked.max(dim=-1).values
+        q_next_max = torch.where(bootstrap_valid, q_next_max, torch.zeros_like(q_next_max))
+        soft_target = float(gamma) * torch.sigmoid(q_next_max).detach()  # [B, K] in [0, γ]
+        outcome_expanded = _expand_to_reference(outcome, chosen_q, dtype=soft_target.dtype)
+        is_terminal = _expand_to_reference(is_terminal, chosen_q, dtype=torch.bool)
+        bootstrap_valid = _expand_to_reference(bootstrap_valid, chosen_q, dtype=torch.bool)
+        return torch.where(is_terminal | ~bootstrap_valid, outcome_expanded, soft_target), bootstrap_valid
+
+    p1_is_terminal = _terminal_mask("p1_is_terminal", enc_p1_T[..., 0])
+    p2_is_terminal = _terminal_mask("p2_is_terminal", enc_p2_T[..., 0])
+    p1_value_bootstrap_valid = torch.zeros_like(p1_is_terminal, dtype=torch.bool)
+    p2_value_bootstrap_valid = torch.zeros_like(p2_is_terminal, dtype=torch.bool)
+    p1_q_bootstrap_valid = torch.zeros_like(p1_is_terminal, dtype=torch.bool)
+    p2_q_bootstrap_valid = torch.zeros_like(p2_is_terminal, dtype=torch.bool)
+
     if "p1_value_logit" in outputs and "p2_value_logit" in outputs:
+        p1_next_v, p1_value_bootstrap_valid = _next_value_logits(
+            outputs["p1_value_logit"],
+            "p1_next_value_logit",
+        )
+        p2_next_v, p2_value_bootstrap_valid = _next_value_logits(
+            outputs["p2_value_logit"],
+            "p2_next_value_logit",
+        )
+        p1_v_target = _td_target(
+            outputs["p1_value_logit"], p1_next_v, p1_outcome,
+            p1_is_terminal, p1_value_bootstrap_valid)
+        p2_v_target = _td_target(
+            outputs["p2_value_logit"], p2_next_v, p2_outcome,
+            p2_is_terminal, p2_value_bootstrap_valid)
         value_loss_p1 = _masked_bce_with_logits(
             outputs["p1_value_logit"],
-            p1_outcome,
+            p1_v_target,
             outcome_valid,
         )
         value_loss_p2 = _masked_bce_with_logits(
             outputs["p2_value_logit"],
-            p2_outcome,
+            p2_v_target,
             outcome_valid,
         )
         value_loss = 0.5 * (value_loss_p1 + value_loss_p2)
@@ -1973,15 +2227,33 @@ def compute_paired_losses(
             advantage_weight_min,
             advantage_weight_max,
         )
+        p1_next_q, p1_next_q_mask = _next_q_logits(
+            outputs["p1_q_logits"],
+            outputs["p1_legal_action_mask"],
+            "p1_next_q_logits",
+            "p1_next_legal_action_mask",
+        )
+        p2_next_q, p2_next_q_mask = _next_q_logits(
+            outputs["p2_q_logits"],
+            outputs["p2_legal_action_mask"],
+            "p2_next_q_logits",
+            "p2_next_legal_action_mask",
+        )
+        p1_q_target, p1_q_bootstrap_valid = _td_q_target(
+            p1_chosen_q, p1_next_q, p1_next_q_mask,
+            p1_outcome, p1_is_terminal)
+        p2_q_target, p2_q_bootstrap_valid = _td_q_target(
+            p2_chosen_q, p2_next_q, p2_next_q_mask,
+            p2_outcome, p2_is_terminal)
         q_value_loss_p1 = _masked_bce_with_logits(
             p1_chosen_q,
-            p1_outcome,
+            p1_q_target,
             outcome_valid,
             p1_adv_weight,
         )
         q_value_loss_p2 = _masked_bce_with_logits(
             p2_chosen_q,
-            p2_outcome,
+            p2_q_target,
             outcome_valid,
             p2_adv_weight,
         )
@@ -2095,9 +2367,20 @@ def compute_paired_losses(
         + lambda_sigreg_state * sigreg_state_loss
         + lambda_sigreg_action * sigreg_action_loss
     )
+    p1_value_td_used = p1_value_bootstrap_valid & ~p1_is_terminal
+    p2_value_td_used = p2_value_bootstrap_valid & ~p2_is_terminal
+    p1_q_td_used = p1_q_bootstrap_valid & ~p1_is_terminal
+    p2_q_td_used = p2_q_bootstrap_valid & ~p2_is_terminal
 
     metrics = {
         "loss": total_loss.item(),
+        "gamma": float(gamma),
+        "p1_terminal_fraction": p1_is_terminal.float().mean().item(),
+        "p2_terminal_fraction": p2_is_terminal.float().mean().item(),
+        "p1_value_td_fraction": p1_value_td_used.float().mean().item(),
+        "p2_value_td_fraction": p2_value_td_used.float().mean().item(),
+        "p1_q_td_fraction": p1_q_td_used.float().mean().item(),
+        "p2_q_td_fraction": p2_q_td_used.float().mean().item(),
         "opponent_state_loss": opponent_state_loss.item(),
         "opponent_state_loss_p1_to_p2": opponent_state_loss_p1_to_p2.item(),
         "opponent_state_loss_p2_to_p1": opponent_state_loss_p2_to_p1.item(),
