@@ -131,7 +131,7 @@ class TuiMixin:
     _repl_active_instance: Optional["TuiMixin"] = None
     _repl_all_instances: list["TuiMixin"] = []
     _repl_verbose_blocks: bool = False
-    _repl_max_history_blocks: int = 0       # 0 = unlimited; set by player on init
+    _repl_max_history_blocks: int = 300     # 0 = unlimited; set by player on init
     _repl_last_auto_redraw: float = 0.0
     _repl_selected_turn: int = -1
     _repl_show_raw_for_turn: bool = False

@@ -67,7 +67,7 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         shard_paths: list[str],
         structural_token_ids: dict[str, int],
         shuffle_shards: bool = True,
-        max_history_blocks: int = 0,
+        max_history_blocks: int = 300,
     ):
         super().__init__()
         if not shard_paths:
@@ -76,7 +76,7 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         self.structural = structural_token_ids
         self.shuffle_shards = shuffle_shards
         self.shuffle_transitions = shuffle_shards
-        self.max_history_blocks = max_history_blocks  # 0 = unlimited
+        self.max_history_blocks = max_history_blocks  # 0 = unlimited, default 300
 
         # Pre-processed shards — populated lazily by _get_shard()
         self._shards: dict[str, dict] = {}
@@ -889,7 +889,10 @@ def train(args: argparse.Namespace) -> None:
     # The stats file already includes a 1.2× safety multiplier on max values.
     auto_state_block_max = None
     auto_temporal_max = None
+    auto_state_block_raw = 0
+    auto_temporal_raw = 0
     auto_safety_multiplier = None
+    auto_stats_source: list[str] = []
     for fmt in args.formats:
         stats_path = os.path.join(args.data_root, fmt, "sequence_stats.json")
         if os.path.exists(stats_path):
@@ -897,30 +900,70 @@ def train(args: argparse.Namespace) -> None:
                 seq_stats = json.load(f)
             sl = seq_stats["state_block_len"]["max"]
             tl = seq_stats["temporal_sequence_len"]["max"]
+            sl_raw = seq_stats["state_block_len"].get("max_raw", int(sl / (seq_stats.get("safety_multiplier", 1.2))))
+            tl_raw = seq_stats["temporal_sequence_len"].get("max_raw", int(tl / (seq_stats.get("safety_multiplier", 1.2))))
             if auto_state_block_max is None or sl > auto_state_block_max:
                 auto_state_block_max = sl
+                auto_state_block_raw = sl_raw
             if auto_temporal_max is None or tl > auto_temporal_max:
                 auto_temporal_max = tl
+                auto_temporal_raw = tl_raw
             if auto_safety_multiplier is None:
                 auto_safety_multiplier = seq_stats.get("safety_multiplier")
+            auto_stats_source.append(stats_path)
+
+    encoder_overridden = False
+    temporal_overridden = False
     if auto_state_block_max is not None:
         # The inflated max already includes safety margin; use it directly.
         if auto_state_block_max > context_length:
             context_length = auto_state_block_max
+            encoder_overridden = True
         model_cfg.setdefault("encoder", {})["max_seq_len"] = context_length
     if auto_temporal_max is not None:
         if auto_temporal_max > temporal_max_seq_len:
             temporal_max_seq_len = auto_temporal_max
+            temporal_overridden = True
         model_cfg.setdefault("temporal_encoder", {})["max_seq_len"] = temporal_max_seq_len
-    if auto_safety_multiplier is not None:
-        print(f"Auto-detected max_seq_len from sequence_stats.json (safety ×{auto_safety_multiplier})")
+
+    # ── Report max_seq_len resolution clearly ──────────────────────
+    config_enc = model_cfg.get("encoder", {}).get("max_seq_len")
+    config_tmp = model_cfg.get("temporal_encoder", {}).get("max_seq_len")
+    if auto_state_block_max is not None:
+        mult = f" (×{auto_safety_multiplier} safety)" if auto_safety_multiplier else ""
+        action = "overriding fallback" if encoder_overridden else "no override needed (≤ fallback)"
+        print(
+            f"Encoder max_seq_len: {context_length} "
+            f"[auto-detected from {auto_stats_source!r}{mult}; "
+            f"raw dataset max = {auto_state_block_raw}; {action}]"
+        )
+    else:
+        source = "config" if config_enc is not None else "hardcoded fallback"
+        print(
+            f"Encoder max_seq_len: {context_length} "
+            f"[{source}{' (config has null)' if config_enc is None else ''}; "
+            f"no sequence_stats.json found — run wm-dataset first]"
+        )
+    if auto_temporal_max is not None:
+        mult = f" (×{auto_safety_multiplier} safety)" if auto_safety_multiplier else ""
+        action = "overriding fallback" if temporal_overridden else "no override needed (≤ fallback)"
+        print(
+            f"Temporal max_seq_len: {temporal_max_seq_len} "
+            f"[auto-detected from {auto_stats_source!r}{mult}; "
+            f"raw dataset max = {auto_temporal_raw}; {action}]"
+        )
+    else:
+        source = "config" if config_tmp is not None else "hardcoded fallback"
+        print(
+            f"Temporal max_seq_len: {temporal_max_seq_len} "
+            f"[{source}{' (config has null)' if config_tmp is None else ''}; "
+            f"no sequence_stats.json found — run wm-dataset first]"
+        )
 
     print(f"Vocabulary size: {vocab_size}")
     print(f"Special tokens: bos={bos_id} eos={eos_id} pad={pad_id}")
     print(f"Structural token IDs: {structural_ids}")
     print(f"Latent dim: {latent_dim}  action_latent_dim: {action_latent_dim}")
-    print(f"CONTEXT_LENGTH (encoder max_seq_len): {context_length}")
-    print(f"Temporal max_seq_len: {temporal_max_seq_len}")
 
     train_shards = PairedJEPADataset.discover(args.data_root, args.formats, "train")
     val_shards = PairedJEPADataset.discover(
@@ -1456,7 +1499,7 @@ if __name__ == "__main__":
                         help="Wandb project name (default: metamon-jepa-<format>).")
     parser.add_argument("--wandb_name", type=str, default=None,
                         help="Wandb run name.")
-    parser.add_argument("--max_history_blocks", type=int, default=0,
+    parser.add_argument("--max_history_blocks", type=int, default=300,
                         help="Maximum non-header history state blocks per sample (0 = unlimited). "
                              "The team header is always retained. Lower = faster data loading + shorter "
                              "temporal sequences. Default: 0 (unlimited)")

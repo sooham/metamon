@@ -178,7 +178,7 @@ JEPA_PREFETCH_FACTOR ?= 4
 JEPA_PRINT_INTERVAL ?= 10
 JEPA_CONFIG ?= metamon/jepa/configs/default.yaml
 JEPA_COMPILE ?= true
-JEPA_MAX_HISTORY ?= 0
+JEPA_MAX_HISTORY ?= 300
 
 # Train the paired-POV JEPA model on paired_shard_*.npz files.
 # Requires paired data generated with scripts/generate_world_model_data.py --paired_pov.
@@ -191,8 +191,8 @@ JEPA_MAX_HISTORY ?= 0
 # Usage:
 #   make train-jepa FORMATS=gen1ou
 #   make train-jepa FORMATS=gen1ou JEPA_MAX_HISTORY=0  # full battle history
-JEPA_PAIRED_BATCH_SIZE ?= 40
-JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 2
+JEPA_PAIRED_BATCH_SIZE ?= 100
+JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 1
 JEPA_PAIRED_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best_stochastic.pt
 JEPA_PAIRED_MAX_STEPS ?= 0
 JEPA_PAIRED_VAL_INTERVAL ?= 500
@@ -201,6 +201,7 @@ JEPA_PAIRED_PRINT_INTERVAL ?= 50
 JEPA_PAIRED_LOG_INTERVAL ?= 20
 JEPA_GAMMA ?= 0.99
 JEPA_PAIRED_EXTRA_ARGS ?=
+
 train-jepa:
 	@if [ -z "$$TMUX" ]; then \
 		if tmux has-session -t jepa-train 2>/dev/null; then \
