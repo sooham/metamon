@@ -89,7 +89,28 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         *,
         required: bool = True,
     ) -> list[str]:
+        """Find paired shard paths under *data_root*.
+
+        Supports two layouts:
+
+        1. **Flat / interleaved** (multi-format generation):
+           ``data_root/{split}/paired_shard_*.npz``
+
+        2. **Per-format** (single-format / legacy):
+           ``data_root/{fmt}/{split}/paired_shard_*.npz``
+
+        Both are searched; results are merged and sorted.
+        """
         shard_paths: list[str] = []
+
+        # Layout 1: flat (interleaved, multi-format)
+        flat_dir = os.path.join(data_root, split)
+        if os.path.isdir(flat_dir):
+            for name in sorted(os.listdir(flat_dir)):
+                if name.startswith("paired_shard_") and name.endswith(".npz"):
+                    shard_paths.append(os.path.join(flat_dir, name))
+
+        # Layout 2: per-format (single-format / legacy)
         for fmt in formats:
             split_dir = os.path.join(data_root, fmt, split)
             if not os.path.isdir(split_dir):
@@ -97,6 +118,7 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
             for name in sorted(os.listdir(split_dir)):
                 if name.startswith("paired_shard_") and name.endswith(".npz"):
                     shard_paths.append(os.path.join(split_dir, name))
+
         if required and not shard_paths:
             raise FileNotFoundError(
                 f"No paired {split!r} shards found under {data_root} for {formats}"
