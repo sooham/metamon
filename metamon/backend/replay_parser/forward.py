@@ -60,7 +60,6 @@ class SimProtocol:
         "-fieldactivate",  # redundant
         "gametype",
         "hidelines",  # undocumented, no idea
-        "-hint",
         "hint",
         "html",
         "-hitcount",
@@ -74,7 +73,6 @@ class SimProtocol:
         "l",
         "L",
         "message",
-        "-message",  # chat
         "-miss",
         "n",
         "-nothing",  # redundant for a move that did "absolutely nothing"
@@ -228,6 +226,9 @@ class SimProtocol:
 
     def __init__(self, replay: ParsedReplay):
         self.replay = replay
+        # Track the most recently set action slot so that clause-mod
+        # -hint / -message handlers can mark the blocked move as failed.
+        self._last_action_slot: Optional[tuple[int, int]] = None  # (team, slot)
 
     @property
     def curr_turn(self):
@@ -301,6 +302,8 @@ class SimProtocol:
         # saves the within-turn-state for the previous turn, but does not continue it
         new_turn.on_end_of_turn()
         self.replay.turnlist.append(new_turn)
+        # Reset last-action tracking at turn boundaries.
+        self._last_action_slot = None
 
     def _parse_win(self, args: List[str]):
         """
@@ -757,6 +760,12 @@ class SimProtocol:
             user=pokemon,
             target=target_pokemon,
         )
+        # Track this action so clause-mod hints/messages can mark it
+        # as failed if the move is blocked by a clause.
+        if poke_str[1] == "1":
+            self._last_action_slot = (1, 0)  # singles: slot 0
+        elif poke_str[1] == "2":
+            self._last_action_slot = (2, 0)
 
     def _parse_damage_heal(self, args: List[str], name: str):
         """
@@ -1540,17 +1549,79 @@ class SimProtocol:
 
         # Mark the corresponding action as failed so the text serializer
         # can output a "fail" outcome in <last_turn_results>.
+        self._mark_action_failed_for_pokemon(pokemon)
+
+        self._cancel_user_switch_based_on_failure(user_pokemon=pokemon)
+        self._cancel_opponent_parting_shot(
+            user_pokemon=pokemon, extra_condition=any("unboost" in s for s in args)
+        )
+
+    def _mark_action_failed_for_pokemon(self, pokemon: Pokemon) -> bool:
+        """Mark the action for *pokemon* on the current turn as failed.
+
+        Returns True if an action was found and marked, False otherwise.
+        """
         team_slot = self.curr_turn.pokemon_to_action_idx(pokemon)
         if team_slot:
             team, slot = team_slot
             moves_list = self.curr_turn.moves_1 if team == 1 else self.curr_turn.moves_2
             if moves_list[slot] is not None:
                 moves_list[slot].failed = True
+                return True
+        return False
 
-        self._cancel_user_switch_based_on_failure(user_pokemon=pokemon)
-        self._cancel_opponent_parting_shot(
-            user_pokemon=pokemon, extra_condition=any("unboost" in s for s in args)
-        )
+    def _mark_last_action_failed(self) -> bool:
+        """Mark the most recently set action on the current turn as failed.
+
+        Used by clause-mod hint/message handlers when a move is blocked
+        but no ``|-fail|`` message identifies the specific Pokémon.
+
+        Returns True if an action was found and marked, False otherwise.
+        """
+        if self._last_action_slot is None:
+            return False
+        team, slot = self._last_action_slot
+        moves_list = self.curr_turn.moves_1 if team == 1 else self.curr_turn.moves_2
+        if slot < len(moves_list) and moves_list[slot] is not None:
+            moves_list[slot].failed = True
+            return True
+        return False
+
+    def _parse_hint(self, args: List[str]):
+        """Handle ``-hint`` protocol messages.
+
+        Most hints are informational and can be ignored, but clause-mod
+        hints (Sleep Clause Mod, Freeze Clause Mod) indicate that a move
+        was blocked.  When we see one of these we mark the most recently
+        set action as failed.
+        """
+        message = " ".join(args)
+        if ("Sleep Clause Mod" in message
+                and "prevents players from putting" in message):
+            self._mark_last_action_failed()
+        elif ("Freeze Clause Mod" in message
+                and "prevents players" in message):
+            self._mark_last_action_failed()
+        # Other hints (Desync Clause Mod, etc.) are handled by |-fail|
+        # or are purely informational — ignore silently.
+
+    def _parse_message_minor(self, args: List[str]):
+        """Handle ``-message`` protocol messages.
+
+        Most ``-message`` lines are chat and should be ignored, but
+        Showdown also uses ``-message`` to report clause-mod activations
+        (e.g. ``Sleep Clause Mod activated.``) that block a move.
+        When we see one of these we mark the most recently set action
+        as failed.
+        """
+        message = " ".join(args)
+        if ("Sleep Clause Mod" in message
+                and "activated" in message):
+            self._mark_last_action_failed()
+        elif ("Freeze Clause Mod" in message
+                and "activated" in message):
+            self._mark_last_action_failed()
+        # else: normal chat message — ignore silently.
 
     def _parse_singleturn(self, args: List[str]):
         """
@@ -1745,6 +1816,10 @@ class SimProtocol:
             self._parse_burst(data)
         elif name == "-fail":
             self._parse_fail(data)
+        elif name == "-hint":
+            self._parse_hint(data)
+        elif name == "-message":
+            self._parse_message_minor(data)
         elif name == "-singleturn":
             self._parse_singleturn(data)
         elif name == "-block":
