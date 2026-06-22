@@ -360,6 +360,30 @@ if __name__ == "__main__":
                 nature = spread.split(":")[0].strip()
                 tokenizer.add_token_for(clean_no_numbers(nature), verbose=args.verbose)
 
+    # ── Guarantee all Dex Pokémon (including forms, variants, megas) ──
+    # The tokenizer must know every Pokémon that could appear in battle,
+    # even species that never occur in the training dataset.
+    import re as _re
+    _dex_gens = sorted(set(
+        int(_re.search(r"gen(\d+)", fmt).group(1))
+        for fmt in formats
+        if _re.search(r"gen(\d+)", fmt)
+    ))
+    _dex_dir = os.path.join(os.path.dirname(__file__), "..", "backend",
+                            "showdown_dex", "static", "pokemon")
+    _dex_added = 0
+    for _gen in _dex_gens:
+        _dex_path = os.path.join(_dex_dir, f"gen{_gen}pokedex.json")
+        if not os.path.isfile(_dex_path):
+            continue
+        with open(_dex_path, "r", encoding="utf-8") as _f:
+            _pokedex = orjson.loads(_f.read())
+        for _pname in _pokedex:
+            if tokenizer.add_token_for(pokemon_name(_pname), verbose=args.verbose):
+                _dex_added += 1
+    if _dex_added:
+        print(f"Added {_dex_added} Dex Pokémon not found in usage stats")
+
     # Pre-register structural tokens
     for token in WORLD_MODEL_STRUCTURAL_TOKENS:
         tokenizer.add_token_for(token, verbose=args.verbose)
@@ -467,6 +491,29 @@ if __name__ == "__main__":
                     break
 
     print(f"Total battles processed: {total_battles}")
+
+    # ── Guarantee HP token coverage ──────────────────────────────────
+    # The online serializer emits HP as [percentage, current_hp, max_hp]
+    # individual tokens.  We must ensure every possible HP percentage
+    # (0.00–1.00) and every integer from 0 up to a safe ceiling are in
+    # the vocabulary so that online play never produces <unk> for valid
+    # HP values, even when the training data did not happen to include
+    # every one.
+    hp_added = 0
+    for i in range(101):
+        if tokenizer.add_token_for(f"{i / 100:.2f}"):
+            hp_added += 1
+    # The ceiling is chosen to cover max-HP values across all standard
+    # generations, including doubles (Blissey 714 × 2 with Dynamax ≈ 1428)
+    # and edge cases.  2000 is the safe upper bound observed in existing
+    # tokenizers built from large multi-generation datasets.
+    MAX_HP_INT = 2000
+    for i in range(MAX_HP_INT + 1):
+        if tokenizer.add_token_for(str(i)):
+            hp_added += 1
+    if hp_added:
+        print(f"Added {hp_added} HP tokens (0.00–1.00, 0–{MAX_HP_INT}) "
+              f"not found in training data")
 
     # Compact vocabulary
     tokenizer.sort_tokens()
