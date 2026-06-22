@@ -412,6 +412,25 @@ class JEPAEncoder(nn.Module):
                 with torch.no_grad():
                     module.weight[module.padding_idx] = 0.0
 
+    def _transformer_forward(
+        self, token_ids: torch.Tensor
+    ) -> torch.Tensor:
+        """Run embedding + transformer stack → pooled latent.
+
+        Separate from ``forward`` so the whole stack can be wrapped
+        in a single gradient checkpoint.  That saves only *token_ids*
+        (int64) for the backward recompute instead of per-block
+        ``[B, T, d_model]`` activations, cutting peak memory ~100× when
+        encoding many state blocks in one call.
+        """
+        valid_mask = token_ids != self.pad_id
+        x = self.token_embedding(token_ids)
+        for block in self.blocks:
+            x = block(x, key_padding_mask=valid_mask)
+        x = self.ln_final(x)
+        pooled = self.pool(x, valid_mask)
+        return self.proj_e(pooled)
+
     def forward(
         self, token_ids: torch.Tensor
     ) -> torch.Tensor:
@@ -423,25 +442,14 @@ class JEPAEncoder(nn.Module):
         Returns:
             e: (B, latent_dim) — deterministic embedding.
         """
-        valid_mask = token_ids != self.pad_id  # (B, S), True for real tokens
-
-        # Token embeddings
-        x = self.token_embedding(token_ids)  # (B, S, d_model)
-
-        # Transformer blocks (bidirectional).
-        for block in self.blocks:
-            if self.gradient_checkpointing and self.training:
-                x = torch.utils.checkpoint.checkpoint(
-                    block, x, valid_mask, use_reentrant=False
-                )
-            else:
-                x = block(x, key_padding_mask=valid_mask)
-        x = self.ln_final(x)  # (B, S, d_model)
-
-        # Learned attention pool over non-pad positions.
-        pooled = self.pool(x, valid_mask)  # (B, d_model)
-
-        return self.proj_e(pooled)  # (B, latent_dim)
+        if self.gradient_checkpointing and self.training:
+            # Checkpoint the ENTIRE transformer stack to bound autograd
+            # context.  The saved context is only *token_ids* (int64),
+            # not per-block ``[B, T, d_model]`` activations.
+            return torch.utils.checkpoint.checkpoint(
+                self._transformer_forward, token_ids, use_reentrant=False
+            )
+        return self._transformer_forward(token_ids)
 
 
 # ═════════════════════════════════════════════════════════════════════════

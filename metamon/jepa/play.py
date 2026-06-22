@@ -114,9 +114,11 @@ async def main() -> None:
     eos_id = tokenizer["<eos>"]
 
     # Extract training-time windowing parameter (0 = unlimited).
-    max_history_blocks = ckpt.get("max_history_blocks", 0)
+    max_history_blocks = ckpt.get("max_history_blocks", 300)
     if max_history_blocks:
         print(f"Using max_history_blocks={max_history_blocks} from checkpoint")
+    else:
+        print("Using unlimited history (max_history_blocks=0 from checkpoint)")
 
     model = PairedJEPAModel(
         vocab_size=vocab_size,

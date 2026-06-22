@@ -286,8 +286,9 @@ an outcome token:
 | Outcome | Meaning |
 |---------|---------|
 | `success` | The move executed normally (or was a switch / recharge). |
-| `fail` | The move was attempted but had no effect (Sucker Punch whiff, stat boost at max, Reflect used twice, etc.). |
+| `fail` | The move was attempted but had no effect (Sucker Punch whiff, stat boost at max, Reflect used twice, clause mod activation such as Sleep Clause Mod / Freeze Clause Mod, etc.). |
 | `cant <reason>` | The Pokémon couldn't execute its chosen move due to a condition (paralysis, sleep, freeze, flinch, etc.). |
+| `none` | Opponent-only: the opponent had no separate action in this subturn (forced switch after faint or U-turn). The opponent already acted in the main turn. |
 
 #### Singles
 ```
@@ -323,6 +324,12 @@ an outcome token:
 ```
 <active>body slam success<end_active>
 <opponent>unknown<end_opponent>
+```
+
+**Opponent no action (forced-switch subturn):**
+```
+<active>switch cloyster success<end_active>
+<opponent>none<end_opponent>
 ```
 
 Note: the `<chosen_move>` and `<opponent_chosen_move>` blocks in the action
@@ -679,7 +686,7 @@ One action block between every pair of states (except after the terminal state).
 <boa>
 <turn>1<end_turn>
 <chosen_move>move <move_name>|switch <pokemon_name>|unknown unknown<end_chosen_move>
-<opponent_chosen_move>move <move_name>|switch <pokemon_name>|unknown unknown<end_opponent_chosen_move>
+<opponent_chosen_move>move <move_name>|switch <pokemon_name>|unknown unknown|none<end_opponent_chosen_move>
 <eoa>
 ```
 
@@ -689,8 +696,8 @@ One action block between every pair of states (except after the terminal state).
 <turn>1<end_turn>
 <chosen_move:1>move <move_name>|switch <pokemon_name>|unknown unknown<end_chosen_move>
 <chosen_move:2>move <move_name>|switch <pokemon_name>|unknown unknown<end_chosen_move>
-<opponent_chosen_move:1>move <move_name>|switch <pokemon_name>|unknown unknown<end_opponent_chosen_move>
-<opponent_chosen_move:2>move <move_name>|switch <pokemon_name>|unknown unknown<end_opponent_chosen_move>
+<opponent_chosen_move:1>move <move_name>|switch <pokemon_name>|unknown unknown|none<end_opponent_chosen_move>
+<opponent_chosen_move:2>move <move_name>|switch <pokemon_name>|unknown unknown|none<end_opponent_chosen_move>
 <eoa>
 ```
 
@@ -766,6 +773,15 @@ Next state:
 <eoa>
 ```
 
+**Opponent no action (forced-switch subturn):**
+```
+<boa>
+<turn>17<end_turn>
+<chosen_move>switch cloyster<end_chosen_move>
+<opponent_chosen_move>none<end_opponent_chosen_move>
+<eoa>
+```
+
 ### 5.3 `cant` and `fail` outcomes (in `<last_turn_results>`, §4.3b)
 
 The outcome of each action is recorded in the **next state's**
@@ -788,7 +804,8 @@ chosen move (what the player intended) from the result (what actually happened).
 
 **`fail`** is set when `|-fail|` fires in the raw protocol (e.g. Sucker Punch
 whiff, stat boost at max, Reflect used twice, flinch/trap move used on a
-substitute, etc.).
+substitute, etc.) or when a clause mod (Sleep Clause Mod, Freeze Clause Mod)
+blocks the move via ``-hint`` / ``-message`` protocol messages.
 
 When the `|choice|` message exists, we use the exact chosen move.  When
 `|choice|` is absent, we randomly pick a valid move from the active Pokémon's
@@ -828,7 +845,13 @@ When `|choice|` messages are absent (common), we infer the opponent's action:
 ## 6. Forced Switches (Subturns)
 
 When a move triggers a forced switch (U-turn, Volt Switch, Eject Button, Red
-Card, Roar, Dragon Tail, etc.), it creates an **extra state-action pair**.
+Card, Roar, Dragon Tail, etc.) or a Pokémon faints, it creates an **extra
+state-action pair** (a *subturn*).
+
+In a subturn, only the POV player acts (they must switch).  The opponent
+already acted in the main turn and has **no separate action** — their action
+block shows ``none`` and the following state's ``<last_turn_results>`` shows
+``<opponent>none<end_opponent>``.
 
 The sequence is: *original state* → *move action* → *intermediate state with
 `forceswitch` marker* → *switch action* → *new state with replacement active
@@ -880,7 +903,7 @@ noweather
 <boa>
 <turn>5<end_turn>
 <chosen_move>switch rotom-wash<end_chosen_move>
-<opponent_chosen_move>unknown unknown<end_opponent_chosen_move>
+<opponent_chosen_move>none<end_opponent_chosen_move>
 <eoa>
 
 <bos>
@@ -1110,7 +1133,7 @@ Standalone sentinel tags:
 `noweather` `sandstorm` `raindance` `sunnyday` `hail` `snow`
 
 ### Special markers (bare words)
-`clean` `forceswitch` `forcedrevival` `cantera` `unknown` `unknownitem`
+`clean` `forceswitch` `forcedrevival` `cantera` `none` `unknown` `unknownitem`
 `unknownability` `nofield` `move` `switch` `recharge` `tera:`
 
 ### Boost tokens (bare words)
