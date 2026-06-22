@@ -94,7 +94,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         fmt: str,
         verbose: bool = True,
         verbose_blocks: bool = False,
-        max_history_blocks: int = 300,
+        max_history_blocks: int = 100,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -102,7 +102,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         self._tokenizer = tokenizer
         self._fmt = fmt
         self._verbose = verbose
-        self._max_history_blocks = max_history_blocks  # 0 = unlimited, default 300
+        self._max_history_blocks = max_history_blocks  # 0 = unlimited, default 100
         TuiMixin._repl_verbose_blocks = verbose_blocks
         TuiMixin._repl_max_history_blocks = max_history_blocks
         self._histories: dict[str, BattleHistory] = {}

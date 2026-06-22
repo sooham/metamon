@@ -87,7 +87,7 @@ def main():
     eos_id = tokenizer["<eos>"]
 
     # Extract training-time windowing parameter (0 = unlimited).
-    max_history_blocks = ckpt.get("max_history_blocks", 300)
+    max_history_blocks = ckpt.get("max_history_blocks", 100)
 
     model = PairedJEPAModel(
         vocab_size=vocab_size,

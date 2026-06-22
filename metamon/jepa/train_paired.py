@@ -67,7 +67,7 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         shard_paths: list[str],
         structural_token_ids: dict[str, int],
         shuffle_shards: bool = True,
-        max_history_blocks: int = 300,
+        max_history_blocks: int = 100,
     ):
         super().__init__()
         if not shard_paths:
@@ -76,7 +76,7 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         self.structural = structural_token_ids
         self.shuffle_shards = shuffle_shards
         self.shuffle_transitions = shuffle_shards
-        self.max_history_blocks = max_history_blocks  # 0 = unlimited, default 300
+        self.max_history_blocks = max_history_blocks  # 0 = unlimited, default 100
 
         # Pre-processed shards — populated lazily by _get_shard()
         self._shards: dict[str, dict] = {}
@@ -920,6 +920,21 @@ def train(args: argparse.Namespace) -> None:
             context_length = auto_state_block_max
             encoder_overridden = True
         model_cfg.setdefault("encoder", {})["max_seq_len"] = context_length
+
+    # ── Cap temporal max_seq_len by max_history_blocks ─────────────
+    # The sequence_stats.json raw max assumes unlimited history (a 2006-block
+    # battle produces 6016 positions).  With max_history_blocks=H the temporal
+    # layout is at most 1 + 3×(H−1) = 3H−2 positions.  Cap the auto-detected
+    # value (and the final effective length) so we never overallocate.
+    if args.max_history_blocks > 0:
+        max_temporal_from_history = 3 * args.max_history_blocks
+        if auto_temporal_max is not None and auto_temporal_max > max_temporal_from_history:
+            auto_temporal_max = max_temporal_from_history
+            auto_temporal_raw = min(auto_temporal_raw, args.max_history_blocks * 3)
+        # Also cap the fallback if it exceeds what history allows.
+        if temporal_max_seq_len > max_temporal_from_history:
+            temporal_max_seq_len = max_temporal_from_history
+
     if auto_temporal_max is not None:
         if auto_temporal_max > temporal_max_seq_len:
             temporal_max_seq_len = auto_temporal_max
@@ -947,17 +962,23 @@ def train(args: argparse.Namespace) -> None:
     if auto_temporal_max is not None:
         mult = f" (×{auto_safety_multiplier} safety)" if auto_safety_multiplier else ""
         action = "overriding fallback" if temporal_overridden else "no override needed (≤ fallback)"
+        cap_note = ""
+        if args.max_history_blocks > 0:
+            cap_note = f"; capped by max_history_blocks={args.max_history_blocks} (3×{args.max_history_blocks} = {3*args.max_history_blocks} positions)"
         print(
             f"Temporal max_seq_len: {temporal_max_seq_len} "
             f"[auto-detected from {auto_stats_source!r}{mult}; "
-            f"raw dataset max = {auto_temporal_raw}; {action}]"
+            f"raw dataset max = {auto_temporal_raw}; {action}{cap_note}]"
         )
     else:
         source = "config" if config_tmp is not None else "hardcoded fallback"
+        cap_note = ""
+        if args.max_history_blocks > 0:
+            cap_note = f"; capped by max_history_blocks={args.max_history_blocks} (3×{args.max_history_blocks} = {3*args.max_history_blocks} positions)"
         print(
             f"Temporal max_seq_len: {temporal_max_seq_len} "
             f"[{source}{' (config has null)' if config_tmp is None else ''}; "
-            f"no sequence_stats.json found — run wm-dataset first]"
+            f"no sequence_stats.json found — run wm-dataset first{cap_note}]"
         )
 
     print(f"Vocabulary size: {vocab_size}")
@@ -1499,7 +1520,7 @@ if __name__ == "__main__":
                         help="Wandb project name (default: metamon-jepa-<format>).")
     parser.add_argument("--wandb_name", type=str, default=None,
                         help="Wandb run name.")
-    parser.add_argument("--max_history_blocks", type=int, default=300,
+    parser.add_argument("--max_history_blocks", type=int, default=100,
                         help="Maximum non-header history state blocks per sample (0 = unlimited). "
                              "The team header is always retained. Lower = faster data loading + shorter "
                              "temporal sequences. Default: 0 (unlimited)")
