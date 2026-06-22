@@ -1978,13 +1978,14 @@ def compute_paired_losses(
       - next_state_loss: diagonal Gaussian NLL of target next-state latent
         (the next-state predictor is stochastic — mu+logvar — because the
         world has inherent randomness: damage rolls, status, speed ties, …)
-      - value_loss: TD(0)-bootstrapped BCE on V(s) per POV.
-        Non-terminal steps use γ·σ(V(T+1)).detach() as a soft target;
-        true terminal steps use the binary outcome.  γ=1 keeps the previous
-        MC supervision path for backward compatibility.
-      - q_value_loss: TD(0)-bootstrapped BCE on Q(s, chosen_action) per POV.
-        Non-terminal steps use γ·σ(maxₐ Q(T+1,a)).detach(); true terminal
-        steps use the binary outcome.
+      - value_loss: rollout-horizon TD(n) BCE on V(s) per POV.
+        Non-terminal steps use the furthest valid in-window bootstrap state
+        γⁿ·σ(V(T+n)).detach() as a soft target; true terminal steps use the
+        discounted binary outcome.  γ=1 keeps the previous MC supervision path
+        for backward compatibility.
+      - q_value_loss: rollout-horizon TD(n) BCE on Q(s, chosen_action) per POV.
+        Non-terminal steps use γⁿ·σ(maxₐ Q(T+n,a)).detach(); true terminal
+        steps use the discounted binary outcome.
       - policy_loss: masked CE over only that POV's legal action candidates
       - SIGReg on state encoder outputs (current, next, context).
         Predicted next-state latents are NOT regularised — they are Gaussian
@@ -1995,8 +1996,10 @@ def compute_paired_losses(
 
     gamma controls TD discount. For backward compatibility, 1.0 disables TD
     and uses the previous MC target for all steps. Typical TD values are
-    0.95–0.99. Bootstrapping is applied to non-terminal transitions, including
-    rollout-window boundaries; true terminal transitions use the battle outcome.
+    0.95–0.99. With K-step rollout tensors, each position bootstraps from the
+    furthest valid T+n state still present in that rollout, so the first
+    position in a K-step non-terminal window uses TD(K). True terminal
+    transitions stop the return early and use the discounted battle outcome.
     """
     if lambda_sigreg_state is None:
         lambda_sigreg_state = lambda_sigreg
@@ -2054,9 +2057,9 @@ def compute_paired_losses(
     rank_loss = enc_p1_T.new_tensor(0.0)
 
     # ── TD bootstrapping helpers ────────────────────────────────────
-    # True TD targets bootstrap from the actual T+1 state. The model emits
-    # next-state V/Q logits for that state, so rollout-window boundaries are
-    # not treated as environment terminals.
+    # True TD targets bootstrap from actual future states in the rollout. The
+    # model emits V/Q logits for each T+1 state, so rollout-window boundaries
+    # are not treated as environment terminals.
     use_td = abs(float(gamma) - 1.0) > 1e-8  # skip TD construction when γ≈1
 
     def _terminal_mask(name: str, reference: torch.Tensor) -> torch.Tensor:
@@ -2110,30 +2113,84 @@ def compute_paired_losses(
             )[..., 1:, :]
         return next_logits, next_mask
 
+    def _discount_like(reference: torch.Tensor, exponent: torch.Tensor) -> torch.Tensor:
+        gamma_tensor = reference.new_tensor(float(gamma))
+        return torch.pow(gamma_tensor, exponent.to(device=reference.device, dtype=reference.dtype))
+
     def _td_target(
         value_logit: torch.Tensor,   # [B, K]
         next_value_logit: torch.Tensor,
         outcome: torch.Tensor,       # [B] or [B, K]
         is_terminal: torch.Tensor,   # [B, K]
         bootstrap_valid: torch.Tensor,
-    ) -> torch.Tensor:
-        """Build TD(0)-bootstrapped soft target for V or Q logit.
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Build rollout-horizon TD(n) soft targets for V logits.
 
-        Non-terminal:  γ · σ(V_{next}).detach()
-        Terminal:      outcome ∈ {0, 1}
+        Non-terminal:  γ^n · σ(V_{T+n}).detach()
+        Terminal:      γ^d · outcome, where d is the terminal transition offset
         """
         if not use_td:
-            return outcome  # [B] — old MC behaviour, broadcast in BCE helper
+            return outcome, torch.zeros_like(value_logit, dtype=torch.bool)
         next_value_logit = _expand_to_reference(
             next_value_logit,
             value_logit,
             dtype=value_logit.dtype,
         )
-        soft_target = float(gamma) * torch.sigmoid(next_value_logit).detach()
-        outcome_expanded = _expand_to_reference(outcome, value_logit, dtype=soft_target.dtype)
+        outcome_expanded = _expand_to_reference(outcome, value_logit, dtype=value_logit.dtype)
         is_terminal = _expand_to_reference(is_terminal, value_logit, dtype=torch.bool)
         bootstrap_valid = _expand_to_reference(bootstrap_valid, value_logit, dtype=torch.bool)
-        return torch.where(is_terminal | ~bootstrap_valid, outcome_expanded, soft_target)
+        if value_logit.ndim < 2 or value_logit.shape[-1] <= 1:
+            soft_target = float(gamma) * torch.sigmoid(next_value_logit).detach()
+            target = torch.where(is_terminal | ~bootstrap_valid, outcome_expanded, soft_target)
+            return target, bootstrap_valid & ~is_terminal
+
+        rollout_len = value_logit.shape[-1]
+        target = torch.empty_like(value_logit)
+        td_used = torch.zeros_like(value_logit, dtype=torch.bool)
+        for step in range(rollout_len):
+            terminal_after = is_terminal[..., step:]
+            valid_after = bootstrap_valid[..., step:]
+            offsets = torch.arange(
+                rollout_len - step,
+                device=value_logit.device,
+                dtype=torch.long,
+            )
+
+            terminal_offsets = torch.where(
+                terminal_after,
+                offsets,
+                torch.full_like(offsets, rollout_len - step),
+            ).min(dim=-1).values
+            has_terminal = terminal_offsets < (rollout_len - step)
+
+            bootstrap_offsets = torch.where(
+                valid_after,
+                offsets,
+                torch.full_like(offsets, -1),
+            ).max(dim=-1).values
+            has_bootstrap = bootstrap_offsets >= 0
+            bootstrap_idx = step + bootstrap_offsets.clamp_min(0)
+            bootstrap_logit = next_value_logit.gather(
+                -1,
+                bootstrap_idx.unsqueeze(-1),
+            ).squeeze(-1)
+
+            outcome_step = outcome_expanded[..., step]
+            terminal_target = _discount_like(value_logit, terminal_offsets) * outcome_step
+            bootstrap_target = (
+                _discount_like(value_logit, bootstrap_offsets + 1)
+                * torch.sigmoid(bootstrap_logit).detach()
+            )
+            step_target = torch.where(has_terminal, terminal_target, bootstrap_target)
+            step_target = torch.where(
+                has_terminal | has_bootstrap,
+                step_target,
+                outcome_step,
+            )
+            target[..., step] = step_target
+            td_used[..., step] = has_bootstrap & ~has_terminal
+
+        return target, td_used
 
     def _td_q_target(
         chosen_q: torch.Tensor,            # [B, K]
@@ -2142,17 +2199,16 @@ def compute_paired_losses(
         outcome: torch.Tensor,             # [B] or [B, K]
         is_terminal: torch.Tensor,         # [B, K]
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Build TD(0)-bootstrapped soft target for Q logit.
+        """Build rollout-horizon TD(n) soft targets for Q logits.
 
-        Non-terminal:  γ · σ(max_candidates Q_{next}).detach()
-        Terminal:      outcome ∈ {0, 1}
+        Non-terminal:  γ^n · σ(max_candidates Q_{T+n}).detach()
+        Terminal:      γ^d · outcome, where d is the terminal transition offset
         """
         if not use_td:
             return outcome, torch.zeros_like(chosen_q, dtype=torch.bool)
         device = chosen_q.device
         next_q_logits = next_q_logits.to(device=device, dtype=chosen_q.dtype)
         next_legal_mask = next_legal_mask.to(device=device, dtype=torch.bool)
-        # max over legal candidates at each step
         bootstrap_valid = next_legal_mask.any(dim=-1)
         masked = next_q_logits.masked_fill(
             ~next_legal_mask,
@@ -2160,11 +2216,58 @@ def compute_paired_losses(
         )
         q_next_max = masked.max(dim=-1).values
         q_next_max = torch.where(bootstrap_valid, q_next_max, torch.zeros_like(q_next_max))
-        soft_target = float(gamma) * torch.sigmoid(q_next_max).detach()  # [B, K] in [0, γ]
-        outcome_expanded = _expand_to_reference(outcome, chosen_q, dtype=soft_target.dtype)
+        outcome_expanded = _expand_to_reference(outcome, chosen_q, dtype=chosen_q.dtype)
         is_terminal = _expand_to_reference(is_terminal, chosen_q, dtype=torch.bool)
         bootstrap_valid = _expand_to_reference(bootstrap_valid, chosen_q, dtype=torch.bool)
-        return torch.where(is_terminal | ~bootstrap_valid, outcome_expanded, soft_target), bootstrap_valid
+        if chosen_q.ndim < 2 or chosen_q.shape[-1] <= 1:
+            soft_target = float(gamma) * torch.sigmoid(q_next_max).detach()
+            target = torch.where(is_terminal | ~bootstrap_valid, outcome_expanded, soft_target)
+            return target, bootstrap_valid & ~is_terminal
+
+        rollout_len = chosen_q.shape[-1]
+        target = torch.empty_like(chosen_q)
+        td_used = torch.zeros_like(chosen_q, dtype=torch.bool)
+        for step in range(rollout_len):
+            terminal_after = is_terminal[..., step:]
+            valid_after = bootstrap_valid[..., step:]
+            offsets = torch.arange(
+                rollout_len - step,
+                device=chosen_q.device,
+                dtype=torch.long,
+            )
+
+            terminal_offsets = torch.where(
+                terminal_after,
+                offsets,
+                torch.full_like(offsets, rollout_len - step),
+            ).min(dim=-1).values
+            has_terminal = terminal_offsets < (rollout_len - step)
+
+            bootstrap_offsets = torch.where(
+                valid_after,
+                offsets,
+                torch.full_like(offsets, -1),
+            ).max(dim=-1).values
+            has_bootstrap = bootstrap_offsets >= 0
+            bootstrap_idx = step + bootstrap_offsets.clamp_min(0)
+            bootstrap_q = q_next_max.gather(-1, bootstrap_idx.unsqueeze(-1)).squeeze(-1)
+
+            outcome_step = outcome_expanded[..., step]
+            terminal_target = _discount_like(chosen_q, terminal_offsets) * outcome_step
+            bootstrap_target = (
+                _discount_like(chosen_q, bootstrap_offsets + 1)
+                * torch.sigmoid(bootstrap_q).detach()
+            )
+            step_target = torch.where(has_terminal, terminal_target, bootstrap_target)
+            step_target = torch.where(
+                has_terminal | has_bootstrap,
+                step_target,
+                outcome_step,
+            )
+            target[..., step] = step_target
+            td_used[..., step] = has_bootstrap & ~has_terminal
+
+        return target, td_used
 
     p1_is_terminal = _terminal_mask("p1_is_terminal", enc_p1_T[..., 0])
     p2_is_terminal = _terminal_mask("p2_is_terminal", enc_p2_T[..., 0])
@@ -2182,10 +2285,10 @@ def compute_paired_losses(
             outputs["p2_value_logit"],
             "p2_next_value_logit",
         )
-        p1_v_target = _td_target(
+        p1_v_target, p1_value_bootstrap_valid = _td_target(
             outputs["p1_value_logit"], p1_next_v, p1_outcome,
             p1_is_terminal, p1_value_bootstrap_valid)
-        p2_v_target = _td_target(
+        p2_v_target, p2_value_bootstrap_valid = _td_target(
             outputs["p2_value_logit"], p2_next_v, p2_outcome,
             p2_is_terminal, p2_value_bootstrap_valid)
         value_loss_p1 = _masked_bce_with_logits(

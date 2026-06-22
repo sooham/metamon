@@ -1421,10 +1421,10 @@ if __name__ == "__main__":
     parser.add_argument("--advantage_temperature", type=float, default=None,
                         help="Optional advantage-weighting temperature for Q/policy losses. Disabled when unset.")
     parser.add_argument("--gamma", type=float, default=None,
-                        help="TD discount factor for V and Q heads. Non-terminal steps use "
-                             "gamma * sigmoid(V_next) as a soft target; terminal steps use outcome. "
-                             "Set to 1.0 (default from config) to disable TD bootstrapping. "
-                             "Typical: 0.95–0.99.")
+                        help="TD discount factor for V and Q heads. Non-terminal rollout steps use "
+                             "the furthest valid in-window gamma^n * V/Q bootstrap target; true "
+                             "terminals stop early on the discounted outcome. Set to 1.0 to disable "
+                             "TD bootstrapping and use MC outcome supervision. Typical: 0.95-0.99.")
     parser.add_argument("--print_interval", type=int, default=10)
     parser.add_argument("--log_interval", type=int, default=0,
                         help="Log every N training steps to wandb (0 = same as print_interval).")
