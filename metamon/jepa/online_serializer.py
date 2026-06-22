@@ -22,6 +22,10 @@ def generation_from_format(fmt: str, fallback: int = 1) -> int:
     return int(match.group(1)) if match else fallback
 
 
+# Track already-warned unknown words so each missing token is reported once.
+_warned_unknown: set[str] = set()
+
+
 def tokenize_words(
     tokenizer: PokemonTokenizer,
     words: list[str],
@@ -31,14 +35,18 @@ def tokenize_words(
     ids: list[int] = []
     unk_id = tokenizer["<unk>"]
     unknown_words: list[str] = []
+    new_unknown: list[str] = []
     for word in words:
         if word in tokenizer:
             ids.append(tokenizer[word])
         else:
             ids.append(unk_id)
             unknown_words.append(word)
-    if warn_unknown and unknown_words:
-        print(f"WARNING: <unk> tokens for words not in tokenizer: {unknown_words}")
+            if word not in _warned_unknown:
+                _warned_unknown.add(word)
+                new_unknown.append(word)
+    if warn_unknown and new_unknown:
+        print(f"WARNING: <unk> tokens for words not in tokenizer: {new_unknown}")
     return np.array(ids, dtype=np.int16)
 
 
@@ -85,20 +93,26 @@ def _pokemon_species(pokemon) -> str:
     return pokemon_name(str(raw)) or "unknown"
 
 
-def _hp_token(pokemon) -> str:
-    """Return HP as "percentage current_hp max_hp" string."""
+def _hp_token(pokemon) -> list[str]:
+    """Return HP as [percentage, current_hp, max_hp] token list.
+
+    Each component is a separate token to match the training-data format
+    where the text serializer joins with spaces and the tokenizer splits
+    on whitespace, producing individual tokens like ``"0.53"``, ``"143"``,
+    ``"271"`` rather than a compound ``"0.53 143 271"``.
+    """
     if pokemon is None:
-        return "unknown"
+        return ["unknown"]
     current_hp = getattr(pokemon, "current_hp", None)
     max_hp = getattr(pokemon, "max_hp", None)
     if current_hp is not None and max_hp:
         pct = float(current_hp) / float(max_hp)
         pct_str = f"{max(0.0, min(1.0, pct)):.2f}"
-        return f"{pct_str} {int(current_hp)} {int(max_hp)}"
+        return [pct_str, str(int(current_hp)), str(int(max_hp))]
     hp_fraction = getattr(pokemon, "current_hp_fraction", None)
     if hp_fraction is not None:
-        return f"{max(0.0, min(1.0, float(hp_fraction))):.2f}"
-    return "unknown"
+        return [f"{max(0.0, min(1.0, float(hp_fraction))):.2f}"]
+    return ["unknown"]
 
 
 def _status_token(pokemon) -> Optional[str]:
@@ -270,13 +284,13 @@ def _team_pokemon(battle) -> list:
 def _bench_pokemon(battle, active) -> list:
     out = []
     active_species = _pokemon_species(active)
-    active_hp = _hp_token(active)
+    active_hp = tuple(_hp_token(active))
     for pokemon in getattr(battle, "team", {}).values():
         if pokemon is None:
             continue
         if pokemon is active:
             continue
-        if active is not None and _pokemon_species(pokemon) == active_species and _hp_token(pokemon) == active_hp:
+        if active is not None and _pokemon_species(pokemon) == active_species and tuple(_hp_token(pokemon)) == active_hp:
             continue
         out.append(pokemon)
     return sorted(out, key=_sort_key)
@@ -453,7 +467,7 @@ def state_words(
 
     if active is not None:
         words.append("<active>")
-        words.extend([_pokemon_species(active), _hp_token(active), *_type_tokens(active)])
+        words.extend([_pokemon_species(active), *_hp_token(active), *_type_tokens(active)])
         item = _item_token(active, gen, is_opponent=False)
         if item is not None:
             words.append(item)
@@ -468,7 +482,7 @@ def state_words(
 
     if opponent is not None:
         words.append("<opponent>")
-        words.extend([_pokemon_species(opponent), _hp_token(opponent), *_type_tokens(opponent)])
+        words.extend([_pokemon_species(opponent), *_hp_token(opponent), *_type_tokens(opponent)])
         item = _item_token(opponent, gen, is_opponent=True)
         if item is not None:
             words.append(item)
@@ -518,7 +532,7 @@ def state_words(
     words.append("<bench>")
     for idx, pokemon in enumerate(_bench_pokemon(battle, active), start=1):
         words.append(f"<poke{idx}>")
-        words.extend([_pokemon_species(pokemon), _hp_token(pokemon), *_type_tokens(pokemon)])
+        words.extend([_pokemon_species(pokemon), *_hp_token(pokemon), *_type_tokens(pokemon)])
         item = _item_token(pokemon, gen, is_opponent=False)
         if item is not None:
             words.append(item)
