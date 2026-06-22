@@ -165,8 +165,8 @@ class TestTDBootstrapping:
         assert metrics["p1_terminal_fraction"] == 0.0
         assert metrics["p2_terminal_fraction"] == 0.0
 
-    def test_rollout_boundary_bootstraps_from_explicit_next_value(self):
-        """The last rollout position is not terminal unless the data says so."""
+    def test_rollout_bootstraps_from_furthest_explicit_next_value(self):
+        """A K-step non-terminal rollout uses the furthest in-window T+n state."""
         B, K = 1, 2
         outputs = self._make_outputs(B=B, K=K, num_candidates=2)
         outputs["p1_value_logit"] = torch.tensor([[0.5, -0.25]])
@@ -197,8 +197,11 @@ class TestTDBootstrapping:
             sigreg_num_points=2,
         )
 
-        p1_target = gamma * torch.sigmoid(outputs["p1_next_value_logit"])
-        p2_target = gamma * torch.sigmoid(outputs["p2_next_value_logit"])
+        p1_final = torch.sigmoid(outputs["p1_next_value_logit"][:, -1:])
+        p2_final = torch.sigmoid(outputs["p2_next_value_logit"][:, -1:])
+        discounts = torch.tensor([[gamma ** 2, gamma]])
+        p1_target = discounts * p1_final
+        p2_target = discounts * p2_final
         expected = 0.5 * (
             torch.nn.functional.binary_cross_entropy_with_logits(
                 outputs["p1_value_logit"], p1_target
@@ -213,6 +216,111 @@ class TestTDBootstrapping:
         assert metrics["p2_value_td_fraction"] == 1.0
         assert metrics["value_loss"] == pytest.approx(expected.item())
 
+    def test_rollout_terminal_uses_discounted_outcome_before_bootstrap(self):
+        """If a terminal appears inside the rollout horizon, TD(n) stops there."""
+        B, K = 1, 3
+        outputs = self._make_outputs(B=B, K=K, num_candidates=2)
+        outputs["p1_value_logit"] = torch.tensor([[0.25, -0.5, 0.75]])
+        outputs["p2_value_logit"] = torch.tensor([[-0.25, 0.5, -0.75]])
+        outputs["p1_next_value_logit"] = torch.full((B, K), 10.0)
+        outputs["p2_next_value_logit"] = torch.full((B, K), 10.0)
+        outputs["p1_won"] = torch.ones((B, K), dtype=torch.bool)
+        outputs["p2_won"] = torch.zeros((B, K), dtype=torch.bool)
+        outputs["rank_valid"] = torch.ones((B, K), dtype=torch.bool)
+        terminal = torch.zeros((B, K), dtype=torch.bool)
+        terminal[:, -1] = True
+        outputs["p1_is_terminal"] = terminal
+        outputs["p2_is_terminal"] = terminal
+
+        gamma = 0.5
+        _, metrics = compute_paired_losses(
+            outputs,
+            lambda_sigreg=0.0,
+            lambda_opponent_state=0.0,
+            lambda_action=0.0,
+            lambda_next_state=0.0,
+            lambda_rank=0.0,
+            lambda_value=1.0,
+            lambda_q_value=0.0,
+            lambda_policy=0.0,
+            lambda_value_teacher=0.0,
+            lambda_q_teacher=0.0,
+            gamma=gamma,
+            sigreg_num_slices=1,
+            sigreg_num_points=2,
+        )
+
+        p1_target = torch.tensor([[gamma ** 2, gamma, 1.0]])
+        p2_target = torch.zeros((B, K))
+        expected = 0.5 * (
+            torch.nn.functional.binary_cross_entropy_with_logits(
+                outputs["p1_value_logit"], p1_target
+            )
+            + torch.nn.functional.binary_cross_entropy_with_logits(
+                outputs["p2_value_logit"], p2_target
+            )
+        )
+        assert metrics["p1_value_td_fraction"] == 0.0
+        assert metrics["p2_value_td_fraction"] == 0.0
+        assert metrics["value_loss"] == pytest.approx(expected.item())
+
+    def test_rollout_q_bootstraps_from_furthest_explicit_next_q(self):
+        """Q TD(n) uses max legal Q at the furthest in-window bootstrap state."""
+        B, K, C = 1, 3, 3
+        outputs = self._make_outputs(B=B, K=K, num_candidates=C)
+        outputs["p1_q_logits"] = torch.tensor([[[0.0, -1.0, -2.0],
+                                                [0.5, -1.0, -2.0],
+                                                [-0.5, -1.0, -2.0]]])
+        outputs["p2_q_logits"] = torch.tensor([[[0.25, -1.0, -2.0],
+                                                [-0.25, -1.0, -2.0],
+                                                [0.75, -1.0, -2.0]]])
+        outputs["p1_next_q_logits"] = torch.tensor([[[1.0, 0.0, -1.0],
+                                                     [2.0, 0.0, -1.0],
+                                                     [3.0, 0.0, -1.0]]])
+        outputs["p2_next_q_logits"] = torch.tensor([[[-1.0, 0.0, 1.0],
+                                                     [-1.0, 0.0, 2.0],
+                                                     [-1.0, 0.0, 4.0]]])
+        outputs["p1_chosen_legal_action_idx"] = torch.zeros((B, K), dtype=torch.long)
+        outputs["p2_chosen_legal_action_idx"] = torch.zeros((B, K), dtype=torch.long)
+        outputs["p1_won"] = torch.ones((B, K), dtype=torch.bool)
+        outputs["p2_won"] = torch.zeros((B, K), dtype=torch.bool)
+        outputs["rank_valid"] = torch.ones((B, K), dtype=torch.bool)
+        outputs["p1_is_terminal"] = torch.zeros((B, K), dtype=torch.bool)
+        outputs["p2_is_terminal"] = torch.zeros((B, K), dtype=torch.bool)
+
+        gamma = 0.5
+        _, metrics = compute_paired_losses(
+            outputs,
+            lambda_sigreg=0.0,
+            lambda_opponent_state=0.0,
+            lambda_action=0.0,
+            lambda_next_state=0.0,
+            lambda_rank=0.0,
+            lambda_value=0.0,
+            lambda_q_value=1.0,
+            lambda_policy=0.0,
+            lambda_value_teacher=0.0,
+            lambda_q_teacher=0.0,
+            gamma=gamma,
+            sigreg_num_slices=1,
+            sigreg_num_points=2,
+        )
+
+        discounts = torch.tensor([[gamma ** 3, gamma ** 2, gamma]])
+        p1_target = discounts * torch.sigmoid(torch.tensor([[3.0]]))
+        p2_target = discounts * torch.sigmoid(torch.tensor([[4.0]]))
+        expected = 0.5 * (
+            torch.nn.functional.binary_cross_entropy_with_logits(
+                outputs["p1_q_logits"][..., 0], p1_target
+            )
+            + torch.nn.functional.binary_cross_entropy_with_logits(
+                outputs["p2_q_logits"][..., 0], p2_target
+            )
+        )
+        assert metrics["p1_q_td_fraction"] == 1.0
+        assert metrics["p2_q_td_fraction"] == 1.0
+        assert metrics["q_value_loss"] == pytest.approx(expected.item())
+
     def test_td_accepts_rollout_shaped_outcomes_with_gamma_lt_one(self):
         """Real collated batches provide outcome labels as [B, K]."""
         outputs = self._make_outputs()
@@ -223,6 +331,8 @@ class TestTDBootstrapping:
         )
         outputs["p2_won"] = ~outputs["p1_won"]
         outputs["rank_valid"] = torch.ones((B, K), dtype=torch.bool)
+        outputs["p1_is_terminal"] = torch.zeros((B, K), dtype=torch.bool)
+        outputs["p2_is_terminal"] = torch.zeros((B, K), dtype=torch.bool)
         loss, metrics = compute_paired_losses(outputs, gamma=0.99)
         assert torch.isfinite(loss)
         assert metrics["p1_value_td_fraction"] > 0.0
@@ -254,9 +364,9 @@ class TestTDBootstrapping:
         next_value_logit = torch.randn(B, K, requires_grad=True)
         gamma = 0.99
 
-        # Manually verify the detach behaviour: the target should be
-        # gamma * sigmoid(next_value_logit).detach(), which has no grad.
-        target = gamma * torch.sigmoid(next_value_logit.detach())
+        # Manually verify the detach behaviour: the target should be built from
+        # detached bootstrap logits, so it has no grad.
+        target = (gamma ** K) * torch.sigmoid(next_value_logit[:, -1:].detach())
         assert not target.requires_grad  # .detach() was called
 
         # Full loss computation with requires_grad on latents:
@@ -264,6 +374,8 @@ class TestTDBootstrapping:
         outputs["p1_value_logit"] = value_logit
         outputs["p1_next_value_logit"] = next_value_logit
         outputs["p2_value_logit"] = torch.randn(B, K, requires_grad=True)
+        outputs["p1_is_terminal"] = torch.zeros((B, K), dtype=torch.bool)
+        outputs["p2_is_terminal"] = torch.zeros((B, K), dtype=torch.bool)
         loss, _ = compute_paired_losses(
             outputs,
             lambda_value=1.0,

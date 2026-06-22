@@ -120,7 +120,8 @@ model:
   advantage_weight_min: 0.1
   advantage_weight_max: 10.0
   # TD bootstrapping discount factor for V and Q heads.
-  # 0.99 = TD(0) bootstrapping from the actual T+1 state.
+  # With K-step rollout shards, 0.99 uses rollout-horizon TD(K) from the
+  # furthest valid in-window T+K state, stopping early on true terminals.
   # For backward compatibility, 1.0 disables TD and uses MC outcome targets.
   gamma: 0.99
   # Deprecated/no-op — accepted by train_paired.py with a warning.
