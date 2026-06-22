@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Optional, List
 
-from metamon.backend.replay_parser.backward import POVReplay
+from metamon.backend.replay_parser.backward import POVReplay, _NO_OPPONENT_ACTION
 from metamon.backend.replay_parser.replay_state import (
     Action,
     Move,
@@ -71,6 +71,8 @@ def _action_choice_text(action: Optional[Action], *, reveal_noop: bool) -> str:
     """Return canonical action-block content with a fixed two-token minimum."""
     if action is None:
         return "unknown unknown"
+    if action is _NO_OPPONENT_ACTION:
+        return "none"
     if action.is_switch or action.is_revival:
         target_name = clean_name(action.target.name) if action.target else "unknown"
         return f"switch {target_name}"
@@ -440,7 +442,9 @@ def _write_last_turn_results_block(
 
     # ── opponent ──
     lines.append("<opponent>")
-    if prev_opponent_action is not None:
+    if prev_opponent_action is _NO_OPPONENT_ACTION:
+        lines.append("none")
+    elif prev_opponent_action is not None:
         if prev_opponent_action.is_switch:
             target_name = clean_name(prev_opponent_action.target.name) if prev_opponent_action.target else "unknown"
             action_name = f"switch {target_name}"
@@ -815,7 +819,9 @@ def _write_state_block_doubles(
         for slot_idx, slot_tag in enumerate(("opponent1", "opponent2")):
             lines.append(f"<{slot_tag}>")
             oa = prev_opponent_actions[slot_idx] if prev_opponent_actions and slot_idx < len(prev_opponent_actions) else None
-            if oa is not None:
+            if oa is _NO_OPPONENT_ACTION:
+                lines.append("none")
+            elif oa is not None:
                 if oa.is_switch:
                     target_name = clean_name(oa.target.name) if oa.target else "unknown"
                     action_name = f"switch {target_name}"

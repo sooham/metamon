@@ -21,6 +21,12 @@ from metamon.backend.replay_parser.replay_state import (
 from metamon.backend.team_prediction.predictor import TeamPredictor
 from metamon.backend.team_prediction.team import TeamSet, PokemonSet
 
+# Sentinel to distinguish "opponent had no action in this subturn" from
+# "opponent action is unknown".  Subturns (forced switches after a faint
+# or U-turn) only contain the POV player's switch — the opponent already
+# acted in the main turn and has no separate action here.
+_NO_OPPONENT_ACTION = Action(name="__no_opponent_action__", user=None, target=None)
+
 
 def unpack_showteam(packed: str) -> list[dict]:
     """Parse a Showdown Teams.pack() string into a list of per-Pokemon dicts.
@@ -439,7 +445,7 @@ class POVReplay:
                     self._povturnlist.append(subturn.turn)
                     self._actionlist.append(action)
                     # opponent already acted this turn; subturn has no opponent action
-                    self._opponent_actionlist.append(None)
+                    self._opponent_actionlist.append(_NO_OPPONENT_ACTION)
 
             self._povturnlist.append(
                 turn_t
@@ -712,7 +718,7 @@ class POVReplayDoubles(POVReplay):
                     self._povturnlist.append(subturn.turn)
                     self._actionlist.append(action)
                     # opponent already acted this turn; subturn has no opponent action
-                    self._opponent_actionlist.append([None, None])
+                    self._opponent_actionlist.append([_NO_OPPONENT_ACTION, _NO_OPPONENT_ACTION])
 
             self._povturnlist.append(turn_t)
 

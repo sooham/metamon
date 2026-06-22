@@ -35,6 +35,10 @@ DOUBLES_REPLAY_URL = (
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _assert_canonical_action_content(content: str) -> None:
+    # "none" is a single-token sentinel for "opponent had no action"
+    # (e.g. forced-switch subturns).
+    if content == "none":
+        return
     parts = content.split()
     assert len(parts) >= 2, f"Action content must have kind and value: {content!r}"
     assert parts[0] in {"move", "switch", "unknown"}, (
