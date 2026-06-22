@@ -129,7 +129,7 @@ WM_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/world-model-samples
 WM_PROCESSES ?= $(N_THREADS)
 WM_VAL_SPLIT ?= 0.05
 WM_SEED ?= 42
-WM_ROLLOUT_LEN ?= 1
+WM_ROLLOUT_LEN ?= 10
 TOKENIZER_FILE := $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
 wm-dataset:
 	@# ---- 1. Check parsed replays exist for every format ----
