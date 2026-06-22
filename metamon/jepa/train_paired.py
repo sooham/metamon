@@ -289,7 +289,9 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
                     *BLOCK_KEYS,
                     *ACTION_KEYS,
                     *LEGAL_ACTION_KEYS,
+                    *NEXT_LEGAL_ACTION_KEYS,
                     *LEGAL_MASK_KEYS,
+                    *NEXT_LEGAL_MASK_KEYS,
                     *LEGAL_INDEX_KEYS,
                     *SCALAR_KEYS,
                 )
@@ -309,6 +311,18 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
                 p2_si = int(p2_state_idx[row, step])
                 p2_nsi = int(p2_next_state_idx[row, step])
                 p2_ai = int(p2_action_idx[row, step])
+                p1_action_end = (
+                    int(data["p1_battle_action_start"][battle_id + 1])
+                    if "p1_battle_action_start" in data
+                    else int(data["battle_action_start"][battle_id + 1])
+                )
+                p2_action_end = (
+                    int(data["p2_battle_action_start"][battle_id + 1])
+                    if "p2_battle_action_start" in data
+                    else int(data["battle_action_start"][battle_id + 1])
+                )
+                p1_terminal = p1_ai + 1 >= p1_action_end
+                p2_terminal = p2_ai + 1 >= p2_action_end
 
                 p1_sT_s, p1_aT_s, p1_aT_e = w(p1_bs, p1_si + 1, p1_as, max_hist)
                 p1_sT1_s, p1_aT1_s, p1_aT1_e = w(p1_bs, p1_nsi + 1, p1_as, max_hist)
@@ -335,21 +349,61 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
                     sample["p1_legal_actions"].append(data["p1_legal_actions"][p1_ai])
                     sample["p1_legal_action_mask"].append(data["p1_legal_action_mask"][p1_ai])
                     sample["p1_chosen_legal_action_idx"].append(int(data["p1_chosen_legal_action_idx"][p1_ai]))
+                    if not p1_terminal:
+                        sample["p1_next_legal_actions"].append(data["p1_legal_actions"][p1_ai + 1])
+                        sample["p1_next_legal_action_mask"].append(data["p1_legal_action_mask"][p1_ai + 1])
+                    else:
+                        sample["p1_next_legal_actions"].append(np.zeros((0, 1), dtype=np.int16))
+                        sample["p1_next_legal_action_mask"].append(np.zeros((0,), dtype=bool))
                 else:
                     sample["p1_legal_actions"].append(sample["p1_action"][-1][None, :])
                     sample["p1_legal_action_mask"].append(np.array([True], dtype=bool))
                     sample["p1_chosen_legal_action_idx"].append(0)
+                    if not p1_terminal:
+                        next_action = sv(
+                            data["p1_actions_combined"],
+                            data["p1_actions_combined_offsets"],
+                            data["p1_actions_combined_lengths"],
+                            p1_ai + 1,
+                            p1_ai + 2,
+                        )[0]
+                        sample["p1_next_legal_actions"].append(next_action[None, :])
+                        sample["p1_next_legal_action_mask"].append(np.array([True], dtype=bool))
+                    else:
+                        sample["p1_next_legal_actions"].append(np.zeros((0, 1), dtype=np.int16))
+                        sample["p1_next_legal_action_mask"].append(np.zeros((0,), dtype=bool))
                 if "p2_legal_actions" in data:
                     sample["p2_legal_actions"].append(data["p2_legal_actions"][p2_ai])
                     sample["p2_legal_action_mask"].append(data["p2_legal_action_mask"][p2_ai])
                     sample["p2_chosen_legal_action_idx"].append(int(data["p2_chosen_legal_action_idx"][p2_ai]))
+                    if not p2_terminal:
+                        sample["p2_next_legal_actions"].append(data["p2_legal_actions"][p2_ai + 1])
+                        sample["p2_next_legal_action_mask"].append(data["p2_legal_action_mask"][p2_ai + 1])
+                    else:
+                        sample["p2_next_legal_actions"].append(np.zeros((0, 1), dtype=np.int16))
+                        sample["p2_next_legal_action_mask"].append(np.zeros((0,), dtype=bool))
                 else:
                     sample["p2_legal_actions"].append(sample["p2_action"][-1][None, :])
                     sample["p2_legal_action_mask"].append(np.array([True], dtype=bool))
                     sample["p2_chosen_legal_action_idx"].append(0)
+                    if not p2_terminal:
+                        next_action = sv(
+                            data["p2_actions_combined"],
+                            data["p2_actions_combined_offsets"],
+                            data["p2_actions_combined_lengths"],
+                            p2_ai + 1,
+                            p2_ai + 2,
+                        )[0]
+                        sample["p2_next_legal_actions"].append(next_action[None, :])
+                        sample["p2_next_legal_action_mask"].append(np.array([True], dtype=bool))
+                    else:
+                        sample["p2_next_legal_actions"].append(np.zeros((0, 1), dtype=np.int16))
+                        sample["p2_next_legal_action_mask"].append(np.zeros((0,), dtype=bool))
                 sample["p1_won"].append(p1_won)
                 sample["p2_won"].append(p2_won)
                 sample["rank_valid"].append(rank_valid)
+                sample["p1_is_terminal"].append(p1_terminal)
+                sample["p2_is_terminal"].append(p2_terminal)
             yield sample
 
     def __iter__(self) -> Iterator[dict[str, object]]:
@@ -395,9 +449,17 @@ LEGAL_ACTION_KEYS = (
     "p1_legal_actions",
     "p2_legal_actions",
 )
+NEXT_LEGAL_ACTION_KEYS = (
+    "p1_next_legal_actions",
+    "p2_next_legal_actions",
+)
 LEGAL_MASK_KEYS = (
     "p1_legal_action_mask",
     "p2_legal_action_mask",
+)
+NEXT_LEGAL_MASK_KEYS = (
+    "p1_next_legal_action_mask",
+    "p2_next_legal_action_mask",
 )
 LEGAL_INDEX_KEYS = (
     "p1_chosen_legal_action_idx",
@@ -407,6 +469,8 @@ SCALAR_KEYS = (
     "p1_won",
     "p2_won",
     "rank_valid",
+    "p1_is_terminal",
+    "p2_is_terminal",
 )
 
 
@@ -464,12 +528,18 @@ def collate_paired_fn(
         masks: list[list[np.ndarray]],
     ) -> tuple[torch.Tensor, torch.Tensor]:
         max_candidates = max(
-            (legal.shape[0] for rollout in actions for legal in rollout),
-            default=1,
+            1,
+            max(
+                (legal.shape[0] for rollout in actions for legal in rollout),
+                default=1,
+            ),
         )
         max_tokens = max(
-            (legal.shape[1] for rollout in actions for legal in rollout),
-            default=1,
+            1,
+            max(
+                (legal.shape[1] for rollout in actions for legal in rollout),
+                default=1,
+            ),
         )
         padded = torch.full(
             (len(actions), rollout_len, max_candidates, max_tokens),
@@ -506,10 +576,27 @@ def collate_paired_fn(
         )
         out[action_key] = legal
         out[mask_key] = mask
+    for action_key, mask_key in zip(NEXT_LEGAL_ACTION_KEYS, NEXT_LEGAL_MASK_KEYS):
+        legal, mask = pad_legal_action_rollouts(
+            [item[action_key] for item in batch],  # type: ignore[index]
+            [item[mask_key] for item in batch],  # type: ignore[index]
+        )
+        out[action_key] = legal
+        out[mask_key] = mask
     for key in LEGAL_INDEX_KEYS:
         out[key] = torch.tensor([item[key] for item in batch], dtype=torch.long)
     for key in SCALAR_KEYS:
         out[key] = torch.tensor([item[key] for item in batch], dtype=torch.bool)
+
+    # Legacy/defensive terminal detection: an empty T+1 state is terminal.
+    # Rollout boundaries are not terminals; the model bootstraps from T+1
+    # directly for those steps.
+    for pov in ("p1", "p2"):
+        t1_valid = out.get(f"{pov}_state_T1_valid")
+        if t1_valid is not None:
+            empty_state = ~t1_valid.any(dim=-1)  # [B, K]
+            out[f"{pov}_is_terminal"] = out[f"{pov}_is_terminal"] | empty_state
+
     return out
 
 
@@ -631,7 +718,12 @@ def _validate_paired_outcomes(shard_paths: list[str], outcome_loss_weight: float
     return stats
 
 
-def _forward_paired(model: PairedJEPAModel, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def _forward_paired(
+    model: PairedJEPAModel,
+    batch: dict[str, torch.Tensor],
+    *,
+    compute_td_bootstrap: bool = True,
+) -> dict[str, torch.Tensor]:
     outputs = model(
         batch["p1_state_T"], batch["p1_state_T_valid"],
         batch["p1_state_T1"], batch["p1_state_T1_valid"],
@@ -655,10 +747,17 @@ def _forward_paired(model: PairedJEPAModel, batch: dict[str, torch.Tensor]) -> d
         batch["p2_legal_actions"],
         batch["p2_legal_action_mask"],
         batch["p2_chosen_legal_action_idx"],
+        p1_next_legal_action_tokens=batch.get("p1_next_legal_actions"),
+        p1_next_legal_action_mask=batch.get("p1_next_legal_action_mask"),
+        p2_next_legal_action_tokens=batch.get("p2_next_legal_actions"),
+        p2_next_legal_action_mask=batch.get("p2_next_legal_action_mask"),
+        compute_td_bootstrap=compute_td_bootstrap,
     )
     outputs["p1_won"] = batch["p1_won"]
     outputs["p2_won"] = batch["p2_won"]
     outputs["rank_valid"] = batch["rank_valid"]
+    outputs["p1_is_terminal"] = batch.get("p1_is_terminal")
+    outputs["p2_is_terminal"] = batch.get("p2_is_terminal")
     return outputs
 
 
@@ -750,6 +849,9 @@ def train(args: argparse.Namespace) -> None:
         advantage_temperature = model_cfg.get("advantage_temperature", None)
     advantage_weight_min = model_cfg.get("advantage_weight_min", 0.1)
     advantage_weight_max = model_cfg.get("advantage_weight_max", 10.0)
+    gamma = args.gamma
+    if gamma is None:
+        gamma = model_cfg.get("gamma", 1.0)
     sigreg_num_slices = model_cfg.get("sigreg_num_slices", SIGREG_NUM_SLICES)
     sigreg_num_points = model_cfg.get("sigreg_num_points", SIGREG_NUM_POINTS)
     sigreg_domain = model_cfg.get("sigreg_domain", SIGREG_DOMAIN)
@@ -909,7 +1011,7 @@ def train(args: argparse.Namespace) -> None:
         f"Transitions: {train_transitions:,} train  {val_transitions:,} val  "
         f"batch={args.batch_size} grad_accum={args.grad_accum_steps} "
         f"effective={args.batch_size * args.grad_accum_steps} "
-        f"max_history_blocks={args.max_history_blocks}"
+        f"max_history_blocks={args.max_history_blocks} gamma={gamma}"
     )
 
     # ---- wandb init ----
@@ -958,6 +1060,7 @@ def train(args: argparse.Namespace) -> None:
                 "lambda_value_teacher": lambda_value_teacher,
                 "lambda_q_teacher": lambda_q_teacher,
                 "advantage_temperature": advantage_temperature,
+                "gamma": gamma,
                 "checkpoint": args.checkpoint,
             },
         )
@@ -981,10 +1084,12 @@ def train(args: argparse.Namespace) -> None:
             advantage_temperature=advantage_temperature,
             advantage_weight_min=advantage_weight_min,
             advantage_weight_max=advantage_weight_max,
+            gamma=gamma,
             sigreg_num_slices=sigreg_num_slices,
             sigreg_num_points=sigreg_num_points,
             sigreg_domain=sigreg_domain,
         )
+    use_td_bootstrap = abs(float(gamma) - 1.0) > 1e-8
 
     @torch.no_grad()
     def validate(max_batches: int) -> dict[str, float]:
@@ -997,7 +1102,11 @@ def train(args: argparse.Namespace) -> None:
             if max_batches > 0 and batch_idx >= max_batches:
                 break
             batch = _batch_to_device(batch, device)
-            outputs = _forward_paired(model, batch)
+            outputs = _forward_paired(
+                model,
+                batch,
+                compute_td_bootstrap=use_td_bootstrap,
+            )
             _, metrics = loss_from_outputs(outputs)
             for key, value in metrics.items():
                 totals[key] = totals.get(key, 0.0) + value
@@ -1020,7 +1129,11 @@ def train(args: argparse.Namespace) -> None:
         epoch_steps = 0
         for batch in train_loader:
             batch = _batch_to_device(batch, device)
-            outputs = _forward_paired(model, batch)
+            outputs = _forward_paired(
+                model,
+                batch,
+                compute_td_bootstrap=use_td_bootstrap,
+            )
             loss, metrics = loss_from_outputs(outputs)
             try:
                 (loss / args.grad_accum_steps).backward()
@@ -1093,6 +1206,12 @@ def train(args: argparse.Namespace) -> None:
                     "train/sigreg_action_opponent": metrics["sigreg_action_opponent"],
                     "train/next_state_logvar_p1": metrics["next_state_logvar_p1"],
                     "train/next_state_logvar_p2": metrics["next_state_logvar_p2"],
+                    "train/p1_terminal_fraction": metrics["p1_terminal_fraction"],
+                    "train/p2_terminal_fraction": metrics["p2_terminal_fraction"],
+                    "train/p1_value_td_fraction": metrics["p1_value_td_fraction"],
+                    "train/p2_value_td_fraction": metrics["p2_value_td_fraction"],
+                    "train/p1_q_td_fraction": metrics["p1_q_td_fraction"],
+                    "train/p2_q_td_fraction": metrics["p2_q_td_fraction"],
                     "train/lr": optimizer.param_groups[0]["lr"],
                     "epoch": epoch,
                     "global_step": global_step,
@@ -1129,6 +1248,8 @@ def train(args: argparse.Namespace) -> None:
                     f"sigreg_action {metrics['sigreg_action_loss']:.4f} "
                     f"[own {metrics['sigreg_action_own']:.4f}, "
                     f"opp {metrics['sigreg_action_opponent']:.4f}] | "
+                    f"td_v {metrics['p1_value_td_fraction']:.2f}/{metrics['p2_value_td_fraction']:.2f} "
+                    f"td_q {metrics['p1_q_td_fraction']:.2f}/{metrics['p2_q_td_fraction']:.2f} | "
                     f"logvar_next {metrics['next_state_logvar_p1']:.3f}/{metrics['next_state_logvar_p2']:.3f}"
                 )
 
@@ -1299,6 +1420,11 @@ if __name__ == "__main__":
     parser.add_argument("--lambda_q_teacher", type=float, default=None)
     parser.add_argument("--advantage_temperature", type=float, default=None,
                         help="Optional advantage-weighting temperature for Q/policy losses. Disabled when unset.")
+    parser.add_argument("--gamma", type=float, default=None,
+                        help="TD discount factor for V and Q heads. Non-terminal steps use "
+                             "gamma * sigmoid(V_next) as a soft target; terminal steps use outcome. "
+                             "Set to 1.0 (default from config) to disable TD bootstrapping. "
+                             "Typical: 0.95–0.99.")
     parser.add_argument("--print_interval", type=int, default=10)
     parser.add_argument("--log_interval", type=int, default=0,
                         help="Log every N training steps to wandb (0 = same as print_interval).")

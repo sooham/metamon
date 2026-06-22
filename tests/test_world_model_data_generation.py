@@ -158,6 +158,18 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     samples = list(dataset)
     assert len(samples) == 2
     assert samples[0]["rank_valid"] == [True]
+    assert samples[0]["p1_is_terminal"] == [False]
+    assert samples[1]["p1_is_terminal"] == [True]
+    np.testing.assert_array_equal(
+        samples[0]["p1_next_legal_actions"][0],
+        np.array([[11]], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        samples[0]["p1_next_legal_action_mask"][0],
+        np.array([True], dtype=bool),
+    )
+    assert samples[1]["p1_next_legal_actions"][0].shape == (0, 1)
+    assert not bool(samples[1]["p1_next_legal_action_mask"][0].any())
     second = samples[1]
     assert len(second["p1_player_hist_T"]) == 1
     assert len(second["p1_player_hist_T"][0]) == 2
@@ -203,6 +215,14 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     assert batch["p1_action"].shape[:2] == (2, 1)
     assert batch["p1_legal_actions"].shape[:3] == (2, 1, 1)
     assert batch["p1_legal_action_mask"].shape == (2, 1, 1)
+    assert batch["p1_next_legal_actions"].shape[:3] == (2, 1, 1)
+    assert batch["p1_next_legal_action_mask"].shape == (2, 1, 1)
+    assert batch["p1_next_legal_action_mask"][0, 0, 0]
+    assert not batch["p1_next_legal_action_mask"][1, 0, 0]
+    assert torch.equal(
+        batch["p1_is_terminal"],
+        torch.tensor([[False], [True]], dtype=torch.bool),
+    )
     assert batch["p1_chosen_legal_action_idx"].shape == (2, 1)
     assert batch["rank_valid"].shape == (2, 1)
 
@@ -326,11 +346,16 @@ def test_paired_shard_accumulator_writes_k_step_rollout_samples(tmp_path):
     assert len(sample["p1_state_T"]) == 3
     assert len(sample["p1_action"]) == 3
     assert sample["p1_won"] == [True, True, True]
+    assert sample["p1_is_terminal"] == [False, False, True]
     np.testing.assert_array_equal(sample["p1_action"][2], np.array([12], dtype=np.int16))
     batch = collate_paired_fn([sample], pad_id=0)
     assert batch["p1_state_T"].shape[:2] == (1, 3)
     assert batch["p1_action"].shape[:2] == (1, 3)
     assert batch["p1_won"].shape == (1, 3)
+    assert torch.equal(
+        batch["p1_is_terminal"],
+        torch.tensor([[False, False, True]], dtype=torch.bool),
+    )
 
 
 def test_paired_jepa_dataset_history_window_can_be_capped():
@@ -651,7 +676,7 @@ def test_paired_jepa_forward_teacher_forces_actual_opponent_state_and_actions_fo
     actual_p2_action = torch.tensor([[31.0, 32.0]])
     actual_p1_action = torch.tensor([[41.0, 42.0]])
 
-    PairedJEPAModel.forward(
+    outputs = PairedJEPAModel.forward(
         fake,
         p1_state_T, valid,
         p1_state_T1, valid,
@@ -669,6 +694,11 @@ def test_paired_jepa_forward_teacher_forces_actual_opponent_state_and_actions_fo
         p2_action,
         actual_p2_action,
         actual_p1_action,
+        p1_next_legal_action_tokens=p1_action.unsqueeze(1),
+        p1_next_legal_action_mask=torch.ones((1, 1), dtype=torch.bool),
+        p2_next_legal_action_tokens=p2_action.unsqueeze(1),
+        p2_next_legal_action_mask=torch.ones((1, 1), dtype=torch.bool),
+        compute_td_bootstrap=True,
     )
 
     assert len(fake.next_state_predictor.calls) == 2
@@ -679,6 +709,10 @@ def test_paired_jepa_forward_teacher_forces_actual_opponent_state_and_actions_fo
     torch.testing.assert_close(p2_next_call[1], p2_action)
     torch.testing.assert_close(p2_next_call[2], p1_state_T)
     torch.testing.assert_close(p2_next_call[3], actual_p1_action)
+    assert "p1_next_value_logit" in outputs
+    assert "p2_next_value_logit" in outputs
+    assert outputs["p1_next_q_logits"].shape == (1, 1)
+    assert outputs["p2_next_q_logits"].shape == (1, 1)
 
 
 def test_compute_paired_losses_uses_value_q_and_policy_heads():
