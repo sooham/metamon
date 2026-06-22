@@ -191,8 +191,8 @@ JEPA_MAX_HISTORY ?= 0
 # Usage:
 #   make train-jepa FORMATS=gen1ou
 #   make train-jepa FORMATS=gen1ou JEPA_MAX_HISTORY=0  # full battle history
-JEPA_PAIRED_BATCH_SIZE ?= 50
-JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 3
+JEPA_PAIRED_BATCH_SIZE ?= 40
+JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 2
 JEPA_PAIRED_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best_stochastic.pt
 JEPA_PAIRED_MAX_STEPS ?= 0
 JEPA_PAIRED_VAL_INTERVAL ?= 500
@@ -274,7 +274,7 @@ _train-jepa-inner:
 # REPL keys (press during battle):
 #   R = raw protocol logs    P = state/action blocks
 #   V = toggle verbose       O = battle overview    Q = quit REPL
-JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best.pt
+JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best_stochastic.pt
 JEPA_PLAY_FORMAT ?= gen1ou
 JEPA_PLAY_USERNAME ?= jepabot
 JEPA_PLAY_TEAM_SET ?= competitive
