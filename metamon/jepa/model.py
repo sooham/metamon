@@ -693,13 +693,19 @@ class JEPATemporalEncoder(nn.Module):
 
         x = x + self.type_embedding(type_ids) + self.pos_embedding[:, :max_seq, :]
 
+        if self.gradient_checkpointing and self.training:
+            # Checkpoint the ENTIRE transformer stack to save only one copy
+            # of [B, max_seq, d_model] instead of one per block (4× reduction).
+            return torch.utils.checkpoint.checkpoint(
+                self._transformer_forward, x, valid, use_reentrant=False
+            )
+        return self._transformer_forward(x, valid)
+
+    def _transformer_forward(
+        self, x: torch.Tensor, valid: torch.Tensor
+    ) -> torch.Tensor:
         for block in self.blocks:
-            if self.gradient_checkpointing and self.training:
-                x = torch.utils.checkpoint.checkpoint(
-                    block, x, valid, use_reentrant=False
-                )
-            else:
-                x = block(x, key_padding_mask=valid)
+            x = block(x, key_padding_mask=valid)
         x = self.ln_final(x)
         pooled = self.pool(x, valid)
         return self.proj_e(pooled)

@@ -963,7 +963,7 @@ def train(args: argparse.Namespace) -> None:
         action = "overriding fallback" if temporal_overridden else "no override needed (≤ fallback)"
         cap_note = ""
         if args.max_history_blocks > 0:
-            cap_note = f"; capped by max_history_blocks={args.max_history_blocks} (3×{args.max_history_blocks} = {3*args.max_history_blocks} positions)"
+            cap_note = f"; capped by max_history_blocks={args.max_history_blocks} (3×{args.max_history_blocks}+2 = {3*args.max_history_blocks+2} positions)"
         print(
             f"Temporal max_seq_len: {temporal_max_seq_len} "
             f"[auto-detected from {auto_stats_source!r}{mult}; "
@@ -973,7 +973,7 @@ def train(args: argparse.Namespace) -> None:
         source = "config" if config_tmp is not None else "hardcoded fallback"
         cap_note = ""
         if args.max_history_blocks > 0:
-            cap_note = f"; capped by max_history_blocks={args.max_history_blocks} (3×{args.max_history_blocks} = {3*args.max_history_blocks} positions)"
+            cap_note = f"; capped by max_history_blocks={args.max_history_blocks} (3×{args.max_history_blocks}+2 = {3*args.max_history_blocks+2} positions)"
         print(
             f"Temporal max_seq_len: {temporal_max_seq_len} "
             f"[{source}{' (config has null)' if config_tmp is None else ''}; "
@@ -1053,10 +1053,9 @@ def train(args: argparse.Namespace) -> None:
         torch.backends.cudnn.allow_tf32 = True
 
     # ── torch.compile submodules individually (CUDA only) ─────────
-    # Compiling the full model or temporal_encoder hits a PyTorch 2.12
-    # inductor partitioner bug (in-place tensor writes in the temporal
-    # encoder interleave logic).  Compile only the heavy encoder + action
-    # encoder; the temporal encoder and MLPs stay eager (they're small).
+    # With max_history_blocks=100, temporal sequences are ≤302 positions
+    # (was ≤7219), so the temporal encoder is small enough that it doesn't
+    # need compilation.  The heavy encoder + action encoder still benefit.
     if args.compile and device.type == "cuda":
         torch._dynamo.config.capture_scalar_outputs = True
         compiled_any = False
