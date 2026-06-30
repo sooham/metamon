@@ -541,6 +541,14 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
 
     @torch.no_grad()
     def _jepa_diagnostics(self, battle: AbstractBattle, hist: BattleHistory, action_names: dict[int, str]):
+        """Score legal actions by predicted latent-state change magnitude.
+
+        Heuristic — "max delta":  score = ||z_next − z_self||
+
+        The model predicts the next latent state for each candidate action
+        (given the opponent belief), then scores by how far that imagined
+        state is from the current one.  Larger jumps = more impactful actions.
+        """
         device = next(self._jepa.parameters()).device
         (
             state_tokens,
@@ -551,55 +559,56 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
             opponent_hist_valid,
         ) = (tensor.to(device) for tensor in self._encode_history_tensors(hist))
 
+        # ── current state latent ──────────────────────────────────
         z_self = self._jepa.encode_current_state(state_tokens, state_valid)
-        c_self = self._jepa.encode_history_context(
-            state_tokens, state_valid,
+        z_self_norm = torch.norm(z_self, dim=-1).item()
+
+        # ── opponent state belief (from target-excluded history) ──
+        hist_state_valid = self._jepa._drop_current_state_from_history(state_valid)
+        ctx = self._jepa.encode_history_context(
+            state_tokens, hist_state_valid,
             player_hist_tokens, player_hist_valid,
             opponent_hist_tokens, opponent_hist_valid,
         )
-        (pred_opponent_state_mu, pred_opponent_state_logvar,
-         pred_opponent_action_mu, pred_opponent_action_logvar) = self._jepa.opponent_belief_predictor(
-            c_self, z_self,
-        )
-        pred_opponent_state = pred_opponent_state_mu
-        pred_opponent_action = pred_opponent_action_mu
+        state_embs, _, player_embs, pa_valid, opponent_embs, oa_valid = ctx
 
-        z_self_norm = torch.norm(z_self, dim=-1).item()
-        pred_state_norm = torch.norm(pred_opponent_state, dim=-1).item()
-        pred_state_delta = torch.norm(pred_opponent_state - z_self, dim=-1).item()
-        pred_action_norm = torch.norm(pred_opponent_action, dim=-1).item()
-        pred_state_logvar_mean = pred_opponent_state_logvar.mean().item()
-        pred_action_logvar_mean = pred_opponent_action_logvar.mean().item()
-        decision_state = self._jepa.decision_state_encoder(
-            z_self,
-            pred_opponent_state_mu,
-            pred_opponent_state_logvar,
+        pred_opp_state_mu, pred_opp_state_logvar = self._jepa.opp_belief_predictor(
+            state_embs, hist_state_valid,
+            player_embs, pa_valid,
+            opponent_embs, oa_valid,
         )
-        value_logit_t = self._jepa.value_head(decision_state)
-        value_logit = value_logit_t.item()
-        value_prob = torch.sigmoid(value_logit_t).item()
+        pred_state_norm = torch.norm(pred_opp_state_mu, dim=-1).item()
+        pred_state_delta = torch.norm(pred_opp_state_mu - z_self, dim=-1).item()
+        pred_state_logvar_mean = pred_opp_state_logvar.mean().item()
 
+        # ── opponent action belief ────────────────────────────────
+        pred_opp_action_mu, pred_opp_action_logvar = self._jepa.opp_action_policy_predictor(
+            z_self, pred_opp_state_mu,
+        )
+        pred_action_norm = torch.norm(pred_opp_action_mu, dim=-1).item()
+        pred_action_logvar_mean = pred_opp_action_logvar.mean().item()
+
+        # ── score each legal action ───────────────────────────────
         rows = []
         for idx, name in action_names.items():
             pa = self._action_content_block(name)
             pa_tensor = torch.from_numpy(pa.astype(np.int32)).unsqueeze(0).to(device)
-            own_action = self._jepa.action_encoder(pa_tensor)
-            action_h = self._jepa.action_projector(own_action)
-            q_logit_t = self._jepa.action_value_head(decision_state, action_h)
-            q_logit = q_logit_t.item()
-            q_prob = torch.sigmoid(q_logit_t).item()
-            pred_next, _ = self._jepa.next_state_predictor(
-                z_self, own_action, pred_opponent_state, pred_opponent_action,
-            )
-            next_norm = torch.norm(pred_next, dim=-1).item()
-            state_delta = torch.norm(pred_next - z_self, dim=-1).item()
+            own_action = self._jepa.encode_token_tokens(pa_tensor)
             action_norm = torch.norm(own_action, dim=-1).item()
+
+            pred_next_mu, _pred_next_logvar = self._jepa.next_state_predictor(
+                z_self, own_action, pred_opp_state_mu, pred_opp_action_mu,
+            )
+            next_norm = torch.norm(pred_next_mu, dim=-1).item()
+            state_delta = torch.norm(pred_next_mu - z_self, dim=-1).item()
+
+            # score = magnitude of predicted latent-state change
+            score = state_delta
+
             rows.append({
                 "idx": idx,
                 "name": name,
-                "score": q_logit,
-                "q_logit": q_logit,
-                "q_prob": q_prob,
+                "score": score,
                 "next_norm": next_norm,
                 "state_delta": state_delta,
                 "action_norm": action_norm,
@@ -612,8 +621,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
             "pred_action_norm": pred_action_norm,
             "pred_state_logvar_mean": pred_state_logvar_mean,
             "pred_action_logvar_mean": pred_action_logvar_mean,
-            "value_logit": value_logit,
-            "value_prob": value_prob,
+            "scorer": "max_delta",
             "rows": rows,
         }
 
@@ -647,7 +655,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
             active_hp=_display_hp(getattr(battle.active_pokemon, "current_hp_fraction", None)),
             opponent_species=_display_species(battle.opponent_active_pokemon),
             opponent_hp=_display_hp(getattr(battle.opponent_active_pokemon, "current_hp_fraction", None)),
-            scorer="actor-critic",
+            scorer="max_delta",
             forced_switch=hist.current_forced_switch,
             num_state_blocks=len(hist.state_blocks),
             num_player_actions=len(hist.player_actions),
@@ -659,16 +667,13 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         best_idx = best_row["idx"]
 
         # Build TuiDiagnostic from JEPA‑specific output.
-        columns = ["action", "name", "Q", "Pwin", "V", "|z_next|", "|Δz|", "|a|"]
+        columns = ["action", "name", "Δz", "|z_next|", "|a|"]
         str_rows: list[list[str]] = [
             [
                 str(row["idx"]),
                 row["name"],
-                f"{row['q_logit']:+8.4f}",
-                f"{row['q_prob']:.4f}",
-                f"{diag['value_prob']:.4f}",
-                f"{row['next_norm']:8.4f}",
                 f"{row['state_delta']:8.4f}",
+                f"{row['next_norm']:8.4f}",
                 f"{row['action_norm']:8.4f}",
             ]
             for row in rows
@@ -681,10 +686,10 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
             chosen_label=action_names.get(best_idx, "?"),
             context_lines=[
                 f"z_self: {diag['z_self_norm']:.4f}  pred_opp: {diag['pred_state_norm']:.4f}  "
-                f"delta: {diag['pred_state_delta']:.4f}  V: {diag['value_logit']:+.4f} "
-                f"Pwin: {diag['value_prob']:.4f}",
+                f"opp_δ: {diag['pred_state_delta']:.4f}",
                 f"opp-state logvar: {diag['pred_state_logvar_mean']:.4f}  "
                 f"opp-action logvar: {diag['pred_action_logvar_mean']:.4f}",
+                f"heuristic: max_delta  (argmax ||z_next − z_self||)",
             ],
         )
 

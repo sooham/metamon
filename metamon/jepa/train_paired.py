@@ -920,8 +920,9 @@ def train(args: argparse.Namespace) -> None:
         if compiled_any:
             print("torch.compile enabled on: encoder")
 
+    loaded_ckpt = None
     if args.checkpoint and os.path.exists(args.checkpoint):
-        _load_compatible_checkpoint(model, args.checkpoint, device)
+        loaded_ckpt = _load_compatible_checkpoint(model, args.checkpoint, device)
 
     model.set_debug_tensor_logging(
         args.debug_tensors,
@@ -1055,6 +1056,17 @@ def train(args: argparse.Namespace) -> None:
     best_val_epoch: int | None = None
     best_val_global_step: int | None = None
     best_val_metrics: dict[str, float] | None = None
+    if loaded_ckpt is not None:
+        ckpt_best = loaded_ckpt.get("best_val_loss")
+        if ckpt_best is not None:
+            best_val_loss = float(ckpt_best)
+            best_val_epoch = loaded_ckpt.get("best_val_epoch")
+            best_val_global_step = loaded_ckpt.get("best_val_global_step")
+            best_val_metrics = loaded_ckpt.get("best_val_metrics")
+            print(
+                f"  restored best val from checkpoint: loss={best_val_loss:.4f}"
+                f" epoch={best_val_epoch} step={best_val_global_step}"
+            )
 
     def update_best_val(
         epoch_idx: int,
@@ -1220,9 +1232,8 @@ def train(args: argparse.Namespace) -> None:
                 }
                 if device.type == "cuda":
                     wandb_payload.update({
-                        "train/cuda_allocated_gib": torch.cuda.memory_allocated() / 1024 ** 3,
-                        "train/cuda_reserved_gib": torch.cuda.memory_reserved() / 1024 ** 3,
-                        "train/cuda_peak_allocated_gib": torch.cuda.max_memory_allocated() / 1024 ** 3,
+                        "mem/cuda_reserved_gib": torch.cuda.memory_reserved() / 1024 ** 3,
+                        "mem/cuda_peak_allocated_gib": torch.cuda.max_memory_allocated() / 1024 ** 3,
                     })
                 wandb_run.log(wandb_payload)
 
@@ -1236,7 +1247,6 @@ def train(args: argparse.Namespace) -> None:
                 if device.type == "cuda":
                     cuda_mem = (
                         " | cuda_mem "
-                        f"{torch.cuda.memory_allocated() / 1024 ** 3:.2f}G alloc/"
                         f"{torch.cuda.memory_reserved() / 1024 ** 3:.2f}G reserved/"
                         f"{torch.cuda.max_memory_allocated() / 1024 ** 3:.2f}G peak"
                     )

@@ -95,20 +95,11 @@ def main():
         bos_id=bos_id,
         eos_id=eos_id,
         latent_dim=model_cfg.get("latent_dim", 100),
-        action_latent_dim=model_cfg.get("action_latent_dim", 32),
         encoder_cfg=model_cfg.get("encoder", {}),
-        temporal_encoder_cfg=model_cfg.get("temporal_encoder", {}),
-        action_encoder_cfg=model_cfg.get("action_encoder", {}),
-        opponent_belief_predictor_cfg=model_cfg.get(
-            "opponent_belief_predictor",
-            model_cfg.get("opponent_state_predictor", {})
-        ),
+        self_belief_encoder_cfg=model_cfg.get("self_belief_encoder", {}),
+        opponent_belief_predictor_cfg=model_cfg.get("opponent_belief_predictor", {}),
+        opponent_policy_belief_cfg=model_cfg.get("opponent_policy_belief", {}),
         next_state_predictor_cfg=model_cfg.get("next_state_predictor", {}),
-        rank_head_cfg=model_cfg.get("rank_head", {}),
-        decision_state_encoder_cfg=model_cfg.get("decision_state_encoder", {}),
-        value_head_cfg=model_cfg.get("value_head", {}),
-        action_projector_cfg=model_cfg.get("action_projector", {}),
-        action_value_head_cfg=model_cfg.get("action_value_head", {}),
     ).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     if device.type == "cuda":
