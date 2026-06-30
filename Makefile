@@ -345,7 +345,7 @@ _train-jepa-inner:
 # REPL keys (press during battle):
 #   R = raw protocol logs    P = state/action blocks
 #   V = toggle verbose       O = battle overview    Q = quit REPL
-JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best.pt
+JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best_stochastic.pt
 JEPA_PLAY_FORMAT ?= gen1ou
 JEPA_PLAY_USERNAME ?= jepabot
 JEPA_PLAY_TEAM_SET ?= competitive
