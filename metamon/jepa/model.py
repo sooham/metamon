@@ -65,13 +65,13 @@ target opponent action latent under the belief predictor action distribution::
 
     L_oa = 0.5 * mean(logvar_action + ||actual_opp_action - mu_action||² / exp(logvar_action))
 
-*SIGReg (not used right now)* — on current-state encoder outputs, next-state target encoder
-outputs, and history-context outputs.  Action SIGReg is configurable and is off
-by default; predicted Gaussian samples are not regularized.
+*State SIGReg* — on p1/p2 current-state encoder outputs, next-state target
+encoder outputs, and history-context state outputs.  Action SIGReg remains off;
+predicted Gaussian samples are not regularized.
 
 Total::
 
-    L = λ_ss L_ss + λ_os L_os + λ_oa L_oa + λ_next L_next
+    L = λ_ss L_ss + λ_os L_os + λ_oa L_oa + λ_next L_next + λ_sigreg_state L_sigreg_state
 """
 
 import math
@@ -1689,6 +1689,10 @@ class PairedJEPAModel(nn.Module):
             "enc_p2_T": z_p2_T,
             "enc_p1_T1": z_p1_T1,
             "enc_p2_T1": z_p2_T1,
+            "enc_p1_history_states": ctx_p1_T[0],
+            "enc_p1_history_states_valid": ctx_p1_T[1],
+            "enc_p2_history_states": ctx_p2_T[0],
+            "enc_p2_history_states_valid": ctx_p2_T[1],
             "pred_p1_self_T_mu": pred_p1_self_T_mu,
             "pred_p1_self_T_logvar": pred_p1_self_T_logvar,
             "pred_p2_self_T_mu": pred_p2_self_T_mu,
@@ -1827,15 +1831,116 @@ def gaussian_nll(
     return 0.5 * (logvar + (target - mu).square() * torch.exp(-logvar)).mean()
 
 
+def _flatten_sigreg_states(
+    embeddings: torch.Tensor,
+    valid: torch.Tensor | None = None,
+) -> torch.Tensor:
+    flat = embeddings.reshape(-1, embeddings.shape[-1])
+    if valid is None:
+        return flat
+    mask = valid.reshape(-1).to(dtype=torch.bool)
+    return flat[mask]
+
+
+def _state_sigreg_terms(
+    outputs: dict[str, torch.Tensor],
+    *,
+    num_slices: int,
+    num_points: int,
+    domain: float,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    groups: dict[str, torch.Tensor] = {}
+    for prefix in ("p1", "p2"):
+        history = outputs.get(f"enc_{prefix}_history_states")
+        if history is not None:
+            groups[f"sigreg_state_{prefix}_history"] = _flatten_sigreg_states(
+                history,
+                outputs.get(f"enc_{prefix}_history_states_valid"),
+            )
+        groups[f"sigreg_state_{prefix}_current"] = _flatten_sigreg_states(
+            outputs[f"enc_{prefix}_T"]
+        )
+        groups[f"sigreg_state_{prefix}_next"] = _flatten_sigreg_states(
+            outputs[f"enc_{prefix}_T1"]
+        )
+
+    terms: dict[str, torch.Tensor] = {}
+    losses: list[torch.Tensor] = []
+    for name, embeddings in groups.items():
+        if embeddings.numel() == 0:
+            continue
+        value = sigreg(
+            embeddings,
+            num_slices=num_slices,
+            num_points=num_points,
+            domain=domain,
+        )
+        terms[name] = value
+        losses.append(value)
+
+    if losses:
+        return torch.stack(losses).mean(), terms
+
+    ref = outputs["enc_p1_T"]
+    return ref.new_zeros(()), terms
+
+
+def _state_target_diagnostics(
+    outputs: dict[str, torch.Tensor],
+    *,
+    max_pairwise_samples: int = 256,
+) -> dict[str, float]:
+    with torch.no_grad():
+        targets = torch.cat(
+            [
+                outputs["enc_p1_T"].reshape(-1, outputs["enc_p1_T"].shape[-1]),
+                outputs["enc_p2_T"].reshape(-1, outputs["enc_p2_T"].shape[-1]),
+                outputs["enc_p1_T1"].reshape(-1, outputs["enc_p1_T1"].shape[-1]),
+                outputs["enc_p2_T1"].reshape(-1, outputs["enc_p2_T1"].shape[-1]),
+            ],
+            dim=0,
+        ).float()
+        if targets.numel() == 0:
+            return {
+                "target_latent_norm": 0.0,
+                "target_latent_std_per_dim": 0.0,
+                "target_pairwise_distance": 0.0,
+            }
+
+        norm = targets.norm(dim=-1).mean()
+        std_per_dim = targets.std(dim=0, unbiased=False).mean()
+        if targets.shape[0] < 2:
+            pairwise = targets.new_zeros(())
+        else:
+            if targets.shape[0] > max_pairwise_samples:
+                idx = torch.linspace(
+                    0,
+                    targets.shape[0] - 1,
+                    steps=max_pairwise_samples,
+                    device=targets.device,
+                ).long()
+                targets = targets.index_select(0, idx)
+            pairwise = torch.pdist(targets, p=2).mean()
+        return {
+            "target_latent_norm": norm.item(),
+            "target_latent_std_per_dim": std_per_dim.item(),
+            "target_pairwise_distance": pairwise.item(),
+        }
+
+
 def compute_paired_losses(
     outputs: dict[str, torch.Tensor],
     lambda_self_state: float = 1.0,
     lambda_opponent_state: float = 1.0,
     lambda_action: float = 1.0,
     lambda_next_state: float = 1.0,
+    lambda_sigreg_state: float = 0.0,
+    sigreg_num_slices: int = SIGREG_NUM_SLICES,
+    sigreg_num_points: int = SIGREG_NUM_POINTS,
+    sigreg_domain: float = SIGREG_DOMAIN,
     **_: object,
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Compute the active NLL-only paired-POV JEPA losses."""
+    """Compute paired-POV JEPA prediction losses plus optional state SIGReg."""
     enc_p1_T = outputs["enc_p1_T"]
     enc_p2_T = outputs["enc_p2_T"]
     enc_p1_T1 = outputs["enc_p1_T1"]
@@ -1891,16 +1996,27 @@ def compute_paired_losses(
     )
     next_state_loss = 0.5 * (next_state_loss_p1 + next_state_loss_p2)
 
-    total_loss = (
+    sigreg_state_loss = enc_p1_T.new_zeros(())
+    sigreg_state_terms: dict[str, torch.Tensor] = {}
+    if lambda_sigreg_state:
+        sigreg_state_loss, sigreg_state_terms = _state_sigreg_terms(
+            outputs,
+            num_slices=sigreg_num_slices,
+            num_points=sigreg_num_points,
+            domain=sigreg_domain,
+        )
+
+    prediction_loss = (
         lambda_self_state * self_state_loss
         + lambda_opponent_state * opponent_state_loss
         + lambda_action * action_loss
         + lambda_next_state * next_state_loss
     )
+    total_loss = prediction_loss + lambda_sigreg_state * sigreg_state_loss
 
     metrics = {
         "loss": total_loss.item(),
-        "pred_loss": total_loss.item(),
+        "pred_loss": prediction_loss.item(),
         "self_state_loss": self_state_loss.item(),
         "self_state_loss_p1": self_state_loss_p1.item(),
         "self_state_loss_p2": self_state_loss_p2.item(),
@@ -1913,6 +2029,8 @@ def compute_paired_losses(
         "next_state_loss": next_state_loss.item(),
         "next_state_loss_p1": next_state_loss_p1.item(),
         "next_state_loss_p2": next_state_loss_p2.item(),
+        "sigreg_state_loss": sigreg_state_loss.item(),
+        "sigreg_state_weighted": (lambda_sigreg_state * sigreg_state_loss).item(),
         "self_state_logvar_p1": outputs["pred_p1_self_T_logvar"].mean().item(),
         "self_state_logvar_p2": outputs["pred_p2_self_T_logvar"].mean().item(),
         "opponent_state_logvar_p1_to_p2": outputs["pred_p2_T_logvar"].mean().item(),
@@ -1922,4 +2040,7 @@ def compute_paired_losses(
         "next_state_logvar_p1": outputs["pred_p1_T1_logvar"].mean().item(),
         "next_state_logvar_p2": outputs["pred_p2_T1_logvar"].mean().item(),
     }
+    metrics.update(_state_target_diagnostics(outputs))
+    for key, value in sigreg_state_terms.items():
+        metrics[key] = value.item()
     return total_loss, metrics

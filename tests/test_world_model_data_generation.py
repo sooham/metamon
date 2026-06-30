@@ -762,7 +762,14 @@ def test_paired_jepa_forward_uses_predicted_beliefs_for_next_state():
             opponent_hist_tokens,
             opponent_hist_valid,
         ):
-            return (state_tokens.float(),)
+            return (
+                state_tokens.float(),
+                state_valid,
+                player_hist_tokens.float(),
+                player_hist_valid,
+                opponent_hist_tokens.float(),
+                opponent_hist_valid,
+            )
 
         def encode_token_tokens(self, action_tokens):
             return action_tokens.float()

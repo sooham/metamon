@@ -85,7 +85,8 @@ model:
   #   dropout: 0.1
 
   # ── LeJEPA loss ───────────────────────────────────────────────────
-  # ── SIGReg hyperparameters (not used) ────────────────────────────────────────
+  lambda_sigreg_state: 0.1
+  # ── SIGReg hyperparameters ────────────────────────────────────────
   sigreg_num_slices: 128
   sigreg_num_points: 17
   sigreg_domain: 3.0

@@ -24,7 +24,7 @@ You should write code which if necessary and at your own discrection and determi
 
 # JEPA — Joint Embedding Predictive Architecture (`metamon/jepa/`)
 
-`metamon/jepa/` trains a paired-POV world model that learns to predict the **hidden opponent state** and the **next state latent** from the visible board state and action history. It is a self-supervised world model that encodes battle states into a deterministic latent space (via `JEPAEncoder`), encodes action text into action latents (via `JEPAActionEncoder`), and uses a temporal encoder over interleaved block embeddings to produce a history context. The model is trained on *paired* POV data — both players' perspectives of the same battle synchronized, so each side predicts the other's hidden state.
+`metamon/jepa/` trains a paired-POV world model that learns to predict the **hidden opponent state** and the **next state latent** from the visible board state and action history. It is a self-supervised world model that encodes battle states, team headers, and action text into a deterministic latent space with `JEPAEncoder`, then uses belief encoders over interleaved block embeddings to produce Gaussian beliefs. The model is trained on *paired* POV data — both players' perspectives of the same battle synchronized, so each side predicts the other's hidden state.
 
 ### Architecture overview
 The team header shows the POV player pokemon team, the pokemon's HP, typing and actions.
@@ -46,7 +46,15 @@ Actor and Critic
 We also train two neural networks for policy / action pi(action | (z, z_opp)) and critic Q(action, z). 
 ```
 
-**Losses:** since the beliefs are distributed priors, we do KL divergence minimization on opponent state prediction loss compared to the encoding of the known opponent history and next-state prediction is minimized with KL divergence to the encoding of new history including the latest actions. (TODO: do I need a loss on the action I'm not certain). The losses and training of the actor and critic will be discussed at length later
+**Losses:** paired training uses constant-free diagonal Gaussian NLL in latent space for self-state, opponent-state, opponent-action, and next-state prediction. State encoder collapse is guarded with state-only SIGReg over **all p1/p2 state embeddings** produced by the batch: history state blocks, current target states `T`, and next target states `T+1`. Action embeddings and sampled Gaussian predictions are not SIGReg-regularized. The total loss is:
+
+```
+L = λ_self L_self_state
+  + λ_opp L_opponent_state
+  + λ_action L_opponent_action
+  + λ_next L_next_state
+  + λ_sigreg_state L_state_sigreg
+```
 
 ### Training (`train_paired.py`)
 
@@ -78,9 +86,17 @@ Key training flags:
 - `--max_history_blocks N` — window to last N state blocks (100 is the **default**) of the history context. The team header is always retained. Lower values reduce memory and speed up training.
 - `--compile` — enable `torch.compile` on encoder + action encoder (CUDA only)
 - `--checkpoint` — path for both warm-start loading AND best-checkpoint saving
+- `--lambda_sigreg_state W` — override the config weight for state SIGReg. If omitted, `model.lambda_sigreg_state` from the config is used.
 - `--no-wandb` — disable Weights & Biases logging. W&B is enabled by default when the `wandb` package is installed; `--wandb` is accepted but redundant.
 
-Training uses bf16 on CUDA, SIGReg resampled per step, and micro-batched encoding (max 65536 tokens per encoder call). The temporal encoder's `max_seq_len` defaults to 100*3+1  to accommodate 100 state battle histories.
+Training uses bf16 on CUDA, state SIGReg resampled per step, and micro-batched encoding (max 65536 tokens per encoder call). The temporal encoder's `max_seq_len` defaults to 100*3+1  to accommodate 100 state battle histories.
+
+Training logs collapse diagnostics for the encoded state targets (`p1/p2 T` and `p1/p2 T+1`):
+- `target_latent_norm` — mean L2 norm of target state latents.
+- `target_latent_std_per_dim` — mean per-dimension batch standard deviation.
+- `target_pairwise_distance` — mean pairwise L2 distance over a bounded target-latent sample.
+
+Console progress prints these compactly as `z norm/std/pairwise`, for example `z 9.84/0.97/13.72`. If these trend toward zero while NLL keeps improving, suspect representation collapse.
 
 ### Config (`metamon/jepa/configs/default.yaml`)
 
@@ -93,6 +109,7 @@ Training uses bf16 on CUDA, SIGReg resampled per step, and micro-batched encodin
 | `next_state_predictor` | hidden_dim=512, n_layers 6 
 | Latents | `latent_dim: 100` |
 | Loss weights | `lambda_sigreg_state: 0.1` |
+| SIGReg | `sigreg_num_slices: 128`, `sigreg_num_points: 17`, `sigreg_domain: 3.0` |
 
 ### Data format (paired shards)
 

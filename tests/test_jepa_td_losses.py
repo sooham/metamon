@@ -1,8 +1,9 @@
-"""Tests for the active NLL-only paired JEPA loss contract."""
+"""Tests for the active paired JEPA loss contract."""
 
 import pytest
 import torch
 
+from metamon.jepa import model as jepa_model
 from metamon.jepa.model import compute_paired_losses
 
 
@@ -65,6 +66,7 @@ def test_loss_ignores_legacy_td_kwargs_and_metrics():
 
     assert torch.isfinite(loss)
     assert metrics["loss"] == pytest.approx(0.0)
+    assert metrics["sigreg_state_loss"] == pytest.approx(0.0)
     for removed_key in (
         "rank_loss",
         "rank_valid",
@@ -77,6 +79,48 @@ def test_loss_ignores_legacy_td_kwargs_and_metrics():
         "sigreg_loss",
     ):
         assert removed_key not in metrics
+
+
+def test_state_sigreg_contributes_for_all_pov_state_groups(monkeypatch):
+    outputs = _outputs(batch_size=1, rollout_len=2, latent_dim=3, action_dim=2)
+    outputs["enc_p1_history_states"] = torch.zeros((1, 2, 3, 3))
+    outputs["enc_p1_history_states_valid"] = torch.tensor(
+        [[[True, True, False], [True, False, False]]]
+    )
+    outputs["enc_p2_history_states"] = torch.zeros((1, 2, 3, 3))
+    outputs["enc_p2_history_states_valid"] = torch.tensor(
+        [[[True, False, False], [False, False, False]]]
+    )
+    call_sizes = []
+
+    def fake_sigreg(embeddings, **_kwargs):
+        call_sizes.append(int(embeddings.shape[0]))
+        return embeddings.sum() * 0 + embeddings.new_tensor(float(embeddings.shape[0]))
+
+    monkeypatch.setattr(jepa_model, "sigreg", fake_sigreg)
+
+    loss, metrics = compute_paired_losses(
+        outputs,
+        lambda_self_state=0.0,
+        lambda_opponent_state=0.0,
+        lambda_action=0.0,
+        lambda_next_state=0.0,
+        lambda_sigreg_state=0.5,
+        sigreg_num_slices=4,
+        sigreg_num_points=5,
+        sigreg_domain=2.0,
+    )
+
+    assert call_sizes == [3, 2, 2, 1, 2, 2]
+    assert metrics["sigreg_state_p1_history"] == pytest.approx(3.0)
+    assert metrics["sigreg_state_p1_current"] == pytest.approx(2.0)
+    assert metrics["sigreg_state_p1_next"] == pytest.approx(2.0)
+    assert metrics["sigreg_state_p2_history"] == pytest.approx(1.0)
+    assert metrics["sigreg_state_p2_current"] == pytest.approx(2.0)
+    assert metrics["sigreg_state_p2_next"] == pytest.approx(2.0)
+    assert metrics["sigreg_state_loss"] == pytest.approx(2.0)
+    assert metrics["sigreg_state_weighted"] == pytest.approx(1.0)
+    assert loss.item() == pytest.approx(1.0)
 
 
 def test_self_state_loss_contributes_to_total():

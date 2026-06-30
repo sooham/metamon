@@ -6,7 +6,8 @@ This trainer consumes ``paired_shard_*.npz`` files produced by:
 
 For each K-step rollout sample, the dataset provides both player perspectives
 with target-excluded history for state T, the target state T, both current
-actions, and next state T+1. The active objective is NLL-only:
+actions, and next state T+1. The active objective is prediction NLL plus
+state SIGReg:
 
 1. history context -> current self-state belief latent
 2. history context -> hidden opponent-state belief latent
@@ -45,6 +46,9 @@ except ImportError:
 from metamon.jepa.checkpointing import save_paired_jepa_checkpoint
 from metamon.jepa.model import (
     LATENT_DIM,
+    SIGREG_DOMAIN,
+    SIGREG_NUM_POINTS,
+    SIGREG_NUM_SLICES,
     PairedJEPAModel,
     compute_paired_losses,
     format_tensor_debug,
@@ -822,6 +826,15 @@ def train(args: argparse.Namespace) -> None:
     }
 
     latent_dim = model_cfg.get("latent_dim", LATENT_DIM)
+    lambda_sigreg_state = (
+        float(args.lambda_sigreg_state)
+        if args.lambda_sigreg_state is not None
+        else float(model_cfg.get("lambda_sigreg_state", model_cfg.get("lambda_sigreg", 0.0)))
+    )
+    model_cfg["lambda_sigreg_state"] = lambda_sigreg_state
+    sigreg_num_slices = int(model_cfg.get("sigreg_num_slices", SIGREG_NUM_SLICES))
+    sigreg_num_points = int(model_cfg.get("sigreg_num_points", SIGREG_NUM_POINTS))
+    sigreg_domain = float(model_cfg.get("sigreg_domain", SIGREG_DOMAIN))
 
     # ── max_seq_len: source of truth is sequence_stats.json ────────
     # Values from the stats file already include a 1.2× safety multiplier.
@@ -940,7 +953,8 @@ def train(args: argparse.Namespace) -> None:
         f"effective_transitions={args.batch_size * rollout_len * args.grad_accum_steps} "
         f"max_history_blocks={args.max_history_blocks} "
         f"encoder_chunk_tokens={args.encoder_chunk_tokens} "
-        f"belief_batch_size={args.belief_batch_size}"
+        f"belief_batch_size={args.belief_batch_size} "
+        f"lambda_sigreg_state={lambda_sigreg_state:g}"
     )
 
     # ---- wandb init ----
@@ -991,6 +1005,10 @@ def train(args: argparse.Namespace) -> None:
                 "lambda_opponent_state": args.lambda_opponent_state,
                 "lambda_action": args.lambda_action,
                 "lambda_next_state": args.lambda_next_state,
+                "lambda_sigreg_state": lambda_sigreg_state,
+                "sigreg_num_slices": sigreg_num_slices,
+                "sigreg_num_points": sigreg_num_points,
+                "sigreg_domain": sigreg_domain,
                 "checkpoint": args.checkpoint,
             },
         )
@@ -1004,6 +1022,10 @@ def train(args: argparse.Namespace) -> None:
             lambda_opponent_state=args.lambda_opponent_state,
             lambda_action=args.lambda_action,
             lambda_next_state=args.lambda_next_state,
+            lambda_sigreg_state=lambda_sigreg_state,
+            sigreg_num_slices=sigreg_num_slices,
+            sigreg_num_points=sigreg_num_points,
+            sigreg_domain=sigreg_domain,
         )
 
     @torch.no_grad()
@@ -1178,6 +1200,11 @@ def train(args: argparse.Namespace) -> None:
                     "train/next_state_loss": metrics["next_state_loss"],
                     "train/next_state_loss_p1": metrics["next_state_loss_p1"],
                     "train/next_state_loss_p2": metrics["next_state_loss_p2"],
+                    "train/sigreg_state_loss": metrics["sigreg_state_loss"],
+                    "train/sigreg_state_weighted": metrics["sigreg_state_weighted"],
+                    "train/target_latent_norm": metrics["target_latent_norm"],
+                    "train/target_latent_std_per_dim": metrics["target_latent_std_per_dim"],
+                    "train/target_pairwise_distance": metrics["target_pairwise_distance"],
                     "train/self_state_logvar_p1": metrics["self_state_logvar_p1"],
                     "train/self_state_logvar_p2": metrics["self_state_logvar_p2"],
                     "train/opponent_state_logvar_p1_to_p2": metrics["opponent_state_logvar_p1_to_p2"],
@@ -1229,6 +1256,10 @@ def train(args: argparse.Namespace) -> None:
                     f"next {metrics['next_state_loss']:.4f} "
                     f"[p1 {metrics['next_state_loss_p1']:.4f}, "
                     f"p2 {metrics['next_state_loss_p2']:.4f}] | "
+                    f"sigreg_state {metrics['sigreg_state_loss']:.4f} | "
+                    f"z {metrics['target_latent_norm']:.2f}/"
+                    f"{metrics['target_latent_std_per_dim']:.3f}/"
+                    f"{metrics['target_pairwise_distance']:.2f} | "
                     f"logvar_next {metrics['next_state_logvar_p1']:.3f}/{metrics['next_state_logvar_p2']:.3f}"
                     f"{cuda_mem}"
                 )
@@ -1244,7 +1275,11 @@ def train(args: argparse.Namespace) -> None:
                         f"self_state {val_metrics['val_self_state_loss']:.4f} | "
                         f"opp_state {val_metrics['val_opponent_state_loss']:.4f} | "
                         f"action {val_metrics['val_action_loss']:.4f} | "
-                        f"next {val_metrics['val_next_state_loss']:.4f}"
+                        f"next {val_metrics['val_next_state_loss']:.4f} | "
+                        f"sigreg_state {val_metrics['val_sigreg_state_loss']:.4f} | "
+                        f"z {val_metrics['val_target_latent_norm']:.2f}/"
+                        f"{val_metrics['val_target_latent_std_per_dim']:.3f}/"
+                        f"{val_metrics['val_target_pairwise_distance']:.2f}"
                     )
                     if wandb_run:
                         wandb_run.log({
@@ -1253,6 +1288,11 @@ def train(args: argparse.Namespace) -> None:
                             "val/opponent_state_loss": val_metrics["val_opponent_state_loss"],
                             "val/action_loss": val_metrics["val_action_loss"],
                             "val/next_state_loss": val_metrics["val_next_state_loss"],
+                            "val/sigreg_state_loss": val_metrics["val_sigreg_state_loss"],
+                            "val/sigreg_state_weighted": val_metrics["val_sigreg_state_weighted"],
+                            "val/target_latent_norm": val_metrics["val_target_latent_norm"],
+                            "val/target_latent_std_per_dim": val_metrics["val_target_latent_std_per_dim"],
+                            "val/target_pairwise_distance": val_metrics["val_target_pairwise_distance"],
                             "epoch": epoch,
                             "global_step": global_step,
                             "samples_seen": args.batch_size * global_step,
@@ -1289,7 +1329,8 @@ def train(args: argparse.Namespace) -> None:
             f"self_state {avg.get('self_state_loss', 0.0):.4f} | "
             f"opp_state {avg.get('opponent_state_loss', 0.0):.4f} | "
             f"action {avg.get('action_loss', 0.0):.4f} | "
-            f"next {avg.get('next_state_loss', 0.0):.4f}"
+            f"next {avg.get('next_state_loss', 0.0):.4f} | "
+            f"sigreg_state {avg.get('sigreg_state_loss', 0.0):.4f}"
         )
         if val_metrics:
             msg += (
@@ -1298,6 +1339,10 @@ def train(args: argparse.Namespace) -> None:
                 f" | val opp_state {val_metrics.get('val_opponent_state_loss', 0.0):.4f}"
                 f" | val action {val_metrics.get('val_action_loss', 0.0):.4f}"
                 f" | val next {val_metrics.get('val_next_state_loss', 0.0):.4f}"
+                f" | val sigreg_state {val_metrics.get('val_sigreg_state_loss', 0.0):.4f}"
+                f" | val z {val_metrics.get('val_target_latent_norm', 0.0):.2f}/"
+                f"{val_metrics.get('val_target_latent_std_per_dim', 0.0):.3f}/"
+                f"{val_metrics.get('val_target_pairwise_distance', 0.0):.2f}"
             )
         print(msg + " ===")
 
@@ -1308,11 +1353,19 @@ def train(args: argparse.Namespace) -> None:
                 "epoch/train_opponent_state_loss": avg.get("opponent_state_loss", 0.0),
                 "epoch/train_action_loss": avg.get("action_loss", 0.0),
                 "epoch/train_next_state_loss": avg.get("next_state_loss", 0.0),
+                "epoch/train_sigreg_state_loss": avg.get("sigreg_state_loss", 0.0),
+                "epoch/train_target_latent_norm": avg.get("target_latent_norm", 0.0),
+                "epoch/train_target_latent_std_per_dim": avg.get("target_latent_std_per_dim", 0.0),
+                "epoch/train_target_pairwise_distance": avg.get("target_pairwise_distance", 0.0),
                 "epoch/val_loss": val_metrics.get("val_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_self_state_loss": val_metrics.get("val_self_state_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_opponent_state_loss": val_metrics.get("val_opponent_state_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_action_loss": val_metrics.get("val_action_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_next_state_loss": val_metrics.get("val_next_state_loss", 0.0) if val_metrics else 0.0,
+                "epoch/val_sigreg_state_loss": val_metrics.get("val_sigreg_state_loss", 0.0) if val_metrics else 0.0,
+                "epoch/val_target_latent_norm": val_metrics.get("val_target_latent_norm", 0.0) if val_metrics else 0.0,
+                "epoch/val_target_latent_std_per_dim": val_metrics.get("val_target_latent_std_per_dim", 0.0) if val_metrics else 0.0,
+                "epoch/val_target_pairwise_distance": val_metrics.get("val_target_pairwise_distance", 0.0) if val_metrics else 0.0,
                 "epoch": epoch,
                 "samples_seen": args.batch_size * global_step,
             })
@@ -1373,6 +1426,9 @@ if __name__ == "__main__":
     parser.add_argument("--lambda_opponent_state", type=float, default=1.0)
     parser.add_argument("--lambda_action", type=float, default=1.0)
     parser.add_argument("--lambda_next_state", type=float, default=1.0)
+    parser.add_argument("--lambda_sigreg_state", type=float, default=None,
+                        help="Weight for SIGReg on all p1/p2 state embeddings. "
+                             "Default: use model config lambda_sigreg_state.")
     parser.add_argument("--print_interval", type=int, default=10, help="Print training progress to stdout at this cadence")
     parser.add_argument("--log_interval", type=int, default=0,
                         help="Log every N training steps to wandb (0 = same as print_interval).")
