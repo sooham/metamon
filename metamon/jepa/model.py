@@ -65,9 +65,10 @@ target opponent action latent under the belief predictor action distribution::
 
     L_oa = 0.5 * mean(logvar_action + ||actual_opp_action - mu_action||² / exp(logvar_action))
 
-*State SIGReg* — on p1/p2 current-state encoder outputs, next-state target
-encoder outputs, and history-context state outputs.  Action SIGReg remains off;
-predicted Gaussian samples are not regularized.
+*State SIGReg* — on p1/p2 current-state and next-state target encoder outputs
+only (history-context state blocks are excluded to avoid correlation from
+overlapping rollout windows and duplicated team headers).  Action SIGReg
+remains off; predicted Gaussian samples are not regularized.
 
 Total::
 
@@ -1851,12 +1852,6 @@ def _state_sigreg_terms(
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     groups: dict[str, torch.Tensor] = {}
     for prefix in ("p1", "p2"):
-        history = outputs.get(f"enc_{prefix}_history_states")
-        if history is not None:
-            groups[f"sigreg_state_{prefix}_history"] = _flatten_sigreg_states(
-                history,
-                outputs.get(f"enc_{prefix}_history_states_valid"),
-            )
         groups[f"sigreg_state_{prefix}_current"] = _flatten_sigreg_states(
             outputs[f"enc_{prefix}_T"]
         )
