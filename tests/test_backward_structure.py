@@ -79,3 +79,33 @@ class TestBackwardStructure:
         for fmt, (p1, p2) in pov_replays.items():
             assert p1.rating is not None
             assert p2.rating is not None
+
+    def test_symmetric_subturn_state_counts(self, pov_replays):
+        """Both POVs have the same number of states after symmetric subturn inclusion.
+
+        Forced-switch subturns from BOTH teams are included in each POV, so the
+        (turn, subturn) key sequences are identical and can be aligned.
+        """
+        for fmt, (p1, p2) in pov_replays.items():
+            p1_states = len(p1.povturnlist)
+            p2_states = len(p2.povturnlist)
+            assert p1_states == p2_states, (
+                f"{fmt}: P1 has {p1_states} states, P2 has {p2_states} — "
+                f"symmetric subturns should produce equal counts"
+            )
+            # Also verify action lists match in length
+            assert len(p1.actionlist) == p1_states
+            assert len(p2.actionlist) == p2_states
+            assert len(p1.opponent_actionlist) == p1_states
+            assert len(p2.opponent_actionlist) == p2_states
+
+    def test_subturn_state_counts_match_between_povs(self, pov_replays):
+        """For each turn number, both POVs have the same number of substates."""
+        for fmt, (p1, p2) in pov_replays.items():
+            from collections import Counter
+            p1_turns = Counter(t.turn_number for t in p1.povturnlist if t.turn_number is not None)
+            p2_turns = Counter(t.turn_number for t in p2.povturnlist if t.turn_number is not None)
+            assert p1_turns == p2_turns, (
+                f"{fmt}: turn distributions differ — "
+                f"P1={dict(p1_turns)}, P2={dict(p2_turns)}"
+            )

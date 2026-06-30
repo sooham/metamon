@@ -11,22 +11,12 @@ import tqdm
 import termcolor
 import lz4.frame
 
-from metamon import interface
-from metamon.backend.replay_parser import backward, forward, checks
+from metamon.backend.replay_parser import backward, forward
 from metamon.backend.replay_parser.backward import POVReplayDoubles
 from metamon.backend.replay_parser.exceptions import (
     BackwardException,
     CustomRulesException,
     ForwardException,
-    InvalidActionIndex,
-    WarningFlags,
-)
-from metamon.backend.replay_parser.replay_state import (
-    Action,
-    ReplayState,
-)
-from metamon.backend.replay_parser.pe_datatypes import (
-    PEStatus,
 )
 from metamon.backend.replay_parser.text_serializer import (
     serialize_pov_replay,
@@ -91,102 +81,6 @@ class ReplayParser:
             elif started and line[0] == "poke":
                 return True
         return False
-
-    def povreplay_to_state_action(self, replay: backward.POVReplay):
-        # TODO for future reference: here is where we start intentionally
-        # dropping the doubles format. most but not all of the code before
-        # this should work with doubles (in theory... no replays scraped to test)
-        p1 = replay.from_p1_pov
-        states, actions = [], []
-        for turn, slot_actions in zip(replay.povturnlist, replay.actionlist):
-            # flip the observation around
-            action = slot_actions[0]
-            active_mon = (turn.active_pokemon_1 if p1 else turn.active_pokemon_2)[0]
-            opponent_mon = (turn.active_pokemon_2 if p1 else turn.active_pokemon_1)[0]
-            opponent_team = turn.pokemon_2 if p1 else turn.pokemon_1
-            player_team = turn.pokemon_1 if p1 else turn.pokemon_2
-            if action and action.is_revival:
-                switches = [
-                    p
-                    for p in player_team
-                    if p.status == PEStatus.FNT and p != active_mon
-                ]
-            else:
-                switches = (
-                    turn.available_switches_1 if p1 else turn.available_switches_2
-                )
-            player_conditions = turn.conditions_1 if p1 else turn.conditions_2
-            opponent_conditions = turn.conditions_2 if p1 else turn.conditions_1
-            can_tera = turn.can_tera_1 if p1 else turn.can_tera_2
-            opponent_teampreview = turn.teampreview_2 if p1 else turn.teampreview_1
-
-            # fill a ReplayState
-            states.append(
-                ReplayState(
-                    format=replay.format,
-                    force_switch=turn.is_force_switch,
-                    active_pokemon=active_mon,
-                    opponent_active_pokemon=opponent_mon,
-                    opponent_team=opponent_team,
-                    player_team=player_team,
-                    available_switches=switches,
-                    player_prev_move=active_mon.last_used_move,
-                    opponent_prev_move=opponent_mon.last_used_move,
-                    player_conditions=player_conditions,
-                    opponent_conditions=opponent_conditions,
-                    weather=turn.weather,
-                    battle_field=turn.battle_field,
-                    battle_won=False,
-                    battle_lost=False,
-                    can_tera=can_tera,
-                    opponent_teampreview=opponent_teampreview,
-                )
-            )
-            actions.append(action)
-
-        states[-1].battle_won = replay.winner
-        states[-1].battle_lost = not replay.winner
-
-        return states, actions
-
-    def state_action_to_obs_action_reward(
-        self, states: list[ReplayState], actions: list[Action],
-        allow_missing: bool = False,
-    ):
-        universal_states = []
-        action_idxs = []
-
-        if self.verbose:
-            print()
-        for state, action in zip(states, actions):
-            universal_state = interface.UniversalState.from_ReplayState(state)
-            universal_action = interface.UniversalAction.from_ReplayAction(
-                state=state, action=action
-            )
-            if universal_action is None:
-                if allow_missing:
-                    action_idxs.append(-1)
-                    universal_states.append(universal_state)
-                    continue
-                raise InvalidActionIndex(state, action)
-            if self.verbose:
-                print(
-                    f"forced: {universal_state.forced_switch}; {universal_state.player_active_pokemon.name} {universal_state.player_active_pokemon.status} vs. {universal_state.opponent_active_pokemon.name} {universal_state.opponent_active_pokemon.status}; {action} --> {universal_action.action_idx}"
-                )
-            action_idxs.append(universal_action.action_idx)
-            universal_states.append(universal_state)
-
-        return universal_states, action_idxs
-
-    def povreplay_to_seq(self, replay: backward.POVReplay):
-        states, actions = self.povreplay_to_state_action(replay)
-        has_zoroark = WarningFlags.ZOROARK in replay.check_warnings
-        universal_states, action_idxs = self.state_action_to_obs_action_reward(
-            states, actions, allow_missing=has_zoroark,
-        )
-        if not has_zoroark:
-            checks.check_action_idxs(universal_states, actions, action_idxs, gen=replay.gen)
-        return universal_states, action_idxs
 
     def save_to_disk(
         self,

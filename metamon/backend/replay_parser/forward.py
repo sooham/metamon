@@ -311,13 +311,29 @@ class SimProtocol:
         """
         winner_name = clean_name(args[0])
         if winner_name == self.replay.players[0]:
-            self.replay.winner = Winner.PLAYER_1
+            winner = Winner.PLAYER_1
+            loser_team = self.curr_turn.pokemon_2
         elif winner_name == self.replay.players[1]:
-            self.replay.winner = Winner.PLAYER_2
+            winner = Winner.PLAYER_2
+            loser_team = self.curr_turn.pokemon_1
         else:
             raise RareValueError(
                 f"Unknown winner: {winner_name} with players: {self.replay.players}"
             )
+
+        # Detect forfeit: does the loser still have any non-fainted Pokémon
+        # (including bench)?
+        has_alive = any(
+            p is not None and p.status != PEStatus.FNT
+            for p in loser_team
+        )
+        if has_alive:
+            winner = (
+                Winner.FORFEIT_PLAYER_1 if winner == Winner.PLAYER_1
+                else Winner.FORFEIT_PLAYER_2
+            )
+
+        self.replay.winner = winner
 
     def _parse_choice(self, args: List[str]):
         """
@@ -1404,6 +1420,15 @@ class SimProtocol:
             return
 
         pokemon.cant_reason = reason
+
+        # Record the temporal position of this |cant| in the turn's move order.
+        # The |cant| message appears at the point where this Pokémon would have
+        # acted in speed order — we need this for correct <boa> / <last_turn_results>
+        # ordering even when no Action is created (slp, par, frz, flinch, etc.).
+        team, slot = self.curr_turn.player_id_to_action_idx(args[0])
+        entry = (team, slot)
+        if entry not in self.curr_turn.move_order:
+            self.curr_turn.move_order.append(entry)
 
         if reason == "recharge":
             # Same as |-mustrecharge| — the only valid action is Recharge.

@@ -67,11 +67,23 @@ def _status_str(status) -> Optional[str]:
     return None
 
 
+def _opponent_moved_first(move_order: list, from_p1_pov: bool) -> bool:
+    """Determine if the opponent moved first based on a turn's move_order.
+
+    *move_order* is a list of ``(team, slot)`` tuples (1-indexed teams).
+    Returns True if the first actor in the turn was the opponent from the
+    given POV, False if the POV player acted first or the order is unknown.
+    """
+    if not move_order:
+        return False  # default: player first (unknown order)
+    pov_team = 1 if from_p1_pov else 2
+    first_team, _ = move_order[0]
+    return first_team != pov_team
+
+
 def _action_choice_text(action: Optional[Action], *, reveal_noop: bool) -> str:
     """Return canonical action-block content with a fixed two-token minimum."""
-    if action is None:
-        return "unknown unknown"
-    if action is _NO_OPPONENT_ACTION:
+    if action is None or action is _NO_OPPONENT_ACTION:
         return "none"
     if action.is_switch or action.is_revival:
         target_name = clean_name(action.target.name) if action.target else "unknown"
@@ -389,6 +401,7 @@ def _write_last_turn_results_block(
     prev_player_action: Optional[Action],
     prev_opponent_action: Optional[Action],
     is_first_state: bool = False,
+    opponent_moved_first: bool = False,
 ) -> list[str]:
     """Build a <last_turn_results> … <end_last_turn_results> block.
 
@@ -401,6 +414,10 @@ def _write_last_turn_results_block(
         Barrier at +6, Reflect used twice).
       - ``cant <reason>`` — the Pokémon couldn't execute its chosen move
         (paralysis, sleep, freeze, flinch, etc.).
+
+    When *opponent_moved_first* is True, the <opponent> block is emitted before
+    the <active> block, matching the temporal execution order in the raw log.
+    Otherwise the POV player's <active> block comes first.
 
     Format::
 
@@ -415,10 +432,16 @@ def _write_last_turn_results_block(
         lines.append("<end_last_turn_results>")
         return lines
 
+    # Build both sub-blocks first, then emit in the correct order.
+    active_block = []
+    opponent_block = []
+
     # ── active ──
-    lines.append("<active>")
+    active_block.append("<active>")
     if prev_player_action is not None:
-        if prev_player_action.is_switch or prev_player_action.is_revival:
+        if prev_player_action is _NO_OPPONENT_ACTION:
+            active_block.append("none")
+        elif prev_player_action.is_switch or prev_player_action.is_revival:
             target_name = clean_name(prev_player_action.target.name) if prev_player_action.target else "unknown"
             action_name = f"switch {target_name}"
         elif prev_player_action.is_noop or prev_player_action.name is None:
@@ -431,19 +454,19 @@ def _write_last_turn_results_block(
         if prev_player_action.user is not None:
             cant = getattr(prev_player_action.user, "cant_reason", None)
         if cant:
-            lines.append(f"{action_name} cant {cant}")
+            active_block.append(f"{action_name} cant {cant}")
         elif prev_player_action.failed:
-            lines.append(f"{action_name} fail")
+            active_block.append(f"{action_name} fail")
         else:
-            lines.append(f"{action_name} success")
+            active_block.append(f"{action_name} success")
     else:
-        lines.append("unknown")
-    lines.append("<end_active>")
+        active_block.append("none")
+    active_block.append("<end_active>")
 
     # ── opponent ──
-    lines.append("<opponent>")
+    opponent_block.append("<opponent>")
     if prev_opponent_action is _NO_OPPONENT_ACTION:
-        lines.append("none")
+        opponent_block.append("none")
     elif prev_opponent_action is not None:
         if prev_opponent_action.is_switch:
             target_name = clean_name(prev_opponent_action.target.name) if prev_opponent_action.target else "unknown"
@@ -457,14 +480,22 @@ def _write_last_turn_results_block(
         if prev_opponent_action.user is not None:
             cant = getattr(prev_opponent_action.user, "cant_reason", None)
         if cant:
-            lines.append(f"{action_name} cant {cant}")
+            opponent_block.append(f"{action_name} cant {cant}")
         elif prev_opponent_action.failed:
-            lines.append(f"{action_name} fail")
+            opponent_block.append(f"{action_name} fail")
         else:
-            lines.append(f"{action_name} success")
+            opponent_block.append(f"{action_name} success")
     else:
-        lines.append("unknown")
-    lines.append("<end_opponent>")
+        opponent_block.append("unknown")
+    opponent_block.append("<end_opponent>")
+
+    # Emit in temporal order
+    if opponent_moved_first:
+        lines.extend(opponent_block)
+        lines.extend(active_block)
+    else:
+        lines.extend(active_block)
+        lines.extend(opponent_block)
 
     lines.append("<end_last_turn_results>")
     return lines
@@ -477,6 +508,7 @@ def _write_state_block(
     display_turn: int | None = None,
     prev_player_action: Optional[Action] = None,
     prev_opponent_action: Optional[Action] = None,
+    opponent_moved_first: bool = False,
 ) -> list[str]:
     """Build a single <bos> … <eos> state block."""
     lines = ["<bos>"]
@@ -503,6 +535,7 @@ def _write_state_block(
     lines.extend(_write_last_turn_results_block(
         prev_player_action, prev_opponent_action,
         is_first_state=(not has_prev_actions),
+        opponent_moved_first=opponent_moved_first,
     ))
 
     # ── arena ──
@@ -643,11 +676,12 @@ def _write_state_block(
     # ── terminal ──
     if is_terminal:
         winner = pov.winner
+        won_by_forfeit = getattr(pov, "won_by_forfeit", False)
         replay_winner = pov.replay.winner if pov.replay else None
         from metamon.backend.replay_parser.replay_state import Winner
         if winner:
             lines.append("<terminal>")
-            lines.append("won")
+            lines.append("forfeit_won" if won_by_forfeit else "won")
             lines.append("<end_terminal>")
         elif replay_winner == Winner.TIE:
             lines.append("<terminal>")
@@ -655,7 +689,7 @@ def _write_state_block(
             lines.append("<end_terminal>")
         else:
             lines.append("<terminal>")
-            lines.append("lost")
+            lines.append("forfeit_lost" if won_by_forfeit else "lost")
             lines.append("<end_terminal>")
 
     lines.append("<eos>")
@@ -666,8 +700,14 @@ def _write_action_block(
     turn: Turn,
     player_action: Optional[Action],
     opponent_action: Optional[Action],
+    opponent_moved_first: bool = False,
 ) -> list[str]:
-    """Build a single <boa> … <eoa> action block."""
+    """Build a single <boa> … <eoa> action block.
+
+    When *opponent_moved_first* is True, the <opponent_chosen_move> block is
+    emitted before <chosen_move>, matching the temporal execution order in
+    the raw log.  Otherwise the POV player's <chosen_move> comes first.
+    """
     lines = ["<boa>"]
 
     turn_num = turn.turn_number if turn.turn_number is not None else 1
@@ -676,13 +716,23 @@ def _write_action_block(
     lines.append("<end_turn>")
 
     # Outcomes live in <last_turn_results> of the next state.
-    lines.append("<chosen_move>")
-    lines.append(_action_choice_text(player_action, reveal_noop=True))
-    lines.append("<end_chosen_move>")
+    player_text = _action_choice_text(player_action, reveal_noop=True)
+    opponent_text = _action_choice_text(opponent_action, reveal_noop=False)
 
-    lines.append("<opponent_chosen_move>")
-    lines.append(_action_choice_text(opponent_action, reveal_noop=False))
-    lines.append("<end_opponent_chosen_move>")
+    if opponent_moved_first:
+        lines.append("<opponent_chosen_move>")
+        lines.append(opponent_text)
+        lines.append("<end_opponent_chosen_move>")
+        lines.append("<chosen_move>")
+        lines.append(player_text)
+        lines.append("<end_chosen_move>")
+    else:
+        lines.append("<chosen_move>")
+        lines.append(player_text)
+        lines.append("<end_chosen_move>")
+        lines.append("<opponent_chosen_move>")
+        lines.append(opponent_text)
+        lines.append("<end_opponent_chosen_move>")
 
     lines.append("<eoa>")
     return lines
@@ -719,8 +769,9 @@ def serialize_pov_replay(pov: POVReplay) -> str:
     # - Subturns (forced switches) share the raw turn with their parent;
     #   the entire subturn chain belongs to the same logical turn.
     # - Strategy: display = raw_turn + 1 for states before the first
-    #   subturn; after any subturn is seen, display = raw_turn (no +1)
-    #   so that subturns and all later turns stay aligned.
+    #   repeated turn number; once a raw turn repeats (any subturn,
+    #   regardless of team), display = raw_turn so that subturns and
+    #   all later turns stay aligned.
     offset = 1  # +1 for initial turns; drops to 0 after first subturn
     for i in range(n):
         turn = povturns[i]
@@ -730,9 +781,11 @@ def serialize_pov_replay(pov: POVReplay) -> str:
 
         if offset == 1:
             display_turn = raw + 1
-            if turn.is_force_switch or turn.is_force_revival:
-                offset = 0
-                display_turn = raw  # subturn keeps the action's turn
+            if i > 0:
+                prev_raw = povturns[i - 1].turn_number if povturns[i - 1].turn_number is not None else 0
+                if raw == prev_raw:
+                    offset = 0
+                    display_turn = raw  # subturn keeps the action's turn
         else:
             display_turn = raw
 
@@ -745,10 +798,16 @@ def serialize_pov_replay(pov: POVReplay) -> str:
             prev_opponent_action = opp_actions[i - 1] if i - 1 < len(opp_actions) else None
 
         # Write state block
+        # Determine move order for <last_turn_results> — the previous
+        # action's execution order is stored in the current turn's move_order.
+        state_opponent_moved_first = _opponent_moved_first(
+            turn.move_order if turn else [], pov.from_p1_pov
+        )
         lines.extend(_write_state_block(
             turn, pov, is_terminal=is_terminal, display_turn=display_turn,
             prev_player_action=prev_player_action,
             prev_opponent_action=prev_opponent_action,
+            opponent_moved_first=state_opponent_moved_first,
         ))
         lines.append("")
 
@@ -757,7 +816,15 @@ def serialize_pov_replay(pov: POVReplay) -> str:
             next_turn = povturns[i + 1]
             player_action = actions[i][0] if i < len(actions) else None
             opponent_action = opp_actions[i] if i < len(opp_actions) else None
-            lines.extend(_write_action_block(next_turn, player_action, opponent_action))
+            # Determine move order for <boa> — the action execution order is
+            # stored in the next turn's move_order.
+            action_opponent_moved_first = _opponent_moved_first(
+                next_turn.move_order if next_turn else [], pov.from_p1_pov
+            )
+            lines.extend(_write_action_block(
+                next_turn, player_action, opponent_action,
+                opponent_moved_first=action_opponent_moved_first,
+            ))
             lines.append("")
 
     return "\n".join(lines)
@@ -793,9 +860,13 @@ def _write_state_block_doubles(
         # First state: empty block
         pass
     else:
-        # Per-slot results for doubles
+        # Build all 4 sub-blocks keyed by spectator (team, slot),
+        # then emit in move_order sequence.
+        pov_team = 1 if p1 else 2
+        opp_team = 2 if p1 else 1
+        sub_blocks: dict[tuple[int, int], list[str]] = {}
         for slot_idx, slot_tag in enumerate(("active1", "active2")):
-            lines.append(f"<{slot_tag}>")
+            block = [f"<{slot_tag}>"]
             pa = prev_player_actions[slot_idx] if prev_player_actions and slot_idx < len(prev_player_actions) else None
             if pa is not None:
                 if pa.is_switch or pa.is_revival:
@@ -807,20 +878,21 @@ def _write_state_block_doubles(
                     action_name = clean_name(pa.name)
                 cant = getattr(pa.user, "cant_reason", None) if pa.user else None
                 if cant:
-                    lines.append(f"{action_name} cant {cant}")
+                    block.append(f"{action_name} cant {cant}")
                 elif pa.failed:
-                    lines.append(f"{action_name} fail")
+                    block.append(f"{action_name} fail")
                 else:
-                    lines.append(f"{action_name} success")
+                    block.append(f"{action_name} success")
             else:
-                lines.append("unknown")
-            lines.append(f"<end_{slot_tag}>")
+                block.append("none")
+            block.append(f"<end_{slot_tag}>")
+            sub_blocks[(pov_team, slot_idx)] = block
 
         for slot_idx, slot_tag in enumerate(("opponent1", "opponent2")):
-            lines.append(f"<{slot_tag}>")
+            block = [f"<{slot_tag}>"]
             oa = prev_opponent_actions[slot_idx] if prev_opponent_actions and slot_idx < len(prev_opponent_actions) else None
             if oa is _NO_OPPONENT_ACTION:
-                lines.append("none")
+                block.append("none")
             elif oa is not None:
                 if oa.is_switch:
                     target_name = clean_name(oa.target.name) if oa.target else "unknown"
@@ -831,14 +903,26 @@ def _write_state_block_doubles(
                     action_name = clean_name(oa.name)
                 cant = getattr(oa.user, "cant_reason", None) if oa.user else None
                 if cant:
-                    lines.append(f"{action_name} cant {cant}")
+                    block.append(f"{action_name} cant {cant}")
                 elif oa.failed:
-                    lines.append(f"{action_name} fail")
+                    block.append(f"{action_name} fail")
                 else:
-                    lines.append(f"{action_name} success")
+                    block.append(f"{action_name} success")
             else:
-                lines.append("unknown")
-            lines.append(f"<end_{slot_tag}>")
+                block.append("unknown")
+            block.append(f"<end_{slot_tag}>")
+            sub_blocks[(opp_team, slot_idx)] = block
+
+        move_order = getattr(turn, "move_order", None) or []
+        if move_order:
+            for team, slot_idx in move_order:
+                if (team, slot_idx) in sub_blocks:
+                    lines.extend(sub_blocks.pop((team, slot_idx)))
+            for entry in sub_blocks.values():
+                lines.extend(entry)
+        else:
+            for entry in sub_blocks.values():
+                lines.extend(entry)
     lines.append("<end_last_turn_results>")
 
     # ── arena (doubles: active1/active2, opponent1/opponent2) ──
@@ -981,11 +1065,12 @@ def _write_state_block_doubles(
     # ── terminal ──
     if is_terminal:
         winner = pov.winner
+        won_by_forfeit = getattr(pov, "won_by_forfeit", False)
         replay_winner = pov.replay.winner if pov.replay else None
         from metamon.backend.replay_parser.replay_state import Winner
         if winner:
             lines.append("<terminal>")
-            lines.append("won")
+            lines.append("forfeit_won" if won_by_forfeit else "won")
             lines.append("<end_terminal>")
         elif replay_winner == Winner.TIE:
             lines.append("<terminal>")
@@ -993,7 +1078,7 @@ def _write_state_block_doubles(
             lines.append("<end_terminal>")
         else:
             lines.append("<terminal>")
-            lines.append("lost")
+            lines.append("forfeit_lost" if won_by_forfeit else "lost")
             lines.append("<end_terminal>")
 
     lines.append("<eos>")
@@ -1004,10 +1089,15 @@ def _write_action_block_doubles(
     turn: Turn,
     player_actions: list,
     opponent_actions: list,
+    from_p1_pov: bool = True,
 ) -> list[str]:
     """Build a single <boa> … <eoa> action block for doubles.
 
     *player_actions* and *opponent_actions* are each ``[Action|None, Action|None]``.
+
+    Emits the per-slot action tags in the temporal execution order recorded
+    in *turn.move_order*.  When move_order is empty, falls back to the
+    legacy fixed order (all player actions, then all opponent actions).
     """
     lines = ["<boa>"]
 
@@ -1016,20 +1106,41 @@ def _write_action_block_doubles(
     lines.append(str(turn_num))
     lines.append("<end_turn>")
 
+    # Map spectator teams (1,2) to POV roles (player/opponent).
+    pov_team = 1 if from_p1_pov else 2
+    opp_team = 2 if from_p1_pov else 1
+
+    # Build all sub-blocks keyed by spectator (team, slot).
+    sub_blocks: dict[tuple[int, int], list[str]] = {}
     for slot_idx in (0, 1):
         slot = slot_idx + 1
 
-        # player action for this slot — outcome now in <last_turn_results> of next state
         pa = player_actions[slot_idx] if slot_idx < len(player_actions) else None
-        lines.append(f"<chosen_move:{slot}>")
-        lines.append(_action_choice_text(pa, reveal_noop=True))
-        lines.append("<end_chosen_move>")
+        sub_blocks[(pov_team, slot_idx)] = [
+            f"<chosen_move:{slot}>",
+            _action_choice_text(pa, reveal_noop=True),
+            "<end_chosen_move>",
+        ]
 
-        # opponent action for this slot — outcome now in <last_turn_results> of next state
         oa = opponent_actions[slot_idx] if slot_idx < len(opponent_actions) else None
-        lines.append(f"<opponent_chosen_move:{slot}>")
-        lines.append(_action_choice_text(oa, reveal_noop=False))
-        lines.append("<end_opponent_chosen_move>")
+        sub_blocks[(opp_team, slot_idx)] = [
+            f"<opponent_chosen_move:{slot}>",
+            _action_choice_text(oa, reveal_noop=False),
+            "<end_opponent_chosen_move>",
+        ]
+
+    move_order = getattr(turn, "move_order", None) or []
+    if move_order:
+        for team, slot_idx in move_order:
+            if (team, slot_idx) in sub_blocks:
+                lines.extend(sub_blocks.pop((team, slot_idx)))
+        # Emit any remaining blocks not in move_order.
+        for entry in sub_blocks.values():
+            lines.extend(entry)
+    else:
+        # Legacy fixed order.
+        for entry in sub_blocks.values():
+            lines.extend(entry)
 
     lines.append("<eoa>")
     return lines
@@ -1083,7 +1194,10 @@ def serialize_pov_replay_doubles(pov: POVReplay) -> str:
             next_turn = povturns[i + 1]
             player_actions = actions[i] if i < len(actions) else [None, None]
             opp_as = opp_actions[i] if i < len(opp_actions) else [None, None]
-            lines.extend(_write_action_block_doubles(next_turn, player_actions, opp_as))
+            lines.extend(_write_action_block_doubles(
+                next_turn, player_actions, opp_as,
+                from_p1_pov=pov.from_p1_pov,
+            ))
             lines.append("")
 
     return "\n".join(lines)

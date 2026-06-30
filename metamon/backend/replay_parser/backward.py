@@ -231,8 +231,13 @@ class POVReplay:
         self.check_warnings = filled_replay.check_warnings
         # rating and winner from POV
         self.rating = filled_replay.ratings[0 if from_p1_pov else 1]
-        self.winner = filled_replay.winner == (
-            Winner.PLAYER_1 if from_p1_pov else Winner.PLAYER_2
+        self.won_by_forfeit = filled_replay.winner in (
+            Winner.FORFEIT_PLAYER_1, Winner.FORFEIT_PLAYER_2
+        )
+        self.winner = (
+            filled_replay.winner in (Winner.PLAYER_1, Winner.FORFEIT_PLAYER_1)
+            if from_p1_pov
+            else filled_replay.winner in (Winner.PLAYER_2, Winner.FORFEIT_PLAYER_2)
         )
 
         self._povturnlist: list[Turn] = []
@@ -265,9 +270,7 @@ class POVReplay:
 
     def _flatten_subturns_from_pov(self, turn: Turn):
         for subturn in turn.subturns:
-            if subturn.turn is not None and subturn.team == (
-                1 if self.from_p1_pov else 2
-            ):
+            if subturn.turn is not None:
                 yield subturn
 
     def _resolve_transforms(self):
@@ -437,15 +440,24 @@ class POVReplay:
             # subturns freeze the sim midturn, which we currently
             # only use to replicate forced switches.
             for subturn in turn_t.subturns:
-                if subturn.turn is not None and subturn.team == (
-                    1 if self.from_p1_pov else 2
-                ):
+                if subturn.turn is not None:
                     action = [None, None]
-                    action[subturn.slot] = subturn.action
+                    is_own = subturn.team == (1 if self.from_p1_pov else 2)
+                    if is_own:
+                        action[subturn.slot] = subturn.action
+                    else:
+                        # Opponent's forced switch: clear flags so <you>
+                        # doesn't show forceswitch for our POV.
+                        subturn.turn.is_force_switch = False
+                        subturn.turn.is_force_revival = False
                     self._povturnlist.append(subturn.turn)
                     self._actionlist.append(action)
-                    # opponent already acted this turn; subturn has no opponent action
-                    self._opponent_actionlist.append(_NO_OPPONENT_ACTION)
+                    if is_own:
+                        # opponent already acted this turn; subturn has no opponent action
+                        self._opponent_actionlist.append(_NO_OPPONENT_ACTION)
+                    else:
+                        # Opponent's forced switch: they act, we don't.
+                        self._opponent_actionlist.append(subturn.action)
 
             self._povturnlist.append(
                 turn_t
@@ -517,12 +529,19 @@ class POVReplay:
 
             self._actionlist.append(actionlist)
 
-            # ── opponent cant substitution ────────────────────────────
-            # Mirror the player-side cant substitution above: when the
-            # opponent's action is None because they were prevented from
-            # acting (|cant|), substitute a valid action so the dataset
-            # sees the move they *chose* + the cant reason.
+            # ── opponent action ───────────────────────────────────────
+            # Prefer the executed move from |move|/|switch|.  When that is
+            # missing (faint before acting, paralysis, sleep, etc.), fall
+            # back to the *named* choice from |choice| messages since those
+            # reveal what the opponent actually clicked.  If even that is
+            # unavailable, pick a random move from the opponent's known
+            # moveset (only for par/slp/frz/confusion self-hit); otherwise
+            # leave it as None (e.g. forced-switch subturn where the POV
+            # player switches and the opponent already acted this turn).
+            opponent_choices = turn_t1.choices_2 if self.from_p1_pov else turn_t1.choices_1
             opponent_action = opponent_moves[0]
+            if opponent_action is None:
+                opponent_action = opponent_choices[0]
             if opponent_action is None:
                 opp_pov_slot = 0
                 opp_active = (
@@ -710,15 +729,21 @@ class POVReplayDoubles(POVReplay):
         ):
             # subturns — same as singles
             for subturn in turn_t.subturns:
-                if subturn.turn is not None and subturn.team == (
-                    1 if self.from_p1_pov else 2
-                ):
+                if subturn.turn is not None:
                     action = [None, None]
-                    action[subturn.slot] = subturn.action
+                    opp_action = [_NO_OPPONENT_ACTION, _NO_OPPONENT_ACTION]
+                    is_own = subturn.team == (1 if self.from_p1_pov else 2)
+                    if is_own:
+                        action[subturn.slot] = subturn.action
+                    else:
+                        # Opponent's forced switch: clear flags so <you>
+                        # doesn't show forceswitch for our POV.
+                        subturn.turn.is_force_switch = False
+                        subturn.turn.is_force_revival = False
+                        opp_action[subturn.slot] = subturn.action
                     self._povturnlist.append(subturn.turn)
                     self._actionlist.append(action)
-                    # opponent already acted this turn; subturn has no opponent action
-                    self._opponent_actionlist.append([_NO_OPPONENT_ACTION, _NO_OPPONENT_ACTION])
+                    self._opponent_actionlist.append(opp_action)
 
             self._povturnlist.append(turn_t)
 
@@ -772,9 +797,14 @@ class POVReplayDoubles(POVReplay):
 
             self._actionlist.append(actionlist)
 
-            # ── opponent cant substitution for BOTH slots ─────────────
+            # ── opponent action for BOTH slots ──────────────────────────
+            # Same logic as singles: prefer executed move, then named
+            # choice, then random pick for cant, otherwise None.
+            opponent_choices = turn_t1.choices_2 if self.from_p1_pov else turn_t1.choices_1
             opponent_actionlist = [opponent_moves[0], opponent_moves[1]]
             for opp_slot in (0, 1):
+                if opponent_actionlist[opp_slot] is None:
+                    opponent_actionlist[opp_slot] = opponent_choices[opp_slot]
                 if opponent_actionlist[opp_slot] is None:
                     opp_active = (
                         turn_t1.active_pokemon_2[opp_slot]

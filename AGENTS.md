@@ -1,5 +1,5 @@
 # Environments
-The package manager in python here is `uv`. The development machine is a macbook pro M4 Pro with 1 TB of storage. Currently there is no production environement.
+The package manager in python here is `uv`. The development machine is a macbook pro M4 Pro with 1 TB of storage. The production environment has nvidia cuda GPU RTX 4090.
 
 # Dependencies
 If you install a new library (via `uv pip install` or similar), also add it to `pyproject.toml` under `[project].dependencies` so it is tracked declaratively.
@@ -27,27 +27,26 @@ You should write code which if necessary and at your own discrection and determi
 `metamon/jepa/` trains a paired-POV world model that learns to predict the **hidden opponent state** and the **next state latent** from the visible board state and action history. It is a self-supervised world model that encodes battle states into a deterministic latent space (via `JEPAEncoder`), encodes action text into action latents (via `JEPAActionEncoder`), and uses a temporal encoder over interleaved block embeddings to produce a history context. The model is trained on *paired* POV data — both players' perspectives of the same battle synchronized, so each side predicts the other's hidden state.
 
 ### Architecture overview
-
+The team header shows the POV player pokemon team, the pokemon's HP, typing and actions.
+In pokemon battles the first state is always state_0, when pokemon are first released into battle, followed by the POV players action player_action_0, then the opponent_action opponent_action_0.
 ```
-State block tokens ─► JEPAEncoder φ ─► state embedding (latent_dim=192)
-Action text tokens  ─► JEPAActionEncoder ψ ─► action embedding (action_latent_dim=32)
+history T is the team header embedding, state embeddings and action embeddings inteleaved in the order of POV's history
+define history_T = [team_header, state_0, p_action_0, o_action_0, state_1, ..., state_{T-1}, p_action_{T-1}, o_action_{T-1}, state_T]
+where action block tokens, team block ─► JEPAEncoder ─► action embedding, team header embedding (latent_dim=100)
+The states i is drawn from a SelfStateBeliefEncoder -> which is run on the prior history to state_i (has a gaussian prior)
 
-[team_header, state₀, p_action₀, o_action₀, state₁, ...] ─► JEPATemporalEncoder τ ─► history context c
+history_T -> SelfStateBeliefEncoder -> state_{T} belief (gaussian) which can be sampled from as z
 
-c + current_state_z ─► JEPAOpponentBeliefPredictor shared backbone
-                    ├─ state head  ─► predicted opponent state z_opp (Gaussian)
-                    └─ action head ─► predicted opponent action a_opp (Gaussian)
-z + own_action + z_opp + a_opp ─► JEPANextStatePredictor ─► predicted next state z_next
-z + predicted_opp_mu/logvar ─► JEPADecisionStateEncoder ─► fused belief state h
-h                          ─► JEPAValueHead ─► V_logit(s)
-h + legal own action       ─► JEPAActionValueHead ─► Q_logit(s,a)
+history_T─► OpponentStateBeliefPredictor transformer ─> predicted opponent current state z_opp (Gaussian prior)
+sampled from z_opp, z -> JEPAOpponentBeliefPolicy -> predicted opponent next action next_action_opp (Gaussian prior) 
+
+(current player state embedding z, opponent state embedding from z_opp, own_action, opponent_action_embedding from a_opp) ─► JEPANextStateBeliefPredictor ─► predicted next POV state z_next (Gaussian prior)
+
+Actor and Critic
+We also train two neural networks for policy / action pi(action | (z, z_opp)) and critic Q(action, z). 
 ```
 
-`JEPAOpponentBeliefPredictor` is the current code path and checkpoint module name; it replaces the older separate opponent-state and paired-action predictor modules with a shared representation plus two output heads.
-
-**Decision heads:** `JEPADecisionStateEncoder` projects `z_self`, predicted opponent state mean, and clamped opponent state log-variance into `decision_dim=384`, then fuses `[self_h, mu_h, logvar_h, self_h - mu_h, self_h * mu_h]` through gated residual blocks. `JEPAValueHead` consumes only this fused belief state and returns `V_logit(s)`. `JEPAActionProjector` maps action latents into the same decision space, and `JEPAActionValueHead` scores current-player legal candidates as `Q_logit(s,a)`.
-
-**Losses:** diagonal Gaussian NLL for opponent state prediction, opponent action prediction, and next-state prediction; SIGReg (Epps-Pulley Gaussianity regularizer); BCE losses for `V(s)` and chosen `Q(s,a)` against the POV terminal outcome; masked cross-entropy over that POV's legal action Q logits; and lower-weight teacher value/Q supervision using the actual paired opponent latent. During paired supervised training, the next-state predictor is conditioned on the actual paired opponent state and the actual opponent action taken between the current and next state. The old Bradley-Terry rank loss is inactive; `--lambda_rank` is accepted only as a deprecated no-op warning.
+**Losses:** since the beliefs are distributed priors, we do KL divergence minimization on opponent state prediction loss compared to the encoding of the known opponent history and next-state prediction is minimized with KL divergence to the encoding of new history including the latest actions. (TODO: do I need a loss on the action I'm not certain). The losses and training of the actor and critic will be discussed at length later
 
 ### Training (`train_paired.py`)
 
@@ -76,29 +75,24 @@ uv run python -m metamon.jepa.train_paired \
 ```
 
 Key training flags:
-- `--max_history_blocks N` — window to last N state blocks (0 = unlimited, the **default**). The team header is always retained. Lower values reduce memory and speed up training.
-- `--lambda_value`, `--lambda_q_value`, `--lambda_policy`, `--lambda_value_teacher`, `--lambda_q_teacher` — actor-critic outcome-supervision weights. Set these to `0` to disable outcome heads when labels are unreliable.
-- `--advantage_temperature` — optional advantage weighting for Q/policy losses using `exp((outcome - sigmoid(V).detach()) / temperature)` with configured clamps.
-- `--lambda_rank` — deprecated/no-op; accepted temporarily with a warning for old scripts.
+- `--max_history_blocks N` — window to last N state blocks (100 is the **default**) of the history context. The team header is always retained. Lower values reduce memory and speed up training.
 - `--compile` — enable `torch.compile` on encoder + action encoder (CUDA only)
 - `--checkpoint` — path for both warm-start loading AND best-checkpoint saving
 - `--no-wandb` — disable Weights & Biases logging. W&B is enabled by default when the `wandb` package is installed; `--wandb` is accepted but redundant.
 
-Training uses bf16 on CUDA, SIGReg resampled per step, and micro-batched encoding (max 65536 tokens per encoder call). The temporal encoder's `max_seq_len` defaults to 6144 to accommodate full-battle histories. The paired dataset and model preserve an explicit rollout axis: state/history tensors are `[B, K, blocks, tokens]`, action tensors are `[B, K, tokens]`, and losses reduce over both batch and rollout steps.
+Training uses bf16 on CUDA, SIGReg resampled per step, and micro-batched encoding (max 65536 tokens per encoder call). The temporal encoder's `max_seq_len` defaults to 100*3+1  to accommodate 100 state battle histories.
 
 ### Config (`metamon/jepa/configs/default.yaml`)
 
 | Module | Key params |
 |---|---|
-| `encoder` | d_model=384, n_heads=6, n_layers=6, d_ff=1536, max_seq_len=256, gradient_checkpointing=true |
-| `temporal_encoder` | n_heads=6, n_layers=4, d_ff=768, max_seq_len=6144 |
-| `action_encoder` | d_model=128, n_heads=4, n_layers=3, d_ff=512, max_seq_len=64 |
-| `decision_state_encoder` | decision_dim=384, n_layers=4, hidden_dim=768 |
-| `value_head` | hidden_dim=384, n_layers=3 |
-| `action_projector` | action_latent_dim → decision_dim |
-| `action_value_head` | hidden_dim=768, n_layers=3 |
-| Latents | `latent_dim: 192`, `action_latent_dim: 32` |
-| Loss weights | `lambda_sigreg_state: 0.1`, `lambda_sigreg_action: 0.0`, `lambda_value: 1.0`, `lambda_q_value: 1.0`, `lambda_policy: 1.0`, `lambda_value_teacher: 0.25`, `lambda_q_teacher: 0.25`; deprecated fallbacks `lambda_sigreg: 0.1`, `lambda_rank: 0.0` |
+| `encoder` | d_model=256, n_heads=8, n_layers=8, d_ff=1024, max_seq_len=256, gradient_checkpointing=true |
+| `self_belief_predictor` | d_model=256, n_heads=8, n_layers=8, d_ff=1024, max_seq_len=256, gradient_checkpointing=true |
+| `opponent_belief_predictor` | d_model=256, n_heads=8, n_layers=8, d_ff=1024, max_seq_len=256, gradient_checkpointing=true |
+| `opponent_action_predictor` | d_model=256, n_heads=8, n_layers=8, d_ff=1024, max_seq_len=256, gradient_checkpointing=true |
+| `next_state_predictor` | hidden_dim=512, n_layers 6 
+| Latents | `latent_dim: 100` |
+| Loss weights | `lambda_sigreg_state: 0.1` |
 
 ### Data format (paired shards)
 
@@ -170,7 +164,7 @@ Then another player challenges with:
 ```
 
 #### Action selection
-
+Online, the OpponentActionBelief predictor, OpponentStateBelief predictor and NextStateBelief predictor are used to predict the next state based on actions.  Next actions are imagined via rollouts in sequence. When 
 Online actor-critic inference predicts the opponent belief from the current bot POV, encodes only the bot's legal Showdown actions, computes `Q_logit(s,a)` with `JEPAActionValueHead`, and chooses the best current-player action. It never requires opponent legal actions.
 
 #### Interactive REPL (keyboard shortcuts during battle)

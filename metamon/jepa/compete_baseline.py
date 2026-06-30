@@ -94,7 +94,7 @@ def main():
         pad_id=pad_id,
         bos_id=bos_id,
         eos_id=eos_id,
-        latent_dim=model_cfg.get("latent_dim", 192),
+        latent_dim=model_cfg.get("latent_dim", 100),
         action_latent_dim=model_cfg.get("action_latent_dim", 32),
         encoder_cfg=model_cfg.get("encoder", {}),
         temporal_encoder_cfg=model_cfg.get("temporal_encoder", {}),

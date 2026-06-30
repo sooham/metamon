@@ -7,10 +7,6 @@ import torch
 
 import scripts.generate_world_model_data as wm_data
 from metamon.jepa.model import (
-    JEPAActionProjector,
-    JEPAActionValueHead,
-    JEPADecisionStateEncoder,
-    JEPAValueHead,
     PairedJEPAModel,
     compute_paired_losses,
 )
@@ -91,7 +87,6 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
             np.array([22], dtype=np.int16),
         ],
         turn_numbers=[1, 2, 3, 4],
-        won=True,
         path="p1.txt",
     )
     p2 = TokenizedPOV(
@@ -116,14 +111,13 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
             np.array([12], dtype=np.int16),
         ],
         turn_numbers=[1, 2, 2, 3, 4],
-        won=False,
         path="p2.txt",
     )
     rows = _paired_transition_rows(p1, p2)
     assert [(r.p1_action_idx, r.p2_action_idx) for r in rows] == [(0, 0), (2, 3)]
     windows = _contiguous_rollout_windows(rows, rollout_len=1)
 
-    acc = PairedShardAccumulator(fmt="gen1ou", fmt_id=0)
+    acc = PairedShardAccumulator(format_names={0: "gen1ou"})
     acc.append(PairedBattle("battle-1", p1, p2, rows, windows))
     stats = acc.write(str(tmp_path), shard_idx=0)
     assert stats["transitions"] == 2
@@ -131,21 +125,26 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     assert stats["rollout_len"] == 1
 
     data = np.load(tmp_path / "paired_shard_0000.npz")
-    np.testing.assert_array_equal(data["p1_state_idx"], np.array([[1], [3]], dtype=np.int32))
+    np.testing.assert_array_equal(data["p1_target_state_idx"], np.array([[1], [3]], dtype=np.int32))
     np.testing.assert_array_equal(data["p1_next_state_idx"], np.array([[2], [4]], dtype=np.int32))
     np.testing.assert_array_equal(data["p1_action_idx"], np.array([[0], [2]], dtype=np.int32))
-    np.testing.assert_array_equal(data["p2_state_idx"], np.array([[1], [4]], dtype=np.int32))
+    np.testing.assert_array_equal(data["p2_target_state_idx"], np.array([[1], [4]], dtype=np.int32))
     np.testing.assert_array_equal(data["p2_next_state_idx"], np.array([[2], [5]], dtype=np.int32))
     np.testing.assert_array_equal(data["p2_action_idx"], np.array([[0], [3]], dtype=np.int32))
     np.testing.assert_array_equal(data["p1_battle_start"], np.array([0, 5], dtype=np.int64))
     np.testing.assert_array_equal(data["p2_battle_start"], np.array([0, 6], dtype=np.int64))
     np.testing.assert_array_equal(data["p1_battle_action_start"], np.array([0, 3], dtype=np.int64))
     np.testing.assert_array_equal(data["p2_battle_action_start"], np.array([0, 4], dtype=np.int64))
-    np.testing.assert_array_equal(data["rank_valid"], np.array([True], dtype=bool))
-    assert data["p1_legal_actions"].shape[:2] == (3, 1)
-    assert data["p2_legal_actions"].shape[:2] == (4, 1)
-    np.testing.assert_array_equal(data["p1_chosen_legal_action_idx"], np.zeros(3, dtype=np.int16))
-    np.testing.assert_array_equal(data["p2_chosen_legal_action_idx"], np.zeros(4, dtype=np.int16))
+    for removed_key in (
+        "p1_won",
+        "p2_won",
+        "rank_valid",
+        "p1_legal_actions",
+        "p2_legal_actions",
+        "p1_chosen_legal_action_idx",
+        "p2_chosen_legal_action_idx",
+    ):
+        assert removed_key not in data
 
     struct_ids = {
         "unknown": 99,
@@ -157,40 +156,26 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     )
     samples = list(dataset)
     assert len(samples) == 2
-    assert samples[0]["rank_valid"] == [True]
-    assert samples[0]["p1_is_terminal"] == [False]
-    assert samples[1]["p1_is_terminal"] == [True]
-    np.testing.assert_array_equal(
-        samples[0]["p1_next_legal_actions"][0],
-        np.array([[11]], dtype=np.int16),
-    )
-    np.testing.assert_array_equal(
-        samples[0]["p1_next_legal_action_mask"][0],
-        np.array([True], dtype=bool),
-    )
-    assert samples[1]["p1_next_legal_actions"][0].shape == (0, 1)
-    assert not bool(samples[1]["p1_next_legal_action_mask"][0].any())
+    assert samples[0]["raw_battle_key"] == "battle-1"
+    assert samples[0]["battle_id"] == 0
+    np.testing.assert_array_equal(samples[0]["turn_number"], np.array([1], dtype=np.int32))
+    np.testing.assert_array_equal(samples[1]["turn_number"], np.array([3], dtype=np.int32))
+    np.testing.assert_array_equal(samples[1]["subturn_idx"], np.array([0], dtype=np.int32))
+    np.testing.assert_array_equal(samples[1]["p1_target_state_idx_meta"], np.array([3], dtype=np.int32))
+    np.testing.assert_array_equal(samples[1]["p2_target_state_idx_meta"], np.array([4], dtype=np.int32))
+    np.testing.assert_array_equal(samples[0]["p1_history_T"][0][0], np.array([90], dtype=np.int16))
+    np.testing.assert_array_equal(samples[0]["p1_target_state_T"][0], np.array([101], dtype=np.int16))
     second = samples[1]
     assert len(second["p1_player_hist_T"]) == 1
     assert len(second["p1_player_hist_T"][0]) == 2
-    assert len(second["p1_player_hist_T1"][0]) == 3
     assert len(second["p2_player_hist_T"][0]) == 3
-    assert len(second["p2_player_hist_T1"][0]) == 4
     np.testing.assert_array_equal(
         second["p1_player_hist_T"][0][-1],
         np.array([11], dtype=np.int16),
     )
     np.testing.assert_array_equal(
-        second["p1_player_hist_T1"][0][-1],
-        np.array([12], dtype=np.int16),
-    )
-    np.testing.assert_array_equal(
         second["p2_player_hist_T"][0][-1],
         np.array([97], dtype=np.int16),
-    )
-    np.testing.assert_array_equal(
-        second["p2_player_hist_T1"][0][-1],
-        np.array([22], dtype=np.int16),
     )
     np.testing.assert_array_equal(
         second["p1_action"][0],
@@ -210,21 +195,17 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     )
 
     batch = collate_paired_fn(samples, pad_id=0)
-    assert batch["p1_state_T"].ndim == 4
-    assert batch["p1_state_T"].shape[:2] == (2, 1)
+    assert batch["p1_history_T"].ndim == 4
+    assert batch["p1_history_T"].shape[:2] == (2, 1)
+    assert batch["p1_target_state_T"].shape[:2] == (2, 1)
+    assert batch["p1_next_state_T1"].shape[:2] == (2, 1)
     assert batch["p1_action"].shape[:2] == (2, 1)
-    assert batch["p1_legal_actions"].shape[:3] == (2, 1, 1)
-    assert batch["p1_legal_action_mask"].shape == (2, 1, 1)
-    assert batch["p1_next_legal_actions"].shape[:3] == (2, 1, 1)
-    assert batch["p1_next_legal_action_mask"].shape == (2, 1, 1)
-    assert batch["p1_next_legal_action_mask"][0, 0, 0]
-    assert not batch["p1_next_legal_action_mask"][1, 0, 0]
-    assert torch.equal(
-        batch["p1_is_terminal"],
-        torch.tensor([[False], [True]], dtype=torch.bool),
-    )
-    assert batch["p1_chosen_legal_action_idx"].shape == (2, 1)
-    assert batch["rank_valid"].shape == (2, 1)
+    assert batch["raw_battle_key"] == ["battle-1", "battle-1"]
+    assert torch.equal(batch["turn_number"], torch.tensor([[1], [3]], dtype=torch.int32))
+    assert torch.equal(batch["p1_target_state_idx_meta"], torch.tensor([[1], [3]], dtype=torch.int32))
+    assert "p1_legal_actions" not in batch
+    assert "p1_is_terminal" not in batch
+    assert "rank_valid" not in batch
 
     capped_dataset = PairedJEPADataset(
         [str(tmp_path / "paired_shard_0000.npz")],
@@ -233,43 +214,32 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
         max_history_blocks=2,
     )
     capped_second = list(capped_dataset)[1]
-    capped_p1_state_T = capped_second["p1_state_T"][0]
-    capped_p1_state_T1 = capped_second["p1_state_T1"][0]
-    assert len(capped_p1_state_T) == 3
-    assert len(capped_p1_state_T1) == 3
+    capped_p1_history_T = capped_second["p1_history_T"][0]
+    assert len(capped_p1_history_T) == 3
     np.testing.assert_array_equal(
-        capped_p1_state_T[0],
+        capped_p1_history_T[0],
         np.array([90], dtype=np.int16),
     )
     np.testing.assert_array_equal(
-        capped_p1_state_T[1],
+        capped_p1_history_T[1],
+        np.array([101], dtype=np.int16),
+    )
+    np.testing.assert_array_equal(
+        capped_p1_history_T[2],
         np.array([102], dtype=np.int16),
     )
     np.testing.assert_array_equal(
-        capped_p1_state_T[2],
+        capped_second["p1_target_state_T"][0],
         np.array([103], dtype=np.int16),
     )
     np.testing.assert_array_equal(
-        capped_p1_state_T1[0],
-        np.array([90], dtype=np.int16),
-    )
-    np.testing.assert_array_equal(
-        capped_p1_state_T1[1],
-        np.array([103], dtype=np.int16),
-    )
-    np.testing.assert_array_equal(
-        capped_p1_state_T1[2],
+        capped_second["p1_next_state_T1"][0],
         np.array([104], dtype=np.int16),
     )
-    assert len(capped_second["p1_player_hist_T"][0]) == 1
-    assert len(capped_second["p1_player_hist_T1"][0]) == 1
+    assert len(capped_second["p1_player_hist_T"][0]) == 2
     np.testing.assert_array_equal(
-        capped_second["p1_player_hist_T"][0][0],
+        capped_second["p1_player_hist_T"][0][-1],
         np.array([11], dtype=np.int16),
-    )
-    np.testing.assert_array_equal(
-        capped_second["p1_player_hist_T1"][0][0],
-        np.array([12], dtype=np.int16),
     )
 
 
@@ -293,7 +263,6 @@ def test_paired_shard_accumulator_writes_k_step_rollout_samples(tmp_path):
             np.array([22], dtype=np.int16),
         ],
         turn_numbers=[1, 2, 3, 4],
-        won=True,
         path="p1.txt",
     )
     p2 = TokenizedPOV(
@@ -315,14 +284,13 @@ def test_paired_shard_accumulator_writes_k_step_rollout_samples(tmp_path):
             np.array([12], dtype=np.int16),
         ],
         turn_numbers=[1, 2, 3, 4],
-        won=False,
         path="p2.txt",
     )
     rows = _paired_transition_rows(p1, p2)
     windows = _contiguous_rollout_windows(rows, rollout_len=3)
     assert len(windows) == 1
 
-    acc = PairedShardAccumulator(fmt="gen1ou", fmt_id=0, rollout_len=3)
+    acc = PairedShardAccumulator(format_names={0: "gen1ou"}, rollout_len=3)
     acc.append(PairedBattle("battle-1", p1, p2, rows, windows))
     stats = acc.write(str(tmp_path), shard_idx=0)
     assert stats["rollout_samples"] == 1
@@ -330,7 +298,7 @@ def test_paired_shard_accumulator_writes_k_step_rollout_samples(tmp_path):
 
     data = np.load(tmp_path / "paired_shard_0000.npz")
     assert int(data["rollout_len"]) == 3
-    np.testing.assert_array_equal(data["p1_state_idx"], np.array([[1, 2, 3]], dtype=np.int32))
+    np.testing.assert_array_equal(data["p1_target_state_idx"], np.array([[1, 2, 3]], dtype=np.int32))
     np.testing.assert_array_equal(data["p1_next_state_idx"], np.array([[2, 3, 4]], dtype=np.int32))
     np.testing.assert_array_equal(data["p1_action_idx"], np.array([[0, 1, 2]], dtype=np.int32))
 
@@ -343,46 +311,47 @@ def test_paired_shard_accumulator_writes_k_step_rollout_samples(tmp_path):
         shuffle_shards=False,
     )
     sample = next(iter(dataset))
-    assert len(sample["p1_state_T"]) == 3
+    assert len(sample["p1_history_T"]) == 3
+    assert len(sample["p1_target_state_T"]) == 3
+    assert len(sample["p1_next_state_T1"]) == 3
     assert len(sample["p1_action"]) == 3
-    assert sample["p1_won"] == [True, True, True]
-    assert sample["p1_is_terminal"] == [False, False, True]
+    assert "p1_won" not in sample
+    assert "p1_is_terminal" not in sample
     np.testing.assert_array_equal(sample["p1_action"][2], np.array([12], dtype=np.int16))
     batch = collate_paired_fn([sample], pad_id=0)
-    assert batch["p1_state_T"].shape[:2] == (1, 3)
+    assert batch["p1_history_T"].shape[:2] == (1, 3)
+    assert batch["p1_target_state_T"].shape[:2] == (1, 3)
+    assert batch["p1_next_state_T1"].shape[:2] == (1, 3)
     assert batch["p1_action"].shape[:2] == (1, 3)
-    assert batch["p1_won"].shape == (1, 3)
-    assert torch.equal(
-        batch["p1_is_terminal"],
-        torch.tensor([[False, False, True]], dtype=torch.bool),
-    )
+    assert "p1_won" not in batch
+    assert "p1_is_terminal" not in batch
 
 
 def test_paired_jepa_dataset_history_window_can_be_capped():
     assert PairedJEPADataset._resolve_window(
         battle_start=0,
-        state_end=4,
-        action_base=0,
-        max_hist=0,
-    ) == (0, 0, 2)
-    assert PairedJEPADataset._resolve_window(
-        battle_start=0,
-        state_end=5,
+        target_state_idx=4,
         action_base=0,
         max_hist=0,
     ) == (0, 0, 3)
     assert PairedJEPADataset._resolve_window(
         battle_start=0,
-        state_end=4,
+        target_state_idx=5,
         action_base=0,
-        max_hist=2,
-    ) == (2, 1, 2)
+        max_hist=0,
+    ) == (0, 0, 4)
     assert PairedJEPADataset._resolve_window(
         battle_start=0,
-        state_end=5,
+        target_state_idx=4,
         action_base=0,
         max_hist=2,
-    ) == (3, 2, 3)
+    ) == (2, 1, 3)
+    assert PairedJEPADataset._resolve_window(
+        battle_start=0,
+        target_state_idx=5,
+        action_base=0,
+        max_hist=2,
+    ) == (3, 2, 4)
 
 
 def test_action_canonicalization_uses_no_role_delimiters_and_fills_unknown():
@@ -400,6 +369,73 @@ def test_action_canonicalization_uses_no_role_delimiters_and_fills_unknown():
     np.testing.assert_array_equal(combined_lengths, np.array([2, 1, 1], dtype=np.int32))
     np.testing.assert_array_equal(combined_offsets, np.array([0, 2, 3, 4], dtype=np.int64))
     np.testing.assert_array_equal(combined, np.array([10, 11, 99, 12], dtype=np.int16))
+
+
+def test_parsed_pov_counts_chosen_and_opponent_moves(tmp_path, monkeypatch):
+    class FakeTokenizer:
+        def __init__(self):
+            self.ids = {}
+
+        def __getitem__(self, key):
+            if key not in self.ids:
+                self.ids[key] = len(self.ids) + 1
+            return self.ids[key]
+
+    monkeypatch.setattr(wm_data, "_TOKENIZER", FakeTokenizer())
+    monkeypatch.setattr(wm_data, "_UNKNOWN_ID", 999)
+
+    replay = """
+<bos>
+<turn> 1 <end_turn>
+<eos>
+<boa>
+<chosen_move>move bodyslam<end_chosen_move>
+<opponent_chosen_move>recover<end_opponent_chosen_move>
+<eoa>
+<bos>
+<turn> 2 <end_turn>
+<eos>
+<terminal>won<end_terminal>
+"""
+    replay_path = tmp_path / "battle_WIN.txt"
+    replay_path.write_text(replay)
+
+    pov = wm_data._parse_single_battle_file_detailed(str(replay_path))
+
+    assert pov is not None
+    assert pov.move_counts == {"bodyslam": 1, "recover": 1}
+
+
+def test_move_histogram_rows_divide_two_view_counts():
+    rows = wm_data._move_histogram_rows({"bodyslam": 4, "recover": 1})
+
+    assert rows[0]["move"] == "bodyslam"
+    assert rows[0]["count"] == pytest.approx(2.0)
+    assert rows[0]["raw_double_count"] == 4
+    assert rows[1]["move"] == "recover"
+    assert rows[1]["count"] == pytest.approx(0.5)
+    assert wm_data._format_histogram_count(float(rows[1]["count"])) == "0.5"
+
+
+def test_move_histogram_output_writes_markdown_and_csv(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        wm_data,
+        "_write_move_histogram_plot",
+        lambda rows, png_path, title: False,
+    )
+
+    outputs = wm_data._write_move_histogram_outputs(
+        str(tmp_path),
+        {"bodyslam": 4, "recover": 2},
+        title="Chosen Move Histogram (test)",
+    )
+
+    assert outputs["plot_path"] is None
+    assert outputs["total_move_actions"] == pytest.approx(3.0)
+    assert (tmp_path / "move_histogram.md").exists()
+    assert (tmp_path / "move_histogram.csv").exists()
+    assert "| 1 | bodyslam | 2 |" in (tmp_path / "move_histogram.md").read_text()
+    assert "bodyslam,2," in (tmp_path / "move_histogram.csv").read_text()
 
 
 def test_legal_action_texts_use_only_acting_player_state():
@@ -437,79 +473,56 @@ chansey 0.00 normal fnt
     assert chosen_idx == 1
 
 
-def test_decision_value_and_action_value_heads_preserve_rollout_shapes():
-    encoder = JEPADecisionStateEncoder(
-        latent_dim=4,
-        decision_dim=6,
-        hidden_dim=8,
-        n_layers=2,
-        dropout=0.0,
-    )
-    value_head = JEPAValueHead(decision_dim=6, hidden_dim=8, n_layers=2, dropout=0.0)
-    action_projector = JEPAActionProjector(
-        action_latent_dim=3,
-        decision_dim=6,
-        hidden_dim=8,
-        dropout=0.0,
-    )
-    q_head = JEPAActionValueHead(decision_dim=6, hidden_dim=8, n_layers=2, dropout=0.0)
-
-    self_state = torch.randn(2, 3, 4)
-    opp_mu = torch.randn(2, 3, 4)
-    opp_logvar = torch.randn(2, 3, 4)
-    legal_actions = torch.randn(2, 3, 5, 3)
-
-    decision_state = encoder(self_state, opp_mu, opp_logvar)
-    value_logits = value_head(decision_state)
-    action_state = action_projector(legal_actions)
-    q_logits = q_head(decision_state, action_state)
-
-    assert decision_state.shape == (2, 3, 6)
-    assert value_logits.shape == (2, 3)
-    assert action_state.shape == (2, 3, 5, 6)
-    assert q_logits.shape == (2, 3, 5)
+def _zero_loss_outputs(state: torch.Tensor, action: torch.Tensor) -> dict[str, torch.Tensor]:
+    return {
+        "enc_p1_T": state,
+        "enc_p2_T": state,
+        "enc_p1_T1": state,
+        "enc_p2_T1": state,
+        "pred_p1_self_T_mu": state,
+        "pred_p1_self_T_logvar": torch.zeros_like(state),
+        "pred_p2_self_T_mu": state,
+        "pred_p2_self_T_logvar": torch.zeros_like(state),
+        "pred_p2_T_mu": state,
+        "pred_p2_T_logvar": torch.zeros_like(state),
+        "pred_p1_T_mu": state,
+        "pred_p1_T_logvar": torch.zeros_like(state),
+        "pred_p2_T": state,
+        "pred_p1_T": state,
+        "p1_action": action,
+        "p2_action": action,
+        "actual_p2_action_from_p1_perspective": action,
+        "actual_p1_action_from_p2_perspective": action,
+        "pred_p2_action_mu": action,
+        "pred_p2_action_logvar": torch.zeros_like(action),
+        "pred_p1_action_mu": action,
+        "pred_p1_action_logvar": torch.zeros_like(action),
+        "pred_p2_action": action,
+        "pred_p1_action": action,
+        "pred_p1_T1_mu": state,
+        "pred_p1_T1_logvar": torch.zeros_like(state),
+        "pred_p2_T1_mu": state,
+        "pred_p2_T1_logvar": torch.zeros_like(state),
+        "pred_p1_T1": state,
+        "pred_p2_T1": state,
+    }
 
 
 def test_compute_paired_losses_targets_predicted_opponent_actions():
     state = torch.zeros((1, 2))
     action = torch.zeros((1, 2))
-    outputs = {
-        "enc_p1_T": state,
-        "enc_p2_T": state,
-        "enc_p1_T1": state,
-        "enc_p2_T1": state,
-        "pred_p2_T_mu": state,
-        "pred_p2_T_logvar": state,
-        "pred_p1_T_mu": state,
-        "pred_p1_T_logvar": state,
-        "pred_p2_T": state,
-        "pred_p1_T": state,
-        "p1_action": action,
-        "p2_action": action,
-        "actual_p2_action_from_p1_perspective": torch.tensor([[1.0, 0.0]]),
-        "actual_p1_action_from_p2_perspective": torch.tensor([[0.0, 2.0]]),
-        "pred_p2_action_mu": torch.tensor([[1.0, 0.0]]),
-        "pred_p2_action_logvar": torch.tensor([[0.0, 0.0]]),
-        "pred_p1_action_mu": torch.tensor([[0.0, 2.0]]),
-        "pred_p1_action_logvar": torch.tensor([[0.0, 0.0]]),
-        "pred_p2_action": torch.tensor([[1.0, 0.0]]),
-        "pred_p1_action": torch.tensor([[0.0, 2.0]]),
-        "pred_p1_T1_mu": state,
-        "pred_p1_T1_logvar": state,
-        "pred_p2_T1_mu": state,
-        "pred_p2_T1_logvar": state,
-        "pred_p1_T1": state,
-        "pred_p2_T1": state,
-    }
+    outputs = _zero_loss_outputs(state, action)
+    outputs["actual_p2_action_from_p1_perspective"] = torch.tensor([[1.0, 0.0]])
+    outputs["actual_p1_action_from_p2_perspective"] = torch.tensor([[0.0, 2.0]])
+    outputs["pred_p2_action_mu"] = torch.tensor([[1.0, 0.0]])
+    outputs["pred_p1_action_mu"] = torch.tensor([[0.0, 2.0]])
 
     loss, metrics = compute_paired_losses(
         outputs,
-        lambda_sigreg=0.0,
+        lambda_self_state=0.0,
         lambda_opponent_state=0.0,
         lambda_action=1.0,
         lambda_next_state=0.0,
-        sigreg_num_slices=1,
-        sigreg_num_points=2,
     )
 
     assert loss.item() == pytest.approx(0.0)
@@ -534,6 +547,10 @@ def test_compute_paired_losses_uses_gaussian_nll_for_prediction_heads():
         "enc_p2_T": state_target,
         "enc_p1_T1": next_target,
         "enc_p2_T1": next_target,
+        "pred_p1_self_T_mu": state_mu,
+        "pred_p1_self_T_logvar": state_logvar,
+        "pred_p2_self_T_mu": state_mu,
+        "pred_p2_self_T_logvar": state_logvar,
         "pred_p2_T_mu": state_mu,
         "pred_p2_T_logvar": state_logvar,
         "pred_p1_T_mu": state_mu,
@@ -560,13 +577,10 @@ def test_compute_paired_losses_uses_gaussian_nll_for_prediction_heads():
 
     loss, metrics = compute_paired_losses(
         outputs,
-        lambda_sigreg=0.0,
+        lambda_self_state=1.0,
         lambda_opponent_state=1.0,
         lambda_action=1.0,
         lambda_next_state=1.0,
-        lambda_rank=0.0,
-        sigreg_num_slices=1,
-        sigreg_num_points=2,
     )
 
     expected_state = (
@@ -579,20 +593,31 @@ def test_compute_paired_losses_uses_gaussian_nll_for_prediction_heads():
         0.5 * (next_logvar + (next_target - next_mu).square() * torch.exp(-next_logvar))
     ).mean().item()
 
+    assert metrics["self_state_loss"] == pytest.approx(expected_state)
     assert metrics["opponent_state_loss"] == pytest.approx(expected_state)
     assert metrics["action_loss"] == pytest.approx(expected_action)
     assert metrics["next_state_loss"] == pytest.approx(expected_next)
-    assert loss.item() == pytest.approx(expected_state + expected_action + expected_next)
+    assert loss.item() == pytest.approx(2 * expected_state + expected_action + expected_next)
 
 
-def test_paired_jepa_forward_teacher_forces_actual_opponent_state_and_actions_for_next_state():
-    class FakeBeliefPredictor:
-        def __call__(self, history_context, current_state):
-            state_mu = current_state + 10.0
-            state_logvar = torch.zeros_like(current_state)
-            action_mu = torch.full_like(current_state, 99.0)
-            action_logvar = torch.zeros_like(current_state)
-            return state_mu, state_logvar, action_mu, action_logvar
+def test_paired_jepa_forward_uses_predicted_beliefs_for_next_state():
+    class SequenceGaussian:
+        def __init__(self, values):
+            self.values = list(values)
+
+        def __call__(self, *args):
+            value = self.values.pop(0)
+            mu = torch.full((1, 2), value)
+            return mu, torch.zeros_like(mu)
+
+    class SequenceActionPolicy:
+        def __init__(self):
+            self.values = [50.0, 60.0]
+
+        def __call__(self, self_state, opponent_state):
+            value = self.values.pop(0)
+            mu = torch.full_like(self_state, value)
+            return mu, torch.zeros_like(mu)
 
     class RecordingNextStatePredictor:
         def __init__(self):
@@ -607,43 +632,14 @@ def test_paired_jepa_forward_teacher_forces_actual_opponent_state_and_actions_fo
             ))
             return torch.zeros_like(current_state), torch.zeros_like(current_state)
 
-    class FakeDecisionStateEncoder:
-        def __call__(self, self_state, opponent_state_mu, opponent_state_logvar):
-            return self_state + opponent_state_mu * 0.0 + opponent_state_logvar * 0.0
-
-    class ZeroValueHead:
-        def __call__(self, decision_state):
-            return torch.zeros(decision_state.shape[:-1], device=decision_state.device)
-
-    class FakeActionProjector:
-        def __call__(self, action_latent):
-            return action_latent
-
-    class ZeroActionValueHead:
-        def __call__(self, decision_state, action_state):
-            return torch.zeros(action_state.shape[:-1], device=action_state.device)
-
-    class ZeroRankHead:
-        def __call__(self, self_state, opponent_state):
-            return torch.zeros(self_state.shape[:-1], device=self_state.device)
-
     class FakeModel:
         training = False
-        _singleton_candidate_tokens = staticmethod(PairedJEPAModel._singleton_candidate_tokens)
-        _singleton_candidate_mask = staticmethod(PairedJEPAModel._singleton_candidate_mask)
-        _zero_chosen_indices = staticmethod(PairedJEPAModel._zero_chosen_indices)
 
         def __init__(self):
-            self.opponent_belief_predictor = FakeBeliefPredictor()
+            self.self_belief_encoder = SequenceGaussian([10.0, 20.0])
+            self.opp_belief_predictor = SequenceGaussian([30.0, 40.0])
+            self.opp_action_policy_predictor = SequenceActionPolicy()
             self.next_state_predictor = RecordingNextStatePredictor()
-            self.rank_head = ZeroRankHead()
-            self.decision_state_encoder = FakeDecisionStateEncoder()
-            self.value_head = ZeroValueHead()
-            self.action_projector = FakeActionProjector()
-            self.action_value_head = ZeroActionValueHead()
-
-        def encode_current_state(self, state_tokens, state_valid):
-            return state_tokens.float()
 
         def encode_history_context(
             self,
@@ -654,21 +650,22 @@ def test_paired_jepa_forward_teacher_forces_actual_opponent_state_and_actions_fo
             opponent_hist_tokens,
             opponent_hist_valid,
         ):
-            return torch.zeros_like(state_tokens.float())
+            return (state_tokens.float(),)
 
-        def encode_action_tokens(self, action_tokens):
+        def encode_token_tokens(self, action_tokens):
             return action_tokens.float()
 
-        def encode_action_candidates(self, action_tokens, action_mask=None):
+        def encode_action_tokens(self, action_tokens):
             return action_tokens.float()
 
         def reparameterize(self, mu, logvar, sample):
             return mu
 
     fake = FakeModel()
-    valid = torch.ones((1,), dtype=torch.bool)
-    p1_state_T = torch.tensor([[1.0, 2.0]])
-    p2_state_T = torch.tensor([[3.0, 4.0]])
+    history = torch.tensor([[[99.0, 99.0]]])
+    history_valid = torch.ones((1, 1), dtype=torch.bool)
+    p1_target = torch.tensor([[1.0, 2.0]])
+    p2_target = torch.tensor([[3.0, 4.0]])
     p1_state_T1 = torch.tensor([[5.0, 6.0]])
     p2_state_T1 = torch.tensor([[7.0, 8.0]])
     p1_action = torch.tensor([[11.0, 12.0]])
@@ -678,274 +675,63 @@ def test_paired_jepa_forward_teacher_forces_actual_opponent_state_and_actions_fo
 
     outputs = PairedJEPAModel.forward(
         fake,
-        p1_state_T, valid,
-        p1_state_T1, valid,
-        p1_state_T, valid,
-        p1_state_T, valid,
-        p1_state_T1, valid,
-        p1_state_T1, valid,
-        p2_state_T, valid,
-        p2_state_T1, valid,
-        p2_state_T, valid,
-        p2_state_T, valid,
-        p2_state_T1, valid,
-        p2_state_T1, valid,
-        p1_action,
-        p2_action,
-        actual_p2_action,
-        actual_p1_action,
-        p1_next_legal_action_tokens=p1_action.unsqueeze(1),
-        p1_next_legal_action_mask=torch.ones((1, 1), dtype=torch.bool),
-        p2_next_legal_action_tokens=p2_action.unsqueeze(1),
-        p2_next_legal_action_mask=torch.ones((1, 1), dtype=torch.bool),
-        compute_td_bootstrap=True,
+        p1_history_T=history,
+        p1_history_T_valid=history_valid,
+        p1_player_hist_T=history,
+        p1_player_hist_T_valid=history_valid,
+        p1_opponent_hist_T=history,
+        p1_opponent_hist_T_valid=history_valid,
+        p1_target_state_T=p1_target,
+        p1_next_state_T1=p1_state_T1,
+        p1_action_tokens=p1_action,
+        actual_p2_action_from_p1_perspective_tokens=actual_p2_action,
+        p2_history_T=history,
+        p2_history_T_valid=history_valid,
+        p2_player_hist_T=history,
+        p2_player_hist_T_valid=history_valid,
+        p2_opponent_hist_T=history,
+        p2_opponent_hist_T_valid=history_valid,
+        p2_target_state_T=p2_target,
+        p2_next_state_T1=p2_state_T1,
+        p2_action_tokens=p2_action,
+        actual_p1_action_from_p2_perspective_tokens=actual_p1_action,
+        sample_beliefs=False,
     )
 
     assert len(fake.next_state_predictor.calls) == 2
     p1_next_call, p2_next_call = fake.next_state_predictor.calls
+    torch.testing.assert_close(p1_next_call[0], torch.full((1, 2), 10.0))
     torch.testing.assert_close(p1_next_call[1], p1_action)
-    torch.testing.assert_close(p1_next_call[2], p2_state_T)
-    torch.testing.assert_close(p1_next_call[3], actual_p2_action)
+    torch.testing.assert_close(p1_next_call[2], torch.full((1, 2), 30.0))
+    torch.testing.assert_close(p1_next_call[3], torch.full((1, 2), 50.0))
+    torch.testing.assert_close(p2_next_call[0], torch.full((1, 2), 20.0))
     torch.testing.assert_close(p2_next_call[1], p2_action)
-    torch.testing.assert_close(p2_next_call[2], p1_state_T)
-    torch.testing.assert_close(p2_next_call[3], actual_p1_action)
-    assert "p1_next_value_logit" in outputs
-    assert "p2_next_value_logit" in outputs
-    assert outputs["p1_next_q_logits"].shape == (1, 1)
-    assert outputs["p2_next_q_logits"].shape == (1, 1)
-
-
-def test_compute_paired_losses_uses_value_q_and_policy_heads():
-    state = torch.zeros((2, 2))
-    action = torch.zeros((2, 2))
-    q_logits = torch.tensor([[0.0, 2.0], [2.0, 0.0]])
-    legal_mask = torch.ones((2, 2), dtype=torch.bool)
-    chosen_idx = torch.tensor([1, 0])
-    outputs = {
-        "enc_p1_T": state,
-        "enc_p2_T": state,
-        "enc_p1_T1": state,
-        "enc_p2_T1": state,
-        "ctx_p1_T": state,
-        "ctx_p2_T": state,
-        "pred_p2_T_mu": state,
-        "pred_p2_T_logvar": state,
-        "pred_p1_T_mu": state,
-        "pred_p1_T_logvar": state,
-        "pred_p2_T": state,
-        "pred_p1_T": state,
-        "p1_action": action,
-        "p2_action": action,
-        "actual_p2_action_from_p1_perspective": action,
-        "actual_p1_action_from_p2_perspective": action,
-        "pred_p2_action_mu": action,
-        "pred_p2_action_logvar": action,
-        "pred_p1_action_mu": action,
-        "pred_p1_action_logvar": action,
-        "pred_p2_action": action,
-        "pred_p1_action": action,
-        "pred_p1_T1_mu": state,
-        "pred_p1_T1_logvar": state,
-        "pred_p2_T1_mu": state,
-        "pred_p2_T1_logvar": state,
-        "pred_p1_T1": state,
-        "pred_p2_T1": state,
-        "p1_value_logit": torch.zeros(2),
-        "p2_value_logit": torch.zeros(2),
-        "p1_q_logits": q_logits,
-        "p2_q_logits": q_logits,
-        "p1_legal_action_mask": legal_mask,
-        "p2_legal_action_mask": legal_mask,
-        "p1_chosen_legal_action_idx": chosen_idx,
-        "p2_chosen_legal_action_idx": chosen_idx,
-        "p1_won": torch.tensor([True, True]),
-        "p2_won": torch.tensor([False, False]),
-        "rank_valid": torch.tensor([True, True]),
-    }
-
-    loss, metrics = compute_paired_losses(
-        outputs,
-        lambda_sigreg=0.0,
-        lambda_opponent_state=0.0,
-        lambda_action=0.0,
-        lambda_next_state=0.0,
-        lambda_rank=1.0,
-        lambda_value=1.0,
-        lambda_q_value=1.0,
-        lambda_policy=1.0,
-        lambda_value_teacher=0.0,
-        lambda_q_teacher=0.0,
-        sigreg_num_slices=1,
-        sigreg_num_points=2,
-    )
-
-    expected_value = torch.nn.functional.binary_cross_entropy_with_logits(
-        torch.zeros(2), torch.ones(2)
-    ).item() * 0.5 + torch.nn.functional.binary_cross_entropy_with_logits(
-        torch.zeros(2), torch.zeros(2)
-    ).item() * 0.5
-    expected_q = 0.5 * (
-        torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([2.0, 2.0]), torch.ones(2))
-        + torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([2.0, 2.0]), torch.zeros(2))
-    ).item()
-    expected_policy = torch.nn.functional.cross_entropy(
-        q_logits,
-        chosen_idx,
-    ).item()
-
-    assert metrics["rank_loss"] == pytest.approx(0.0)
-    assert metrics["value_loss"] == pytest.approx(expected_value)
-    assert metrics["q_value_loss"] == pytest.approx(expected_q)
-    assert metrics["policy_loss"] == pytest.approx(expected_policy)
-    assert loss.item() == pytest.approx(expected_value + expected_q + expected_policy)
+    torch.testing.assert_close(p2_next_call[2], torch.full((1, 2), 40.0))
+    torch.testing.assert_close(p2_next_call[3], torch.full((1, 2), 60.0))
+    assert outputs["enc_p1_T"].equal(p1_target)
+    assert outputs["actual_p2_action_from_p1_perspective"].equal(actual_p2_action)
 
 
 def test_compute_paired_losses_accepts_rollout_axis():
     state = torch.zeros((2, 3, 2))
     action = torch.zeros((2, 3, 2))
-    outputs = {
-        "enc_p1_T": state,
-        "enc_p2_T": state,
-        "enc_p1_T1": state,
-        "enc_p2_T1": state,
-        "ctx_p1_T": state,
-        "ctx_p2_T": state,
-        "pred_p2_T_mu": state,
-        "pred_p2_T_logvar": state,
-        "pred_p1_T_mu": state,
-        "pred_p1_T_logvar": state,
-        "pred_p2_T": state,
-        "pred_p1_T": state,
-        "p1_action": action,
-        "p2_action": action,
-        "actual_p2_action_from_p1_perspective": action,
-        "actual_p1_action_from_p2_perspective": action,
-        "pred_p2_action_mu": action,
-        "pred_p2_action_logvar": action,
-        "pred_p1_action_mu": action,
-        "pred_p1_action_logvar": action,
-        "pred_p2_action": action,
-        "pred_p1_action": action,
-        "pred_p1_T1_mu": state,
-        "pred_p1_T1_logvar": state,
-        "pred_p2_T1_mu": state,
-        "pred_p2_T1_logvar": state,
-        "pred_p1_T1": state,
-        "pred_p2_T1": state,
-        "p1_value_logit": torch.zeros((2, 3)),
-        "p2_value_logit": torch.zeros((2, 3)),
-        "p1_q_logits": torch.zeros((2, 3, 2)),
-        "p2_q_logits": torch.zeros((2, 3, 2)),
-        "p1_legal_action_mask": torch.ones((2, 3, 2), dtype=torch.bool),
-        "p2_legal_action_mask": torch.ones((2, 3, 2), dtype=torch.bool),
-        "p1_chosen_legal_action_idx": torch.zeros((2, 3), dtype=torch.long),
-        "p2_chosen_legal_action_idx": torch.zeros((2, 3), dtype=torch.long),
-        "p1_won": torch.ones((2, 3), dtype=torch.bool),
-        "p2_won": torch.zeros((2, 3), dtype=torch.bool),
-        "rank_valid": torch.ones((2, 3), dtype=torch.bool),
-    }
+    outputs = _zero_loss_outputs(state, action)
 
     loss, metrics = compute_paired_losses(
         outputs,
-        lambda_sigreg=0.0,
+        lambda_self_state=1.0,
         lambda_opponent_state=1.0,
         lambda_action=1.0,
         lambda_next_state=1.0,
-        lambda_rank=1.0,
-        lambda_value=1.0,
-        lambda_q_value=1.0,
-        lambda_policy=1.0,
-        lambda_value_teacher=0.0,
-        lambda_q_teacher=0.0,
-        sigreg_num_slices=1,
-        sigreg_num_points=2,
+        lambda_q_value=999.0,
+        lambda_policy=999.0,
+        gamma=0.1,
     )
 
+    assert metrics["self_state_loss"] == pytest.approx(0.0)
     assert metrics["opponent_state_loss"] == pytest.approx(0.0)
     assert metrics["action_loss"] == pytest.approx(0.0)
     assert metrics["next_state_loss"] == pytest.approx(0.0)
-    assert metrics["rank_valid"] == pytest.approx(1.0)
-    assert metrics["rank_loss"] == pytest.approx(0.0)
-    assert metrics["value_loss"] == pytest.approx(torch.nn.functional.softplus(torch.tensor(0.0)).item())
+    for legacy_key in ("rank_loss", "rank_valid", "value_loss", "q_value_loss", "policy_loss"):
+        assert legacy_key not in metrics
     assert torch.isfinite(loss)
-
-
-def test_compute_paired_losses_ignores_invalid_outcomes_for_value_q_policy():
-    state = torch.zeros((2, 2))
-    action = torch.zeros((2, 2))
-    outputs = {
-        "enc_p1_T": state,
-        "enc_p2_T": state,
-        "enc_p1_T1": state,
-        "enc_p2_T1": state,
-        "ctx_p1_T": state,
-        "ctx_p2_T": state,
-        "pred_p2_T_mu": state,
-        "pred_p2_T_logvar": state,
-        "pred_p1_T_mu": state,
-        "pred_p1_T_logvar": state,
-        "pred_p2_T": state,
-        "pred_p1_T": state,
-        "p1_action": action,
-        "p2_action": action,
-        "actual_p2_action_from_p1_perspective": action,
-        "actual_p1_action_from_p2_perspective": action,
-        "pred_p2_action_mu": action,
-        "pred_p2_action_logvar": action,
-        "pred_p1_action_mu": action,
-        "pred_p1_action_logvar": action,
-        "pred_p2_action": action,
-        "pred_p1_action": action,
-        "pred_p1_T1_mu": state,
-        "pred_p1_T1_logvar": state,
-        "pred_p2_T1_mu": state,
-        "pred_p2_T1_logvar": state,
-        "pred_p1_T1": state,
-        "pred_p2_T1": state,
-        "p1_value_logit": torch.tensor([1.0, -10.0]),
-        "p2_value_logit": torch.tensor([0.0, 10.0]),
-        "p1_q_logits": torch.tensor([[1.0, 0.0], [-10.0, 10.0]]),
-        "p2_q_logits": torch.tensor([[0.0, 1.0], [10.0, -10.0]]),
-        "p1_legal_action_mask": torch.ones((2, 2), dtype=torch.bool),
-        "p2_legal_action_mask": torch.ones((2, 2), dtype=torch.bool),
-        "p1_chosen_legal_action_idx": torch.zeros(2, dtype=torch.long),
-        "p2_chosen_legal_action_idx": torch.zeros(2, dtype=torch.long),
-        "p1_won": torch.tensor([True, False]),
-        "p2_won": torch.tensor([False, False]),
-        "rank_valid": torch.tensor([True, False]),
-    }
-
-    loss, metrics = compute_paired_losses(
-        outputs,
-        lambda_sigreg=0.0,
-        lambda_opponent_state=0.0,
-        lambda_action=0.0,
-        lambda_next_state=0.0,
-        lambda_rank=1.0,
-        lambda_value=1.0,
-        lambda_q_value=1.0,
-        lambda_policy=1.0,
-        lambda_value_teacher=0.0,
-        lambda_q_teacher=0.0,
-        sigreg_num_slices=1,
-        sigreg_num_points=2,
-    )
-
-    expected_value = 0.5 * (
-        torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([1.0]), torch.tensor([1.0]))
-        + torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([0.0]), torch.tensor([0.0]))
-    ).item()
-    expected_q = 0.5 * (
-        torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([1.0]), torch.tensor([1.0]))
-        + torch.nn.functional.binary_cross_entropy_with_logits(torch.tensor([0.0]), torch.tensor([0.0]))
-    ).item()
-    expected_policy = 0.5 * (
-        torch.nn.functional.cross_entropy(torch.tensor([[1.0, 0.0]]), torch.tensor([0]))
-        + torch.nn.functional.cross_entropy(torch.tensor([[0.0, 1.0]]), torch.tensor([0]))
-    ).item()
-    assert metrics["rank_loss"] == pytest.approx(0.0)
-    assert metrics["rank_valid"] == pytest.approx(0.5)
-    assert metrics["value_loss"] == pytest.approx(expected_value)
-    assert metrics["q_value_loss"] == pytest.approx(expected_q)
-    assert metrics["policy_loss"] == pytest.approx(expected_policy)
-    assert loss.item() == pytest.approx(expected_value + expected_q + expected_policy)

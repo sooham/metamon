@@ -280,6 +280,9 @@ empty block with no sub-tags:
 <end_last_turn_results>
 ```
 
+The order of `<active>` and `<opponent>` sub-blocks matches the **temporal
+execution order** from the raw replay log, same as the `<boa>` block ordering.
+
 For all subsequent states, each sub-block shows the action name followed by
 an outcome token:
 
@@ -288,7 +291,7 @@ an outcome token:
 | `success` | The move executed normally (or was a switch / recharge). |
 | `fail` | The move was attempted but had no effect (Sucker Punch whiff, stat boost at max, Reflect used twice, clause mod activation such as Sleep Clause Mod / Freeze Clause Mod, etc.). |
 | `cant <reason>` | The Pokémon couldn't execute its chosen move due to a condition (paralysis, sleep, freeze, flinch, etc.). |
-| `none` | Opponent-only: the opponent had no separate action in this subturn (forced switch after faint or U-turn). The opponent already acted in the main turn. |
+| `none` | The player had no separate action in this subturn (forced switch after a faint or U-turn). When the POV player's Pokémon faints, the opponent slot shows `none`. When the opponent's Pokémon faints, the POV player's active slot shows `none`. |
 
 #### Singles
 ```
@@ -326,10 +329,16 @@ an outcome token:
 <opponent>unknown<end_opponent>
 ```
 
-**Opponent no action (forced-switch subturn):**
+**Opponent no action (POV player's forced-switch subturn):**
 ```
 <active>switch cloyster success<end_active>
 <opponent>none<end_opponent>
+```
+
+**POV player no action (opponent's forced-switch subturn):**
+```
+<active>none<end_active>
+<opponent>switch exeggutor success<end_opponent>
 ```
 
 Note: the `<chosen_move>` and `<opponent_chosen_move>` blocks in the action
@@ -665,10 +674,11 @@ Only present in the **final** state block. Options:
 
 | Content | Meaning |
 |---------|---------|
-| `<terminal>won<end_terminal>` | POV player won |
-| `<terminal>lost<end_terminal>` | POV player lost |
+| `<terminal>won<end_terminal>` | POV player won by KO |
+| `<terminal>lost<end_terminal>` | POV player lost by KO |
+| `<terminal>forfeit_won<end_terminal>` | POV player won because opponent forfeited / disconnected |
+| `<terminal>forfeit_lost<end_terminal>` | POV player lost by forfeit / disconnect |
 | `<terminal>tie<end_terminal>` | Battle ended in a tie |
-| `<terminal>forfeit<end_terminal>` | Opponent forfeited / timed out (treated as win) |
 
 The final state has **no** following `<boa>` block.
 
@@ -679,6 +689,11 @@ The final state has **no** following `<boa>` block.
 Shows the actions chosen by the POV player and the opponent for a given turn.
 One action block between every pair of states (except after the terminal state).
 
+The **order** of `<chosen_move>` and `<opponent_chosen_move>` reflects the
+**temporal execution order** from the raw replay log: whoever moved (or
+attempted to move) first appears first.  In a subturn where only one player
+makes a decision, the deciding player is first.
+
 ### 5.1 Structure
 
 #### Singles
@@ -687,6 +702,15 @@ One action block between every pair of states (except after the terminal state).
 <turn>1<end_turn>
 <chosen_move>move <move_name>|switch <pokemon_name>|unknown unknown<end_chosen_move>
 <opponent_chosen_move>move <move_name>|switch <pokemon_name>|unknown unknown|none<end_opponent_chosen_move>
+<eoa>
+```
+
+When the opponent moved first, the order is reversed:
+```
+<boa>
+<turn>1<end_turn>
+<opponent_chosen_move>move <move_name>|switch <pokemon_name>|unknown unknown|none<end_opponent_chosen_move>
+<chosen_move>move <move_name>|switch <pokemon_name>|unknown unknown<end_chosen_move>
 <eoa>
 ```
 
@@ -773,12 +797,21 @@ Next state:
 <eoa>
 ```
 
-**Opponent no action (forced-switch subturn):**
+**Opponent no action (POV player's forced-switch subturn):**
 ```
 <boa>
 <turn>17<end_turn>
 <chosen_move>switch cloyster<end_chosen_move>
 <opponent_chosen_move>none<end_opponent_chosen_move>
+<eoa>
+```
+
+**POV player no action (opponent's forced-switch subturn):**
+```
+<boa>
+<turn>2<end_turn>
+<chosen_move>none<end_chosen_move>
+<opponent_chosen_move>switch exeggutor<end_opponent_chosen_move>
 <eoa>
 ```
 
@@ -848,10 +881,14 @@ When a move triggers a forced switch (U-turn, Volt Switch, Eject Button, Red
 Card, Roar, Dragon Tail, etc.) or a Pokémon faints, it creates an **extra
 state-action pair** (a *subturn*).
 
-In a subturn, only the POV player acts (they must switch).  The opponent
-already acted in the main turn and has **no separate action** — their action
-block shows ``none`` and the following state's ``<last_turn_results>`` shows
-``<opponent>none<end_opponent>``.
+In a subturn, the player whose Pokémon fainted or was forced out must switch.
+The other player already acted in the main turn and has **no separate action** —
+their action block shows ``none`` and the following state's
+``<last_turn_results>`` shows ``none`` for that player.
+
+Both POV files include subturns from **both** teams, so the state counts are
+symmetric.  The ``<you>`` marker only shows ``forceswitch`` when it is the POV
+player who must switch.
 
 The sequence is: *original state* → *move action* → *intermediate state with
 `forceswitch` marker* → *switch action* → *new state with replacement active

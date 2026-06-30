@@ -133,11 +133,31 @@ class PokemonTokenizer:
         self._new_ids[string] = self.new_token
         return True
 
+    @staticmethod
+    def _natural_sort_key(token: str):
+        """Sort key so numeric tokens appear in natural (not lexicographic) order.
+
+        Group ordering:
+          0. Decimal percentages (``0.00`` – ``1.00``) — sorted by float value
+          1. Non-negative integers (``0`` – ``2000``) — sorted by int value
+          2. Everything else — lexicographic
+        """
+        # Decimal percentages: "0.00" through "1.00"
+        if re.match(r'^\d+\.\d{2}$', token):
+            return (0, float(token), token)
+        # Non-negative integers
+        if token.isdigit():
+            return (1, int(token), token)
+        # Everything else (words, structural tokens, etc.)
+        return (2, 0, token)
+
     def sort_tokens(self) -> None:
         base = len(self._initial_ids) + 1
         self._new_ids = {
             k: i + base
-            for i, k in enumerate(sorted(self._new_ids.keys()))
+            for i, k in enumerate(
+                sorted(self._new_ids.keys(), key=self._natural_sort_key)
+            )
         }
 
     def _ensure_special_tokens(self) -> None:
@@ -152,30 +172,15 @@ class PokemonTokenizer:
             if token not in self:
                 self._new_ids[token] = self.new_token
                 added = True
-        for token in WORLD_MODEL_ACTION_TOKENS:
-            if token not in self:
-                self._new_ids[token] = self.new_token
-                added = True
-
         if added:
             self.sort_tokens()
 
         self.unknown_token_id = self["<unk>"]
         self.pad_token_id = self["<pad>"]
 
-    def get_action_token_id(self, action_idx: int) -> int:
-        return self[f"<action_{action_idx}>"]
-
     def tokenize(self, text: str) -> np.ndarray:
         words = text.split()
         return np.array([self[word] for word in words], dtype=np.int32)
-
-    def tokenize_text_only(self, text: str) -> bool:
-        added_any = False
-        for word in text.split():
-            if self.add_token_for(word):
-                added_any = True
-        return added_any
 
     def detokenize(self, ids: list[int] | np.ndarray) -> list[str]:
         if not hasattr(self, "_reverse_ids") or self._reverse_ids is None:
@@ -189,35 +194,41 @@ class PokemonTokenizer:
 
 # ── World-model structural tokens (new text format) ──────────────────────
 WORLD_MODEL_STRUCTURAL_TOKENS = [
+    # ── team header (§2) ──
     "<begin_team>", "<end_team>",
     "<begin_opponent_team>", "<end_opponent_team>",
+    *[f"<poke{i}>" for i in range(1, 7)],
+    *[f"<end_poke{i}>" for i in range(1, 7)],
+    # ── state / action frames (§1, §4, §5) ──
     "<bos>", "<eos>", "<boa>", "<eoa>",
     "<format>", "<end_format>", "<turn>", "<end_turn>",
+    # ── last_turn_results (§4.3b) ──
+    "<last_turn_results>", "<end_last_turn_results>",
+    # ── arena (§4.4) ──
     "<arena>", "<end_arena>",
     "<active>", "<end_active>",
     "<opponent>", "<end_opponent>",
     "<active1>", "<end_active1>", "<active2>", "<end_active2>",
     "<opponent1>", "<end_opponent1>", "<opponent2>", "<end_opponent2>",
+    # ── available moves (§4.5) ──
     "<begin_moves>", "<end_moves>", "<move>", "<end_move>",
     "<begin_moves:1>", "<begin_moves:2>",
+    # ── bench (§4.6) ──
     "<bench>", "<end_bench>",
+    # ── conditions (§4.7) ──
     "<conditions>", "<end_conditions>",
     "<empty_conditions>",
-    "<conditions_empty>",  # legacy parsed-replay marker; new output uses <empty_conditions>
     "<you>", "<end_you>", "<you_empty>",
     "<opponent_empty>",
+    # ── boosts (§4.4 arena) ──
     "<boosts>", "<end_boosts>",
+    # ── action block content (§5) ──
     "<chosen_move>", "<end_chosen_move>",
     "<chosen_move:1>", "<chosen_move:2>",
     "<opponent_chosen_move>", "<end_opponent_chosen_move>",
     "<opponent_chosen_move:1>", "<opponent_chosen_move:2>",
+    # ── terminal (§4.8) ──
     "<terminal>", "<end_terminal>",
-]
-
-# ── World-model action tokens ────────────────────────────────────────────
-WORLD_MODEL_ACTION_TOKENS = [
-    "<action_-1>",
-    *[f"<action_{i}>" for i in range(13)],
 ]
 
 # ── Premade token lists ──────────────────────────────────────────────────
@@ -390,9 +401,6 @@ if __name__ == "__main__":
     # Pre-register structural tokens
     for token in WORLD_MODEL_STRUCTURAL_TOKENS:
         tokenizer.add_token_for(token, verbose=args.verbose)
-    for token in WORLD_MODEL_ACTION_TOKENS:
-        tokenizer.add_token_for(token, verbose=args.verbose)
-
     # Collect all .txt filenames (recursive, matching wm-dataset generator)
     all_filenames = []
     per_format_counts: dict[str, int] = {}
@@ -428,7 +436,7 @@ if __name__ == "__main__":
     early_stop_battles = args.early_stop
 
     # Master n-gram counters
-    master_ngrams: dict[int, Counter] = {2: Counter(), 3: Counter(), 5: Counter()}
+    master_ngrams: dict[int, Counter] = {2: Counter(), 3: Counter(), 5: Counter(), 4: Counter()}
 
     if args.num_workers > 1:
         tmpdir = tempfile.mkdtemp(prefix="tokenizer_")
@@ -549,7 +557,7 @@ if __name__ == "__main__":
 
     # ── n-gram output ──
     TOP_N = 30
-    for n in [2, 3, 5]:
+    for n in [2, 3, 4, 5]:
         print(f"\n{'=' * 60}")
         print(f"Top {TOP_N} {n}-grams by count:")
         print(f"{'=' * 60}")

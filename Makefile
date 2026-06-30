@@ -16,7 +16,7 @@ FORMATS ?= $(FORMAT)
         wm-dataset \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer \
-        train-jepa _train-jepa-inner play-jepa play-jepa-local showdown bash-completion
+        train-jepa train-jepa-debug _train-jepa-inner play-jepa play-jepa-local showdown bash-completion
 
 # Start a local Pokemon Showdown server (no auth, port 8000)
 # Requires the server/pokemon-showdown submodule to be initialized.
@@ -199,8 +199,13 @@ JEPA_PAIRED_VAL_INTERVAL ?= 100
 JEPA_PAIRED_VAL_MAX_BATCHES ?= 10
 JEPA_PAIRED_PRINT_INTERVAL ?= 2
 JEPA_PAIRED_LOG_INTERVAL ?= 10
-JEPA_GAMMA ?= 0.99
 JEPA_PAIRED_EXTRA_ARGS ?=
+
+JEPA_DEBUG_BATCH_SIZE ?= 1
+JEPA_DEBUG_MAX_STEPS ?= 1
+JEPA_DEBUG_TENSOR_STEPS ?= 1
+JEPA_DEBUG_TENSOR_VALUES ?= 64
+JEPA_DEBUG_TENSOR_SAMPLES ?= 2
 
 train-jepa:
 	@if [ -z "$$TMUX" ]; then \
@@ -211,7 +216,7 @@ train-jepa:
 			exit 1; \
 		fi; \
 		echo "Launching training in tmux session 'jepa-train'..."; \
-		tmux new-session -d -s jepa-train "$(MAKE) _train-jepa-inner FORMAT='$(FORMAT)' FORMATS='$(FORMATS)' WANDB='$(WANDB)' WANDB_PROJECT='$(WANDB_PROJECT)' WANDB_NAME='$(WANDB_NAME)' JEPA_COMPILE='$(JEPA_COMPILE)' JEPA_MAX_HISTORY='$(JEPA_MAX_HISTORY)' JEPA_GAMMA='$(JEPA_GAMMA)' JEPA_PAIRED_BATCH_SIZE='$(JEPA_PAIRED_BATCH_SIZE)' JEPA_PAIRED_GRAD_ACCUM_STEPS='$(JEPA_PAIRED_GRAD_ACCUM_STEPS)' JEPA_LR='$(JEPA_LR)' JEPA_EPOCHS='$(JEPA_EPOCHS)' JEPA_NUM_WORKERS='$(JEPA_NUM_WORKERS)' JEPA_PREFETCH_FACTOR='$(JEPA_PREFETCH_FACTOR)' JEPA_GRAD_CLIP='$(JEPA_GRAD_CLIP)' JEPA_PAIRED_MAX_STEPS='$(JEPA_PAIRED_MAX_STEPS)' JEPA_PAIRED_VAL_INTERVAL='$(JEPA_PAIRED_VAL_INTERVAL)' JEPA_PAIRED_VAL_MAX_BATCHES='$(JEPA_PAIRED_VAL_MAX_BATCHES)' JEPA_PAIRED_PRINT_INTERVAL='$(JEPA_PAIRED_PRINT_INTERVAL)' JEPA_PAIRED_LOG_INTERVAL='$(JEPA_PAIRED_LOG_INTERVAL)' JEPA_PAIRED_EXTRA_ARGS='$(JEPA_PAIRED_EXTRA_ARGS)'"; \
+		tmux new-session -d -s jepa-train "$(MAKE) _train-jepa-inner FORMAT='$(FORMAT)' FORMATS='$(FORMATS)' WANDB='$(WANDB)' WANDB_PROJECT='$(WANDB_PROJECT)' WANDB_NAME='$(WANDB_NAME)' JEPA_COMPILE='$(JEPA_COMPILE)' JEPA_MAX_HISTORY='$(JEPA_MAX_HISTORY)' JEPA_PAIRED_BATCH_SIZE='$(JEPA_PAIRED_BATCH_SIZE)' JEPA_PAIRED_GRAD_ACCUM_STEPS='$(JEPA_PAIRED_GRAD_ACCUM_STEPS)' JEPA_LR='$(JEPA_LR)' JEPA_EPOCHS='$(JEPA_EPOCHS)' JEPA_NUM_WORKERS='$(JEPA_NUM_WORKERS)' JEPA_PREFETCH_FACTOR='$(JEPA_PREFETCH_FACTOR)' JEPA_GRAD_CLIP='$(JEPA_GRAD_CLIP)' JEPA_PAIRED_MAX_STEPS='$(JEPA_PAIRED_MAX_STEPS)' JEPA_PAIRED_VAL_INTERVAL='$(JEPA_PAIRED_VAL_INTERVAL)' JEPA_PAIRED_VAL_MAX_BATCHES='$(JEPA_PAIRED_VAL_MAX_BATCHES)' JEPA_PAIRED_PRINT_INTERVAL='$(JEPA_PAIRED_PRINT_INTERVAL)' JEPA_PAIRED_LOG_INTERVAL='$(JEPA_PAIRED_LOG_INTERVAL)' JEPA_PAIRED_EXTRA_ARGS='$(JEPA_PAIRED_EXTRA_ARGS)'"; \
 		echo ""; \
 		echo "  Attach:  tmux attach -t jepa-train"; \
 		echo "  Detach:  Ctrl+B, D"; \
@@ -219,6 +224,31 @@ train-jepa:
 	else \
 		$(MAKE) _train-jepa-inner; \
 	fi
+
+# Run a small paired-POV JEPA training step with tensor debug dumps enabled.
+#
+# This stays in the foreground instead of tmux so the batch/model tensor logs are
+# immediately visible in the current terminal.
+#
+# Usage:
+#   make train-jepa-debug FORMATS=gen1ou
+#   make train-jepa-debug JEPA_DEBUG_TENSOR_VALUES=128 JEPA_DEBUG_TENSOR_SAMPLES=1 JEPA_MAX_HISTORY=4
+train-jepa-debug:
+	$(MAKE) _train-jepa-inner \
+		FORMAT='$(FORMAT)' \
+		FORMATS='$(FORMATS)' \
+		WANDB=false \
+		JEPA_COMPILE=false \
+		JEPA_PAIRED_BATCH_SIZE='$(JEPA_DEBUG_BATCH_SIZE)' \
+		JEPA_PAIRED_GRAD_ACCUM_STEPS=1 \
+		JEPA_PAIRED_MAX_STEPS='$(JEPA_DEBUG_MAX_STEPS)' \
+		JEPA_PAIRED_VAL_INTERVAL=0 \
+		JEPA_PAIRED_VAL_MAX_BATCHES=0 \
+		JEPA_PAIRED_PRINT_INTERVAL=1 \
+		JEPA_PAIRED_LOG_INTERVAL=0 \
+		JEPA_NUM_WORKERS=0 \
+		JEPA_PREFETCH_FACTOR=2 \
+		JEPA_PAIRED_EXTRA_ARGS="--debug_tensors --debug_tensor_steps $(JEPA_DEBUG_TENSOR_STEPS) --debug_tensor_values $(JEPA_DEBUG_TENSOR_VALUES) --debug_tensor_samples $(JEPA_DEBUG_TENSOR_SAMPLES) $(JEPA_PAIRED_EXTRA_ARGS)"
 
 _train-jepa-inner:
 	@if [ ! -d "$(JEPA_DATA_ROOT)" ]; then \
@@ -255,7 +285,6 @@ _train-jepa-inner:
 		--val_max_batches $(JEPA_PAIRED_VAL_MAX_BATCHES) \
 		$(if $(filter false,$(JEPA_COMPILE)),--no-compile) \
 		--max_history_blocks $(JEPA_MAX_HISTORY) \
-		--gamma $(JEPA_GAMMA) \
 		$(JEPA_PAIRED_EXTRA_ARGS)
 
 # ── JEPA Showdown Play

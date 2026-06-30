@@ -6,6 +6,7 @@ battle history tracking, JEPA diagnostics, and opponent ``|cant|`` detection.
 
 from __future__ import annotations
 
+import random
 import threading
 from dataclasses import dataclass, field
 from typing import Optional
@@ -173,6 +174,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
                     player_outcome,
                     opponent_action_text,
                     opponent_outcome,
+                    opponent_moved_first,
                 ) = self._infer_previous_turn_results(battle, hist)
                 current_state = state_block(
                     self._tokenizer,
@@ -184,6 +186,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
                     last_turn_player_outcome=player_outcome,
                     last_turn_opponent_action=opponent_action_text,
                     last_turn_opponent_outcome=opponent_outcome,
+                    opponent_moved_first=opponent_moved_first,
                 )
                 hist.player_actions.append(hist.pending_player_action)
                 opp_block = self._opponent_action_block(opponent_action_text or "unknown")
@@ -262,17 +265,23 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         self,
         battle: AbstractBattle,
         hist: BattleHistory,
-    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-        """Infer previous action choices and outcomes for the next state block.
+    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], bool]:
+        """Infer previous action choices, outcomes, and who moved first.
 
         Action embeddings stay choice-only.  This helper returns the outcome
         tokens used in ``<last_turn_results>`` for the state reached by the
-        pending player action.
+        pending player action, plus a boolean indicating whether the opponent
+        moved first in the turn.
+
+        Returns:
+            (player_action, player_outcome, opponent_action, opponent_outcome,
+             opponent_moved_first)
         """
         player_action = hist.pending_player_action_text
         player_outcome = self._default_outcome(player_action)
         opponent_action: Optional[str] = None
         opponent_outcome: Optional[str] = None
+        opponent_moved_first: Optional[bool] = None  # None = unknown until first action
 
         our_prefix = self._player_role_prefix(battle)
         opponent_prefix = self._opponent_role_prefix(battle)
@@ -285,6 +294,8 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
 
             if kind == "move" and len(args) >= 2:
                 side = self._side_from_identifier(args[0], our_prefix, opponent_prefix)
+                if opponent_moved_first is None and side is not None:
+                    opponent_moved_first = (side == "opponent")
                 if side == "opponent":
                     opponent_action = f"opponent move: {args[1]}"
                     opponent_outcome = "success"
@@ -294,6 +305,8 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
                 side = self._side_from_identifier(args[0], our_prefix, opponent_prefix)
                 if side in fainted_sides:
                     continue
+                if opponent_moved_first is None and side is not None:
+                    opponent_moved_first = (side == "opponent")
                 species = self._species_from_protocol_details(args[1])
                 if side == "opponent":
                     opponent_action = f"opponent switch: {species}"
@@ -302,6 +315,8 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
                     player_outcome = self._default_outcome(player_action)
             elif kind == "cant" and len(args) >= 2:
                 side = self._side_from_identifier(args[0], our_prefix, opponent_prefix)
+                if opponent_moved_first is None and side is not None:
+                    opponent_moved_first = (side == "opponent")
                 reason = args[1].strip()
                 if side == "player" and self._known_action(player_action):
                     player_outcome = f"cant {reason}"
@@ -312,8 +327,13 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
                     elif self._known_action(opponent_action):
                         opponent_outcome = f"cant {reason}"
                     else:
-                        opponent_action = "unknown"
-                        opponent_outcome = None
+                        random_move = self._random_opponent_move(battle)
+                        if random_move is not None:
+                            opponent_action = f"opponent move: {random_move}"
+                            opponent_outcome = f"cant {reason}"
+                        else:
+                            opponent_action = "unknown"
+                            opponent_outcome = None
             elif kind == "-fail" and args:
                 side = self._side_from_identifier(args[0], our_prefix, opponent_prefix)
                 if side == "player" and self._known_action(player_action):
@@ -330,7 +350,10 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
                 battle, raw_messages,
             )
 
-        return player_action, player_outcome, opponent_action, opponent_outcome
+        return (
+            player_action, player_outcome, opponent_action, opponent_outcome,
+            opponent_moved_first or False,
+        )
 
     @staticmethod
     def _split_protocol_message(msg: str) -> tuple[Optional[str], list[str]]:
@@ -366,6 +389,28 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
     @classmethod
     def _default_outcome(cls, action_text: Optional[str]) -> Optional[str]:
         return "success" if cls._known_action(action_text) else None
+
+    @staticmethod
+    def _random_opponent_move(battle: AbstractBattle) -> Optional[str]:
+        """Pick a random move from the opponent active Pokémon's known moveset.
+
+        Used as a fallback when the opponent was prevented from acting
+        (|cant| par/slp/frz) and the exact chosen move was not revealed in
+        the protocol message.  Returns ``None`` if no moves are known.
+        """
+        opponent_active = getattr(battle, "opponent_active_pokemon", None)
+        if opponent_active is None:
+            return None
+        moves = getattr(opponent_active, "moves", {}) or {}
+        if isinstance(moves, dict):
+            move_list = list(moves.values())
+        else:
+            move_list = list(moves)
+        if not move_list:
+            return None
+        chosen = random.choice(move_list)
+        raw = getattr(chosen, "id", None) or getattr(chosen, "name", None) or str(chosen)
+        return move_name(str(raw)) or None
 
     def _fallback_opponent_previous_action(
         self,
@@ -470,10 +515,10 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         def pad_blocks(blocks: list[np.ndarray]) -> tuple[torch.Tensor, torch.Tensor]:
             max_blocks = max(len(blocks), 1)
             max_tokens = max((len(block) for block in blocks), default=1)
-            padded = torch.full((1, max_blocks, max_tokens), pad_id, dtype=torch.long)
+            padded = torch.full((1, max_blocks, max_tokens), pad_id, dtype=torch.int32)
             valid = torch.zeros((1, max_blocks), dtype=torch.bool)
             for block_idx, block in enumerate(blocks):
-                tokens = torch.from_numpy(block.astype(np.int64, copy=False))
+                tokens = torch.from_numpy(block.astype(np.int32, copy=False))
                 padded[0, block_idx, :len(tokens)] = tokens
                 valid[0, block_idx] = True
             return padded, valid
@@ -537,7 +582,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         rows = []
         for idx, name in action_names.items():
             pa = self._action_content_block(name)
-            pa_tensor = torch.from_numpy(pa.astype(np.int64)).unsqueeze(0).to(device)
+            pa_tensor = torch.from_numpy(pa.astype(np.int32)).unsqueeze(0).to(device)
             own_action = self._jepa.action_encoder(pa_tensor)
             action_h = self._jepa.action_projector(own_action)
             q_logit_t = self._jepa.action_value_head(decision_state, action_h)

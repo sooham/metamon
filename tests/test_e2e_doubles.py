@@ -331,7 +331,7 @@ class TestDoublesTextOutput:
     def test_terminal_tag_present(self, doubles_pov_texts):
         """Output has a valid terminal tag (multi-line format)."""
         for text in doubles_pov_texts:
-            assert re.search(r"<terminal>\s*(won|lost|tie|forfeit)\s*<end_terminal>", text, re.DOTALL), (
+            assert re.search(r"<terminal>\s*(won|lost|tie|forfeit_won|forfeit_lost)\s*<end_terminal>", text, re.DOTALL), (
                 "No valid terminal tag found"
             )
 

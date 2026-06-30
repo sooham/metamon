@@ -29,6 +29,7 @@ dependencies = [
   "einops",
   "tqdm",
   "lz4",
+  "matplotlib",
   "termcolor",
   "rich",
   "huggingface_hub",

@@ -111,9 +111,13 @@ class Winner(Enum):
     TIE = 0
     """The battle ended in a tie (``|tie`` message)."""
     PLAYER_1 = 1
-    """Player 1 won (``|win|p1name``)."""
+    """Player 1 won by KO (``|win|p1name``)."""
     PLAYER_2 = 2
-    """Player 2 won (``|win|p2name``)."""
+    """Player 2 won by KO (``|win|p2name``)."""
+    FORFEIT_PLAYER_1 = 3
+    """Player 1 won because Player 2 forfeited / disconnected."""
+    FORFEIT_PLAYER_2 = 4
+    """Player 2 won because Player 1 forfeited / disconnected."""
 
 
 class Boosts:
@@ -127,8 +131,7 @@ class Boosts:
       mutated in place during ``|-boost|`` / ``|-unboost|`` messages.
     * :meth:`Pokemon.on_switch_out` — resets boosts to zero on switch.
     * :meth:`Pokemon.fresh_like` — resets for fresh copies.
-    * :meth:`UniversalPokemon.from_ReplayPokemon` / :meth:`UniversalPokemon.from_Pokemon`
-      — reads boost stages into the universal format.
+    * :meth:`UniversalPokemon.from_Pokemon` — reads boost stages into the universal format.
 
     Edge cases / limitations:
     * ``|-swapboost|`` (Heart Swap, Guard Swap, Power Swap) is handled at the
@@ -161,8 +164,7 @@ class Boosts:
     def stat_attrs(self) -> List[str]:
         """Return the list of attribute names (with trailing underscores).
 
-        Used to iterate over all seven boost fields in
-        :meth:`UniversalPokemon.from_ReplayPokemon`.
+        Used to iterate over all seven boost fields.
         """
         return [
             f"{s}_" for s in ["atk", "spa", "def", "spd", "spe", "accuracy", "evasion"]
@@ -332,8 +334,8 @@ class Pokemon:
       — mutates ``Pokemon`` instances as messages reveal new info.
     * :meth:`Pokemon.backfill_info` in :mod:`~metamon.backend.replay_parser.backward`
       — propagates known info from later turns backward.
-    * :meth:`UniversalPokemon.from_ReplayPokemon` in :mod:`metamon.interface`
-      — converts to the backend-agnostic format.
+    * Converts to the backend-agnostic format via the universal types in
+      :mod:`metamon.interface`.
     * :meth:`Pokemon.metamon_to_poke_env` — converts to poke-env's ``Pokemon``
       for online battles.
 
@@ -1072,7 +1074,7 @@ class Action:
     * :attr:`Turn.moves_1` / :attr:`Turn.moves_2` — the parsed moves.
     * :attr:`Turn.choices_1` / :attr:`Turn.choices_2` — raw ``|choice|`` data.
     * :class:`Subturn` — forced-switch sub-actions.
-    * :class:`UniversalAction.from_ReplayAction` — converts to the universal index.
+    * Conversion to the universal format is handled in :mod:`metamon.interface`.
 
     Edge cases / limitations:
 
@@ -1162,6 +1164,11 @@ class Turn:
     can_tera_2: bool = False
     teampreview_1: List[Pokemon] = field(default_factory=list)
     teampreview_2: List[Pokemon] = field(default_factory=list)
+    # Temporal order of actions within this turn, as (team, slot) tuples.
+    # Populated as |move|, |switch|, and |cant| messages are parsed.
+    # Used by the serializer to emit <chosen_move>/<opponent_chosen_move> in
+    # the correct execution order rather than a fixed player-first order.
+    move_order: List[Tuple[int, int]] = field(default_factory=list)
 
     def __deepcopy__(self, memo: dict) -> "Turn":
         """Fast deepcopy that avoids Python's default recursive dataclass
@@ -1206,6 +1213,8 @@ class Turn:
         # ── teampreview rosters (Pokemon objects → deepcopy) ───────
         new.teampreview_1 = [copy.deepcopy(p, memo) for p in self.teampreview_1]
         new.teampreview_2 = [copy.deepcopy(p, memo) for p in self.teampreview_2]
+        # move_order is a list of (int, int) tuples — shallow copy
+        new.move_order = list(self.move_order)
         return new
 
     def get_active_pokemon(self, p1: bool) -> Optional[Pokemon]:
@@ -1343,6 +1352,7 @@ class Turn:
         next_turn.is_force_revival = False
         next_turn.replacements_1 = []
         next_turn.replacements_2 = []
+        next_turn.move_order = []
         # Clear transient per-turn state on all Pokémon in the new turn.
         for pokemon in next_turn.all_pokemon:
             if pokemon is not None:
@@ -1356,6 +1366,7 @@ class Turn:
         subturn = copy.deepcopy(self)
         subturn.subturns = []
         subturn.is_force_switch = force_switch
+        subturn.move_order = []
         return subturn
 
     def remove_empty_subturn(self, team: int, slot: int) -> None:
@@ -1437,6 +1448,7 @@ class Turn:
         else:
             raise RareValueError(f"Unknown index: '{s}'")
 
+        team = 1 if s[1] == "1" else 2
         if moves_list[index] is None:
             # create new Action
             moves_list[index] = Action(
@@ -1448,6 +1460,11 @@ class Turn:
                 is_tera=is_tera or False,
                 failed=failed or False,
             )
+            # Record the temporal order of this action within the turn.
+            # Avoid duplicates (e.g. when _parse_cant also records the entry).
+            entry = (team, index)
+            if entry not in self.move_order:
+                self.move_order.append(entry)
         else:
             # adjust existing Action
             if move_name is not None:
@@ -1668,10 +1685,7 @@ class ReplayState:
 
     * :class:`POVReplay` — generates ``ReplayState`` objects for the WIN and
       LOSS trajectories.
-    * :meth:`UniversalState.from_ReplayState` — converts to the universal format.
-    * Legacy JSON export paths can convert this through
-      :meth:`UniversalState.from_ReplayState`; the new parser text output is
-      serialized directly from ``POVReplay``.
+    * The new parser text output is serialized directly from ``POVReplay``.
 
     Fields are one-sided: ``active_pokemon`` is the player's, ``opponent_active_pokemon``
     is the enemy's.  Bench, fainted, and team preview follow the same convention.

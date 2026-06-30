@@ -5,11 +5,13 @@ This trainer consumes ``paired_shard_*.npz`` files produced by:
     uv run python scripts/generate_world_model_data.py --rollout_len K ...
 
 For each K-step rollout sample, the dataset provides both player perspectives
-through state T and T+1 at every rollout step. The model learns:
+with target-excluded history for state T, the target state T, both current
+actions, and next state T+1. The active objective is NLL-only:
 
-1. history context + visible POV latent -> hidden opponent POV latent
-2. the same shared opponent-belief backbone -> opponent action latent
-3. visible POV latent + predicted opponent POV/action + own action -> next POV latent
+1. history context -> current self-state belief latent
+2. history context -> hidden opponent-state belief latent
+3. sampled self/opponent belief latents -> opponent action belief latent
+4. sampled beliefs + own action -> next POV state belief latent
 """
 
 from __future__ import annotations
@@ -42,15 +44,13 @@ except ImportError:
 
 from metamon.jepa.checkpointing import save_paired_jepa_checkpoint
 from metamon.jepa.model import (
-    ACTION_LATENT_DIM,
-    CONTEXT_LENGTH,
     LATENT_DIM,
-    SIGREG_DOMAIN,
-    SIGREG_NUM_POINTS,
-    SIGREG_NUM_SLICES,
     PairedJEPAModel,
     compute_paired_losses,
+    format_tensor_debug,
 )
+
+from metamon.tokenizer import PokemonTokenizer
 
 
 class PairedJEPADataset(torch.utils.data.IterableDataset):
@@ -130,7 +130,7 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         total = 0
         for path in shard_paths:
             data = np.load(path)
-            idx = data["state_idx"]
+            idx = data["p1_target_state_idx"]
             if idx.ndim == 1:
                 total += int(len(idx))
             else:
@@ -140,18 +140,18 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
     @staticmethod
     def _resolve_window(
         battle_start: int,
-        state_end: int,
+        target_state_idx: int,
         action_base: int,
         max_hist: int,
     ) -> tuple[int, int, int]:
         state_start = battle_start
         if max_hist > 0:
-            state_start = max(battle_start + 1, state_end - max_hist)
+            state_start = max(battle_start + 1, target_state_idx - max_hist)
         # State index 0 within each battle is the team header, so action i
-        # connects state i+1 -> state i+2. Keep only actions between retained
-        # state blocks; the current transition appears in the T1 window, not T.
+        # connects state i+1 -> state i+2. For target state T, keep actions
+        # before T; the current transition action is encoded separately.
         action_start = action_base + max(0, state_start - battle_start - 1)
-        action_end = action_base + max(0, state_end - battle_start - 2)
+        action_end = action_base + max(0, target_state_idx - battle_start - 1)
         action_end = max(action_start, action_end)
         return state_start, action_start, action_end
 
@@ -257,35 +257,37 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         )
 
     @staticmethod
-    def _rollout_index_matrix(data: dict, key: str, fallback: str | None = None) -> np.ndarray:
-        arr = data[key] if key in data else data[fallback]  # type: ignore[index]
-        arr = np.asarray(arr)
-        if arr.ndim == 1:
-            return arr[:, None]
-        if arr.ndim != 2:
-            raise ValueError(f"{key} must be a 1D legacy array or 2D rollout matrix, got {arr.shape}")
-        return arr
-
-    @staticmethod
     def _iter_shard(data: dict, unknown_token: int | None,
                     shuffle_transitions: bool, max_hist: int) -> Iterator[dict]:
-        p1_state_idx = PairedJEPADataset._rollout_index_matrix(data, "p1_state_idx", "state_idx")
-        p1_next_state_idx = PairedJEPADataset._rollout_index_matrix(data, "p1_next_state_idx", "next_state_idx")
-        p1_action_idx = PairedJEPADataset._rollout_index_matrix(data, "p1_action_idx", "action_idx")
-        p2_state_idx = PairedJEPADataset._rollout_index_matrix(data, "p2_state_idx", "state_idx")
-        p2_next_state_idx = PairedJEPADataset._rollout_index_matrix(data, "p2_next_state_idx", "next_state_idx")
-        p2_action_idx = PairedJEPADataset._rollout_index_matrix(data, "p2_action_idx", "action_idx")
+        p1_target_state_idx = np.asarray(data["p1_target_state_idx"])
+        if p1_target_state_idx.ndim == 1:
+            p1_target_state_idx = p1_target_state_idx[:, None]
+        p1_next_state_idx = np.asarray(data["p1_next_state_idx"])
+        if p1_next_state_idx.ndim == 1:
+            p1_next_state_idx = p1_next_state_idx[:, None]
+        p1_action_idx = np.asarray(data["p1_action_idx"])
+        if p1_action_idx.ndim == 1:
+            p1_action_idx = p1_action_idx[:, None]
+        p2_target_state_idx = np.asarray(data["p2_target_state_idx"])
+        if p2_target_state_idx.ndim == 1:
+            p2_target_state_idx = p2_target_state_idx[:, None]
+        p2_next_state_idx = np.asarray(data["p2_next_state_idx"])
+        if p2_next_state_idx.ndim == 1:
+            p2_next_state_idx = p2_next_state_idx[:, None]
+        p2_action_idx = np.asarray(data["p2_action_idx"])
+        if p2_action_idx.ndim == 1:
+            p2_action_idx = p2_action_idx[:, None]
 
-        n, rollout_len = p1_state_idx.shape
+        n, rollout_len = p1_target_state_idx.shape
         for name, arr in [
             ("p1_next_state_idx", p1_next_state_idx),
             ("p1_action_idx", p1_action_idx),
-            ("p2_state_idx", p2_state_idx),
+            ("p2_target_state_idx", p2_target_state_idx),
             ("p2_next_state_idx", p2_next_state_idx),
             ("p2_action_idx", p2_action_idx),
         ]:
             if arr.shape != (n, rollout_len):
-                raise ValueError(f"{name} shape {arr.shape} does not match p1_state_idx {(n, rollout_len)}")
+                raise ValueError(f"{name} shape {arr.shape} does not match p1_target_state_idx {(n, rollout_len)}")
 
         order = np.arange(n)
         if shuffle_transitions:
@@ -296,10 +298,10 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
 
         for row in order:
             battle_id = int(data["battle_id"][row])
-            p1_bs = int(data["p1_battle_start"][battle_id]) if "p1_battle_start" in data else int(data["battle_start"][battle_id])
-            p2_bs = int(data["p2_battle_start"][battle_id]) if "p2_battle_start" in data else int(data["battle_start"][battle_id])
-            p1_as = int(data["p1_battle_action_start"][battle_id]) if "p1_battle_action_start" in data else int(data["battle_action_start"][battle_id])
-            p2_as = int(data["p2_battle_action_start"][battle_id]) if "p2_battle_action_start" in data else int(data["battle_action_start"][battle_id])
+            p1_bs = int(data["p1_battle_start"][battle_id])
+            p2_bs = int(data["p2_battle_start"][battle_id])
+            p1_as = int(data["p1_battle_action_start"][battle_id])
+            p2_as = int(data["p2_battle_action_start"][battle_id])
 
             w = PairedJEPADataset._resolve_window
             sv = PairedJEPADataset._slice_view
@@ -309,123 +311,50 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
                 key: []
                 for key in (
                     *BLOCK_KEYS,
+                    *SINGLE_BLOCK_KEYS,
                     *ACTION_KEYS,
-                    *LEGAL_ACTION_KEYS,
-                    *NEXT_LEGAL_ACTION_KEYS,
-                    *LEGAL_MASK_KEYS,
-                    *NEXT_LEGAL_MASK_KEYS,
-                    *LEGAL_INDEX_KEYS,
-                    *SCALAR_KEYS,
                 )
             }
-            p1_won = bool(data["p1_won"][battle_id])
-            p2_won = bool(data["p2_won"][battle_id])
-            rank_valid = (
-                bool(data["rank_valid"][battle_id])
-                if "rank_valid" in data
-                else p1_won != p2_won
+            sample["battle_id"] = battle_id
+            sample["raw_battle_key"] = str(
+                data["raw_battle_key"][battle_id]
+                if "raw_battle_key" in data else battle_id
             )
+            sample["turn_idx"] = np.asarray(data["turn_idx"][row], dtype=np.int32).copy()
+            sample["turn_number"] = np.asarray(data["turn_number"][row], dtype=np.int32).copy()
+            sample["subturn_idx"] = np.asarray(data["subturn_idx"][row], dtype=np.int32).copy()
+            sample["p1_target_state_idx_meta"] = p1_target_state_idx[row].astype(np.int32, copy=True)
+            sample["p1_next_state_idx_meta"] = p1_next_state_idx[row].astype(np.int32, copy=True)
+            sample["p1_action_idx_meta"] = p1_action_idx[row].astype(np.int32, copy=True)
+            sample["p2_target_state_idx_meta"] = p2_target_state_idx[row].astype(np.int32, copy=True)
+            sample["p2_next_state_idx_meta"] = p2_next_state_idx[row].astype(np.int32, copy=True)
+            sample["p2_action_idx_meta"] = p2_action_idx[row].astype(np.int32, copy=True)
 
             for step in range(rollout_len):
-                p1_si = int(p1_state_idx[row, step])
+                p1_si = int(p1_target_state_idx[row, step])
                 p1_nsi = int(p1_next_state_idx[row, step])
                 p1_ai = int(p1_action_idx[row, step])
-                p2_si = int(p2_state_idx[row, step])
+                p2_si = int(p2_target_state_idx[row, step])
                 p2_nsi = int(p2_next_state_idx[row, step])
                 p2_ai = int(p2_action_idx[row, step])
-                p1_action_end = (
-                    int(data["p1_battle_action_start"][battle_id + 1])
-                    if "p1_battle_action_start" in data
-                    else int(data["battle_action_start"][battle_id + 1])
-                )
-                p2_action_end = (
-                    int(data["p2_battle_action_start"][battle_id + 1])
-                    if "p2_battle_action_start" in data
-                    else int(data["battle_action_start"][battle_id + 1])
-                )
-                p1_terminal = p1_ai + 1 >= p1_action_end
-                p2_terminal = p2_ai + 1 >= p2_action_end
 
-                p1_sT_s, p1_aT_s, p1_aT_e = w(p1_bs, p1_si + 1, p1_as, max_hist)
-                p1_sT1_s, p1_aT1_s, p1_aT1_e = w(p1_bs, p1_nsi + 1, p1_as, max_hist)
-                p2_sT_s, p2_aT_s, p2_aT_e = w(p2_bs, p2_si + 1, p2_as, max_hist)
-                p2_sT1_s, p2_aT1_s, p2_aT1_e = w(p2_bs, p2_nsi + 1, p2_as, max_hist)
+                p1_hist_s, p1_aT_s, p1_aT_e = w(p1_bs, p1_si, p1_as, max_hist)
+                p2_hist_s, p2_aT_s, p2_aT_e = w(p2_bs, p2_si, p2_as, max_hist)
 
-                sample["p1_state_T"].append(ssv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_bs, p1_sT_s, p1_si + 1))
-                sample["p1_state_T1"].append(ssv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_bs, p1_sT1_s, p1_nsi + 1))
-                sample["p2_state_T"].append(ssv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_bs, p2_sT_s, p2_si + 1))
-                sample["p2_state_T1"].append(ssv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_bs, p2_sT1_s, p2_nsi + 1))
+                sample["p1_history_T"].append(ssv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_bs, p1_hist_s, p1_si))
+                sample["p2_history_T"].append(ssv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_bs, p2_hist_s, p2_si))
+                sample["p1_target_state_T"].append(sv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_si, p1_si + 1)[0])
+                sample["p1_next_state_T1"].append(sv(data["p1_states"], data["p1_state_offsets"], data["p1_state_lengths"], p1_nsi, p1_nsi + 1)[0])
+                sample["p2_target_state_T"].append(sv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_si, p2_si + 1)[0])
+                sample["p2_next_state_T1"].append(sv(data["p2_states"], data["p2_state_offsets"], data["p2_state_lengths"], p2_nsi, p2_nsi + 1)[0])
                 sample["p1_player_hist_T"].append(sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_aT_s, p1_aT_e))
                 sample["p1_opponent_hist_T"].append(sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_aT_s, p1_aT_e))
-                sample["p1_player_hist_T1"].append(sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_aT1_s, p1_aT1_e))
-                sample["p1_opponent_hist_T1"].append(sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_aT1_s, p1_aT1_e))
                 sample["p2_player_hist_T"].append(sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_aT_s, p2_aT_e))
                 sample["p2_opponent_hist_T"].append(sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_aT_s, p2_aT_e))
-                sample["p2_player_hist_T1"].append(sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_aT1_s, p2_aT1_e))
-                sample["p2_opponent_hist_T1"].append(sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_aT1_s, p2_aT1_e))
                 sample["p1_action"].append(sv(data["p1_actions_combined"], data["p1_actions_combined_offsets"], data["p1_actions_combined_lengths"], p1_ai, p1_ai + 1)[0])
                 sample["p2_action"].append(sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_ai, p2_ai + 1)[0])
                 sample["actual_p2_action_from_p1_perspective"].append(sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_ai, p1_ai + 1)[0])
                 sample["actual_p1_action_from_p2_perspective"].append(sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_ai, p2_ai + 1)[0])
-                if "p1_legal_actions" in data:
-                    sample["p1_legal_actions"].append(data["p1_legal_actions"][p1_ai])
-                    sample["p1_legal_action_mask"].append(data["p1_legal_action_mask"][p1_ai])
-                    sample["p1_chosen_legal_action_idx"].append(int(data["p1_chosen_legal_action_idx"][p1_ai]))
-                    if not p1_terminal:
-                        sample["p1_next_legal_actions"].append(data["p1_legal_actions"][p1_ai + 1])
-                        sample["p1_next_legal_action_mask"].append(data["p1_legal_action_mask"][p1_ai + 1])
-                    else:
-                        sample["p1_next_legal_actions"].append(np.zeros((0, 1), dtype=np.int16))
-                        sample["p1_next_legal_action_mask"].append(np.zeros((0,), dtype=bool))
-                else:
-                    sample["p1_legal_actions"].append(sample["p1_action"][-1][None, :])
-                    sample["p1_legal_action_mask"].append(np.array([True], dtype=bool))
-                    sample["p1_chosen_legal_action_idx"].append(0)
-                    if not p1_terminal:
-                        next_action = sv(
-                            data["p1_actions_combined"],
-                            data["p1_actions_combined_offsets"],
-                            data["p1_actions_combined_lengths"],
-                            p1_ai + 1,
-                            p1_ai + 2,
-                        )[0]
-                        sample["p1_next_legal_actions"].append(next_action[None, :])
-                        sample["p1_next_legal_action_mask"].append(np.array([True], dtype=bool))
-                    else:
-                        sample["p1_next_legal_actions"].append(np.zeros((0, 1), dtype=np.int16))
-                        sample["p1_next_legal_action_mask"].append(np.zeros((0,), dtype=bool))
-                if "p2_legal_actions" in data:
-                    sample["p2_legal_actions"].append(data["p2_legal_actions"][p2_ai])
-                    sample["p2_legal_action_mask"].append(data["p2_legal_action_mask"][p2_ai])
-                    sample["p2_chosen_legal_action_idx"].append(int(data["p2_chosen_legal_action_idx"][p2_ai]))
-                    if not p2_terminal:
-                        sample["p2_next_legal_actions"].append(data["p2_legal_actions"][p2_ai + 1])
-                        sample["p2_next_legal_action_mask"].append(data["p2_legal_action_mask"][p2_ai + 1])
-                    else:
-                        sample["p2_next_legal_actions"].append(np.zeros((0, 1), dtype=np.int16))
-                        sample["p2_next_legal_action_mask"].append(np.zeros((0,), dtype=bool))
-                else:
-                    sample["p2_legal_actions"].append(sample["p2_action"][-1][None, :])
-                    sample["p2_legal_action_mask"].append(np.array([True], dtype=bool))
-                    sample["p2_chosen_legal_action_idx"].append(0)
-                    if not p2_terminal:
-                        next_action = sv(
-                            data["p2_actions_combined"],
-                            data["p2_actions_combined_offsets"],
-                            data["p2_actions_combined_lengths"],
-                            p2_ai + 1,
-                            p2_ai + 2,
-                        )[0]
-                        sample["p2_next_legal_actions"].append(next_action[None, :])
-                        sample["p2_next_legal_action_mask"].append(np.array([True], dtype=bool))
-                    else:
-                        sample["p2_next_legal_actions"].append(np.zeros((0, 1), dtype=np.int16))
-                        sample["p2_next_legal_action_mask"].append(np.zeros((0,), dtype=bool))
-                sample["p1_won"].append(p1_won)
-                sample["p2_won"].append(p2_won)
-                sample["rank_valid"].append(rank_valid)
-                sample["p1_is_terminal"].append(p1_terminal)
-                sample["p2_is_terminal"].append(p2_terminal)
             yield sample
 
     def __iter__(self) -> Iterator[dict[str, object]]:
@@ -448,18 +377,18 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
 
 
 BLOCK_KEYS = (
-    "p1_state_T",
-    "p1_state_T1",
+    "p1_history_T",
     "p1_player_hist_T",
     "p1_opponent_hist_T",
-    "p1_player_hist_T1",
-    "p1_opponent_hist_T1",
-    "p2_state_T",
-    "p2_state_T1",
+    "p2_history_T",
     "p2_player_hist_T",
     "p2_opponent_hist_T",
-    "p2_player_hist_T1",
-    "p2_opponent_hist_T1",
+)
+SINGLE_BLOCK_KEYS = (
+    "p1_target_state_T",
+    "p1_next_state_T1",
+    "p2_target_state_T",
+    "p2_next_state_T1",
 )
 ACTION_KEYS = (
     "p1_action",
@@ -467,41 +396,25 @@ ACTION_KEYS = (
     "actual_p2_action_from_p1_perspective",
     "actual_p1_action_from_p2_perspective",
 )
-LEGAL_ACTION_KEYS = (
-    "p1_legal_actions",
-    "p2_legal_actions",
-)
-NEXT_LEGAL_ACTION_KEYS = (
-    "p1_next_legal_actions",
-    "p2_next_legal_actions",
-)
-LEGAL_MASK_KEYS = (
-    "p1_legal_action_mask",
-    "p2_legal_action_mask",
-)
-NEXT_LEGAL_MASK_KEYS = (
-    "p1_next_legal_action_mask",
-    "p2_next_legal_action_mask",
-)
-LEGAL_INDEX_KEYS = (
-    "p1_chosen_legal_action_idx",
-    "p2_chosen_legal_action_idx",
-)
-SCALAR_KEYS = (
-    "p1_won",
-    "p2_won",
-    "rank_valid",
-    "p1_is_terminal",
-    "p2_is_terminal",
+ROLLOUT_METADATA_KEYS = (
+    "turn_idx",
+    "turn_number",
+    "subturn_idx",
+    "p1_target_state_idx_meta",
+    "p1_next_state_idx_meta",
+    "p1_action_idx_meta",
+    "p2_target_state_idx_meta",
+    "p2_next_state_idx_meta",
+    "p2_action_idx_meta",
 )
 
 
 def collate_paired_fn(
     batch: list[dict[str, object]],
     pad_id: int,
-) -> dict[str, torch.Tensor]:
+) -> dict[str, object]:
     rollout_lengths = {
-        len(item["p1_state_T"])  # type: ignore[arg-type,index]
+        len(item["p1_history_T"])  # type: ignore[arg-type,index]
         for item in batch
     }
     if len(rollout_lengths) != 1:
@@ -522,13 +435,13 @@ def collate_paired_fn(
         padded = torch.full(
             (len(block_rollouts), rollout_len, max_blocks, max_tokens),
             pad_id,
-            dtype=torch.long,
+            dtype=torch.int32,
         )
         valid = torch.zeros((len(block_rollouts), rollout_len, max_blocks), dtype=torch.bool)
         for batch_idx, rollout in enumerate(block_rollouts):
             for step_idx, blocks in enumerate(rollout):
                 for block_idx, block in enumerate(blocks):
-                    tokens = torch.from_numpy(block.astype(np.int64, copy=False))
+                    tokens = torch.from_numpy(block.astype(np.int32, copy=False))
                     padded[batch_idx, step_idx, block_idx, :len(tokens)] = tokens
                     valid[batch_idx, step_idx, block_idx] = True
         return padded, valid
@@ -538,92 +451,165 @@ def collate_paired_fn(
             (len(action) for rollout in actions for action in rollout),
             default=1,
         )
-        padded = torch.full((len(actions), rollout_len, max_tokens), pad_id, dtype=torch.long)
+        padded = torch.full((len(actions), rollout_len, max_tokens), pad_id, dtype=torch.int32)
         for batch_idx, rollout in enumerate(actions):
             for step_idx, action in enumerate(rollout):
-                tokens = torch.from_numpy(action.astype(np.int64, copy=False))
+                tokens = torch.from_numpy(action.astype(np.int32, copy=False))
                 padded[batch_idx, step_idx, :len(tokens)] = tokens
         return padded
 
-    def pad_legal_action_rollouts(
-        actions: list[list[np.ndarray]],
-        masks: list[list[np.ndarray]],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        max_candidates = max(
-            1,
-            max(
-                (legal.shape[0] for rollout in actions for legal in rollout),
-                default=1,
-            ),
-        )
-        max_tokens = max(
-            1,
-            max(
-                (legal.shape[1] for rollout in actions for legal in rollout),
-                default=1,
-            ),
-        )
-        padded = torch.full(
-            (len(actions), rollout_len, max_candidates, max_tokens),
-            pad_id,
-            dtype=torch.long,
-        )
-        out_mask = torch.zeros(
-            (len(actions), rollout_len, max_candidates),
-            dtype=torch.bool,
-        )
-        for batch_idx, (rollout, rollout_masks) in enumerate(zip(actions, masks)):
-            for step_idx, (legal, legal_mask) in enumerate(zip(rollout, rollout_masks)):
-                candidate_count = int(legal.shape[0])
-                token_count = int(legal.shape[1]) if legal.ndim == 2 else 0
-                if candidate_count <= 0 or token_count <= 0:
-                    continue
-                tokens = torch.from_numpy(legal.astype(np.int64, copy=False))
-                mask = torch.from_numpy(legal_mask.astype(bool, copy=False))
-                padded[batch_idx, step_idx, :candidate_count, :token_count] = tokens
-                out_mask[batch_idx, step_idx, :candidate_count] = mask[:candidate_count]
-        return padded, out_mask
-
-    out: dict[str, torch.Tensor] = {}
+    out: dict[str, object] = {}
     for key in BLOCK_KEYS:
         blocks, valid = pad_block_rollouts([item[key] for item in batch])  # type: ignore[index]
         out[key] = blocks
         out[f"{key}_valid"] = valid
-    for key in ACTION_KEYS:
+    for key in (*SINGLE_BLOCK_KEYS, *ACTION_KEYS):
         out[key] = pad_action_rollouts([item[key] for item in batch])  # type: ignore[index]
-    for action_key, mask_key in zip(LEGAL_ACTION_KEYS, LEGAL_MASK_KEYS):
-        legal, mask = pad_legal_action_rollouts(
-            [item[action_key] for item in batch],  # type: ignore[index]
-            [item[mask_key] for item in batch],  # type: ignore[index]
-        )
-        out[action_key] = legal
-        out[mask_key] = mask
-    for action_key, mask_key in zip(NEXT_LEGAL_ACTION_KEYS, NEXT_LEGAL_MASK_KEYS):
-        legal, mask = pad_legal_action_rollouts(
-            [item[action_key] for item in batch],  # type: ignore[index]
-            [item[mask_key] for item in batch],  # type: ignore[index]
-        )
-        out[action_key] = legal
-        out[mask_key] = mask
-    for key in LEGAL_INDEX_KEYS:
-        out[key] = torch.tensor([item[key] for item in batch], dtype=torch.long)
-    for key in SCALAR_KEYS:
-        out[key] = torch.tensor([item[key] for item in batch], dtype=torch.bool)
-
-    # Legacy/defensive terminal detection: an empty T+1 state is terminal.
-    # Rollout boundaries are not terminals; the model bootstraps from T+1
-    # directly for those steps.
-    for pov in ("p1", "p2"):
-        t1_valid = out.get(f"{pov}_state_T1_valid")
-        if t1_valid is not None:
-            empty_state = ~t1_valid.any(dim=-1)  # [B, K]
-            out[f"{pov}_is_terminal"] = out[f"{pov}_is_terminal"] | empty_state
+    out["battle_id"] = torch.tensor([int(item["battle_id"]) for item in batch], dtype=torch.int32)
+    out["raw_battle_key"] = [str(item["raw_battle_key"]) for item in batch]  # type: ignore[assignment]
+    for key in ROLLOUT_METADATA_KEYS:
+        out[key] = torch.tensor(np.stack([item[key] for item in batch], axis=0), dtype=torch.int32)  # type: ignore[index]
 
     return out
 
 
-def _batch_to_device(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
-    return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
+def _batch_to_device(batch: dict[str, object], device: torch.device) -> dict[str, object]:
+    return {
+        key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value
+        for key, value in batch.items()
+    }
+
+
+def _debug_dump_tensor_mapping(
+    title: str,
+    tensors: dict[str, object],
+    *,
+    pad_id: int,
+    max_values: int,
+    tokenizer: PokemonTokenizer | None = None,
+) -> None:
+    print(f"\n[train tensor debug] {title}", flush=True)
+    for key, value in tensors.items():
+        if not isinstance(value, torch.Tensor):
+            print(f"  {key}: {value}", flush=True)
+            continue
+        key_tokenizer = tokenizer if key in (*BLOCK_KEYS, *SINGLE_BLOCK_KEYS, *ACTION_KEYS) else None
+        print(
+            "  " + format_tensor_debug(
+                key,
+                value,
+                max_values=max_values,
+                pad_id=pad_id,
+                tokenizer=key_tokenizer,
+            ),
+            flush=True,
+        )
+
+
+def _ids_and_text(
+    tokens: torch.Tensor,
+    *,
+    tokenizer: PokemonTokenizer,
+    pad_id: int,
+    max_values: int,
+) -> tuple[list[int], str, bool]:
+    ids = [
+        int(v)
+        for v in tokens.detach().cpu().reshape(-1).tolist()
+        if int(v) != pad_id
+    ]
+    truncated = len(ids) > max_values
+    preview = ids[:max_values]
+    return preview, " ".join(tokenizer.detokenize(preview)), truncated
+
+
+def _debug_dump_detokenized_batch_inputs(
+    title: str,
+    batch: dict[str, object],
+    *,
+    tokenizer: PokemonTokenizer,
+    pad_id: int,
+    max_values: int,
+    max_samples: int,
+) -> None:
+    print(f"\n[train tensor debug] {title}", flush=True)
+    raw_keys = batch.get("raw_battle_key", [])
+    battle_ids = batch.get("battle_id")
+    turn_numbers = batch.get("turn_number")
+    subturn_idx = batch.get("subturn_idx")
+    turn_idx = batch.get("turn_idx")
+
+    if not isinstance(battle_ids, torch.Tensor):
+        return
+    batch_size = int(battle_ids.shape[0])
+    rollout_len = int(turn_numbers.shape[1]) if isinstance(turn_numbers, torch.Tensor) and turn_numbers.ndim == 2 else 0
+    max_b = min(batch_size, max_samples)
+
+    for b in range(max_b):
+        raw_key = raw_keys[b] if isinstance(raw_keys, list) and b < len(raw_keys) else "<unknown>"
+        print(
+            f"  sample[{b}] raw_battle_key={raw_key} battle_id={int(battle_ids[b].item())} rollout_len={rollout_len}",
+            flush=True,
+        )
+        for k in range(rollout_len):
+            parts = []
+            if isinstance(turn_numbers, torch.Tensor):
+                parts.append(f"turn={int(turn_numbers[b, k].item())}")
+            if isinstance(subturn_idx, torch.Tensor):
+                parts.append(f"subturn={int(subturn_idx[b, k].item())}")
+            if isinstance(turn_idx, torch.Tensor):
+                parts.append(f"turn_idx={int(turn_idx[b, k].item())}")
+            for key in (
+                "p1_target_state_idx_meta",
+                "p1_next_state_idx_meta",
+                "p1_action_idx_meta",
+                "p2_target_state_idx_meta",
+                "p2_next_state_idx_meta",
+                "p2_action_idx_meta",
+            ):
+                value = batch.get(key)
+                if isinstance(value, torch.Tensor):
+                    parts.append(f"{key.removesuffix('_meta')}={int(value[b, k].item())}")
+            print(f"    step[{k}] " + " ".join(parts), flush=True)
+
+            for key in BLOCK_KEYS:
+                tokens = batch.get(key)
+                valid = batch.get(f"{key}_valid")
+                if not isinstance(tokens, torch.Tensor) or not isinstance(valid, torch.Tensor):
+                    continue
+                valid_blocks = valid[b, k].detach().cpu().nonzero(as_tuple=True)[0].tolist()
+                print(f"      {key}: blocks={len(valid_blocks)}", flush=True)
+                for block_idx in valid_blocks:
+                    ids, text, truncated = _ids_and_text(
+                        tokens[b, k, int(block_idx)],
+                        tokenizer=tokenizer,
+                        pad_id=pad_id,
+                        max_values=max_values,
+                    )
+                    suffix = " ..." if truncated else ""
+                    print(
+                        f"        block[{int(block_idx)}] ids={ids}{suffix} text={text!r}{suffix}",
+                        flush=True,
+                    )
+
+            for key in (*SINGLE_BLOCK_KEYS, *ACTION_KEYS):
+                tokens = batch.get(key)
+                if not isinstance(tokens, torch.Tensor):
+                    continue
+                ids, text, truncated = _ids_and_text(
+                    tokens[b, k],
+                    tokenizer=tokenizer,
+                    pad_id=pad_id,
+                    max_values=max_values,
+                )
+                suffix = " ..." if truncated else ""
+                print(f"      {key}: ids={ids}{suffix} text={text!r}{suffix}", flush=True)
+
+
+def _debug_dump_metrics(title: str, metrics: dict[str, float]) -> None:
+    print(f"\n[train tensor debug] {title}", flush=True)
+    for key in sorted(metrics):
+        print(f"  {key}: {metrics[key]:.8g}", flush=True)
 
 
 def _load_compatible_checkpoint(
@@ -636,7 +622,7 @@ def _load_compatible_checkpoint(
     ``--checkpoint`` is also the "save best here" path.  After architecture
     changes, that file may exist but contain old predictor heads.  Loading only
     matching keys lets the encoder/action encoder warm-start while new or
-    resized Gaussian/ranking heads train from initialization.
+    resized Gaussian heads train from initialization.
     """
     ckpt = torch.load(checkpoint_path, map_location=device)
     raw_state = ckpt["model_state_dict"]
@@ -676,110 +662,32 @@ def _load_compatible_checkpoint(
     return ckpt
 
 
-def _paired_outcome_stats(shard_paths: list[str]) -> dict[str, int]:
-    stats = {
-        "battles": 0,
-        "p1_won": 0,
-        "p2_won": 0,
-        "both_won": 0,
-        "both_lost": 0,
-        "rank_valid": 0,
-        "missing": 0,
-    }
-    for path in shard_paths:
-        data = np.load(path)
-        if "p1_won" not in data or "p2_won" not in data:
-            stats["missing"] += 1
-            continue
-        p1 = data["p1_won"].astype(bool, copy=False)
-        p2 = data["p2_won"].astype(bool, copy=False)
-        n = min(len(p1), len(p2))
-        if len(p1) != len(p2):
-            stats["missing"] += 1
-            p1 = p1[:n]
-            p2 = p2[:n]
-        stats["battles"] += n
-        stats["p1_won"] += int(p1.sum())
-        stats["p2_won"] += int(p2.sum())
-        stats["both_won"] += int((p1 & p2).sum())
-        stats["both_lost"] += int((~p1 & ~p2).sum())
-        if "rank_valid" in data:
-            stats["rank_valid"] += int(data["rank_valid"][:n].astype(bool, copy=False).sum())
-        else:
-            stats["rank_valid"] += int((p1 ^ p2).sum())
-    return stats
-
-
-def _validate_paired_outcomes(shard_paths: list[str], outcome_loss_weight: float) -> dict[str, int]:
-    stats = _paired_outcome_stats(shard_paths)
-    if stats["battles"] <= 0:
-        return stats
-    invalid = stats["both_won"] + stats["both_lost"]
-    print(
-        "Paired outcome labels: "
-        f"battles={stats['battles']:,} "
-        f"p1_won={stats['p1_won']:,} "
-        f"p2_won={stats['p2_won']:,} "
-        f"outcome_valid={stats['rank_valid']:,} "
-        f"both_lost={stats['both_lost']:,} "
-        f"both_won={stats['both_won']:,}"
-    )
-    invalid_fraction = invalid / max(stats["battles"], 1)
-    if outcome_loss_weight > 0 and stats["missing"] > 0:
-        raise RuntimeError(
-            "Paired JEPA shards are missing p1_won/p2_won labels for value/Q training. "
-            "Regenerate paired shards with the patched scripts/generate_world_model_data.py, "
-            "or temporarily disable outcome heads via --lambda_value 0 --lambda_q_value 0 "
-            "--lambda_policy 0 --lambda_value_teacher 0 --lambda_q_teacher 0."
-        )
-    if invalid > 0:
-        print(
-            "WARNING: Some paired outcome labels are invalid for value/Q supervision "
-            f"({invalid_fraction:.2%}); these battles will be ignored by outcome losses."
-        )
-    return stats
-
-
 def _forward_paired(
     model: PairedJEPAModel,
     batch: dict[str, torch.Tensor],
-    *,
-    compute_td_bootstrap: bool = True,
 ) -> dict[str, torch.Tensor]:
     outputs = model(
-        batch["p1_state_T"], batch["p1_state_T_valid"],
-        batch["p1_state_T1"], batch["p1_state_T1_valid"],
-        batch["p1_player_hist_T"], batch["p1_player_hist_T_valid"],
-        batch["p1_opponent_hist_T"], batch["p1_opponent_hist_T_valid"],
-        batch["p1_player_hist_T1"], batch["p1_player_hist_T1_valid"],
-        batch["p1_opponent_hist_T1"], batch["p1_opponent_hist_T1_valid"],
-        batch["p2_state_T"], batch["p2_state_T_valid"],
-        batch["p2_state_T1"], batch["p2_state_T1_valid"],
-        batch["p2_player_hist_T"], batch["p2_player_hist_T_valid"],
-        batch["p2_opponent_hist_T"], batch["p2_opponent_hist_T_valid"],
-        batch["p2_player_hist_T1"], batch["p2_player_hist_T1_valid"],
-        batch["p2_opponent_hist_T1"], batch["p2_opponent_hist_T1_valid"],
-        batch["p1_action"],
-        batch["p2_action"],
-        batch["actual_p2_action_from_p1_perspective"],
-        batch["actual_p1_action_from_p2_perspective"],
-        batch["p1_legal_actions"],
-        batch["p1_legal_action_mask"],
-        batch["p1_chosen_legal_action_idx"],
-        batch["p2_legal_actions"],
-        batch["p2_legal_action_mask"],
-        batch["p2_chosen_legal_action_idx"],
-        p1_next_legal_action_tokens=batch.get("p1_next_legal_actions"),
-        p1_next_legal_action_mask=batch.get("p1_next_legal_action_mask"),
-        p2_next_legal_action_tokens=batch.get("p2_next_legal_actions"),
-        p2_next_legal_action_mask=batch.get("p2_next_legal_action_mask"),
-        compute_td_bootstrap=compute_td_bootstrap,
+        p1_history_T=batch["p1_history_T"],
+        p1_history_T_valid=batch["p1_history_T_valid"],
+        p1_player_hist_T=batch["p1_player_hist_T"],
+        p1_player_hist_T_valid=batch["p1_player_hist_T_valid"],
+        p1_opponent_hist_T=batch["p1_opponent_hist_T"],
+        p1_opponent_hist_T_valid=batch["p1_opponent_hist_T_valid"],
+        p1_target_state_T=batch["p1_target_state_T"],
+        p1_next_state_T1=batch["p1_next_state_T1"],
+        p1_action_tokens=batch["p1_action"],
+        actual_p2_action_from_p1_perspective_tokens=batch["actual_p2_action_from_p1_perspective"],
+        p2_history_T=batch["p2_history_T"],
+        p2_history_T_valid=batch["p2_history_T_valid"],
+        p2_player_hist_T=batch["p2_player_hist_T"],
+        p2_player_hist_T_valid=batch["p2_player_hist_T_valid"],
+        p2_opponent_hist_T=batch["p2_opponent_hist_T"],
+        p2_opponent_hist_T_valid=batch["p2_opponent_hist_T_valid"],
+        p2_target_state_T=batch["p2_target_state_T"],
+        p2_next_state_T1=batch["p2_next_state_T1"],
+        p2_action_tokens=batch["p2_action"],
+        actual_p1_action_from_p2_perspective_tokens=batch["actual_p1_action_from_p2_perspective"],
     )
-    outputs["p1_won"] = batch["p1_won"]
-    outputs["p2_won"] = batch["p2_won"]
-    outputs["rank_valid"] = batch["rank_valid"]
-    outputs["p1_is_terminal"] = batch.get("p1_is_terminal")
-    outputs["p2_is_terminal"] = batch.get("p2_is_terminal")
     return outputs
 
 
@@ -804,10 +712,58 @@ def _make_loader(
     )
 
 
-def train(args: argparse.Namespace) -> None:
-    if args.grad_accum_steps < 1:
-        raise ValueError("--grad_accum_steps must be >= 1")
+def _build_dataloaders(
+    data_root: str,
+    formats: list[str],
+    structural_ids: dict[str, int],
+    max_history_blocks: int,
+    batch_size: int,
+    pad_id: int,
+    num_workers: int,
+    prefetch_factor: int,
+    device: torch.device,
+) -> tuple[
+        torch.utils.data.DataLoader,
+        torch.utils.data.DataLoader | None,
+        list[str],
+        list[str],
+    ]:
+    """Discover shards, build datasets and return train/val DataLoaders."""
+    train_shards = PairedJEPADataset.discover(data_root, formats, "train")
+    val_shards = PairedJEPADataset.discover(
+        data_root, formats, "val", required=False
+    )
+    train_dataset = PairedJEPADataset(
+        train_shards, structural_ids, shuffle_shards=True,
+        max_history_blocks=max_history_blocks,
+    )
+    val_dataset = PairedJEPADataset(
+        val_shards, structural_ids, shuffle_shards=False,
+        max_history_blocks=max_history_blocks,
+    )
+    val_loader: torch.utils.data.DataLoader | None = None
+    if val_shards:
+        val_loader = _make_loader(
+            val_dataset,
+            batch_size,
+            pad_id,
+            max(0, num_workers // 2),
+            prefetch_factor,
+            device.type == "cuda",
+        )
+    train_loader = _make_loader(
+        train_dataset,
+        batch_size,
+        pad_id,
+        num_workers,
+        prefetch_factor,
+        device.type == "cuda",
+    )
+    return train_loader, val_loader, train_shards, val_shards
 
+
+def _auto_detect_device() -> torch.device:
+    """Detect the best available torch device: CUDA > MPS > CPU."""
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
@@ -815,16 +771,22 @@ def train(args: argparse.Namespace) -> None:
     else:
         device = torch.device("cpu")
     print(f"Using device: {device}")
+    return device
+
+
+def train(args: argparse.Namespace) -> None:
+    if args.grad_accum_steps < 1:
+        raise ValueError("--grad_accum_steps must be >= 1")
+
+    device = _auto_detect_device()
 
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     model_cfg = cfg["model"]
 
-    from metamon.tokenizer import PokemonTokenizer
-
     tokenizer = PokemonTokenizer()
     tokenizer.load_tokens_from_disk(args.tokenizer_path)
-    vocab_size = model_cfg.get("vocab_size") or len(tokenizer)
+    vocab_size = len(tokenizer)
     pad_id = tokenizer.pad_token_id
     bos_id = tokenizer["<bos>"]
     eos_id = tokenizer["<eos>"]
@@ -833,196 +795,60 @@ def train(args: argparse.Namespace) -> None:
     }
 
     latent_dim = model_cfg.get("latent_dim", LATENT_DIM)
-    action_latent_dim = model_cfg.get("action_latent_dim", ACTION_LATENT_DIM)
-    lambda_sigreg = args.lambda_sigreg
-    if lambda_sigreg is None:
-        lambda_sigreg = model_cfg.get("lambda_sigreg", 0.1)
-    lambda_sigreg_state = args.lambda_sigreg_state
-    if lambda_sigreg_state is None:
-        lambda_sigreg_state = model_cfg.get("lambda_sigreg_state")
-        if lambda_sigreg_state is None:
-            lambda_sigreg_state = lambda_sigreg  # backward-compat fallback
-    lambda_sigreg_action = args.lambda_sigreg_action
-    if lambda_sigreg_action is None:
-        lambda_sigreg_action = model_cfg.get("lambda_sigreg_action")
-        if lambda_sigreg_action is None:
-            lambda_sigreg_action = lambda_sigreg  # backward-compat fallback
-    config_lambda_rank = model_cfg.get("lambda_rank", 0.0)
-    if args.lambda_rank is not None or float(config_lambda_rank or 0.0) != 0.0:
-        print("WARNING: lambda_rank is deprecated and ignored; actor-critic value/Q losses are used instead.")
-    lambda_rank = 0.0
-    lambda_value = args.lambda_value
-    if lambda_value is None:
-        lambda_value = model_cfg.get("lambda_value", 1.0)
-    lambda_q_value = args.lambda_q_value
-    if lambda_q_value is None:
-        lambda_q_value = model_cfg.get("lambda_q_value", 1.0)
-    lambda_policy = args.lambda_policy
-    if lambda_policy is None:
-        lambda_policy = model_cfg.get("lambda_policy", 1.0)
-    lambda_value_teacher = args.lambda_value_teacher
-    if lambda_value_teacher is None:
-        lambda_value_teacher = model_cfg.get("lambda_value_teacher", 0.25)
-    lambda_q_teacher = args.lambda_q_teacher
-    if lambda_q_teacher is None:
-        lambda_q_teacher = model_cfg.get("lambda_q_teacher", 0.25)
-    advantage_temperature = args.advantage_temperature
-    if advantage_temperature is None:
-        advantage_temperature = model_cfg.get("advantage_temperature", None)
-    advantage_weight_min = model_cfg.get("advantage_weight_min", 0.1)
-    advantage_weight_max = model_cfg.get("advantage_weight_max", 10.0)
-    gamma = args.gamma
-    if gamma is None:
-        gamma = model_cfg.get("gamma", 1.0)
-    sigreg_num_slices = model_cfg.get("sigreg_num_slices", SIGREG_NUM_SLICES)
-    sigreg_num_points = model_cfg.get("sigreg_num_points", SIGREG_NUM_POINTS)
-    sigreg_domain = model_cfg.get("sigreg_domain", SIGREG_DOMAIN)
-    context_length = model_cfg.get("encoder", {}).get("max_seq_len", CONTEXT_LENGTH)
-    temporal_max_seq_len = model_cfg.get("temporal_encoder", {}).get("max_seq_len", 6144)
-    # Defaults if config has null (match previous default.yaml concrete values)
-    if context_length is None:
-        context_length = 256
-    if temporal_max_seq_len is None:
-        temporal_max_seq_len = 6144
 
-    # ── auto-detect max_seq_len from dataset sequence_stats.json ──
-    # The stats file already includes a 1.2× safety multiplier on max values.
-    auto_state_block_max = None
-    auto_temporal_max = None
-    auto_state_block_raw = 0
-    auto_temporal_raw = 0
-    auto_safety_multiplier = None
-    auto_stats_source: list[str] = []
+    # ── max_seq_len: source of truth is sequence_stats.json ────────
+    # Values from the stats file already include a 1.2× safety multiplier.
+    state_block_max = None
+    temporal_max = None
     for fmt in args.formats:
         stats_path = os.path.join(args.data_root, fmt, "sequence_stats.json")
-        if os.path.exists(stats_path):
-            with open(stats_path, "r") as f:
-                seq_stats = json.load(f)
-            sl = seq_stats["state_block_len"]["max"]
-            tl = seq_stats["temporal_sequence_len"]["max"]
-            sl_raw = seq_stats["state_block_len"].get("max_raw", int(sl / (seq_stats.get("safety_multiplier", 1.2))))
-            tl_raw = seq_stats["temporal_sequence_len"].get("max_raw", int(tl / (seq_stats.get("safety_multiplier", 1.2))))
-            if auto_state_block_max is None or sl > auto_state_block_max:
-                auto_state_block_max = sl
-                auto_state_block_raw = sl_raw
-            if auto_temporal_max is None or tl > auto_temporal_max:
-                auto_temporal_max = tl
-                auto_temporal_raw = tl_raw
-            if auto_safety_multiplier is None:
-                auto_safety_multiplier = seq_stats.get("safety_multiplier")
-            auto_stats_source.append(stats_path)
+        if not os.path.exists(stats_path):
+            raise FileNotFoundError(
+                f"sequence_stats.json not found at {stats_path}. Run scripts/generate_world_model_data.py first."
+            )
+        with open(stats_path, "r") as f:
+            seq_stats = json.load(f)
+        sl = seq_stats["state_block_len"]["max"]
+        tl = seq_stats["temporal_sequence_len"]["max"]
+        if state_block_max is None or sl > state_block_max:
+            state_block_max = sl
+        if temporal_max is None or tl > temporal_max:
+            temporal_max = tl
 
-    encoder_overridden = False
-    temporal_overridden = False
-    if auto_state_block_max is not None:
-        # The inflated max already includes safety margin; use it directly.
-        if auto_state_block_max > context_length:
-            context_length = auto_state_block_max
-            encoder_overridden = True
-        model_cfg.setdefault("encoder", {})["max_seq_len"] = context_length
+    if state_block_max is None:
+        raise FileNotFoundError(
+            f"No sequence_stats.json found under {args.data_root}/[{', '.join(args.formats)}]. "
+            f"Run scripts/generate_world_model_data.py first."
+        )
+
+    model_cfg.setdefault("encoder", {})["max_seq_len"] = state_block_max
+    print(f"Encoder max_seq_len: {state_block_max} [from sequence_stats.json]")
 
     # ── Cap temporal max_seq_len by max_history_blocks ─────────────
-    # The sequence_stats.json raw max assumes unlimited history (a 2006-block
-    # battle produces 6016 positions).  With max_history_blocks=H the temporal
-    # layout is at most 1 + 3×H positions: the collation pads state blocks to
-    # H+1 (current state included then dropped), so max(S-1, A) = H.
+    temporal_capped = False
     if args.max_history_blocks > 0:
+        # TODO: double check the calculation below is consistent with self belief encoder
         max_temporal_from_history = 3 * args.max_history_blocks + 2
-        if auto_temporal_max is not None and auto_temporal_max > max_temporal_from_history:
-            auto_temporal_max = max_temporal_from_history
-            auto_temporal_raw = min(auto_temporal_raw, max_temporal_from_history)
-        if temporal_max_seq_len > max_temporal_from_history:
-            temporal_max_seq_len = max_temporal_from_history
+        if temporal_max > max_temporal_from_history:
+            temporal_max = max_temporal_from_history
+            temporal_capped = True
 
-    if auto_temporal_max is not None:
-        if auto_temporal_max > temporal_max_seq_len:
-            temporal_max_seq_len = auto_temporal_max
-            temporal_overridden = True
-        model_cfg.setdefault("temporal_encoder", {})["max_seq_len"] = temporal_max_seq_len
-
-    # ── Report max_seq_len resolution clearly ──────────────────────
-    config_enc = model_cfg.get("encoder", {}).get("max_seq_len")
-    config_tmp = model_cfg.get("temporal_encoder", {}).get("max_seq_len")
-    if auto_state_block_max is not None:
-        mult = f" (×{auto_safety_multiplier} safety)" if auto_safety_multiplier else ""
-        action = "overriding fallback" if encoder_overridden else "no override needed (≤ fallback)"
-        print(
-            f"Encoder max_seq_len: {context_length} "
-            f"[auto-detected from {auto_stats_source!r}{mult}; "
-            f"raw dataset max = {auto_state_block_raw}; {action}]"
-        )
-    else:
-        source = "config" if config_enc is not None else "hardcoded fallback"
-        print(
-            f"Encoder max_seq_len: {context_length} "
-            f"[{source}{' (config has null)' if config_enc is None else ''}; "
-            f"no sequence_stats.json found — run wm-dataset first]"
-        )
-    if auto_temporal_max is not None:
-        mult = f" (×{auto_safety_multiplier} safety)" if auto_safety_multiplier else ""
-        action = "overriding fallback" if temporal_overridden else "no override needed (≤ fallback)"
-        cap_note = ""
-        if args.max_history_blocks > 0:
-            cap_note = f"; capped by max_history_blocks={args.max_history_blocks} (3×{args.max_history_blocks}+2 = {3*args.max_history_blocks+2} positions)"
-        print(
-            f"Temporal max_seq_len: {temporal_max_seq_len} "
-            f"[auto-detected from {auto_stats_source!r}{mult}; "
-            f"raw dataset max = {auto_temporal_raw}; {action}{cap_note}]"
-        )
-    else:
-        source = "config" if config_tmp is not None else "hardcoded fallback"
-        cap_note = ""
-        if args.max_history_blocks > 0:
-            cap_note = f"; capped by max_history_blocks={args.max_history_blocks} (3×{args.max_history_blocks}+2 = {3*args.max_history_blocks+2} positions)"
-        print(
-            f"Temporal max_seq_len: {temporal_max_seq_len} "
-            f"[{source}{' (config has null)' if config_tmp is None else ''}; "
-            f"no sequence_stats.json found — run wm-dataset first{cap_note}]"
-        )
+    model_cfg.setdefault("self_belief_encoder", {})["max_seq_len"] = temporal_max
+    model_cfg.setdefault("opponent_belief_predictor", {})["max_seq_len"] = temporal_max
+    cap_note = (
+        f" (capped by --max_history_blocks={args.max_history_blocks})"
+        if temporal_capped else ""
+    )
+    print(f"Temporal max_seq_len: {temporal_max} [from sequence_stats.json{cap_note}]")
 
     print(f"Vocabulary size: {vocab_size}")
     print(f"Special tokens: bos={bos_id} eos={eos_id} pad={pad_id}")
     print(f"Structural token IDs: {structural_ids}")
-    print(f"Latent dim: {latent_dim}  action_latent_dim: {action_latent_dim}")
+    print(f"Latent dim: {latent_dim}")
 
-    train_shards = PairedJEPADataset.discover(args.data_root, args.formats, "train")
-    val_shards = PairedJEPADataset.discover(
-        args.data_root, args.formats, "val", required=False
-    )
-    outcome_loss_weight = (
-        float(lambda_value)
-        + float(lambda_q_value)
-        + float(lambda_policy)
-        + float(lambda_value_teacher)
-        + float(lambda_q_teacher)
-    )
-    _validate_paired_outcomes(train_shards, outcome_loss_weight)
-    train_dataset = PairedJEPADataset(
-        train_shards, structural_ids, shuffle_shards=True,
-        max_history_blocks=args.max_history_blocks,
-    )
-    val_loader = None
-    if val_shards:
-        val_dataset = PairedJEPADataset(
-            val_shards, structural_ids, shuffle_shards=False,
-            max_history_blocks=args.max_history_blocks,
-        )
-        val_loader = _make_loader(
-            val_dataset,
-            args.batch_size,
-            pad_id,
-            max(0, args.num_workers // 2),
-            args.prefetch_factor,
-            device.type == "cuda",
-        )
-
-    train_loader = _make_loader(
-        train_dataset,
-        args.batch_size,
-        pad_id,
-        args.num_workers,
-        args.prefetch_factor,
-        device.type == "cuda",
+    train_loader, val_loader, train_shards, val_shards = _build_dataloaders(
+        args.data_root, args.formats, structural_ids, args.max_history_blocks,
+        args.batch_size, pad_id, args.num_workers, args.prefetch_factor, device,
     )
 
     model = PairedJEPAModel(
@@ -1031,20 +857,11 @@ def train(args: argparse.Namespace) -> None:
         bos_id=bos_id,
         eos_id=eos_id,
         latent_dim=latent_dim,
-        action_latent_dim=action_latent_dim,
         encoder_cfg=model_cfg.get("encoder", {}),
-        temporal_encoder_cfg=model_cfg.get("temporal_encoder", {}),
-        action_encoder_cfg=model_cfg.get("action_encoder", {}),
-        opponent_belief_predictor_cfg=model_cfg.get(
-            "opponent_belief_predictor",
-            model_cfg.get("opponent_state_predictor", {})
-        ),
-        next_state_predictor_cfg=model_cfg.get("next_state_predictor", {}),
-        rank_head_cfg=model_cfg.get("rank_head", {}),
-        decision_state_encoder_cfg=model_cfg.get("decision_state_encoder", {}),
-        value_head_cfg=model_cfg.get("value_head", {}),
-        action_projector_cfg=model_cfg.get("action_projector", {}),
-        action_value_head_cfg=model_cfg.get("action_value_head", {}),
+        self_belief_encoder_cfg=model_cfg.get("self_belief_encoder", {}),
+        opponent_belief_predictor_cfg=model_cfg.get("opponent_belief_predictor", {}),
+        opponent_policy_belief_cfg=model_cfg.get("opponent_policy_belief", {}),
+        next_state_predictor_cfg=model_cfg.get("next_state_predictor", {})
     ).to(device)
 
     if device.type == "cuda":
@@ -1054,12 +871,12 @@ def train(args: argparse.Namespace) -> None:
 
     # ── torch.compile submodules individually (CUDA only) ─────────
     # With max_history_blocks=100, temporal sequences are ≤302 positions
-    # (was ≤7219), so the temporal encoder is small enough that it doesn't
-    # need compilation.  The heavy encoder + action encoder still benefit.
+    # so the belief encoder, opponent belief predictor is small enough that it doesn't
+    # need compilation.  The heavy encoder still benefits.
     if args.compile and device.type == "cuda":
         torch._dynamo.config.capture_scalar_outputs = True
         compiled_any = False
-        for name in ["encoder", "action_encoder"]:
+        for name in ["encoder"]:
             module = getattr(model, name, None)
             if module is None:
                 continue
@@ -1070,10 +887,16 @@ def train(args: argparse.Namespace) -> None:
             except Exception as e:
                 print(f"  [{name}] torch.compile failed: {e}")
         if compiled_any:
-            print("torch.compile enabled on: encoder, action_encoder")
+            print("torch.compile enabled on: encoder")
 
     if args.checkpoint and os.path.exists(args.checkpoint):
         _load_compatible_checkpoint(model, args.checkpoint, device)
+
+    model.set_debug_tensor_logging(
+        args.debug_tensors,
+        max_steps=args.debug_tensor_steps,
+        max_values=args.debug_tensor_values,
+    )
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -1095,7 +918,7 @@ def train(args: argparse.Namespace) -> None:
         f"Transitions: {train_transitions:,} train  {val_transitions:,} val  "
         f"batch={args.batch_size} grad_accum={args.grad_accum_steps} "
         f"effective={args.batch_size * args.grad_accum_steps} "
-        f"max_history_blocks={args.max_history_blocks} gamma={gamma}"
+        f"max_history_blocks={args.max_history_blocks}"
     )
 
     # ---- wandb init ----
@@ -1127,24 +950,20 @@ def train(args: argparse.Namespace) -> None:
                 "val_max_batches": args.val_max_batches,
                 "print_interval": args.print_interval,
                 "log_interval": args.log_interval,
+                "debug_tensors": args.debug_tensors,
+                "debug_tensor_steps": args.debug_tensor_steps,
+                "debug_tensor_values": args.debug_tensor_values,
+                "debug_tensor_samples": args.debug_tensor_samples,
                 "n_params": n_params,
                 "n_train_transitions": train_transitions,
                 "n_val_transitions": val_transitions,
-                "context_length": context_length,
+                "state_block_max_seq_len": state_block_max,
+                "temporal_max_seq_len": temporal_max,
                 "max_history_blocks": args.max_history_blocks,
-                "lambda_sigreg": lambda_sigreg,
-                "lambda_sigreg_state": lambda_sigreg_state,
-                "lambda_sigreg_action": lambda_sigreg_action,
+                "lambda_self_state": args.lambda_self_state,
                 "lambda_opponent_state": args.lambda_opponent_state,
                 "lambda_action": args.lambda_action,
                 "lambda_next_state": args.lambda_next_state,
-                "lambda_value": lambda_value,
-                "lambda_q_value": lambda_q_value,
-                "lambda_policy": lambda_policy,
-                "lambda_value_teacher": lambda_value_teacher,
-                "lambda_q_teacher": lambda_q_teacher,
-                "advantage_temperature": advantage_temperature,
-                "gamma": gamma,
                 "checkpoint": args.checkpoint,
             },
         )
@@ -1154,26 +973,11 @@ def train(args: argparse.Namespace) -> None:
     def loss_from_outputs(outputs: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict[str, float]]:
         return compute_paired_losses(
             outputs,
-            lambda_sigreg_state=lambda_sigreg_state,
-            lambda_sigreg_action=lambda_sigreg_action,
+            lambda_self_state=args.lambda_self_state,
             lambda_opponent_state=args.lambda_opponent_state,
             lambda_action=args.lambda_action,
             lambda_next_state=args.lambda_next_state,
-            lambda_rank=lambda_rank,
-            lambda_value=lambda_value,
-            lambda_q_value=lambda_q_value,
-            lambda_policy=lambda_policy,
-            lambda_value_teacher=lambda_value_teacher,
-            lambda_q_teacher=lambda_q_teacher,
-            advantage_temperature=advantage_temperature,
-            advantage_weight_min=advantage_weight_min,
-            advantage_weight_max=advantage_weight_max,
-            gamma=gamma,
-            sigreg_num_slices=sigreg_num_slices,
-            sigreg_num_points=sigreg_num_points,
-            sigreg_domain=sigreg_domain,
         )
-    use_td_bootstrap = abs(float(gamma) - 1.0) > 1e-8
 
     @torch.no_grad()
     def validate(max_batches: int) -> dict[str, float]:
@@ -1188,8 +992,7 @@ def train(args: argparse.Namespace) -> None:
             batch = _batch_to_device(batch, device)
             outputs = _forward_paired(
                 model,
-                batch,
-                compute_td_bootstrap=use_td_bootstrap,
+                batch
             )
             _, metrics = loss_from_outputs(outputs)
             for key, value in metrics.items():
@@ -1213,12 +1016,39 @@ def train(args: argparse.Namespace) -> None:
         epoch_steps = 0
         for batch in train_loader:
             batch = _batch_to_device(batch, device)
+            debug_this_step = args.debug_tensors and global_step < args.debug_tensor_steps
+            if debug_this_step:
+                _debug_dump_tensor_mapping(
+                    f"train step {global_step + 1} batch inputs after collation/device move",
+                    batch,
+                    pad_id=pad_id,
+                    max_values=args.debug_tensor_values,
+                    tokenizer=tokenizer,
+                )
+                _debug_dump_detokenized_batch_inputs(
+                    f"train step {global_step + 1} detokenized rollout inputs",
+                    batch,
+                    tokenizer=tokenizer,
+                    pad_id=pad_id,
+                    max_values=args.debug_tensor_values,
+                    max_samples=args.debug_tensor_samples,
+                )
             outputs = _forward_paired(
                 model,
-                batch,
-                compute_td_bootstrap=use_td_bootstrap,
+                batch
             )
             loss, metrics = loss_from_outputs(outputs)
+            if debug_this_step:
+                _debug_dump_tensor_mapping(
+                    f"train step {global_step + 1} model outputs",
+                    outputs,
+                    pad_id=pad_id,
+                    max_values=args.debug_tensor_values,
+                )
+                _debug_dump_metrics(
+                    f"train step {global_step + 1} loss metrics",
+                    metrics,
+                )
             try:
                 (loss / args.grad_accum_steps).backward()
             except torch.OutOfMemoryError:
@@ -1248,10 +1078,16 @@ def train(args: argparse.Namespace) -> None:
             # Count tokens processed (non-pad).  State blocks dominate;
             # count all 4 state tensors + single-action tokens.
             batch_tokens = 0
-            for key in ("p1_state_T", "p2_state_T", "p1_state_T1", "p2_state_T1",
-                        "p1_action", "p2_action", "actual_p2_action_from_p1_perspective",
-                        "actual_p1_action_from_p2_perspective",
-                        "p1_legal_actions", "p2_legal_actions"):
+            for key in (
+                "p1_history_T", "p2_history_T",
+                "p1_target_state_T", "p2_target_state_T",
+                "p1_next_state_T1", "p2_next_state_T1",
+                "p1_player_hist_T", "p2_player_hist_T",
+                "p1_opponent_hist_T", "p2_opponent_hist_T",
+                "p1_action", "p2_action",
+                "actual_p2_action_from_p1_perspective",
+                "actual_p1_action_from_p2_perspective",
+            ):
                 batch_tokens += int((batch[key] != pad_id).sum().item())
             tokens_since_print += batch_tokens
             tokens_since_wandb += batch_tokens
@@ -1266,6 +1102,9 @@ def train(args: argparse.Namespace) -> None:
                 wandb_run.log({
                     "train/tok_per_sec": tok_per_sec_wandb,
                     "train/loss": metrics["loss"],
+                    "train/self_state_loss": metrics["self_state_loss"],
+                    "train/self_state_loss_p1": metrics["self_state_loss_p1"],
+                    "train/self_state_loss_p2": metrics["self_state_loss_p2"],
                     "train/opponent_state_loss": metrics["opponent_state_loss"],
                     "train/opponent_state_loss_p1_to_p2": metrics["opponent_state_loss_p1_to_p2"],
                     "train/opponent_state_loss_p2_to_p1": metrics["opponent_state_loss_p2_to_p1"],
@@ -1275,27 +1114,14 @@ def train(args: argparse.Namespace) -> None:
                     "train/next_state_loss": metrics["next_state_loss"],
                     "train/next_state_loss_p1": metrics["next_state_loss_p1"],
                     "train/next_state_loss_p2": metrics["next_state_loss_p2"],
-                    "train/value_loss": metrics["value_loss"],
-                    "train/q_value_loss": metrics["q_value_loss"],
-                    "train/policy_loss": metrics["policy_loss"],
-                    "train/value_teacher_loss": metrics["value_teacher_loss"],
-                    "train/q_teacher_loss": metrics["q_teacher_loss"],
-                    "train/sigreg_loss": metrics["sigreg_loss"],
-                    "train/sigreg_state_loss": metrics["sigreg_state_loss"],
-                    "train/sigreg_action_loss": metrics["sigreg_action_loss"],
-                    "train/sigreg_current": metrics["sigreg_current"],
-                    "train/sigreg_next_true": metrics["sigreg_next_true"],
-                    "train/sigreg_context": metrics["sigreg_context"],
-                    "train/sigreg_action_own": metrics["sigreg_action_own"],
-                    "train/sigreg_action_opponent": metrics["sigreg_action_opponent"],
+                    "train/self_state_logvar_p1": metrics["self_state_logvar_p1"],
+                    "train/self_state_logvar_p2": metrics["self_state_logvar_p2"],
+                    "train/opponent_state_logvar_p1_to_p2": metrics["opponent_state_logvar_p1_to_p2"],
+                    "train/opponent_state_logvar_p2_to_p1": metrics["opponent_state_logvar_p2_to_p1"],
+                    "train/action_logvar_p1_to_p2": metrics["action_logvar_p1_to_p2"],
+                    "train/action_logvar_p2_to_p1": metrics["action_logvar_p2_to_p1"],
                     "train/next_state_logvar_p1": metrics["next_state_logvar_p1"],
                     "train/next_state_logvar_p2": metrics["next_state_logvar_p2"],
-                    "train/p1_terminal_fraction": metrics["p1_terminal_fraction"],
-                    "train/p2_terminal_fraction": metrics["p2_terminal_fraction"],
-                    "train/p1_value_td_fraction": metrics["p1_value_td_fraction"],
-                    "train/p2_value_td_fraction": metrics["p2_value_td_fraction"],
-                    "train/p1_q_td_fraction": metrics["p1_q_td_fraction"],
-                    "train/p2_q_td_fraction": metrics["p2_q_td_fraction"],
                     "train/lr": optimizer.param_groups[0]["lr"],
                     "epoch": epoch,
                     "global_step": global_step,
@@ -1312,6 +1138,9 @@ def train(args: argparse.Namespace) -> None:
                     f"  epoch {epoch:3d} | step {global_step:6d} | "
                     f"tok/s {tok_per_sec:,.0f} | "
                     f"loss {metrics['loss']:.4f} | "
+                    f"self_state {metrics['self_state_loss']:.4f} "
+                    f"[p1 {metrics['self_state_loss_p1']:.4f}, "
+                    f"p2 {metrics['self_state_loss_p2']:.4f}] | "
                     f"opp_state {metrics['opponent_state_loss']:.4f} "
                     f"[p1->p2 {metrics['opponent_state_loss_p1_to_p2']:.4f}, "
                     f"p2->p1 {metrics['opponent_state_loss_p2_to_p1']:.4f}] | "
@@ -1321,19 +1150,6 @@ def train(args: argparse.Namespace) -> None:
                     f"next {metrics['next_state_loss']:.4f} "
                     f"[p1 {metrics['next_state_loss_p1']:.4f}, "
                     f"p2 {metrics['next_state_loss_p2']:.4f}] | "
-                    f"value {metrics['value_loss']:.4f} | "
-                    f"q {metrics['q_value_loss']:.4f} | "
-                    f"policy {metrics['policy_loss']:.4f} | "
-                    f"teacher {metrics['value_teacher_loss']:.4f}/{metrics['q_teacher_loss']:.4f} | "
-                    f"sigreg_state {metrics['sigreg_state_loss']:.4f} "
-                    f"[cur {metrics['sigreg_current']:.4f}, "
-                    f"next {metrics['sigreg_next_true']:.4f}, "
-                    f"ctx {metrics['sigreg_context']:.4f}] | "
-                    f"sigreg_action {metrics['sigreg_action_loss']:.4f} "
-                    f"[own {metrics['sigreg_action_own']:.4f}, "
-                    f"opp {metrics['sigreg_action_opponent']:.4f}] | "
-                    f"td_v {metrics['p1_value_td_fraction']:.2f}/{metrics['p2_value_td_fraction']:.2f} "
-                    f"td_q {metrics['p1_q_td_fraction']:.2f}/{metrics['p2_q_td_fraction']:.2f} | "
                     f"logvar_next {metrics['next_state_logvar_p1']:.3f}/{metrics['next_state_logvar_p2']:.3f}"
                 )
 
@@ -1343,27 +1159,18 @@ def train(args: argparse.Namespace) -> None:
                     print(
                         f"  val @ step {global_step:6d} | "
                         f"loss {val_metrics['val_loss']:.4f} | "
+                        f"self_state {val_metrics['val_self_state_loss']:.4f} | "
                         f"opp_state {val_metrics['val_opponent_state_loss']:.4f} | "
                         f"action {val_metrics['val_action_loss']:.4f} | "
-                        f"next {val_metrics['val_next_state_loss']:.4f} | "
-                        f"value {val_metrics.get('val_value_loss', 0.0):.4f} | "
-                        f"q {val_metrics.get('val_q_value_loss', 0.0):.4f} | "
-                        f"policy {val_metrics.get('val_policy_loss', 0.0):.4f} | "
-                        f"sigreg_state {val_metrics.get('val_sigreg_state_loss', 0.0):.4f} | "
-                        f"sigreg_action {val_metrics.get('val_sigreg_action_loss', 0.0):.4f}"
+                        f"next {val_metrics['val_next_state_loss']:.4f}"
                     )
                     if wandb_run:
                         wandb_run.log({
                             "val/loss": val_metrics["val_loss"],
+                            "val/self_state_loss": val_metrics["val_self_state_loss"],
                             "val/opponent_state_loss": val_metrics["val_opponent_state_loss"],
                             "val/action_loss": val_metrics["val_action_loss"],
                             "val/next_state_loss": val_metrics["val_next_state_loss"],
-                            "val/value_loss": val_metrics.get("val_value_loss", 0.0),
-                            "val/q_value_loss": val_metrics.get("val_q_value_loss", 0.0),
-                            "val/policy_loss": val_metrics.get("val_policy_loss", 0.0),
-                            "val/sigreg_loss": val_metrics.get("val_sigreg_loss", 0.0),
-                            "val/sigreg_state_loss": val_metrics.get("val_sigreg_state_loss", 0.0),
-                            "val/sigreg_action_loss": val_metrics.get("val_sigreg_action_loss", 0.0),
                             "epoch": epoch,
                             "global_step": global_step,
                             "samples_seen": args.batch_size * global_step,
@@ -1395,42 +1202,33 @@ def train(args: argparse.Namespace) -> None:
         val_metrics = validate(args.val_max_batches)
         msg = (
             f"=== epoch {epoch:3d} done | train loss {avg.get('loss', 0.0):.4f} | "
+            f"self_state {avg.get('self_state_loss', 0.0):.4f} | "
             f"opp_state {avg.get('opponent_state_loss', 0.0):.4f} | "
             f"action {avg.get('action_loss', 0.0):.4f} | "
-            f"next {avg.get('next_state_loss', 0.0):.4f} | "
-            f"value {avg.get('value_loss', 0.0):.4f} | "
-            f"q {avg.get('q_value_loss', 0.0):.4f} | "
-            f"policy {avg.get('policy_loss', 0.0):.4f} | "
-            f"sigreg_state {avg.get('sigreg_state_loss', 0.0):.4f} | "
-            f"sigreg_action {avg.get('sigreg_action_loss', 0.0):.4f}"
+            f"next {avg.get('next_state_loss', 0.0):.4f}"
         )
         if val_metrics:
             msg += (
                 f" | val loss {val_metrics.get('val_loss', 0.0):.4f}"
-                f" | val sigreg_state {val_metrics.get('val_sigreg_state_loss', 0.0):.4f}"
-                f" | val sigreg_action {val_metrics.get('val_sigreg_action_loss', 0.0):.4f}"
+                f" | val self_state {val_metrics.get('val_self_state_loss', 0.0):.4f}"
+                f" | val opp_state {val_metrics.get('val_opponent_state_loss', 0.0):.4f}"
+                f" | val action {val_metrics.get('val_action_loss', 0.0):.4f}"
+                f" | val next {val_metrics.get('val_next_state_loss', 0.0):.4f}"
             )
         print(msg + " ===")
 
         if wandb_run:
             wandb_run.log({
                 "epoch/train_loss": avg.get("loss", 0.0),
+                "epoch/train_self_state_loss": avg.get("self_state_loss", 0.0),
                 "epoch/train_opponent_state_loss": avg.get("opponent_state_loss", 0.0),
                 "epoch/train_action_loss": avg.get("action_loss", 0.0),
                 "epoch/train_next_state_loss": avg.get("next_state_loss", 0.0),
-                "epoch/train_value_loss": avg.get("value_loss", 0.0),
-                "epoch/train_q_value_loss": avg.get("q_value_loss", 0.0),
-                "epoch/train_policy_loss": avg.get("policy_loss", 0.0),
-                "epoch/train_sigreg_state_loss": avg.get("sigreg_state_loss", 0.0),
-                "epoch/train_sigreg_action_loss": avg.get("sigreg_action_loss", 0.0),
                 "epoch/val_loss": val_metrics.get("val_loss", 0.0) if val_metrics else 0.0,
+                "epoch/val_self_state_loss": val_metrics.get("val_self_state_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_opponent_state_loss": val_metrics.get("val_opponent_state_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_action_loss": val_metrics.get("val_action_loss", 0.0) if val_metrics else 0.0,
                 "epoch/val_next_state_loss": val_metrics.get("val_next_state_loss", 0.0) if val_metrics else 0.0,
-                "epoch/val_value_loss": val_metrics.get("val_value_loss", 0.0) if val_metrics else 0.0,
-                "epoch/val_q_value_loss": val_metrics.get("val_q_value_loss", 0.0) if val_metrics else 0.0,
-                "epoch/val_policy_loss": val_metrics.get("val_policy_loss", 0.0) if val_metrics else 0.0,
-                "epoch/val_sigreg_loss": val_metrics.get("val_sigreg_loss", 0.0) if val_metrics else 0.0,
                 "epoch": epoch,
                 "samples_seen": args.batch_size * global_step,
             })
@@ -1486,32 +1284,22 @@ if __name__ == "__main__":
     parser.add_argument("--prefetch_factor", type=int, default=2)
     parser.add_argument("--val_interval", type=int, default=100)
     parser.add_argument("--val_max_batches", type=int, default=10)
-    parser.add_argument("--lambda_sigreg", type=float, default=None,
-                        help="Deprecated: backward-compat fallback for lambda_sigreg_state and lambda_sigreg_action.")
-    parser.add_argument("--lambda_sigreg_state", type=float, default=None,
-                        help="SIGReg weight on state latents (current encoder outputs, true next-state targets, context; not predicted next-state latents). Default from config or 0.1.")
-    parser.add_argument("--lambda_sigreg_action", type=float, default=None,
-                        help="SIGReg weight on true action encoder outputs (own and opponent actions from both POVs). Default from config or 0.0 (off).")
+    parser.add_argument("--lambda_self_state", type=float, default=1.0)
     parser.add_argument("--lambda_opponent_state", type=float, default=1.0)
     parser.add_argument("--lambda_action", type=float, default=1.0)
     parser.add_argument("--lambda_next_state", type=float, default=1.0)
-    parser.add_argument("--lambda_rank", type=float, default=None,
-                        help="Deprecated/no-op: ranking loss has been replaced by value/Q losses.")
-    parser.add_argument("--lambda_value", type=float, default=None)
-    parser.add_argument("--lambda_q_value", type=float, default=None)
-    parser.add_argument("--lambda_policy", type=float, default=None)
-    parser.add_argument("--lambda_value_teacher", type=float, default=None)
-    parser.add_argument("--lambda_q_teacher", type=float, default=None)
-    parser.add_argument("--advantage_temperature", type=float, default=None,
-                        help="Optional advantage-weighting temperature for Q/policy losses. Disabled when unset.")
-    parser.add_argument("--gamma", type=float, default=None,
-                        help="TD discount factor for V and Q heads. Non-terminal rollout steps use "
-                             "the furthest valid in-window gamma^n * V/Q bootstrap target; true "
-                             "terminals stop early on the discounted outcome. Set to 1.0 to disable "
-                             "TD bootstrapping and use MC outcome supervision. Typical: 0.95-0.99.")
-    parser.add_argument("--print_interval", type=int, default=10)
+    parser.add_argument("--print_interval", type=int, default=10, help="Print training progress to stdout at this cadence")
     parser.add_argument("--log_interval", type=int, default=0,
                         help="Log every N training steps to wandb (0 = same as print_interval).")
+    parser.add_argument("--debug_tensors", action="store_true",
+                        help="Dump train batch tensors, model submodule handoff tensors, model outputs, "
+                             "and loss metrics for the first --debug_tensor_steps training steps.")
+    parser.add_argument("--debug_tensor_steps", type=int, default=1,
+                        help="Number of initial training steps to dump when --debug_tensors is set.")
+    parser.add_argument("--debug_tensor_values", type=int, default=16,
+                        help="Number of flattened values and detokenized IDs to preview per dumped tensor.")
+    parser.add_argument("--debug_tensor_samples", type=int, default=2,
+                        help="Number of batch samples to expand in the structured detokenized debug dump.")
     parser.add_argument("--wandb", default=True, action=argparse.BooleanOptionalAction,
                         help="Enable Weights & Biases logging (default: True). Use --no-wandb to disable.")
     parser.add_argument("--wandb_project", type=str, default=None,

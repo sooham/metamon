@@ -34,6 +34,19 @@ Windows that cross skipped subturn gaps are dropped. If a battle has fewer than
 prints a warning summary such as `too_short_for_rollout_len_K` or
 `no_contiguous_rollout_windows_K`.
 
+After writing shards, the generator also writes chosen-move usage statistics for
+the accepted battles:
+
+| File | Meaning |
+|---|---|
+| `move_histogram.md` | Markdown table of all chosen move counts |
+| `move_histogram.csv` | CSV copy of the same table |
+| `move_histogram.png` | Matplotlib bar chart of the same histogram |
+
+The raw scan includes both `<chosen_move>` and `<opponent_chosen_move>` from both
+POV files, so each actual clicked move appears twice. The public `count` column
+is therefore `raw_double_count / 2`.
+
 ## Split And Shuffle
 
 The train/validation split is by raw battle key, so the WIN and LOSS parsed POV
@@ -68,10 +81,6 @@ Each shard stores variable-length token arrays plus index matrices:
 | `p1_battle_start`, `p2_battle_start` | `(num_battles+1,)` | Per-POV cumulative state starts |
 | `p1_battle_action_start`, `p2_battle_action_start` | `(num_battles+1,)` | Per-POV cumulative action starts |
 | `rollout_len` | scalar | `K` for this shard |
-
-The legacy aliases `state_idx`, `next_state_idx`, `action_idx`, `battle_start`,
-and `battle_action_start` are still written for compatibility, but new code
-should use the explicit `p1_*` and `p2_*` arrays.
 
 ## Action Encoding
 

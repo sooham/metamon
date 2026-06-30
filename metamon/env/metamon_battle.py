@@ -676,8 +676,8 @@ class MetamonBackendBattle(pe.AbstractBattle):
         if winner is None:
             return None
         elif p1:
-            return winner == Winner.PLAYER_1
-        return winner == Winner.PLAYER_2
+            return winner in (Winner.PLAYER_1, Winner.FORFEIT_PLAYER_1)
+        return winner in (Winner.PLAYER_2, Winner.FORFEIT_PLAYER_2)
 
     @property
     def reviving(self) -> bool:
