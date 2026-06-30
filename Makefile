@@ -16,24 +16,38 @@ FORMATS ?= $(FORMAT)
         wm-dataset \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer \
-        train-jepa train-jepa-debug _train-jepa-inner play-jepa play-jepa-local showdown bash-completion
+        train-jepa train-jepa-debug _train-jepa-inner play-jepa play-jepa-local \
+        showdown ensure-showdown showdown-daemon showdown-status showdown-stop \
+        showdown-install-autostart showdown-uninstall-autostart bash-completion
 
 # Start a local Pokemon Showdown server (no auth, port 8000)
 # Requires the server/pokemon-showdown submodule to be initialized.
+NODE ?= node
+SHOWDOWN_WATCHDOG ?= tools/showdown_watchdog.sh
 showdown:
-	cd server/pokemon-showdown && node pokemon-showdown start --no-security
+	cd server/pokemon-showdown && $(NODE) pokemon-showdown start --no-security
 
-# Ensure a local Showdown server is running (starts one if not).
+# Ensure a local Showdown server is running and supervised (starts one if not).
 # Used as a dependency by targets that need a local server.
 ensure-showdown:
-	@if curl -s http://localhost:8000 > /dev/null 2>&1; then \
-		echo "Showdown server already running on localhost:8000"; \
-	else \
-		echo "Starting Showdown server..."; \
-		cd server/pokemon-showdown && node pokemon-showdown start --no-security & \
-		sleep 3; \
-		echo "Showdown server started."; \
-	fi
+	@$(SHOWDOWN_WATCHDOG) start
+
+# Run the local Showdown server under a watchdog in a detached tmux session.
+showdown-daemon:
+	@$(SHOWDOWN_WATCHDOG) start
+
+showdown-status:
+	@$(SHOWDOWN_WATCHDOG) status
+
+showdown-stop:
+	@$(SHOWDOWN_WATCHDOG) stop
+
+# Install/remove a cron entry that restarts the tmux watchdog after reboot.
+showdown-install-autostart:
+	@$(SHOWDOWN_WATCHDOG) install-cron
+
+showdown-uninstall-autostart:
+	@$(SHOWDOWN_WATCHDOG) uninstall-cron
 
 # Open a battle replay in browser + parsed output in Cursor
 # Usage: make show-battle BATTLE_ID=smogtours-gen1ou-694141
@@ -191,14 +205,16 @@ JEPA_MAX_HISTORY ?= 100
 # Usage:
 #   make train-jepa FORMATS=gen1ou
 #   make train-jepa FORMATS=gen1ou JEPA_MAX_HISTORY=0  # full battle history
-JEPA_PAIRED_BATCH_SIZE ?= 100
-JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 1
+JEPA_PAIRED_BATCH_SIZE ?= 50
+JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 2
 JEPA_PAIRED_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best_stochastic.pt
 JEPA_PAIRED_MAX_STEPS ?= 0
 JEPA_PAIRED_VAL_INTERVAL ?= 100
 JEPA_PAIRED_VAL_MAX_BATCHES ?= 10
 JEPA_PAIRED_PRINT_INTERVAL ?= 2
 JEPA_PAIRED_LOG_INTERVAL ?= 10
+JEPA_ENCODER_CHUNK_TOKENS ?= 65536
+JEPA_BELIEF_BATCH_SIZE ?= 512
 JEPA_PAIRED_EXTRA_ARGS ?=
 
 JEPA_DEBUG_BATCH_SIZE ?= 1
@@ -216,7 +232,7 @@ train-jepa:
 			exit 1; \
 		fi; \
 		echo "Launching training in tmux session 'jepa-train'..."; \
-		tmux new-session -d -s jepa-train "$(MAKE) _train-jepa-inner FORMAT='$(FORMAT)' FORMATS='$(FORMATS)' WANDB='$(WANDB)' WANDB_PROJECT='$(WANDB_PROJECT)' WANDB_NAME='$(WANDB_NAME)' JEPA_COMPILE='$(JEPA_COMPILE)' JEPA_MAX_HISTORY='$(JEPA_MAX_HISTORY)' JEPA_PAIRED_BATCH_SIZE='$(JEPA_PAIRED_BATCH_SIZE)' JEPA_PAIRED_GRAD_ACCUM_STEPS='$(JEPA_PAIRED_GRAD_ACCUM_STEPS)' JEPA_LR='$(JEPA_LR)' JEPA_EPOCHS='$(JEPA_EPOCHS)' JEPA_NUM_WORKERS='$(JEPA_NUM_WORKERS)' JEPA_PREFETCH_FACTOR='$(JEPA_PREFETCH_FACTOR)' JEPA_GRAD_CLIP='$(JEPA_GRAD_CLIP)' JEPA_PAIRED_MAX_STEPS='$(JEPA_PAIRED_MAX_STEPS)' JEPA_PAIRED_VAL_INTERVAL='$(JEPA_PAIRED_VAL_INTERVAL)' JEPA_PAIRED_VAL_MAX_BATCHES='$(JEPA_PAIRED_VAL_MAX_BATCHES)' JEPA_PAIRED_PRINT_INTERVAL='$(JEPA_PAIRED_PRINT_INTERVAL)' JEPA_PAIRED_LOG_INTERVAL='$(JEPA_PAIRED_LOG_INTERVAL)' JEPA_PAIRED_EXTRA_ARGS='$(JEPA_PAIRED_EXTRA_ARGS)'"; \
+		tmux new-session -d -s jepa-train "$(MAKE) _train-jepa-inner FORMAT='$(FORMAT)' FORMATS='$(FORMATS)' WANDB='$(WANDB)' WANDB_PROJECT='$(WANDB_PROJECT)' WANDB_NAME='$(WANDB_NAME)' JEPA_COMPILE='$(JEPA_COMPILE)' JEPA_MAX_HISTORY='$(JEPA_MAX_HISTORY)' JEPA_PAIRED_BATCH_SIZE='$(JEPA_PAIRED_BATCH_SIZE)' JEPA_PAIRED_GRAD_ACCUM_STEPS='$(JEPA_PAIRED_GRAD_ACCUM_STEPS)' JEPA_LR='$(JEPA_LR)' JEPA_EPOCHS='$(JEPA_EPOCHS)' JEPA_NUM_WORKERS='$(JEPA_NUM_WORKERS)' JEPA_PREFETCH_FACTOR='$(JEPA_PREFETCH_FACTOR)' JEPA_GRAD_CLIP='$(JEPA_GRAD_CLIP)' JEPA_PAIRED_MAX_STEPS='$(JEPA_PAIRED_MAX_STEPS)' JEPA_PAIRED_VAL_INTERVAL='$(JEPA_PAIRED_VAL_INTERVAL)' JEPA_PAIRED_VAL_MAX_BATCHES='$(JEPA_PAIRED_VAL_MAX_BATCHES)' JEPA_PAIRED_PRINT_INTERVAL='$(JEPA_PAIRED_PRINT_INTERVAL)' JEPA_PAIRED_LOG_INTERVAL='$(JEPA_PAIRED_LOG_INTERVAL)' JEPA_ENCODER_CHUNK_TOKENS='$(JEPA_ENCODER_CHUNK_TOKENS)' JEPA_BELIEF_BATCH_SIZE='$(JEPA_BELIEF_BATCH_SIZE)' JEPA_PAIRED_EXTRA_ARGS='$(JEPA_PAIRED_EXTRA_ARGS)'"; \
 		echo ""; \
 		echo "  Attach:  tmux attach -t jepa-train"; \
 		echo "  Detach:  Ctrl+B, D"; \
@@ -284,6 +300,8 @@ _train-jepa-inner:
 		--val_interval $(JEPA_PAIRED_VAL_INTERVAL) \
 		--val_max_batches $(JEPA_PAIRED_VAL_MAX_BATCHES) \
 		$(if $(filter false,$(JEPA_COMPILE)),--no-compile) \
+		--encoder_chunk_tokens $(JEPA_ENCODER_CHUNK_TOKENS) \
+		--belief_batch_size $(JEPA_BELIEF_BATCH_SIZE) \
 		--max_history_blocks $(JEPA_MAX_HISTORY) \
 		$(JEPA_PAIRED_EXTRA_ARGS)
 
@@ -389,8 +407,9 @@ SAVE_CHECKPOINTS_DIR ?= checkpoints
 BACKUP_NAME ?=
 save-checkpoints:
 	@now=$$(date +%Y-%m-%d_%H%M%S); \
-	if [ -n "$(BACKUP_NAME)" ]; then dest="$(SAVE_CHECKPOINTS_DIR)/$(BACKUP_NAME)_$${now}"; \
-	else dest="$(SAVE_CHECKPOINTS_DIR)/$${now}"; fi; \
+	commit=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown-git); \
+	if [ -n "$(BACKUP_NAME)" ]; then dest="$(SAVE_CHECKPOINTS_DIR)/$${commit}_$(BACKUP_NAME)_$${now}"; \
+	else dest="$(SAVE_CHECKPOINTS_DIR)/$${commit}_$${now}"; fi; \
 	mkdir -p "$$dest"; \
 	echo "Backing up checkpoints to $$dest"; \
 	copied=0; \

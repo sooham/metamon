@@ -91,7 +91,7 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
     ) -> list[str]:
         """Find paired shard paths under *data_root*.
 
-        Supports two layouts:
+        Supports two layouts, preferring the current flat/interleaved output:
 
         1. **Flat / interleaved** (multi-format generation):
            ``data_root/{split}/paired_shard_*.npz``
@@ -99,18 +99,22 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         2. **Per-format** (single-format / legacy):
            ``data_root/{fmt}/{split}/paired_shard_*.npz``
 
-        Both are searched; results are merged and sorted.
+        When the flat layout exists for a split, it is authoritative. Mixing it
+        with per-format directories can accidentally train on stale shards from
+        a previous data generation run.
         """
-        shard_paths: list[str] = []
-
         # Layout 1: flat (interleaved, multi-format)
+        flat_paths: list[str] = []
         flat_dir = os.path.join(data_root, split)
         if os.path.isdir(flat_dir):
             for name in sorted(os.listdir(flat_dir)):
                 if name.startswith("paired_shard_") and name.endswith(".npz"):
-                    shard_paths.append(os.path.join(flat_dir, name))
+                    flat_paths.append(os.path.join(flat_dir, name))
+        if flat_paths:
+            return flat_paths
 
         # Layout 2: per-format (single-format / legacy)
+        shard_paths: list[str] = []
         for fmt in formats:
             split_dir = os.path.join(data_root, fmt, split)
             if not os.path.isdir(split_dir):
@@ -774,9 +778,32 @@ def _auto_detect_device() -> torch.device:
     return device
 
 
+def _load_rollout_len(data_root: str, shard_paths: list[str]) -> int:
+    """Return K from generated metadata, falling back to the first shard."""
+    metadata_path = os.path.join(data_root, "metadata.json")
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+        rollout_len = int(metadata.get("rollout_len", 1))
+        return max(1, rollout_len)
+
+    if shard_paths:
+        with np.load(shard_paths[0]) as data:
+            if "rollout_len" in data:
+                return max(1, int(data["rollout_len"]))
+            idx = data["p1_target_state_idx"]
+            return int(idx.shape[1]) if idx.ndim == 2 else 1
+
+    return 1
+
+
 def train(args: argparse.Namespace) -> None:
     if args.grad_accum_steps < 1:
         raise ValueError("--grad_accum_steps must be >= 1")
+    if args.encoder_chunk_tokens < 0:
+        raise ValueError("--encoder_chunk_tokens must be >= 0")
+    if args.belief_batch_size < 0:
+        raise ValueError("--belief_batch_size must be >= 0")
 
     device = _auto_detect_device()
 
@@ -798,28 +825,16 @@ def train(args: argparse.Namespace) -> None:
 
     # ── max_seq_len: source of truth is sequence_stats.json ────────
     # Values from the stats file already include a 1.2× safety multiplier.
-    state_block_max = None
-    temporal_max = None
-    for fmt in args.formats:
-        stats_path = os.path.join(args.data_root, fmt, "sequence_stats.json")
-        if not os.path.exists(stats_path):
-            raise FileNotFoundError(
-                f"sequence_stats.json not found at {stats_path}. Run scripts/generate_world_model_data.py first."
-            )
-        with open(stats_path, "r") as f:
-            seq_stats = json.load(f)
-        sl = seq_stats["state_block_len"]["max"]
-        tl = seq_stats["temporal_sequence_len"]["max"]
-        if state_block_max is None or sl > state_block_max:
-            state_block_max = sl
-        if temporal_max is None or tl > temporal_max:
-            temporal_max = tl
-
-    if state_block_max is None:
+    stats_path = os.path.join(args.data_root, "sequence_stats.json")
+    if not os.path.exists(stats_path):
         raise FileNotFoundError(
-            f"No sequence_stats.json found under {args.data_root}/[{', '.join(args.formats)}]. "
-            f"Run scripts/generate_world_model_data.py first."
+            f"sequence_stats.json not found at {stats_path}. "
+            "Run scripts/generate_world_model_data.py first."
         )
+    with open(stats_path, "r") as f:
+        seq_stats = json.load(f)
+    state_block_max = seq_stats["state_block_len"]["max"]
+    temporal_max = seq_stats["temporal_sequence_len"]["max"]
 
     model_cfg.setdefault("encoder", {})["max_seq_len"] = state_block_max
     print(f"Encoder max_seq_len: {state_block_max} [from sequence_stats.json]")
@@ -850,6 +865,7 @@ def train(args: argparse.Namespace) -> None:
         args.data_root, args.formats, structural_ids, args.max_history_blocks,
         args.batch_size, pad_id, args.num_workers, args.prefetch_factor, device,
     )
+    rollout_len = _load_rollout_len(args.data_root, train_shards)
 
     model = PairedJEPAModel(
         vocab_size=vocab_size,
@@ -861,7 +877,9 @@ def train(args: argparse.Namespace) -> None:
         self_belief_encoder_cfg=model_cfg.get("self_belief_encoder", {}),
         opponent_belief_predictor_cfg=model_cfg.get("opponent_belief_predictor", {}),
         opponent_policy_belief_cfg=model_cfg.get("opponent_policy_belief", {}),
-        next_state_predictor_cfg=model_cfg.get("next_state_predictor", {})
+        next_state_predictor_cfg=model_cfg.get("next_state_predictor", {}),
+        encoder_chunk_tokens=args.encoder_chunk_tokens,
+        belief_batch_size=args.belief_batch_size,
     ).to(device)
 
     if device.type == "cuda":
@@ -917,8 +935,12 @@ def train(args: argparse.Namespace) -> None:
     print(
         f"Transitions: {train_transitions:,} train  {val_transitions:,} val  "
         f"batch={args.batch_size} grad_accum={args.grad_accum_steps} "
-        f"effective={args.batch_size * args.grad_accum_steps} "
-        f"max_history_blocks={args.max_history_blocks}"
+        f"rollout_len={rollout_len} "
+        f"microbatch_transitions={args.batch_size * rollout_len} "
+        f"effective_transitions={args.batch_size * rollout_len * args.grad_accum_steps} "
+        f"max_history_blocks={args.max_history_blocks} "
+        f"encoder_chunk_tokens={args.encoder_chunk_tokens} "
+        f"belief_batch_size={args.belief_batch_size}"
     )
 
     # ---- wandb init ----
@@ -936,7 +958,10 @@ def train(args: argparse.Namespace) -> None:
                 "vocab_size": vocab_size,
                 "batch_size": args.batch_size,
                 "grad_accum_steps": args.grad_accum_steps,
+                "rollout_len": rollout_len,
+                "microbatch_transitions": args.batch_size * rollout_len,
                 "effective_batch_size": args.batch_size * args.grad_accum_steps,
+                "effective_transition_batch_size": args.batch_size * rollout_len * args.grad_accum_steps,
                 "lr": args.lr,
                 "weight_decay": args.weight_decay,
                 "epochs": args.epochs,
@@ -954,6 +979,8 @@ def train(args: argparse.Namespace) -> None:
                 "debug_tensor_steps": args.debug_tensor_steps,
                 "debug_tensor_values": args.debug_tensor_values,
                 "debug_tensor_samples": args.debug_tensor_samples,
+                "encoder_chunk_tokens": args.encoder_chunk_tokens,
+                "belief_batch_size": args.belief_batch_size,
                 "n_params": n_params,
                 "n_train_transitions": train_transitions,
                 "n_val_transitions": val_transitions,
@@ -1003,12 +1030,44 @@ def train(args: argparse.Namespace) -> None:
 
     global_step = 0
     best_val_loss = float("inf")
+    best_val_epoch: int | None = None
+    best_val_global_step: int | None = None
+    best_val_metrics: dict[str, float] | None = None
+
+    def update_best_val(
+        epoch_idx: int,
+        step_idx: int,
+        val_metrics: dict[str, float],
+    ) -> bool:
+        nonlocal best_val_loss, best_val_epoch, best_val_global_step, best_val_metrics
+        val_loss = val_metrics.get("val_loss")
+        if val_loss is None or val_loss >= best_val_loss:
+            return False
+        best_val_loss = val_loss
+        best_val_epoch = epoch_idx
+        best_val_global_step = step_idx
+        best_val_metrics = dict(val_metrics)
+        return True
+
+    def checkpoint_val_metadata(
+        last_val_metrics: dict[str, float] | None = None,
+    ) -> dict[str, object]:
+        return {
+            "best_val_loss": best_val_loss if best_val_loss < float("inf") else None,
+            "best_val_epoch": best_val_epoch,
+            "best_val_global_step": best_val_global_step,
+            "best_val_metrics": best_val_metrics,
+            "last_val_metrics": dict(last_val_metrics) if last_val_metrics else None,
+        }
+
     optimizer.zero_grad(set_to_none=True)
     done = False
     t_last_print = time.time()
     tokens_since_print = 0
     t_last_wandb = time.time()
     tokens_since_wandb = 0
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats()
 
     for epoch in range(args.epochs):
         model.train()
@@ -1059,9 +1118,14 @@ def train(args: argparse.Namespace) -> None:
                         "CUDA OOM during backward. "
                         f"allocated={allocated:.2f} GiB reserved={reserved:.2f} GiB "
                         f"batch_size={args.batch_size} grad_accum_steps={args.grad_accum_steps} "
-                        f"max_history_blocks={args.max_history_blocks}. "
+                        f"rollout_len={rollout_len} "
+                        f"microbatch_transitions={args.batch_size * rollout_len} "
+                        f"max_history_blocks={args.max_history_blocks} "
+                        f"encoder_chunk_tokens={args.encoder_chunk_tokens} "
+                        f"belief_batch_size={args.belief_batch_size}. "
                         "Reduce JEPA_PAIRED_BATCH_SIZE or JEPA_MAX_HISTORY; "
-                        "increase JEPA_PAIRED_GRAD_ACCUM_STEPS to keep the same effective batch."
+                        "increase JEPA_PAIRED_GRAD_ACCUM_STEPS to keep the same effective batch; "
+                        "or lower --belief_batch_size / --encoder_chunk_tokens."
                     )
                 raise
 
@@ -1099,7 +1163,7 @@ def train(args: argparse.Namespace) -> None:
                 tok_per_sec_wandb = tokens_since_wandb / elapsed if elapsed > 0 else 0
                 t_last_wandb = now
                 tokens_since_wandb = 0
-                wandb_run.log({
+                wandb_payload = {
                     "train/tok_per_sec": tok_per_sec_wandb,
                     "train/loss": metrics["loss"],
                     "train/self_state_loss": metrics["self_state_loss"],
@@ -1126,7 +1190,14 @@ def train(args: argparse.Namespace) -> None:
                     "epoch": epoch,
                     "global_step": global_step,
                     "samples_seen": args.batch_size * global_step,
-                })
+                }
+                if device.type == "cuda":
+                    wandb_payload.update({
+                        "train/cuda_allocated_gib": torch.cuda.memory_allocated() / 1024 ** 3,
+                        "train/cuda_reserved_gib": torch.cuda.memory_reserved() / 1024 ** 3,
+                        "train/cuda_peak_allocated_gib": torch.cuda.max_memory_allocated() / 1024 ** 3,
+                    })
+                wandb_run.log(wandb_payload)
 
             if args.print_interval > 0 and global_step % args.print_interval == 0:
                 now = time.time()
@@ -1134,6 +1205,14 @@ def train(args: argparse.Namespace) -> None:
                 tok_per_sec = tokens_since_print / elapsed if elapsed > 0 else 0
                 t_last_print = now
                 tokens_since_print = 0
+                cuda_mem = ""
+                if device.type == "cuda":
+                    cuda_mem = (
+                        " | cuda_mem "
+                        f"{torch.cuda.memory_allocated() / 1024 ** 3:.2f}G alloc/"
+                        f"{torch.cuda.memory_reserved() / 1024 ** 3:.2f}G reserved/"
+                        f"{torch.cuda.max_memory_allocated() / 1024 ** 3:.2f}G peak"
+                    )
                 print(
                     f"  epoch {epoch:3d} | step {global_step:6d} | "
                     f"tok/s {tok_per_sec:,.0f} | "
@@ -1151,7 +1230,10 @@ def train(args: argparse.Namespace) -> None:
                     f"[p1 {metrics['next_state_loss_p1']:.4f}, "
                     f"p2 {metrics['next_state_loss_p2']:.4f}] | "
                     f"logvar_next {metrics['next_state_logvar_p1']:.3f}/{metrics['next_state_logvar_p2']:.3f}"
+                    f"{cuda_mem}"
                 )
+                if device.type == "cuda":
+                    torch.cuda.reset_peak_memory_stats()
 
             if args.val_interval > 0 and global_step % args.val_interval == 0:
                 val_metrics = validate(args.val_max_batches)
@@ -1175,8 +1257,8 @@ def train(args: argparse.Namespace) -> None:
                             "global_step": global_step,
                             "samples_seen": args.batch_size * global_step,
                         })
-                    if val_metrics["val_loss"] < best_val_loss and args.checkpoint:
-                        best_val_loss = val_metrics["val_loss"]
+                    val_improved = update_best_val(epoch, global_step, val_metrics)
+                    if val_improved and args.checkpoint:
                         save_paired_jepa_checkpoint(
                             model,
                             args.checkpoint,
@@ -1186,6 +1268,7 @@ def train(args: argparse.Namespace) -> None:
                             vocab_size=vocab_size,
                             max_history_blocks=args.max_history_blocks,
                             tokenizer=tokenizer,
+                            **checkpoint_val_metadata(val_metrics),
                         )
                         print(f"  best checkpoint -> {args.checkpoint}")
 
@@ -1200,6 +1283,7 @@ def train(args: argparse.Namespace) -> None:
 
         avg = {key: value / max(epoch_steps, 1) for key, value in epoch_totals.items()}
         val_metrics = validate(args.val_max_batches)
+        epoch_val_improved = update_best_val(epoch, global_step, val_metrics) if val_metrics else False
         msg = (
             f"=== epoch {epoch:3d} done | train loss {avg.get('loss', 0.0):.4f} | "
             f"self_state {avg.get('self_state_loss', 0.0):.4f} | "
@@ -1243,9 +1327,9 @@ def train(args: argparse.Namespace) -> None:
             vocab_size=vocab_size,
             max_history_blocks=args.max_history_blocks,
             tokenizer=tokenizer,
+            **checkpoint_val_metadata(val_metrics if val_metrics else None),
         )
-        if args.checkpoint and (not val_metrics or val_metrics.get("val_loss", float("inf")) < best_val_loss):
-            best_val_loss = val_metrics.get("val_loss", avg.get("loss", best_val_loss))
+        if args.checkpoint and (not val_metrics or epoch_val_improved):
             save_paired_jepa_checkpoint(
                 model,
                 args.checkpoint,
@@ -1255,6 +1339,7 @@ def train(args: argparse.Namespace) -> None:
                 vocab_size=vocab_size,
                 max_history_blocks=args.max_history_blocks,
                 tokenizer=tokenizer,
+                **checkpoint_val_metadata(val_metrics if val_metrics else None),
             )
         if done:
             break
@@ -1300,6 +1385,12 @@ if __name__ == "__main__":
                         help="Number of flattened values and detokenized IDs to preview per dumped tensor.")
     parser.add_argument("--debug_tensor_samples", type=int, default=2,
                         help="Number of batch samples to expand in the structured detokenized debug dump.")
+    parser.add_argument("--encoder_chunk_tokens", type=int, default=65536,
+                        help="Maximum padded token slots per JEPAEncoder call when encoding history blocks "
+                             "(0 = no chunking). Lower uses less peak CUDA memory.")
+    parser.add_argument("--belief_batch_size", type=int, default=128,
+                        help="Maximum flattened rollout items per state-belief transformer call "
+                             "(0 = no chunking). Lower uses less peak CUDA memory.")
     parser.add_argument("--wandb", default=True, action=argparse.BooleanOptionalAction,
                         help="Enable Weights & Biases logging (default: True). Use --no-wandb to disable.")
     parser.add_argument("--wandb_project", type=str, default=None,

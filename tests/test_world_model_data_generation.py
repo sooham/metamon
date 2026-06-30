@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -65,6 +66,117 @@ won
 
     assert match is not None
     assert match.group(1) == "won"
+
+
+def test_paired_jepa_dataset_discover_prefers_flat_split_layout(tmp_path):
+    flat_train = tmp_path / "train"
+    format_train = tmp_path / "gen1ou" / "train"
+    flat_train.mkdir()
+    format_train.mkdir(parents=True)
+    flat_shard = flat_train / "paired_shard_0000.npz"
+    stale_format_shard = format_train / "paired_shard_0000.npz"
+    flat_shard.touch()
+    stale_format_shard.touch()
+
+    paths = PairedJEPADataset.discover(str(tmp_path), ["gen1ou"], "train")
+
+    assert paths == [str(flat_shard)]
+
+
+def test_paired_jepa_encode_blocks_respects_chunk_budget():
+    belief_cfg = {
+        "n_heads": 1,
+        "n_layers": 1,
+        "d_ff": 16,
+        "dropout": 0.0,
+        "max_seq_len": 16,
+    }
+    model = PairedJEPAModel(
+        vocab_size=8,
+        pad_id=0,
+        bos_id=1,
+        eos_id=2,
+        latent_dim=4,
+        encoder_cfg={
+            "d_model": 8,
+            "n_heads": 2,
+            "n_layers": 1,
+            "d_ff": 16,
+            "dropout": 0.0,
+            "max_seq_len": 8,
+            "gradient_checkpointing": False,
+        },
+        self_belief_encoder_cfg=belief_cfg,
+        opponent_belief_predictor_cfg=belief_cfg,
+        opponent_policy_belief_cfg={"hidden_dim": 16, "n_layers": 1, "dropout": 0.0},
+        next_state_predictor_cfg={
+            "hidden_dim": 16,
+            "n_heads": 1,
+            "n_layers": 1,
+            "dropout": 0.0,
+            "gradient_checkpointing": False,
+        },
+    )
+    model.eval()
+    tokens = torch.tensor(
+        [
+            [[1, 3, 0, 0], [1, 4, 5, 0], [0, 0, 0, 0]],
+            [[1, 6, 0, 0], [1, 7, 8, 0], [1, 3, 4, 5]],
+        ],
+        dtype=torch.int32,
+    )
+    valid = torch.tensor([[True, True, False], [True, True, True]])
+
+    with torch.no_grad():
+        unchunked = model._encode_blocks(tokens, valid, max_chunk_tokens=0)
+        chunked = model._encode_blocks(tokens, valid, max_chunk_tokens=4)
+
+    torch.testing.assert_close(chunked, unchunked)
+    torch.testing.assert_close(chunked[0, 2], torch.zeros_like(chunked[0, 2]))
+
+
+def test_paired_jepa_belief_chunking_flattens_rollout_axis():
+    class RecordingBeliefEncoder:
+        def __init__(self):
+            self.batch_sizes = []
+
+        def __call__(
+            self,
+            state_embs,
+            state_valid,
+            player_action_embs,
+            player_action_valid,
+            opponent_action_embs,
+            opponent_action_valid,
+        ):
+            self.batch_sizes.append(int(state_embs.shape[0]))
+            mu = state_embs[:, -1, :]
+            return mu, torch.zeros_like(mu)
+
+    owner = SimpleNamespace(belief_batch_size=2)
+    encoder = RecordingBeliefEncoder()
+    state_embs = torch.arange(2 * 3 * 4 * 5, dtype=torch.float32).reshape(2, 3, 4, 5)
+    state_valid = torch.ones((2, 3, 4), dtype=torch.bool)
+    player_action_embs = torch.zeros((2, 3, 4, 5))
+    player_action_valid = torch.ones((2, 3, 4), dtype=torch.bool)
+    opponent_action_embs = torch.zeros((2, 3, 4, 5))
+    opponent_action_valid = torch.ones((2, 3, 4), dtype=torch.bool)
+
+    mu, logvar = PairedJEPAModel._forward_belief_encoder_chunked(
+        owner,
+        encoder,
+        state_embs,
+        state_valid,
+        player_action_embs,
+        player_action_valid,
+        opponent_action_embs,
+        opponent_action_valid,
+    )
+
+    expected = state_embs.reshape(6, 4, 5)[:, -1, :].reshape(2, 3, 5)
+    assert encoder.batch_sizes == [2, 2, 2]
+    torch.testing.assert_close(mu, expected)
+    torch.testing.assert_close(logvar, torch.zeros_like(expected))
 
 
 def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):

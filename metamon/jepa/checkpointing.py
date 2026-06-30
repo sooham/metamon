@@ -38,6 +38,11 @@ def save_paired_jepa_checkpoint(
     vocab_size: int,
     max_history_blocks: int,
     tokenizer: PokemonTokenizer,
+    best_val_loss: float | None = None,
+    best_val_epoch: int | None = None,
+    best_val_global_step: int | None = None,
+    best_val_metrics: dict[str, float] | None = None,
+    last_val_metrics: dict[str, float] | None = None,
 ) -> None:
     """Save a paired JEPA checkpoint with all inference-critical metadata."""
     model.save_checkpoint(
@@ -48,4 +53,9 @@ def save_paired_jepa_checkpoint(
         vocab_size=vocab_size,
         max_history_blocks=max_history_blocks,
         tokenizer_state=tokenizer.to_state(),
+        best_val_loss=best_val_loss,
+        best_val_epoch=best_val_epoch,
+        best_val_global_step=best_val_global_step,
+        best_val_metrics=best_val_metrics,
+        last_val_metrics=last_val_metrics,
     )

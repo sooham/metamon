@@ -31,6 +31,11 @@ def test_save_paired_jepa_checkpoint_includes_inference_metadata():
         vocab_size=123,
         max_history_blocks=4,
         tokenizer=tokenizer,
+        best_val_loss=0.123,
+        best_val_epoch=2,
+        best_val_global_step=17,
+        best_val_metrics={"val_loss": 0.123, "val_next_state_loss": 0.04},
+        last_val_metrics={"val_loss": 0.125},
     )
 
     assert model.saved_path == "/tmp/paired.pt"
@@ -39,6 +44,14 @@ def test_save_paired_jepa_checkpoint_includes_inference_metadata():
     assert model.saved_extra["config"] == {"latent_dim": 8}
     assert model.saved_extra["vocab_size"] == 123
     assert model.saved_extra["max_history_blocks"] == 4
+    assert model.saved_extra["best_val_loss"] == 0.123
+    assert model.saved_extra["best_val_epoch"] == 2
+    assert model.saved_extra["best_val_global_step"] == 17
+    assert model.saved_extra["best_val_metrics"] == {
+        "val_loss": 0.123,
+        "val_next_state_loss": 0.04,
+    }
+    assert model.saved_extra["last_val_metrics"] == {"val_loss": 0.125}
     restored = require_tokenizer_from_checkpoint(
         model.saved_extra,
         "/tmp/paired.pt",

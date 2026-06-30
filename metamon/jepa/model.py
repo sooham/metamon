@@ -1134,6 +1134,8 @@ class PairedJEPAModel(nn.Module):
         opponent_belief_predictor_cfg: Optional[dict] = None,
         opponent_policy_belief_cfg: Optional[dict] = None,
         next_state_predictor_cfg: Optional[dict] = None,
+        encoder_chunk_tokens: int = 65536,
+        belief_batch_size: int = 128,
         **kwargs,
     ):
         super().__init__()
@@ -1147,6 +1149,8 @@ class PairedJEPAModel(nn.Module):
         self.debug_tensor_max_steps = 1
         self.debug_tensor_max_values = 16
         self._debug_tensor_forward_count = 0
+        self.encoder_chunk_tokens = int(encoder_chunk_tokens)
+        self.belief_batch_size = int(belief_batch_size)
 
         enc_cfg = dict(encoder_cfg or {})
         self_belief_enc_cfg = _latent_transformer_cfg(self_belief_encoder_cfg, latent_dim)
@@ -1220,7 +1224,7 @@ class PairedJEPAModel(nn.Module):
         self,
         tokens: torch.Tensor,
         valid: torch.Tensor,
-        max_chunk_tokens: int = 65536,
+        max_chunk_tokens: int | None = None,
     ) -> torch.Tensor:
         """Encode state blocks in micro-batches to bound peak FFN memory.
 
@@ -1236,34 +1240,73 @@ class PairedJEPAModel(nn.Module):
         flat_tokens = tokens.reshape(B * S, T)
         flat_valid = valid.reshape(B * S)
         valid_idx = flat_valid.nonzero(as_tuple=True)[0]
-        encoded = self.encoder(flat_tokens[valid_idx])
-        out.reshape(B * S, self.latent_dim)[valid_idx] = encoded
+        flat_out = out.reshape(B * S, self.latent_dim)
+
+        token_budget = self.encoder_chunk_tokens if max_chunk_tokens is None else int(max_chunk_tokens)
+        if token_budget <= 0:
+            flat_out[valid_idx] = self.encoder(flat_tokens[valid_idx])
+            return out
+
+        blocks_per_chunk = max(1, int(token_budget) // max(int(T), 1))
+        for start in range(0, int(valid_idx.numel()), blocks_per_chunk):
+            chunk_idx = valid_idx[start : start + blocks_per_chunk]
+            flat_out[chunk_idx] = self.encoder(flat_tokens[chunk_idx])
         return out
-        # TODO: below is a vectorized processing of encode state blocks
-        # Vectorized token count per valid block, then cumulative sum for chunking.
-        # n_tokens = (flat_tokens[valid_idx] != self.pad_id).sum(dim=1)  # (V,)
-        # cum_tokens = torch.cumsum(n_tokens, dim=0)
-        # total_tokens = cum_tokens[-1].item() # last index of the cumulative sum
-        # if total_tokens <= max_chunk_tokens:
-        #     encoded = self.encoder(flat_tokens[valid_idx])
-        #     out.reshape(B * S, self.latent_dim)[valid_idx] = encoded
-        #     return out
-        # # Find split point where cum_tokens crosses multiples of max_chunk_tokens.
-        # boundaries = torch.searchsorted(
-        #     cum_tokens,
-        #     torch.arange(max_chunk_tokens, total_tokens, max_chunk_tokens,
-        #                  device=cum_tokens.device),
-        # )
-        # chunk_bounds = torch.cat([
-        #     torch.tensor([0], device=cum_tokens.device),
-        #     boundaries,
-        #     torch.tensor([len(valid_idx)], device=cum_tokens.device),
-        # ])
-        # for i in range(len(chunk_bounds) - 1):
-        #     chunk_idx = valid_idx[chunk_bounds[i]:chunk_bounds[i + 1]]
-        #     encoded = self.encoder(flat_tokens[chunk_idx])
-        #     out.reshape(B * S, self.latent_dim)[chunk_idx] = encoded
-        return out
+
+    @staticmethod
+    def _forward_belief_encoder_chunked(
+        owner: object,
+        encoder: nn.Module,
+        *ctx: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run a belief encoder with an optional cap on flattened batch size."""
+        max_batch = int(getattr(owner, "belief_batch_size", 0) or 0)
+        if max_batch <= 0 or len(ctx) != 6:
+            return encoder(*ctx)
+
+        (
+            state_embs,
+            state_valid,
+            player_action_embs,
+            player_action_valid,
+            opponent_action_embs,
+            opponent_action_valid,
+        ) = ctx
+
+        if state_embs.ndim == 4:
+            b, k, s, d = state_embs.shape
+            a = player_action_embs.shape[2]
+            oa = opponent_action_embs.shape[2]
+            mu, logvar = PairedJEPAModel._forward_belief_encoder_chunked(
+                owner,
+                encoder,
+                state_embs.reshape(b * k, s, d),
+                state_valid.reshape(b * k, s),
+                player_action_embs.reshape(b * k, a, d),
+                player_action_valid.reshape(b * k, a),
+                opponent_action_embs.reshape(b * k, oa, d),
+                opponent_action_valid.reshape(b * k, oa),
+            )
+            return mu.reshape(b, k, d), logvar.reshape(b, k, d)
+
+        if state_embs.ndim != 3 or state_embs.shape[0] <= max_batch:
+            return encoder(*ctx)
+
+        mu_chunks: list[torch.Tensor] = []
+        logvar_chunks: list[torch.Tensor] = []
+        for start in range(0, int(state_embs.shape[0]), max_batch):
+            sl = slice(start, start + max_batch)
+            mu, logvar = encoder(
+                state_embs[sl],
+                state_valid[sl],
+                player_action_embs[sl],
+                player_action_valid[sl],
+                opponent_action_embs[sl],
+                opponent_action_valid[sl],
+            )
+            mu_chunks.append(mu)
+            logvar_chunks.append(logvar)
+        return torch.cat(mu_chunks, dim=0), torch.cat(logvar_chunks, dim=0)
 
     def encode_history(
         self,
@@ -1543,10 +1586,18 @@ class PairedJEPAModel(nn.Module):
                 },
             )
 
-        pred_p1_self_T_mu, pred_p1_self_T_logvar = self.self_belief_encoder(*ctx_p1_T)
-        pred_p2_self_T_mu, pred_p2_self_T_logvar = self.self_belief_encoder(*ctx_p2_T)
-        pred_p2_T_mu, pred_p2_T_logvar = self.opp_belief_predictor(*ctx_p1_T)
-        pred_p1_T_mu, pred_p1_T_logvar = self.opp_belief_predictor(*ctx_p2_T)
+        pred_p1_self_T_mu, pred_p1_self_T_logvar = PairedJEPAModel._forward_belief_encoder_chunked(
+            self, self.self_belief_encoder, *ctx_p1_T
+        )
+        pred_p2_self_T_mu, pred_p2_self_T_logvar = PairedJEPAModel._forward_belief_encoder_chunked(
+            self, self.self_belief_encoder, *ctx_p2_T
+        )
+        pred_p2_T_mu, pred_p2_T_logvar = PairedJEPAModel._forward_belief_encoder_chunked(
+            self, self.opp_belief_predictor, *ctx_p1_T
+        )
+        pred_p1_T_mu, pred_p1_T_logvar = PairedJEPAModel._forward_belief_encoder_chunked(
+            self, self.opp_belief_predictor, *ctx_p2_T
+        )
         if debug_this_forward:
             self._debug_dump_tensors(
                 "JEPAStateBeliefEncoder Gaussian outputs",
