@@ -315,6 +315,7 @@ _train-jepa-inner:
 # Usage:
 #   make play-jepa
 #   make play-jepa-local
+#   make play-jepa DEMO=1                         # use bundled demo checkpoint
 #   make play-jepa JEPA_PLAY_FORMAT=gen1ou JEPA_PLAY_USERNAME=JEPABot
 #   make play-jepa JEPA_PLAY_CHECKPOINT=/path/to/paired_best.pt
 #   make play-jepa JEPA_PLAY_VERBOSE_BLOCKS=true JEPA_PLAY_LADDER=true
@@ -322,7 +323,7 @@ _train-jepa-inner:
 # REPL keys (press during battle):
 #   R = raw protocol logs    P = state/action blocks
 #   V = toggle verbose       O = battle overview    Q = quit REPL
-JEPA_PLAY_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best_stochastic.pt
+JEPA_PLAY_CHECKPOINT ?= $(if $(filter 1,$(DEMO)),./checkpoints/demo_best.pt,$(JEPA_SAVE_DIR)/paired_best_stochastic.pt)
 JEPA_PLAY_FORMAT ?= gen1ou
 JEPA_PLAY_USERNAME ?= jepabot
 JEPA_PLAY_TEAM_SET ?= competitive
@@ -335,6 +336,7 @@ play-jepa:
 	@if [ ! -f "$(JEPA_PLAY_CHECKPOINT)" ]; then \
 		echo "ERROR: Checkpoint not found at $(JEPA_PLAY_CHECKPOINT)."; \
 		echo "  Train first: make train-jepa FORMATS=$(JEPA_PLAY_FORMAT)"; \
+		echo "  Or use demo: make play-jepa DEMO=1"; \
 		exit 1; \
 	fi
 	uv run python -m metamon.jepa.play \
@@ -350,6 +352,8 @@ play-jepa:
 
 # Battle with the paired JEPA bot on a local Pokemon Showdown server.
 # Start the server first with: make showdown
+#
+# DEMO=1 uses the bundled demo checkpoint (./checkpoints/demo_best.pt)
 play-jepa-local: ensure-showdown
 	$(MAKE) play-jepa JEPA_PLAY_SERVER=localhost JEPA_PLAY_PASSWORD=
 
@@ -367,6 +371,7 @@ test-jepa-baseline: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure-show
 	@if [ ! -f "$(JEPA_PLAY_CHECKPOINT)" ]; then \
 		echo "ERROR: Checkpoint not found at $(JEPA_PLAY_CHECKPOINT)."; \
 		echo "  Train first: make train-jepa FORMATS=$(JEPA_BASELINE_FORMAT)"; \
+		echo "  Or use demo: make test-jepa-baseline DEMO=1"; \
 		exit 1; \
 	fi
 	uv run python -m metamon.jepa.compete_baseline \
@@ -384,6 +389,7 @@ test-jepa-baseline: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure-show
 test-jepa-all-baselines: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure-showdown)
 	@if [ ! -f "$(JEPA_PLAY_CHECKPOINT)" ]; then \
 		echo "ERROR: Checkpoint not found at $(JEPA_PLAY_CHECKPOINT)."; \
+		echo "  Or use demo: make test-jepa-all-baselines DEMO=1"; \
 		exit 1; \
 	fi
 	uv run python -m metamon.jepa.compete_baseline \
