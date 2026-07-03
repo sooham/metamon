@@ -1,0 +1,73 @@
+# Git internals
+.git/
+
+# Virtual environment
+.venv/
+venv/
+
+# Python bytecode & cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build & packaging
+build/
+dist/
+*.egg-info/
+*.egg
+*.so
+
+# OS junk
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Weights & Biases
+wandb/
+
+# Model checkpoints
+checkpoints/
+
+# Showdown server submodule
+server/pokemon-showdown/
+
+# Logs
+*.log
+logs/
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+
+# Large data files
+parsed-json-format.jsonl
+*.jsonl
+*.pkl
+
+# Lock files
+uv.lock
+package-lock.json
+
+# Media
+media/
+*.png
+*.jpg
+*.gif
+*.webp
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Doc builds
+docs/_build/
+
+# Misc
+.hypothesis/
+.pdm.toml
+*.csv

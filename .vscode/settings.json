@@ -1,4 +1,22 @@
 {
+    "files.watcherExclude": {
+        "**/.git/**": true,
+        "**/node_modules/**": true,
+        "**/.next/**": true,
+        "**/dist/**": true,
+        "**/build/**": true,
+        "**/coverage/**": true,
+        "**/.cache/**": true,
+        "**/.venv/**": true,
+        "**/wandb/**": true,
+        "**/checkpoints/**": true,
+        "**/__pycache__/**": true,
+        "**/*.egg-info/**": true,
+        "**/.pytest_cache/**": true,
+        "**/server/pokemon-showdown/**": true,
+        "**/bayesian_dataset/**": true,
+        "**/parsed-json-format.jsonl": true
+    },
     "folder-color.pathColors": [
         {
             "folderPath": "metamon/data/",
