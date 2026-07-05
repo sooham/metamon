@@ -11,6 +11,7 @@ from pathlib import Path
 
 import orjson
 from huggingface_hub import CommitOperationAdd, HfApi
+from tqdm import tqdm
 
 from metamon.config import METAMON_CACHE_DIR, SUPPORTED_BATTLE_FORMATS
 
@@ -85,7 +86,7 @@ def _write_index(
     file_count = 0
     total_uncompressed_bytes = 0
     with gzip.open(index_path, "wt", encoding="utf-8") as f:
-        for path in parsed_files:
+        for path in tqdm(parsed_files, desc="Indexing parsed replays", unit="file"):
             size_bytes = path.stat().st_size
             total_uncompressed_bytes += size_bytes
             file_count += 1
@@ -101,7 +102,7 @@ def _write_index(
 
 def _write_archive(archive_path: Path, parsed_files: list[Path], format_name: str) -> None:
     with tarfile.open(archive_path, "w:gz") as tar:
-        for path in parsed_files:
+        for path in tqdm(parsed_files, desc="Writing tar archive", unit="file"):
             tar.add(path, arcname=f"{format_name}/{path.name}", recursive=False)
 
 
@@ -121,6 +122,10 @@ def package_format(
 
     total_bytes = sum(path.stat().st_size for path in parsed_files)
     _check_staging_space(staging_dir, total_bytes)
+    print(
+        f"Packaging {len(parsed_files)} parsed replay files "
+        f"({total_bytes / 1e9:.2f} GB uncompressed) from {parsed_dir}"
+    )
 
     archive_path = staging_dir / f"{format_name}.tar.gz"
     index_path = staging_dir / f"{format_name}.jsonl.gz"
@@ -172,6 +177,7 @@ def upload_format(
     manifest: dict,
 ) -> None:
     api = HfApi()
+    print(f"Ensuring Hugging Face dataset repo exists: {repo_id}")
     api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
     operations = [
         CommitOperationAdd(
@@ -187,6 +193,15 @@ def upload_format(
             path_or_fileobj=str(manifest_path),
         ),
     ]
+    upload_bytes = (
+        archive_path.stat().st_size
+        + index_path.stat().st_size
+        + manifest_path.stat().st_size
+    )
+    print(
+        f"Uploading archive, index, and manifest "
+        f"({upload_bytes / 1e9:.2f} GB total) to {repo_id}@{revision}"
+    )
     api.create_commit(
         repo_id=repo_id,
         repo_type="dataset",
