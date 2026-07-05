@@ -1,6 +1,6 @@
 # Detect OS and number of CPU cores
 OS := $(shell uname -s)
-N_THREADS := $(shell expr \( $$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4) + 1 \) / 2)
+N_THREADS := $(shell expr \( $$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4) + 1 \))
 
 ifeq ($(OS),Darwin)
 METAMON_CACHE_DIR ?= /Users/srafiz/Repositories/poke-datasets
@@ -11,7 +11,7 @@ RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/raw-replays
 FORMAT ?= gen1ou
 FORMATS ?= $(FORMAT)
 
-.PHONY: parse parse-all show-battle show-rand-battle \
+.PHONY: parse parse-all upload-parsed-wm-replays show-battle show-rand-battle \
         wm-tokenizer \
         wm-dataset \
         test test-quick test-forward test-backward test-e2e \
@@ -80,6 +80,19 @@ parse-all:
 		echo "=== $$fmt ==="; \
 		$(MAKE) parse FORMAT=$$fmt; \
 	done
+
+PARSED_WM_REPLAY_REPO ?= sooham34/metamon-parsed-wm-replays
+PARSED_WM_REPLAY_REVISION ?= main
+PARSED_WM_REPLAY_PRIVATE ?= 0
+PARSED_WM_REPLAY_DRY_RUN ?= 0
+upload-parsed-wm-replays:
+	uv run python scripts/upload_parsed_wm_replays.py \
+		--format $(FORMAT) \
+		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed-replays \
+		--repo_id $(PARSED_WM_REPLAY_REPO) \
+		--revision $(PARSED_WM_REPLAY_REVISION) \
+		$(if $(filter 1 true yes,$(PARSED_WM_REPLAY_PRIVATE)),--private,) \
+		$(if $(filter 1 true yes,$(PARSED_WM_REPLAY_DRY_RUN)),--dry_run,)
 
 # Inspect a random sample of 5 parsed battles from a format (one at a time in Cursor + browser)
 # Usage: make show-rand-battle FORMAT=gen1ou

@@ -80,6 +80,7 @@ else:
 
 LATEST_RAW_REPLAY_REVISION = "v6"
 LATEST_PARSED_REPLAY_REVISION = "v6"
+LATEST_PARSED_WM_REPLAY_REVISION = "main"
 LATEST_TEAMS_REVISION = "v5"
 LATEST_USAGE_STATS_REVISION = "v5"
 
@@ -156,6 +157,89 @@ def download_parsed_replays(
         tar.extractall(path=extract_path)
     os.remove(tar_path)
     _update_version_reference("parsed-replays", battle_format, version)
+    return out_path
+
+
+def download_parsed_wm_replays(
+    battle_format: str,
+    version: str = LATEST_PARSED_WM_REPLAY_REVISION,
+    force_download: bool = False,
+) -> str:
+    """Download parser text outputs used by world-model dataset generation.
+
+    These are the .txt files produced by ``python -m metamon.backend.replay_parser``
+    and consumed by tokenizer / world-model data generation commands.
+
+    Args:
+        battle_format: Showdown battle format (e.g. "gen1ou")
+        version: Hugging Face Hub revision to download.
+        force_download: If True, replace any existing extracted format directory.
+
+    Returns:
+        The extracted ``$METAMON_CACHE_DIR/parsed-replays/{battle_format}`` path.
+    """
+    if METAMON_CACHE_DIR is None:
+        raise ValueError("METAMON_CACHE_DIR environment variable is not set")
+
+    parsed_replay_dir = os.path.join(METAMON_CACHE_DIR, "parsed-replays")
+    parsed_wm_dir = os.path.join(METAMON_CACHE_DIR, "parsed-wm-replays")
+    out_path = os.path.join(parsed_replay_dir, battle_format)
+    tar_path = os.path.join(parsed_wm_dir, "archives", f"{battle_format}.tar.gz")
+    manifest_path = os.path.join(
+        parsed_wm_dir, "manifests", f"{battle_format}.json"
+    )
+    index_path = os.path.join(parsed_wm_dir, "indexes", f"{battle_format}.jsonl.gz")
+
+    if os.path.exists(out_path):
+        if not force_download:
+            return out_path
+        print(f"Clearing existing dataset at {out_path}...")
+        shutil.rmtree(out_path)
+
+    hf_hub_download(
+        cache_dir=parsed_wm_dir,
+        repo_id="sooham34/metamon-parsed-wm-replays",
+        filename=f"archives/{battle_format}.tar.gz",
+        local_dir=parsed_wm_dir,
+        revision=version,
+        repo_type="dataset",
+    )
+    hf_hub_download(
+        cache_dir=parsed_wm_dir,
+        repo_id="sooham34/metamon-parsed-wm-replays",
+        filename=f"manifests/{battle_format}.json",
+        local_dir=parsed_wm_dir,
+        revision=version,
+        repo_type="dataset",
+    )
+    hf_hub_download(
+        cache_dir=parsed_wm_dir,
+        repo_id="sooham34/metamon-parsed-wm-replays",
+        filename=f"indexes/{battle_format}.jsonl.gz",
+        local_dir=parsed_wm_dir,
+        revision=version,
+        repo_type="dataset",
+    )
+
+    os.makedirs(parsed_replay_dir, exist_ok=True)
+    with tarfile.open(tar_path) as tar:
+        print(f"Extracting {tar_path}...")
+        tar.extractall(path=parsed_replay_dir)
+    os.remove(tar_path)
+
+    source_commit = "unknown"
+    if os.path.exists(manifest_path):
+        with open(manifest_path, "rb") as f:
+            manifest = orjson.loads(f.read())
+        source_commit = manifest.get("source_repo_commit", source_commit)
+    if not os.path.exists(index_path):
+        print(f"Warning: expected parsed-wm-replays index missing: {index_path}")
+
+    _update_version_reference(
+        "parsed-wm-replays",
+        battle_format,
+        f"{version}, source_repo_commit {source_commit}",
+    )
     return out_path
 
 
@@ -460,6 +544,7 @@ This tool downloads and manages Metamon datasets from Hugging Face Hub.
 Available datasets include:
     - raw-replays: Unprocessed Showdown replays (stripped of usernames/chat)
     - parsed-replays: RL-compatible version of replays with reconstructed player actions  
+    - parsed-wm-replays: Parser text outputs for tokenizer/world-model data generation
     - revealed-teams: Teams that were revealed during replay battles
     - replay-stats: Statistics generated from revealed teams
     - usage-stats: Team composition stats from Showdown
@@ -471,6 +556,9 @@ Examples:
 
     # Download parsed replays for Gen 1 UU  
     python -m metamon.data.download parsed-replays --formats gen1uu
+
+    # Download parser text outputs for world-model generation
+    python -m metamon.data.download parsed-wm-replays --formats gen1ou
 
     # Download (anonymized) Showdown replay logs (all formats)
     python -m metamon.data.download raw-replays
@@ -495,6 +583,7 @@ For current dataset versions, see `get_active_dataset_versions()` or run:
         choices=[
             "raw-replays",
             "parsed-replays",
+            "parsed-wm-replays",
             "self-play",
             "revealed-teams",
             "replay-stats",
@@ -508,6 +597,7 @@ For current dataset versions, see `get_active_dataset_versions()` or run:
 Dataset to download:
     raw-replays: Unprocessed Showdown replays (stripped of usernames/chat)
     parsed-replays: RL-compatible version of replays with reconstructed player actions
+    parsed-wm-replays: Parser text outputs consumed by world-model dataset generation
     self-play: Self-play battle data (pac-base, pac-exploratory, pac-tauros subsets)
     revealed-teams: Teams that were revealed during battles
     replay-stats: Statistics generated from revealed teams. Used to predict team sets.
@@ -521,7 +611,7 @@ Dataset to download:
         default=None,
         help="""
 Battle formats to download. Defaults depend on dataset type:
-  - parsed-replays, teams, usage-stats: All Gen 1-4 formats (OU, UU, NU, Ubers) + Gen 9 OU
+  - parsed-replays, parsed-wm-replays, teams, usage-stats: All Gen 1-4 formats (OU, UU, NU, Ubers) + Gen 9 OU
   - self-play: gen1ou, gen2ou, gen3ou, gen4ou, gen9ou (only OU available; defaults depend on subset)
 Examples:
     --formats gen1ou gen2ou    # Only Gen 1-2 OU
@@ -551,6 +641,7 @@ Specific version to download. Defaults to latest version.
 Available versions:
     raw-replays: v1, v2, v3, v4, v5, v6
     parsed-replays: v0 (deprecated) v1, v2, v3-beta, v3, v4, v5, v6
+    parsed-wm-replays: main, or any Hub commit/tag/branch in sooham34/metamon-parsed-wm-replays
     teams: v0, v1, v2, v3, v4, v5
     usage-stats: v0, v1, v2, v3, v4, v5
     
@@ -567,6 +658,11 @@ Available versions:
         formats = args.formats or SUPPORTED_BATTLE_FORMATS
         for format in formats:
             download_parsed_replays(format, version=version, force_download=True)
+    elif args.dataset == "parsed-wm-replays":
+        version = args.version or LATEST_PARSED_WM_REPLAY_REVISION
+        formats = args.formats or SUPPORTED_BATTLE_FORMATS
+        for format in formats:
+            download_parsed_wm_replays(format, version=version, force_download=True)
     elif args.dataset == "self-play":
         version = args.version or "main"
         downloads = iter_self_play_downloads(
