@@ -83,6 +83,7 @@ LATEST_PARSED_REPLAY_REVISION = "v6"
 LATEST_PARSED_WM_REPLAY_REVISION = "main"
 LATEST_TEAMS_REVISION = "v5"
 LATEST_USAGE_STATS_REVISION = "v5"
+PARSED_WM_REPLAY_MANIFEST_EXTENSION = ".metadata"
 
 
 def _update_version_reference(key: str, name: str, version: str):
@@ -185,8 +186,13 @@ def download_parsed_wm_replays(
     parsed_wm_dir = os.path.join(METAMON_CACHE_DIR, "parsed-wm-replays")
     out_path = os.path.join(parsed_replay_dir, battle_format)
     tar_path = os.path.join(parsed_wm_dir, "archives", f"{battle_format}.tar.gz")
+    manifest_filename = (
+        f"manifests/{battle_format}{PARSED_WM_REPLAY_MANIFEST_EXTENSION}"
+    )
     manifest_path = os.path.join(
-        parsed_wm_dir, "manifests", f"{battle_format}.json"
+        parsed_wm_dir,
+        "manifests",
+        f"{battle_format}{PARSED_WM_REPLAY_MANIFEST_EXTENSION}",
     )
     index_path = os.path.join(parsed_wm_dir, "indexes", f"{battle_format}.jsonl.gz")
 
@@ -204,14 +210,28 @@ def download_parsed_wm_replays(
         revision=version,
         repo_type="dataset",
     )
-    hf_hub_download(
-        cache_dir=parsed_wm_dir,
-        repo_id="sooham34/metamon-parsed-wm-replays",
-        filename=f"manifests/{battle_format}.json",
-        local_dir=parsed_wm_dir,
-        revision=version,
-        repo_type="dataset",
-    )
+    try:
+        hf_hub_download(
+            cache_dir=parsed_wm_dir,
+            repo_id="sooham34/metamon-parsed-wm-replays",
+            filename=manifest_filename,
+            local_dir=parsed_wm_dir,
+            revision=version,
+            repo_type="dataset",
+        )
+    except Exception:
+        manifest_filename = f"manifests/{battle_format}.json"
+        manifest_path = os.path.join(
+            parsed_wm_dir, "manifests", f"{battle_format}.json"
+        )
+        hf_hub_download(
+            cache_dir=parsed_wm_dir,
+            repo_id="sooham34/metamon-parsed-wm-replays",
+            filename=manifest_filename,
+            local_dir=parsed_wm_dir,
+            revision=version,
+            repo_type="dataset",
+        )
     hf_hub_download(
         cache_dir=parsed_wm_dir,
         repo_id="sooham34/metamon-parsed-wm-replays",

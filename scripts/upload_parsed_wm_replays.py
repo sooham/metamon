@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import orjson
-from huggingface_hub import CommitOperationAdd, HfApi
+from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
 from tqdm import tqdm
 
 from metamon.config import METAMON_CACHE_DIR, SUPPORTED_BATTLE_FORMATS
@@ -18,6 +18,7 @@ from metamon.config import METAMON_CACHE_DIR, SUPPORTED_BATTLE_FORMATS
 
 DEFAULT_REPO_ID = "sooham34/metamon-parsed-wm-replays"
 MIN_FREE_BYTES_AFTER_STAGING = 512 * 1024 * 1024
+MANIFEST_EXTENSION = ".metadata"
 
 
 def _run_git(args: list[str], repo_root: Path) -> str:
@@ -106,12 +107,62 @@ def _write_archive(archive_path: Path, parsed_files: list[Path], format_name: st
             tar.add(path, arcname=f"{format_name}/{path.name}", recursive=False)
 
 
+def _write_dataset_card(readme_path: Path, repo_id: str, manifest: dict) -> None:
+    card = f"""---
+license: mit
+task_categories:
+- reinforcement-learning
+language:
+- en
+pretty_name: Metamon Parsed World-Model Replays
+---
+
+# Metamon Parsed World-Model Replays
+
+This dataset contains Metamon replay parser text outputs for world-model
+training. These files are produced by `python -m metamon.backend.replay_parser`
+and are consumed by Metamon tokenizer and world-model dataset generation tools.
+
+## Storage layout
+
+- `archives/<format>.tar.gz`: parsed replay `.txt` files for one battle format.
+- `indexes/<format>.jsonl.gz`: one row per replay text file with `path`,
+  `size_bytes`, and `sha256`.
+- `manifests/<format>.metadata`: packaging metadata for the corresponding
+  archive and index.
+
+The archive extracts to a top-level `<format>/` directory, matching the local
+layout expected at `$METAMON_CACHE_DIR/parsed-replays/<format>`.
+
+## Current upload
+
+- Dataset repo: `{repo_id}`
+- Format: `{manifest["format"]}`
+- Source Metamon commit: `{manifest["source_repo_commit"]}`
+- Created at: `{manifest["created_at"]}`
+- File count: `{manifest["file_count"]}`
+- Total uncompressed bytes: `{manifest["total_uncompressed_bytes"]}`
+- Archive SHA256: `{manifest["archive_sha256"]}`
+- Index SHA256: `{manifest["index_sha256"]}`
+
+## Download
+
+```bash
+uv run python -m metamon.data.download parsed-wm-replays --formats {manifest["format"]}
+```
+
+The downloader extracts files into `$METAMON_CACHE_DIR/parsed-replays`.
+"""
+    readme_path.write_text(card, encoding="utf-8")
+
+
 def package_format(
     format_name: str,
     parsed_replay_root: Path,
     staging_dir: Path,
     repo_root: Path,
-) -> tuple[Path, Path, Path, dict]:
+    repo_id: str,
+) -> tuple[Path, Path, Path, Path, dict]:
     parsed_dir = parsed_replay_root / format_name
     if not parsed_dir.is_dir():
         raise FileNotFoundError(f"No parsed replay directory found: {parsed_dir}")
@@ -129,7 +180,8 @@ def package_format(
 
     archive_path = staging_dir / f"{format_name}.tar.gz"
     index_path = staging_dir / f"{format_name}.jsonl.gz"
-    manifest_path = staging_dir / f"{format_name}.json"
+    manifest_path = staging_dir / f"{format_name}{MANIFEST_EXTENSION}"
+    readme_path = staging_dir / "README.md"
 
     file_count, total_uncompressed_bytes = _write_index(
         index_path=index_path,
@@ -164,7 +216,8 @@ def package_format(
         ),
     }
     manifest_path.write_bytes(orjson.dumps(manifest, option=orjson.OPT_INDENT_2))
-    return archive_path, index_path, manifest_path, manifest
+    _write_dataset_card(readme_path=readme_path, repo_id=repo_id, manifest=manifest)
+    return archive_path, index_path, manifest_path, readme_path, manifest
 
 
 def upload_format(
@@ -174,6 +227,7 @@ def upload_format(
     archive_path: Path,
     index_path: Path,
     manifest_path: Path,
+    readme_path: Path,
     manifest: dict,
 ) -> None:
     api = HfApi()
@@ -189,17 +243,32 @@ def upload_format(
             path_or_fileobj=str(index_path),
         ),
         CommitOperationAdd(
-            path_in_repo=f"manifests/{manifest['format']}.json",
+            path_in_repo=f"manifests/{manifest['format']}{MANIFEST_EXTENSION}",
             path_or_fileobj=str(manifest_path),
         ),
+        CommitOperationAdd(
+            path_in_repo="README.md",
+            path_or_fileobj=str(readme_path),
+        ),
     ]
+    legacy_manifest_path = f"manifests/{manifest['format']}.json"
+    try:
+        repo_files = set(
+            api.list_repo_files(repo_id=repo_id, repo_type="dataset", revision=revision)
+        )
+    except Exception:
+        repo_files = set()
+    if legacy_manifest_path in repo_files:
+        operations.append(CommitOperationDelete(path_in_repo=legacy_manifest_path))
+
     upload_bytes = (
         archive_path.stat().st_size
         + index_path.stat().st_size
         + manifest_path.stat().st_size
+        + readme_path.stat().st_size
     )
     print(
-        f"Uploading archive, index, and manifest "
+        f"Uploading archive, index, manifest, and dataset card "
         f"({upload_bytes / 1e9:.2f} GB total) to {repo_id}@{revision}"
     )
     api.create_commit(
@@ -252,11 +321,12 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="metamon-parsed-wm-") as tmp:
         staging_dir = Path(tmp)
-        archive_path, index_path, manifest_path, manifest = package_format(
+        archive_path, index_path, manifest_path, readme_path, manifest = package_format(
             format_name=args.format,
             parsed_replay_root=Path(args.parsed_replay_root),
             staging_dir=staging_dir,
             repo_root=repo_root,
+            repo_id=args.repo_id,
         )
         print(orjson.dumps(manifest, option=orjson.OPT_INDENT_2).decode("utf-8"))
         if args.dry_run:
@@ -269,6 +339,7 @@ def main() -> None:
             archive_path=archive_path,
             index_path=index_path,
             manifest_path=manifest_path,
+            readme_path=readme_path,
             manifest=manifest,
         )
         print(
