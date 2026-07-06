@@ -81,9 +81,11 @@ else:
 LATEST_RAW_REPLAY_REVISION = "v6"
 LATEST_PARSED_REPLAY_REVISION = "v6"
 LATEST_PARSED_WM_REPLAY_REVISION = "main"
+LATEST_WM_DATASET_REVISION = "main"
 LATEST_TEAMS_REVISION = "v5"
 LATEST_USAGE_STATS_REVISION = "v5"
 PARSED_WM_REPLAY_MANIFEST_EXTENSION = ".metadata"
+WM_DATASET_MANIFEST_EXTENSION = ".metadata"
 
 
 def _update_version_reference(key: str, name: str, version: str):
@@ -261,6 +263,86 @@ def download_parsed_wm_replays(
         f"{version}, source_repo_commit {source_commit}",
     )
     return out_path
+
+
+def download_wm_dataset(
+    battle_format: str,
+    version: str = LATEST_WM_DATASET_REVISION,
+    force_download: bool = False,
+) -> str:
+    """Download generated world-model training shards for a single format.
+
+    The archive is extracted to ``$METAMON_CACHE_DIR/world-model-samples`` in
+    the same flat layout produced by ``make wm-dataset``.
+    """
+    if METAMON_CACHE_DIR is None:
+        raise ValueError("METAMON_CACHE_DIR environment variable is not set")
+
+    wm_output_dir = os.path.join(METAMON_CACHE_DIR, "world-model-samples")
+    wm_cache_dir = os.path.join(METAMON_CACHE_DIR, "wm-dataset")
+    archive_path = os.path.join(wm_cache_dir, "archives", f"{battle_format}.tar.lz4")
+    manifest_filename = f"manifests/{battle_format}{WM_DATASET_MANIFEST_EXTENSION}"
+    manifest_path = os.path.join(
+        wm_cache_dir,
+        "manifests",
+        f"{battle_format}{WM_DATASET_MANIFEST_EXTENSION}",
+    )
+    index_path = os.path.join(wm_cache_dir, "indexes", f"{battle_format}.jsonl.gz")
+
+    if os.path.exists(wm_output_dir):
+        if not force_download:
+            return wm_output_dir
+        print(f"Clearing existing dataset at {wm_output_dir}...")
+        shutil.rmtree(wm_output_dir)
+
+    hf_hub_download(
+        cache_dir=wm_cache_dir,
+        repo_id="sooham34/metamon-wm-dataset",
+        filename=f"archives/{battle_format}.tar.lz4",
+        local_dir=wm_cache_dir,
+        revision=version,
+        repo_type="dataset",
+    )
+    hf_hub_download(
+        cache_dir=wm_cache_dir,
+        repo_id="sooham34/metamon-wm-dataset",
+        filename=manifest_filename,
+        local_dir=wm_cache_dir,
+        revision=version,
+        repo_type="dataset",
+    )
+    hf_hub_download(
+        cache_dir=wm_cache_dir,
+        repo_id="sooham34/metamon-wm-dataset",
+        filename=f"indexes/{battle_format}.jsonl.gz",
+        local_dir=wm_cache_dir,
+        revision=version,
+        repo_type="dataset",
+    )
+
+    import lz4.frame
+
+    os.makedirs(wm_output_dir, exist_ok=True)
+    print(f"Extracting {archive_path}...")
+    with lz4.frame.open(archive_path, "rb") as compressed:
+        with tarfile.open(fileobj=compressed, mode="r|") as tar:
+            tar.extractall(path=wm_output_dir)
+    os.remove(archive_path)
+
+    source_commit = "unknown"
+    if os.path.exists(manifest_path):
+        with open(manifest_path, "rb") as f:
+            manifest = orjson.loads(f.read())
+        source_commit = manifest.get("source_repo_commit", source_commit)
+    if not os.path.exists(index_path):
+        print(f"Warning: expected wm-dataset index missing: {index_path}")
+
+    _update_version_reference(
+        "wm-dataset",
+        battle_format,
+        f"{version}, source_repo_commit {source_commit}",
+    )
+    return wm_output_dir
 
 
 def download_teams(
@@ -565,6 +647,7 @@ Available datasets include:
     - raw-replays: Unprocessed Showdown replays (stripped of usernames/chat)
     - parsed-replays: RL-compatible version of replays with reconstructed player actions  
     - parsed-wm-replays: Parser text outputs for tokenizer/world-model data generation
+    - wm-dataset: Generated JEPA/world-model training shards from make wm-dataset
     - revealed-teams: Teams that were revealed during replay battles
     - replay-stats: Statistics generated from revealed teams
     - usage-stats: Team composition stats from Showdown
@@ -579,6 +662,9 @@ Examples:
 
     # Download parser text outputs for world-model generation
     python -m metamon.data.download parsed-wm-replays --formats gen1ou
+
+    # Download generated world-model shards for Gen 1 OU
+    python -m metamon.data.download wm-dataset --formats gen1ou
 
     # Download (anonymized) Showdown replay logs (all formats)
     python -m metamon.data.download raw-replays
@@ -604,6 +690,7 @@ For current dataset versions, see `get_active_dataset_versions()` or run:
             "raw-replays",
             "parsed-replays",
             "parsed-wm-replays",
+            "wm-dataset",
             "self-play",
             "revealed-teams",
             "replay-stats",
@@ -618,6 +705,7 @@ Dataset to download:
     raw-replays: Unprocessed Showdown replays (stripped of usernames/chat)
     parsed-replays: RL-compatible version of replays with reconstructed player actions
     parsed-wm-replays: Parser text outputs consumed by world-model dataset generation
+    wm-dataset: Generated JEPA/world-model training shards from make wm-dataset
     self-play: Self-play battle data (pac-base, pac-exploratory, pac-tauros subsets)
     revealed-teams: Teams that were revealed during battles
     replay-stats: Statistics generated from revealed teams. Used to predict team sets.
@@ -632,6 +720,7 @@ Dataset to download:
         help="""
 Battle formats to download. Defaults depend on dataset type:
   - parsed-replays, parsed-wm-replays, teams, usage-stats: All Gen 1-4 formats (OU, UU, NU, Ubers) + Gen 9 OU
+  - wm-dataset: exactly one format, because it restores the flat make wm-dataset output layout
   - self-play: gen1ou, gen2ou, gen3ou, gen4ou, gen9ou (only OU available; defaults depend on subset)
 Examples:
     --formats gen1ou gen2ou    # Only Gen 1-2 OU
@@ -662,6 +751,7 @@ Available versions:
     raw-replays: v1, v2, v3, v4, v5, v6
     parsed-replays: v0 (deprecated) v1, v2, v3-beta, v3, v4, v5, v6
     parsed-wm-replays: main, or any Hub commit/tag/branch in sooham34/metamon-parsed-wm-replays
+    wm-dataset: main, or any Hub commit/tag/branch in sooham34/metamon-wm-dataset
     teams: v0, v1, v2, v3, v4, v5
     usage-stats: v0, v1, v2, v3, v4, v5
     
@@ -683,6 +773,15 @@ Available versions:
         formats = args.formats or SUPPORTED_BATTLE_FORMATS
         for format in formats:
             download_parsed_wm_replays(format, version=version, force_download=True)
+    elif args.dataset == "wm-dataset":
+        version = args.version or LATEST_WM_DATASET_REVISION
+        formats = args.formats or [SUPPORTED_BATTLE_FORMATS[0]]
+        if len(formats) != 1:
+            raise ValueError(
+                "wm-dataset downloads require exactly one --formats value because "
+                "the archive restores the flat make wm-dataset output layout."
+            )
+        download_wm_dataset(formats[0], version=version, force_download=True)
     elif args.dataset == "self-play":
         version = args.version or "main"
         downloads = iter_self_play_downloads(

@@ -13,7 +13,7 @@ FORMATS ?= $(FORMAT)
 
 .PHONY: parse parse-all upload-parsed-wm-replays show-battle show-rand-battle \
         wm-tokenizer \
-        wm-dataset \
+        wm-dataset upload-wm-dataset \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer \
         train-jepa train-jepa-debug _train-jepa-inner play-jepa play-jepa-local \
@@ -189,6 +189,19 @@ wm-dataset:
 		--rollout_len $(WM_ROLLOUT_LEN) \
 		--processes $(WM_PROCESSES)
 
+WM_DATASET_REPO ?= sooham34/metamon-wm-dataset
+WM_DATASET_REVISION ?= main
+WM_DATASET_PRIVATE ?= 0
+WM_DATASET_DRY_RUN ?= 0
+upload-wm-dataset:
+	uv run python scripts/upload_wm_dataset.py \
+		--format $(FORMAT) \
+		--output_dir $(WM_OUTPUT_DIR) \
+		--repo_id $(WM_DATASET_REPO) \
+		--revision $(WM_DATASET_REVISION) \
+		$(if $(filter 1 true yes,$(WM_DATASET_PRIVATE)),--private,) \
+		$(if $(filter 1 true yes,$(WM_DATASET_DRY_RUN)),--dry_run,)
+
 # SL targets removed — SL model deleted.
 
 # ── JEPA Training ────────────────────────────────────────────────────
@@ -200,7 +213,7 @@ JEPA_SAVE_DIR ?= $(METAMON_CACHE_DIR)/jepa-checkpoints
 JEPA_LR ?= 5e-5
 JEPA_EPOCHS ?= 10
 JEPA_GRAD_CLIP ?= 1.0
-JEPA_NUM_WORKERS ?= 20
+JEPA_NUM_WORKERS ?= $(shell python3 -c 'import os; n=len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 4); print(min(12, n))')
 JEPA_PREFETCH_FACTOR ?= 4
 JEPA_PRINT_INTERVAL ?= 10
 JEPA_CONFIG ?= metamon/jepa/configs/default.yaml
