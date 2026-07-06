@@ -1,0 +1,91 @@
+# LeJEPA v4 — paired-POV current-state belief + next-state rollout.
+#
+# Same architecture as default.yaml, but disables gradient checkpointing for
+# speed experiments that trade higher activation memory for less recompute.
+#
+# Training hyperparameters (lr, epochs, batch_size, etc.) are passed
+# via CLI flags to train_paired.py and are NOT stored here.
+
+model:
+  # Vocabulary size (auto-detected from tokenizer if null).
+  vocab_size: null
+
+  # Latent space dimensionality (deterministic state embedding e).
+  latent_dim: 100
+
+  # ── Block Encoder — bidirectional transformer over one header/action block ──
+  encoder:
+    d_model: 256
+    n_heads: 8
+    n_layers: 8
+    d_ff: 1024           # 4× d_model
+    dropout: 0.0
+    theta: 10000.0
+    ffn_activation: gelu
+    gradient_checkpointing: false
+
+  # ── self Belief Encoder — state  ──
+  # Takes (history_context) which includes the last actions and ouputs the belief of the current
+  # self state
+  self_belief_encoder:
+    d_model: 256
+    n_heads: 8
+    n_layers: 8
+    d_ff: 1024
+    dropout: 0.0
+    ffn_activation: gelu
+    gradient_checkpointing: false
+
+  # ── Opponent Belief Predictor — state  ──
+  # Takes (history_context) which includes the last actions and ouputs the belief prediction of the current
+  # opponent state
+  opponent_belief_predictor:
+    d_model: 256
+    n_heads: 8
+    n_layers: 8
+    d_ff: 1024
+    dropout: 0.0
+    ffn_activation: gelu
+    gradient_checkpointing: false
+
+  # ── Opponent Policy Policy — state  ──
+  # predict the next opponent move given the current state, the current opponent state
+  opponent_policy_belief:
+    d_model: 256
+    n_heads: 8
+    n_layers: 8
+    d_ff: 1024
+    dropout: 0.0
+    ffn_activation: gelu
+    gradient_checkpointing: false
+
+  # ── Paired-POV next-state predictor — stochastic (mu+logvar) ──────
+  # Takes (current_state, own_action, opponent_state, opponent_action) through
+  # an transformer belief for the next-state latent. Paired training teacher-forces
+  # actual opponent state/action and uses Gaussian NLL.
+  next_state_predictor:
+    hidden_dim: 512
+    n_layers: 5
+    dropout: 0.0
+    ffn_activation: gelu
+    gradient_checkpointing: false
+
+  # ── Decision heads — actor-critic offline outcome supervision ─────
+  # decision_state_encoder:
+  #   decision_dim: 256
+  #   hidden_dim: 768
+  #   n_layers: 4
+  #   dropout: 0.1
+
+  # ── Value head operates on current state and opponent state to produce the value for the policy  ─────
+  # value_head:
+  #   hidden_dim: 384
+  #   n_layers: 3
+  #   dropout: 0.1
+
+  # ── LeJEPA loss ───────────────────────────────────────────────────
+  lambda_sigreg_state: 0.1
+  # ── SIGReg hyperparameters ────────────────────────────────────────
+  sigreg_num_slices: 128
+  sigreg_num_points: 17
+  sigreg_domain: 3.0
