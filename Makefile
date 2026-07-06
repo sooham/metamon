@@ -231,7 +231,7 @@ JEPA_MAX_HISTORY ?= 100
 # Usage:
 #   make train-jepa FORMATS=gen1ou
 #   make train-jepa FORMATS=gen1ou JEPA_MAX_HISTORY=0  # full battle history
-JEPA_PAIRED_BATCH_SIZE ?= 128
+JEPA_PAIRED_BATCH_SIZE ?= 140
 JEPA_PAIRED_GRAD_ACCUM_STEPS ?= 1
 JEPA_PAIRED_CHECKPOINT ?= $(JEPA_SAVE_DIR)/paired_best_stochastic.pt
 JEPA_PAIRED_MAX_STEPS ?= 64
