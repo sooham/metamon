@@ -22,7 +22,7 @@ model:
     dropout: 0.0
     theta: 10000.0
     ffn_activation: gelu
-    gradient_checkpointing: false
+    gradient_checkpointing: true
 
   # ── self Belief Encoder — state  ──
   # Takes (history_context) which includes the last actions and ouputs the belief of the current
