@@ -85,10 +85,13 @@ PARSED_WM_REPLAY_REPO ?= sooham34/metamon-parsed-wm-replays
 PARSED_WM_REPLAY_REVISION ?= main
 PARSED_WM_REPLAY_PRIVATE ?= 0
 PARSED_WM_REPLAY_DRY_RUN ?= 0
+PARSED_WM_REPLAY_ROOT ?= $(METAMON_CACHE_DIR)/parsed-replays
+# Upload online-play saves with:
+#   make upload-parsed-wm-replays FORMAT=gen1ou PARSED_WM_REPLAY_ROOT=$(METAMON_CACHE_DIR)/online-play
 upload-parsed-wm-replays:
 	uv run python scripts/upload_parsed_wm_replays.py \
 		--format $(FORMAT) \
-		--parsed_replay_root $(METAMON_CACHE_DIR)/parsed-replays \
+		--parsed_replay_root $(PARSED_WM_REPLAY_ROOT) \
 		--repo_id $(PARSED_WM_REPLAY_REPO) \
 		--revision $(PARSED_WM_REPLAY_REVISION) \
 		$(if $(filter 1 true yes,$(PARSED_WM_REPLAY_PRIVATE)),--private,) \
@@ -345,6 +348,8 @@ _train-jepa-inner:
 #   make play-jepa JEPA_PLAY_FORMAT=gen1ou JEPA_PLAY_USERNAME=JEPABot
 #   make play-jepa JEPA_PLAY_CHECKPOINT=/path/to/paired_best.pt
 #   make play-jepa JEPA_PLAY_VERBOSE_BLOCKS=true JEPA_PLAY_LADDER=true
+#   make play-jepa JEPA_PLAY_SAVE=1
+#   make play-jepa JEPA_PLAY_LADDER=true JEPA_PLAY_NUM_BATTLES=100 JEPA_PLAY_MAX_CONCURRENT_BATTLES=8
 #
 # REPL keys (press during battle):
 #   R = raw protocol logs    P = state/action blocks
@@ -354,10 +359,13 @@ JEPA_PLAY_FORMAT ?= gen1ou
 JEPA_PLAY_USERNAME ?= jepabot
 JEPA_PLAY_TEAM_SET ?= competitive
 JEPA_PLAY_NUM_BATTLES ?= 30
+JEPA_PLAY_MAX_CONCURRENT_BATTLES ?= 30
 JEPA_PLAY_LADDER ?=
 JEPA_PLAY_VERBOSE_BLOCKS ?=
 JEPA_PLAY_SERVER ?= showdown
 JEPA_PLAY_PASSWORD ?= JEPAJEPA
+JEPA_PLAY_SAVE ?=
+JEPA_PLAY_SAVE_DIR ?=
 play-jepa:
 	@if [ ! -f "$(JEPA_PLAY_CHECKPOINT)" ]; then \
 		echo "ERROR: Checkpoint not found at $(JEPA_PLAY_CHECKPOINT)."; \
@@ -371,8 +379,11 @@ play-jepa:
 		--username $(JEPA_PLAY_USERNAME) \
 		--team_set $(JEPA_PLAY_TEAM_SET) \
 		--num_battles $(JEPA_PLAY_NUM_BATTLES) \
+		--max_concurrent_battles $(JEPA_PLAY_MAX_CONCURRENT_BATTLES) \
 		$(if $(JEPA_PLAY_LADDER),--ladder) \
 		$(if $(JEPA_PLAY_VERBOSE_BLOCKS),--verbose_blocks) \
+		$(if $(JEPA_PLAY_SAVE),--save) \
+		$(if $(JEPA_PLAY_SAVE_DIR),--save-dir $(JEPA_PLAY_SAVE_DIR)) \
 		--server $(JEPA_PLAY_SERVER) \
 		$(if $(JEPA_PLAY_PASSWORD),--password $(JEPA_PLAY_PASSWORD))
 

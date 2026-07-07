@@ -64,6 +64,9 @@ async def main() -> None:
     parser.add_argument("--username", default="JEPABot")
     parser.add_argument("--num_battles", type=int, default=30,
                         help="Number of battles to play (default: 30).")
+    parser.add_argument("--max_concurrent_battles", type=int, default=30,
+                        help="Maximum simultaneous battles per bot instance "
+                             "(default: 30).")
     parser.add_argument("--team_set", default="competitive")
     parser.add_argument("--config",
                         default=os.path.join(os.path.dirname(__file__), "configs", "default.yaml"))
@@ -88,7 +91,15 @@ async def main() -> None:
     parser.add_argument("--raw-replay-dir", default=None,
                         help="Directory for saved raw replays (default: "
                              "$METAMON_CACHE_DIR/online-raw-replays).")
+    parser.add_argument("--save", action="store_true",
+                        help="Save finished online battles in parsed replay text format "
+                             "under $METAMON_CACHE_DIR/online-play/<format>.")
+    parser.add_argument("--save-dir", default=None,
+                        help="Root directory for --save output (default: "
+                             "$METAMON_CACHE_DIR/online-play).")
     args = parser.parse_args()
+    if args.max_concurrent_battles < 1:
+        parser.error("--max_concurrent_battles must be >= 1")
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -177,6 +188,14 @@ async def main() -> None:
         TuiMixin._repl_save_raw_dir = None
         TuiMixin._repl_save_raw_by_format = False
 
+    parsed_save_root = None
+    if args.save:
+        parsed_save_root = args.save_dir or os.path.join(
+            os.environ.get("METAMON_CACHE_DIR", "."), "online-play"
+        )
+        os.makedirs(parsed_save_root, exist_ok=True)
+        print(f"Saving parsed online replays to {parsed_save_root}/<format>")
+
     player_ou = JEPAWorldModelPlayer(
         model=model,
         tokenizer=tokenizer,
@@ -184,12 +203,13 @@ async def main() -> None:
         verbose=not args.quiet,
         verbose_blocks=args.verbose_blocks,
         max_history_blocks=max_history_blocks,
+        save_online_play_root=parsed_save_root,
         account_configuration=AccountConfiguration(username, args.password),
         server_configuration=server_config,
         battle_format=main_format,
         team=team_set,
         start_timer_on_battle_start=False,
-        max_concurrent_battles=30,
+        max_concurrent_battles=args.max_concurrent_battles,
     )
     player_rb = JEPAWorldModelPlayer(
         model=model,
@@ -198,12 +218,13 @@ async def main() -> None:
         verbose=not args.quiet,
         verbose_blocks=args.verbose_blocks,
         max_history_blocks=max_history_blocks,
+        save_online_play_root=parsed_save_root,
         account_configuration=AccountConfiguration(username_rb, args.password),
         server_configuration=server_config,
         battle_format=random_format,
         team=None,
         start_timer_on_battle_start=False,
-        max_concurrent_battles=30,
+        max_concurrent_battles=args.max_concurrent_battles,
     )
 
     await asyncio.sleep(2)

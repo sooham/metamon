@@ -29,6 +29,7 @@ from metamon.jepa.online_serializer import (
     team_context_block,
     tokenize_words,
 )
+from metamon.jepa.online_replay_saver import save_online_replay_as_parsed
 from metamon.tui import TuiMixin, BattleHistory, TurnContext, TuiDiagnostic
 from metamon.tokenizer import PokemonTokenizer
 
@@ -76,6 +77,7 @@ class BattleHistory:
     # Battle outcome tracking.
     finished: bool = False
     outcome: Optional[str] = None  # "win", "loss", "tie", or None
+    online_play_saved: bool = False
     # Indices into raw_messages where each turn started (for per‑turn raw log view).
     turn_msg_boundaries: list[int] = field(default_factory=list)
 
@@ -96,6 +98,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         verbose: bool = True,
         verbose_blocks: bool = False,
         max_history_blocks: int = 100,
+        save_online_play_root: Optional[str] = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -104,6 +107,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         self._fmt = fmt
         self._verbose = verbose
         self._max_history_blocks = max_history_blocks  # 0 = unlimited, default 100
+        self._save_online_play_root = save_online_play_root
         TuiMixin._repl_verbose_blocks = verbose_blocks
         TuiMixin._repl_max_history_blocks = max_history_blocks
         self._histories: dict[str, BattleHistory] = {}
@@ -133,6 +137,30 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         elif hist is None:
             hist = self._histories.get(">" + tag)
         return hist
+
+    def _tui_after_battle_finished(self, battle_tag: str, hist: BattleHistory) -> None:
+        if not self._save_online_play_root or hist.online_play_saved:
+            return
+        hist.online_play_saved = True
+        try:
+            result = save_online_replay_as_parsed(
+                raw_messages=hist.raw_messages,
+                battle_tag=battle_tag,
+                fallback_format=self._fmt,
+                output_root=self._save_online_play_root,
+            )
+        except Exception as exc:
+            print(f"WARNING: failed to save parsed online replay for {battle_tag}: {exc}")
+            return
+
+        if result.saved_files:
+            names = ", ".join(path.name for path in result.saved_files)
+            print(f"Saved parsed online replay to {result.output_dir}: {names}")
+        else:
+            print(
+                "WARNING: online replay parser completed but wrote no files "
+                f"for {battle_tag} in {result.output_dir}"
+            )
 
     # ── utility ───────────────────────────────────────────────────────
 

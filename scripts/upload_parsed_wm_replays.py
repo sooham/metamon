@@ -13,7 +13,7 @@ import orjson
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
 from tqdm import tqdm
 
-from metamon.config import METAMON_CACHE_DIR, SUPPORTED_BATTLE_FORMATS
+from metamon.config import METAMON_CACHE_DIR
 
 
 DEFAULT_REPO_ID = "sooham34/metamon-parsed-wm-replays"
@@ -287,7 +287,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Package and upload parser text outputs for world-model training."
     )
-    parser.add_argument("--format", required=True, choices=SUPPORTED_BATTLE_FORMATS)
+    parser.add_argument("--format", required=True)
     parser.add_argument(
         "--parsed_replay_root",
         default=(

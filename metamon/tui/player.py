@@ -111,6 +111,7 @@ class BattleHistory:
     # Battle outcome tracking.
     finished: bool = False
     outcome: Optional[str] = None  # "win", "loss", "tie", or None
+    online_play_saved: bool = False
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -150,6 +151,10 @@ class TuiMixin:
 
     def _tui_current_hist(self) -> Optional[BattleHistory]:
         raise NotImplementedError("subclass must provide _tui_current_hist")
+
+    def _tui_after_battle_finished(self, battle_tag: str, hist: BattleHistory) -> None:
+        """Optional hook called after the base player processes a win/tie."""
+        return None
 
     # ── windowing (matches training dataset _resolve_window) ──────────
 
@@ -221,10 +226,20 @@ class TuiMixin:
 
     @classmethod
     def _stop_repl(cls) -> None:
+        cls._request_repl_stop(show_message=False)
+
+    @classmethod
+    def _request_repl_stop(cls, *, show_message: bool = True) -> None:
+        """Stop the REPL key listener and leave fullscreen mode immediately."""
         TuiMixin._repl_running = False
         if TuiMixin._repl_term is not None:
-            _sys.stdout.write((TuiMixin._repl_term.exit_fullscreen() or "") + "\n")
+            _sys.stdout.write((TuiMixin._repl_term.exit_fullscreen() or ""))
+            if show_message:
+                _sys.stdout.write("\n[REPL quit]\n")
+            else:
+                _sys.stdout.write("\n")
             _sys.stdout.flush()
+            TuiMixin._repl_term = None
 
     # ═══════════════════════════════════════════════════════════════════
     # Key listener (daemon thread)
@@ -261,9 +276,10 @@ class TuiMixin:
                             continue
                         key_str = data.decode("utf-8", errors="replace")
                         if key_str == "\x03":
-                            TuiMixin._repl_running = False
-                            with TuiMixin._repl_lock:
-                                TuiMixin._repl_keys.append(key_str)
+                            cls._request_repl_stop()
+                            break
+                        if key_str.lower() == "q":
+                            cls._request_repl_stop()
                             break
                         if key_str in ("\t", " "):
                             continue
@@ -326,9 +342,7 @@ class TuiMixin:
                             if inst is not None:
                                 inst._tui_redraw()
         except (KeyboardInterrupt, OSError):
-            TuiMixin._repl_running = False
-            with TuiMixin._repl_lock:
-                TuiMixin._repl_keys.append("\x03")
+            cls._request_repl_stop()
 
     # ═══════════════════════════════════════════════════════════════════
     # Key processing (called from main event loop and listener)
@@ -343,9 +357,7 @@ class TuiMixin:
                     break
                 key = self._repl_keys.pop(0)
             if key == "\x03" or key.lower() == 'q':
-                self._tui_clear()
-                print("[REPL quit — restart with TuiMixin._start_repl()]")
-                TuiMixin._repl_running = False
+                TuiMixin._request_repl_stop()
             elif key.lower() == 'r':
                 TuiMixin._repl_view = "raw"
                 TuiMixin._repl_scroll_offset = 0
@@ -633,6 +645,23 @@ class TuiMixin:
                 print(f"    {line}")
 
     def _tui_render_overview(self) -> None:
+        total_battles = 0
+        ongoing_battles = 0
+        finished_battles = 0
+        for inst in TuiMixin._repl_all_instances:
+            histories = getattr(inst, "_histories", {})
+            for hist in histories.values():
+                total_battles += 1
+                if hist.finished:
+                    finished_battles += 1
+                else:
+                    ongoing_battles += 1
+
+        print(
+            f"  ongoing battles: {ongoing_battles}  "
+            f"finished: {finished_battles}  total: {total_battles}"
+        )
+
         any_battle = False
         for inst in TuiMixin._repl_all_instances:
             histories = getattr(inst, "_histories", {})
@@ -676,6 +705,7 @@ class TuiMixin:
     async def _handle_battle_message(self, split_messages):
         """Capture raw messages + drain REPL keys + auto‑refresh views."""
         import sys as _sys
+        finished_battle: tuple[str, BattleHistory] | None = None
         try:
             battle_tag = self._normalise_tag(split_messages[0][0])
             _sys.stderr.write(f"[TUI] hbm {battle_tag} msgs={len(split_messages)-1}\n")
@@ -701,6 +731,8 @@ class TuiMixin:
                     # Save raw replay when battle finishes.
                     if msg[0] in ("win", "tie") and TuiMixin._repl_save_raw_dir:
                         self._tui_save_raw_replay(battle_tag, hist)
+                    if msg[0] in ("win", "tie"):
+                        finished_battle = (battle_tag, hist)
             self._last_active_battle_tag = battle_tag
             TuiMixin._repl_active_instance = self
             self._process_repl_keys()
@@ -731,6 +763,8 @@ class TuiMixin:
             _sys.stderr.flush()
         # Always delegate to the concrete player's parent.
         await super()._handle_battle_message(split_messages)  # type: ignore[misc]
+        if finished_battle is not None:
+            self._tui_after_battle_finished(*finished_battle)
 
     @staticmethod
     def _normalise_tag(raw_tag: str) -> str:
