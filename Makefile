@@ -342,7 +342,7 @@ _train-jepa-inner:
 # pass a separate tokenizer path to play targets.
 #
 # Usage:
-#   make play-jepa
+#   make play-jepa                             # default: keep 100 gen1 random battles active, save parsed replays
 #   make play-jepa-local
 #   make play-jepa DEMO=1                         # use bundled demo checkpoint
 #   make play-jepa JEPA_PLAY_FORMAT=gen1ou JEPA_PLAY_USERNAME=JEPABot
@@ -350,21 +350,25 @@ _train-jepa-inner:
 #   make play-jepa JEPA_PLAY_VERBOSE_BLOCKS=true JEPA_PLAY_LADDER=true
 #   make play-jepa JEPA_PLAY_SAVE=1
 #   make play-jepa JEPA_PLAY_LADDER=true JEPA_PLAY_NUM_BATTLES=100 JEPA_PLAY_MAX_CONCURRENT_BATTLES=8
+#   make play-jepa JEPA_PLAY_KEEP_LADDER_BATTLES=100 JEPA_PLAY_RANDOM_BATTLE_BOT=0 JEPA_PLAY_SAVE=1
 #
 # REPL keys (press during battle):
 #   R = raw protocol logs    P = state/action blocks
 #   V = toggle verbose       O = battle overview    Q = quit REPL
 JEPA_PLAY_CHECKPOINT ?= $(if $(filter 1,$(DEMO)),./checkpoints/demo_best.pt,$(JEPA_SAVE_DIR)/paired_best_stochastic.pt)
-JEPA_PLAY_FORMAT ?= gen1ou
+JEPA_PLAY_FORMAT ?= gen1randombattle
 JEPA_PLAY_USERNAME ?= jepabot
 JEPA_PLAY_TEAM_SET ?= competitive
 JEPA_PLAY_NUM_BATTLES ?= 30
-JEPA_PLAY_MAX_CONCURRENT_BATTLES ?= 30
+JEPA_PLAY_MAX_CONCURRENT_BATTLES ?= 100
+JEPA_PLAY_KEEP_LADDER_BATTLES ?= 100
+JEPA_PLAY_RANDOM_BATTLE_BOT ?= 0
 JEPA_PLAY_LADDER ?=
 JEPA_PLAY_VERBOSE_BLOCKS ?=
 JEPA_PLAY_SERVER ?= showdown
 JEPA_PLAY_PASSWORD ?= JEPAJEPA
-JEPA_PLAY_SAVE ?=
+JEPA_PLAY_TIMER ?= 1
+JEPA_PLAY_SAVE ?= 1
 JEPA_PLAY_SAVE_DIR ?=
 play-jepa:
 	@if [ ! -f "$(JEPA_PLAY_CHECKPOINT)" ]; then \
@@ -380,8 +384,11 @@ play-jepa:
 		--team_set $(JEPA_PLAY_TEAM_SET) \
 		--num_battles $(JEPA_PLAY_NUM_BATTLES) \
 		--max_concurrent_battles $(JEPA_PLAY_MAX_CONCURRENT_BATTLES) \
+		$(if $(JEPA_PLAY_KEEP_LADDER_BATTLES),--keep_ladder_battles $(JEPA_PLAY_KEEP_LADDER_BATTLES)) \
+		$(if $(filter 0 false no,$(JEPA_PLAY_RANDOM_BATTLE_BOT)),--no_random_battle_bot) \
 		$(if $(JEPA_PLAY_LADDER),--ladder) \
 		$(if $(JEPA_PLAY_VERBOSE_BLOCKS),--verbose_blocks) \
+		$(if $(filter 0 false no,$(JEPA_PLAY_TIMER)),--no-timer) \
 		$(if $(JEPA_PLAY_SAVE),--save) \
 		$(if $(JEPA_PLAY_SAVE_DIR),--save-dir $(JEPA_PLAY_SAVE_DIR)) \
 		--server $(JEPA_PLAY_SERVER) \

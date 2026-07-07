@@ -44,6 +44,10 @@ def random_battle_format_for(fmt: str) -> str:
     return f"{match.group(1)}randombattle"
 
 
+def uses_random_battle_team(fmt: str) -> bool:
+    return "randombattle" in (fmt or "").lower()
+
+
 def _patch_null_max_seq_len(model_cfg: dict) -> None:
     """Replace null max_seq_len with safe defaults for YAML-fallback configs.
 
@@ -54,6 +58,39 @@ def _patch_null_max_seq_len(model_cfg: dict) -> None:
         sec = model_cfg.setdefault(section, {})
         if sec.get("max_seq_len") is None:
             sec["max_seq_len"] = fallback
+
+
+def _active_battle_count(player: JEPAWorldModelPlayer) -> int:
+    return sum(1 for battle in player._battles.values() if not battle.finished)
+
+
+async def _maintain_ladder_battles(
+    player: JEPAWorldModelPlayer,
+    *,
+    target_active: int,
+    label: str,
+) -> None:
+    """Keep roughly ``target_active`` ladder battles open until cancelled."""
+    await player.ps_client.logged_in.wait()
+    print(f"Keeping {target_active} {label} ladder battles active...")
+
+    while True:
+        active = _active_battle_count(player)
+        if active >= target_active:
+            try:
+                async with player._battle_end_condition:
+                    await asyncio.wait_for(
+                        player._battle_end_condition.wait(),
+                        timeout=1.0,
+                    )
+            except asyncio.TimeoutError:
+                pass
+            continue
+
+        async with player._battle_start_condition:
+            await player.ps_client.search_ladder_game(player.format, player.next_team)
+            await player._battle_start_condition.wait()
+        await player._battle_semaphore.acquire()
 
 
 async def main() -> None:
@@ -78,6 +115,16 @@ async def main() -> None:
                         help="Action-scoring heuristic (default: max_delta).")
     parser.add_argument("--ladder", action="store_true",
                         help="Search for random ladder battles instead of waiting for challenges.")
+    parser.add_argument("--keep_ladder_battles", type=int, default=0,
+                        help="Continuously keep this many ladder battles active per "
+                             "laddering bot. Implies --ladder for the main bot. "
+                             "Runs until interrupted.")
+    parser.add_argument("--no_random_battle_bot", action="store_true",
+                        help="Disable the companion random-battle ladder bot.")
+    parser.add_argument("--timer", dest="timer", action="store_true", default=True,
+                        help="Send /timer on when each battle starts (default).")
+    parser.add_argument("--no-timer", dest="timer", action="store_false",
+                        help="Do not automatically start the Showdown battle timer.")
     parser.add_argument("--server", default="localhost",
                         choices=["localhost", "showdown"],
                         help="Server to connect to (default: localhost).")
@@ -100,6 +147,14 @@ async def main() -> None:
     args = parser.parse_args()
     if args.max_concurrent_battles < 1:
         parser.error("--max_concurrent_battles must be >= 1")
+    if args.keep_ladder_battles < 0:
+        parser.error("--keep_ladder_battles must be >= 0")
+    if args.keep_ladder_battles > args.max_concurrent_battles:
+        args.max_concurrent_battles = args.keep_ladder_battles
+        print(
+            "Increasing max_concurrent_battles to "
+            f"{args.max_concurrent_battles} for --keep_ladder_battles"
+        )
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -157,7 +212,7 @@ async def main() -> None:
     server_config = ShowdownServerConfiguration if args.server == "showdown" else LocalhostServerConfiguration
     main_format = args.format
     random_format = random_battle_format_for(main_format)
-    team_set = get_metamon_teams(main_format, args.team_set)
+    team_set = None if uses_random_battle_team(main_format) else get_metamon_teams(main_format, args.team_set)
 
     # Generate unique usernames for the real server.
     if args.server == "showdown":
@@ -208,24 +263,26 @@ async def main() -> None:
         server_configuration=server_config,
         battle_format=main_format,
         team=team_set,
-        start_timer_on_battle_start=False,
+        start_timer_on_battle_start=args.timer,
         max_concurrent_battles=args.max_concurrent_battles,
     )
-    player_rb = JEPAWorldModelPlayer(
-        model=model,
-        tokenizer=tokenizer,
-        fmt=random_format,
-        verbose=not args.quiet,
-        verbose_blocks=args.verbose_blocks,
-        max_history_blocks=max_history_blocks,
-        save_online_play_root=parsed_save_root,
-        account_configuration=AccountConfiguration(username_rb, args.password),
-        server_configuration=server_config,
-        battle_format=random_format,
-        team=None,
-        start_timer_on_battle_start=False,
-        max_concurrent_battles=args.max_concurrent_battles,
-    )
+    player_rb = None
+    if not args.no_random_battle_bot:
+        player_rb = JEPAWorldModelPlayer(
+            model=model,
+            tokenizer=tokenizer,
+            fmt=random_format,
+            verbose=not args.quiet,
+            verbose_blocks=args.verbose_blocks,
+            max_history_blocks=max_history_blocks,
+            save_online_play_root=parsed_save_root,
+            account_configuration=AccountConfiguration(username_rb, args.password),
+            server_configuration=server_config,
+            battle_format=random_format,
+            team=None,
+            start_timer_on_battle_start=args.timer,
+            max_concurrent_battles=args.max_concurrent_battles,
+        )
 
     await asyncio.sleep(2)
 
@@ -233,7 +290,13 @@ async def main() -> None:
     JEPAWorldModelPlayer._start_repl()
 
     tasks = []
-    if args.ladder:
+    if args.keep_ladder_battles:
+        tasks.append(_maintain_ladder_battles(
+            player_ou,
+            target_active=args.keep_ladder_battles,
+            label=main_format,
+        ))
+    elif args.ladder:
         print(f"Searching for {args.num_battles} {main_format} ladder battles...")
         tasks.append(player_ou.ladder(args.num_battles))
     else:
@@ -241,9 +304,17 @@ async def main() -> None:
         print(f"Challenge with: /challenge {username}, {main_format}")
         tasks.append(player_ou.accept_challenges(None, args.num_battles))
 
-    # Random battle bot always ladders.
-    print(f"Searching for {args.num_battles} {random_format} ladder battles as {username_rb}...")
-    tasks.append(player_rb.ladder(args.num_battles))
+    # Random battle bot ladders unless explicitly disabled.
+    if player_rb is not None:
+        if args.keep_ladder_battles:
+            tasks.append(_maintain_ladder_battles(
+                player_rb,
+                target_active=args.keep_ladder_battles,
+                label=f"{random_format} as {username_rb}",
+            ))
+        else:
+            print(f"Searching for {args.num_battles} {random_format} ladder battles as {username_rb}...")
+            tasks.append(player_rb.ladder(args.num_battles))
 
     try:
         await asyncio.gather(*tasks)
@@ -253,8 +324,9 @@ async def main() -> None:
         JEPAWorldModelPlayer._stop_repl()
         print(f"\nResults for {username} ({main_format}):")
         print(f"  Wins: {player_ou.n_won_battles}  Losses: {player_ou.n_lost_battles}  Ties: {player_ou.n_tied_battles}")
-        print(f"Results for {username_rb} ({random_format}):")
-        print(f"  Wins: {player_rb.n_won_battles}  Losses: {player_rb.n_lost_battles}  Ties: {player_rb.n_tied_battles}")
+        if player_rb is not None:
+            print(f"Results for {username_rb} ({random_format}):")
+            print(f"  Wins: {player_rb.n_won_battles}  Losses: {player_rb.n_lost_battles}  Ties: {player_rb.n_tied_battles}")
 
 
 if __name__ == "__main__":

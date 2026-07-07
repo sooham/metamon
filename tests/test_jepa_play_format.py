@@ -9,7 +9,11 @@ from metamon.jepa.online_replay_saver import (
     game_id_from_battle_tag,
     save_online_replay_as_parsed,
 )
-from metamon.jepa.play import random_battle_format_for
+from metamon.jepa.play import (
+    _active_battle_count,
+    random_battle_format_for,
+    uses_random_battle_team,
+)
 from metamon.tui import BattleHistory, TuiMixin
 
 
@@ -17,6 +21,22 @@ def test_random_battle_format_matches_requested_generation():
     assert random_battle_format_for("gen1ou") == "gen1randombattle"
     assert random_battle_format_for("gen9ou") == "gen9randombattle"
     assert random_battle_format_for("gen4ubers") == "gen4randombattle"
+
+
+def test_random_battle_formats_do_not_use_fixed_teams():
+    assert uses_random_battle_team("gen1randombattle")
+    assert uses_random_battle_team("gen9randombattle")
+    assert not uses_random_battle_team("gen1ou")
+
+
+def test_active_battle_count_ignores_finished_battles():
+    player = SimpleNamespace(_battles={
+        "a": SimpleNamespace(finished=False),
+        "b": SimpleNamespace(finished=True),
+        "c": SimpleNamespace(finished=False),
+    })
+
+    assert _active_battle_count(player) == 2
 
 
 def test_online_replay_ids_use_actual_battle_format():
