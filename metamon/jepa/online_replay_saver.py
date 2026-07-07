@@ -26,24 +26,39 @@ class OnlineReplaySaveResult:
     saved_files: tuple[Path, ...]
 
 
-def format_from_battle_tag(battle_tag: str, fallback: str) -> str:
-    """Infer the Showdown format id from a battle room tag."""
+def _room_tag_parts(battle_tag: str) -> tuple[str, str] | None:
+    """Return (format, numeric id) from a Showdown battle room tag.
+
+    Authenticated/private battle rooms can append an extra token after the
+    numeric id, e.g. ``battle-gen1randombattle-123-a1b2``.  The public replay
+    id is still ``gen1randombattle-123``.
+    """
     tag = battle_tag[1:] if battle_tag.startswith(">") else battle_tag
     if tag.startswith("battle-"):
         tag = tag.removeprefix("battle-")
-    match = re.match(r"^([A-Za-z0-9]+)-\d+$", tag)
+    match = re.match(r"^([A-Za-z0-9]+)-(\d+)(?:-[A-Za-z0-9]+)?$", tag)
     if match:
-        return match.group(1).lower()
+        return match.group(1).lower(), match.group(2)
+    return None
+
+
+def format_from_battle_tag(battle_tag: str, fallback: str) -> str:
+    """Infer the Showdown format id from a battle room tag."""
+    parts = _room_tag_parts(battle_tag)
+    if parts is not None:
+        return parts[0]
     return (fallback or "unknown").lower()
 
 
 def game_id_from_battle_tag(battle_tag: str, fallback_format: str) -> str:
-    """Return the parser-style game id for an online battle tag."""
+    """Return the parser-style public game id for an online battle tag."""
+    parts = _room_tag_parts(battle_tag)
+    if parts is not None:
+        fmt, battle_id = parts
+        return f"{fmt}-{battle_id}"
     tag = battle_tag[1:] if battle_tag.startswith(">") else battle_tag
     if tag.startswith("battle-"):
         tag = tag.removeprefix("battle-")
-    if re.match(r"^[A-Za-z0-9]+-\d+$", tag):
-        return tag
     fmt = format_from_battle_tag(battle_tag, fallback_format)
     suffix = re.sub(r"[^A-Za-z0-9]+", "", tag.rsplit("-", 1)[-1]) or "online"
     return f"{fmt}-{suffix}"

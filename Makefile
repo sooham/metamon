@@ -359,6 +359,7 @@ JEPA_PLAY_CHECKPOINT ?= $(if $(filter 1,$(DEMO)),./checkpoints/demo_best.pt,$(JE
 JEPA_PLAY_FORMAT ?= gen1randombattle
 JEPA_PLAY_USERNAME ?= jepabot
 JEPA_PLAY_TEAM_SET ?= competitive
+# Used only when JEPA_PLAY_KEEP_LADDER_BATTLES is empty.
 JEPA_PLAY_NUM_BATTLES ?= 30
 JEPA_PLAY_MAX_CONCURRENT_BATTLES ?= 100
 JEPA_PLAY_KEEP_LADDER_BATTLES ?= 100
@@ -382,7 +383,7 @@ play-jepa:
 		--format $(JEPA_PLAY_FORMAT) \
 		--username $(JEPA_PLAY_USERNAME) \
 		--team_set $(JEPA_PLAY_TEAM_SET) \
-		--num_battles $(JEPA_PLAY_NUM_BATTLES) \
+		$(if $(JEPA_PLAY_KEEP_LADDER_BATTLES),,--num_battles $(JEPA_PLAY_NUM_BATTLES)) \
 		--max_concurrent_battles $(JEPA_PLAY_MAX_CONCURRENT_BATTLES) \
 		$(if $(JEPA_PLAY_KEEP_LADDER_BATTLES),--keep_ladder_battles $(JEPA_PLAY_KEEP_LADDER_BATTLES)) \
 		$(if $(filter 0 false no,$(JEPA_PLAY_RANDOM_BATTLE_BOT)),--no_random_battle_bot) \

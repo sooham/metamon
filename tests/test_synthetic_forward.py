@@ -3411,6 +3411,43 @@ class TestZoroark:
         assert t1.moves_1[0].name == "Night Daze"
         assert t1.moves_2[0].name == "Psychic"
 
+    def test_70B_hisuian_zoroark_replace_uses_protocol_hp(self):
+        """|replace| should not leave Hisuian Zoroark with the disguise max HP."""
+        log = make_skeleton(
+            gen=9,
+            tier="[Gen 9] OU",
+            format="gen9ou",
+            teamsize1=2,
+            teamsize2=1,
+            p1_pokes=["Charizard", "Zoroark-Hisui"],
+            p2_pokes=["Alakazam"],
+            p1_lead=("Charizard", "324/324"),
+            p2_lead=("Alakazam", "251/251"),
+        )
+        log.extend(
+            [
+                ["turn", "1"],
+                ["move", "p2a: Alakazam", "Psychic", "p1a: Charizard"],
+                ["-damage", "p1a: Charizard", "200/324"],
+                ["replace", "p1a: Charizard", "Zoroark-Hisui, M", "190/314"],
+                ["move", "p2a: Alakazam", "Pain Split", "p1a: Zoroark-Hisui"],
+                [
+                    "-sethp",
+                    "p1a: Zoroark-Hisui",
+                    "157/314",
+                    "[from] move: Pain Split",
+                ],
+            ]
+        )
+        log.extend(make_winner("Alice"))
+
+        replay = build_parsed_replay(log, gameid="test-70B", format="gen9ou")
+
+        t1 = replay.turnlist[1]
+        zoroark = t1.active_pokemon_1[0]
+        assert zoroark.name == "Zoroark-Hisui"
+        _assert_pokemon_hp(zoroark, 157, 314)
+
     # -- 71: Zoroark illusion breaks from damage only ----------------------
 
     def test_71_zoroark_break_on_damage(self):  # Gen:9  Ability:Illusion  Gimmick: illusion break on damage.

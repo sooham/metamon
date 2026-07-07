@@ -884,13 +884,13 @@ class SimProtocol:
             if not self.replay._hp_percentage_mod:
                 pokemon.max_hp = max_hp
 
-    def _parse_sethp(self, args: List[str]):
-        """
-        |-sethp|POKEMON|HP
-        """
-        pokemon = self.curr_turn.get_pokemon_from_str(args[0])
-        assert pokemon is not None
-        cur_hp, max_hp = parse_hp_fraction(args[1])
+    def _parse_hp_for_pokemon(
+        self, pokemon: Pokemon, raw_hp: str
+    ) -> tuple[int, int, bool]:
+        cur_hp, max_hp = parse_hp_fraction(raw_hp)
+        max_hp_is_authoritative = (
+            not self.replay._hp_percentage_mod or max_hp > 100
+        )
         if self.replay._hp_percentage_mod and pokemon.base_stats:
             real_max = Pokemon.compute_max_hp(
                 pokemon.base_stats.get("hp", 0), pokemon.lvl, self.replay.gen
@@ -898,10 +898,32 @@ class SimProtocol:
             if real_max > 0 and max_hp <= 100:
                 cur_hp = int(cur_hp / max_hp * real_max) if max_hp > 0 else real_max
                 max_hp = real_max
-        if pokemon.max_hp:
-            assert max_hp == pokemon.max_hp, (
-                f"sethp max_hp mismatch: {max_hp} != {pokemon.max_hp} for {pokemon.name}"
+                max_hp_is_authoritative = True
+        return cur_hp, max_hp, max_hp_is_authoritative
+
+    def _parse_sethp(self, args: List[str]):
+        """
+        |-sethp|POKEMON|HP
+        """
+        pokemon = self.curr_turn.get_pokemon_from_str(args[0])
+        assert pokemon is not None
+        cur_hp, max_hp, max_hp_is_authoritative = self._parse_hp_for_pokemon(
+            pokemon, args[1]
+        )
+        if pokemon.max_hp and max_hp != pokemon.max_hp:
+            mismatch_action = (
+                "using protocol HP."
+                if max_hp_is_authoritative
+                else "preserving existing max HP."
             )
+            warnings.warn(
+                f"[{self.replay.gameid}] sethp max_hp mismatch: "
+                f"{max_hp} != {pokemon.max_hp} for {pokemon.name}; "
+                f"{mismatch_action}",
+                stacklevel=2,
+            )
+        if max_hp_is_authoritative:
+            pokemon.max_hp = max_hp
         pokemon.current_hp = cur_hp
 
     def _parse_faint(self, args: List[str]):
@@ -1514,6 +1536,17 @@ class SimProtocol:
         replace_with.status = to_replace.status
         replace_with.current_hp = to_replace.current_hp
         replace_with.max_hp = to_replace.max_hp
+        if len(args) >= 3:
+            if "fnt" in args[2] or args[2] == "0" or args[2][:2] == "0 ":
+                replace_with.current_hp = 0
+                replace_with.status = PEStatus.FNT
+            else:
+                cur_hp, max_hp, max_hp_is_authoritative = self._parse_hp_for_pokemon(
+                    replace_with, args[2]
+                )
+                replace_with.current_hp = cur_hp
+                if max_hp_is_authoritative:
+                    replace_with.max_hp = max_hp
         replace_with.boosts = to_replace.boosts
         # Transfer moves, items, and abilities that were *newly discovered*
         # during the Illusion window from the disguise to the real Zoroark.

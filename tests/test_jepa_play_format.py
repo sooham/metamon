@@ -1,4 +1,5 @@
 from pathlib import Path
+import asyncio
 from types import SimpleNamespace
 import os
 
@@ -44,6 +45,14 @@ def test_online_replay_ids_use_actual_battle_format():
 
     assert format_from_battle_tag(tag, "gen9ou") == "gen9randombattle"
     assert game_id_from_battle_tag(tag, "gen9ou") == "gen9randombattle-12345"
+
+
+def test_online_replay_ids_strip_private_room_suffix():
+    tag = "battle-gen1randombattle-2645190409-38yux185ec5aal0yb64a2fmitqn1f1spw"
+
+    assert format_from_battle_tag(tag, "gen1ou") == "gen1randombattle"
+    assert game_id_from_battle_tag(tag, "gen1ou") == "gen1randombattle-2645190409"
+    assert TuiMixin._public_battle_tag(tag) == "battle-gen1randombattle-2645190409"
 
 
 def test_online_replay_save_routes_to_format_directory(tmp_path):
@@ -107,11 +116,14 @@ def test_tui_raw_replay_save_routes_by_battle_format(tmp_path):
             outcome="win",
         )
 
-        tui._tui_save_raw_replay("battle-gen9randombattle-12345", hist)
+        tui._tui_save_raw_replay(
+            "battle-gen9randombattle-12345-privateabc", hist,
+        )
 
         saved = list((tmp_path / "gen9" / "randombattle").glob("*.txt"))
         assert len(saved) == 1
         assert saved[0].name.startswith("gen9randombattle-12345_JEPABot_vs_Opponent_")
+        assert "privateabc" not in saved[0].name
     finally:
         TuiMixin._repl_save_raw_dir = None
         TuiMixin._repl_save_raw_by_format = False
@@ -136,6 +148,48 @@ def test_tui_overview_reports_ongoing_battle_count(capsys):
 
     output = capsys.readouterr().out
     assert "ongoing battles: 2  finished: 1  total: 3" in output
+
+
+def test_tui_overview_displays_public_battle_ids(capsys):
+    private_tag = "battle-gen1randombattle-2645190409-privateabc"
+    inst = TuiMixin()
+    inst._histories = {private_tag: BattleHistory(finished=False)}
+    inst._battles = {}
+
+    old_instances = TuiMixin._repl_all_instances
+    TuiMixin._repl_all_instances = [inst]
+    try:
+        inst._tui_render_overview()
+    finally:
+        TuiMixin._repl_all_instances = old_instances
+
+    output = capsys.readouterr().out
+    assert "battle-gen1randombattle-2645190409:" in output
+    assert "privateabc" not in output
+
+
+def test_tui_marks_pipe_split_win_messages_finished():
+    class Base:
+        async def _handle_battle_message(self, _split_messages):
+            return None
+
+    class DummyTui(TuiMixin, Base):
+        pass
+
+    inst = DummyTui()
+    inst.username = "JEPABot"
+    inst._histories = {}
+    inst._last_active_battle_tag = None
+    tag = "battle-gen1randombattle-2645198205"
+
+    asyncio.run(inst._handle_battle_message([
+        [f">{tag}"],
+        ["", "win", "JEPABot"],
+    ]))
+
+    hist = inst._histories[tag]
+    assert hist.finished is True
+    assert hist.outcome == "win"
 
 
 def test_tui_q_key_stops_repl_from_listener(monkeypatch):

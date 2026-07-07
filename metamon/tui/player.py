@@ -687,7 +687,8 @@ class TuiMixin:
                     ]
                     if our_team:
                         extra += f"\n    team: {', '.join(our_team)}"
-                print(f"  {tag}: turn≈{n_states - 1}  states={n_states}  actions=({n_player},{n_opp})  msgs={n_raw}{extra}")
+                display_tag = self._public_battle_tag(tag)
+                print(f"  {display_tag}: turn≈{n_states - 1}  states={n_states}  actions=({n_player},{n_opp})  msgs={n_raw}{extra}")
                 # Show outcome for finished battles.
                 if hist.finished:
                     outcomes = {"win": "[W]", "loss": "[L]", "tie": "[T]"}
@@ -719,19 +720,22 @@ class TuiMixin:
             for msg in split_messages[1:]:
                 if len(msg) > 1:
                     hist.raw_messages.append("|".join(msg))
+                    msg_type_idx = 1 if msg[0] == "" and len(msg) > 1 else 0
+                    msg_type = msg[msg_type_idx]
+                    msg_args = msg[msg_type_idx + 1:]
                     # Detect battle outcomes.
-                    if msg[0] == "win":
+                    if msg_type == "win":
                         hist.finished = True
-                        winner = msg[1] if len(msg) > 1 else ""
+                        winner = msg_args[0] if msg_args else ""
                         our_name = getattr(self, "username", "")
                         hist.outcome = "win" if winner == our_name else "loss"
-                    elif msg[0] == "tie":
+                    elif msg_type == "tie":
                         hist.finished = True
                         hist.outcome = "tie"
                     # Save raw replay when battle finishes.
-                    if msg[0] in ("win", "tie") and TuiMixin._repl_save_raw_dir:
+                    if msg_type in ("win", "tie") and TuiMixin._repl_save_raw_dir:
                         self._tui_save_raw_replay(battle_tag, hist)
-                    if msg[0] in ("win", "tie"):
+                    if msg_type in ("win", "tie"):
                         finished_battle = (battle_tag, hist)
             self._last_active_battle_tag = battle_tag
             TuiMixin._repl_active_instance = self
@@ -770,6 +774,28 @@ class TuiMixin:
     def _normalise_tag(raw_tag: str) -> str:
         """Strip the leading '>' from protocol room identifiers."""
         return raw_tag[1:] if raw_tag.startswith(">") else raw_tag
+
+    @staticmethod
+    def _battle_tag_parts(battle_tag: str) -> tuple[str, str] | None:
+        """Return (format, numeric id) from a Showdown battle room tag."""
+        import re as _re
+
+        tag = TuiMixin._normalise_tag(battle_tag)
+        if tag.startswith("battle-"):
+            tag = tag.removeprefix("battle-")
+        match = _re.match(r"^([A-Za-z0-9]+)-(\d+)(?:-[A-Za-z0-9]+)?$", tag)
+        if match:
+            return match.group(1).lower(), match.group(2)
+        return None
+
+    @staticmethod
+    def _public_battle_tag(battle_tag: str) -> str:
+        """Return the public replay-style battle tag, stripping private room tokens."""
+        parts = TuiMixin._battle_tag_parts(battle_tag)
+        if parts is None:
+            return TuiMixin._normalise_tag(battle_tag)
+        fmt, battle_id = parts
+        return f"battle-{fmt}-{battle_id}"
 
     @classmethod
     def _tui_handle_nav_key(cls, key_str: str) -> None:
@@ -874,11 +900,14 @@ class TuiMixin:
         import os as _os2
         from datetime import datetime
 
-        # Extract the numeric battle ID from the tag (e.g. "battle-gen1ou-55" → "55").
-        battle_id = battle_tag.rsplit("-", 1)[-1]
-        # Extract format from the tag (e.g. "battle-gen1ou-55" → "gen1ou").
-        tag_format = battle_tag.split("-", 1)[1] if "-" in battle_tag else battle_tag
-        tag_format = tag_format.rsplit("-", 1)[0] if "-" in tag_format else tag_format
+        parts = TuiMixin._battle_tag_parts(battle_tag)
+        if parts is not None:
+            tag_format, battle_id = parts
+        else:
+            # Fallback for non-standard room tags.
+            battle_id = battle_tag.rsplit("-", 1)[-1]
+            tag_format = battle_tag.split("-", 1)[1] if "-" in battle_tag else battle_tag
+            tag_format = tag_format.rsplit("-", 1)[0] if "-" in tag_format else tag_format
 
         # Try to find opponent name from |player| messages.
         our_name = getattr(self, "username", "player")
