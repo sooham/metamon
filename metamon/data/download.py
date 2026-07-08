@@ -87,6 +87,25 @@ LATEST_USAGE_STATS_REVISION = "v5"
 PARSED_WM_REPLAY_MANIFEST_EXTENSION = ".metadata"
 WM_DATASET_MANIFEST_EXTENSION = ".metadata"
 
+# Multi-format wm-dataset archives are keyed by the sorted, deduplicated tuple of
+# formats joined with "+" (e.g. "gen1ou+gen9ou"). Single-format datasets keep the
+# bare format name. Must match scripts/upload_wm_dataset.py:formats_to_key.
+WM_DATASET_FORMAT_KEY_SEPARATOR = "+"
+
+
+def formats_to_wm_archive_key(formats):
+    """Canonical archive key for a (possibly multi-format) wm-dataset.
+
+    Accepts a single format string or an iterable of formats. Sorts and dedupes
+    so "gen9ou gen1ou" and "gen1ou gen9ou" map to the same archive.
+    """
+    if isinstance(formats, str):
+        formats = [formats]
+    unique = sorted(set(formats))
+    if not unique:
+        raise ValueError("At least one format is required")
+    return WM_DATASET_FORMAT_KEY_SEPARATOR.join(unique)
+
 
 def _update_version_reference(key: str, name: str, version: str):
     """Maintains a version_reference.json file in the METAMON_CACHE_DIR.
@@ -266,31 +285,58 @@ def download_parsed_wm_replays(
 
 
 def download_wm_dataset(
-    battle_format: str,
+    battle_format=None,
+    formats=None,
     version: str = LATEST_WM_DATASET_REVISION,
     force_download: bool = False,
 ) -> str:
-    """Download generated world-model training shards for a single format.
+    """Download generated world-model training shards.
+
+    Accepts either ``formats`` (a single format string or an iterable) or, for
+    backwards compatibility, ``battle_format`` (a single format string). One or
+    more formats may be requested: multi-format requests download the combined
+    archive keyed by the sorted, ``+``-joined format tuple, restoring the same
+    flat layout produced by ``make wm-dataset FORMATS="..."``.
 
     The archive is extracted to ``$METAMON_CACHE_DIR/world-model-samples`` in
-    the same flat layout produced by ``make wm-dataset``.
+    the flat layout produced by ``make wm-dataset``. An existing directory is
+    left untouched unless ``force_download=True``.
     """
     if METAMON_CACHE_DIR is None:
         raise ValueError("METAMON_CACHE_DIR environment variable is not set")
 
+    if formats is None:
+        if battle_format is None:
+            raise ValueError(
+                "download_wm_dataset requires either `formats` or `battle_format`"
+            )
+        formats = [battle_format]
+    elif isinstance(formats, str):
+        formats = [formats]
+    else:
+        formats = list(formats)
+    if not formats:
+        raise ValueError("download_wm_dataset requires at least one format")
+
+    key = formats_to_wm_archive_key(formats)
+
     wm_output_dir = os.path.join(METAMON_CACHE_DIR, "world-model-samples")
     wm_cache_dir = os.path.join(METAMON_CACHE_DIR, "wm-dataset")
-    archive_path = os.path.join(wm_cache_dir, "archives", f"{battle_format}.tar.lz4")
-    manifest_filename = f"manifests/{battle_format}{WM_DATASET_MANIFEST_EXTENSION}"
+    archive_path = os.path.join(wm_cache_dir, "archives", f"{key}.tar.lz4")
+    manifest_filename = f"manifests/{key}{WM_DATASET_MANIFEST_EXTENSION}"
     manifest_path = os.path.join(
         wm_cache_dir,
         "manifests",
-        f"{battle_format}{WM_DATASET_MANIFEST_EXTENSION}",
+        f"{key}{WM_DATASET_MANIFEST_EXTENSION}",
     )
-    index_path = os.path.join(wm_cache_dir, "indexes", f"{battle_format}.jsonl.gz")
+    index_path = os.path.join(wm_cache_dir, "indexes", f"{key}.jsonl.gz")
 
     if os.path.exists(wm_output_dir):
         if not force_download:
+            print(
+                f"wm-dataset already present at {wm_output_dir}; "
+                "skipping download (pass force_download=True to replace)."
+            )
             return wm_output_dir
         print(f"Clearing existing dataset at {wm_output_dir}...")
         shutil.rmtree(wm_output_dir)
@@ -298,23 +344,33 @@ def download_wm_dataset(
     hf_hub_download(
         cache_dir=wm_cache_dir,
         repo_id="sooham34/metamon-wm-dataset",
-        filename=f"archives/{battle_format}.tar.lz4",
+        filename=f"archives/{key}.tar.lz4",
         local_dir=wm_cache_dir,
         revision=version,
         repo_type="dataset",
     )
+    # Older single-format uploads may have stored the manifest under the bare
+    # format name; the manifest path is derived from the same key, so try the
+    # expected name first and fall back to the legacy name only for
+    # single-format keys.
+    try:
+        hf_hub_download(
+            cache_dir=wm_cache_dir,
+            repo_id="sooham34/metamon-wm-dataset",
+            filename=manifest_filename,
+            local_dir=wm_cache_dir,
+            revision=version,
+            repo_type="dataset",
+        )
+    except Exception:
+        # No fallback for multi-format keys; re-raise.
+        if "+" in key:
+            raise
+        raise
     hf_hub_download(
         cache_dir=wm_cache_dir,
         repo_id="sooham34/metamon-wm-dataset",
-        filename=manifest_filename,
-        local_dir=wm_cache_dir,
-        revision=version,
-        repo_type="dataset",
-    )
-    hf_hub_download(
-        cache_dir=wm_cache_dir,
-        repo_id="sooham34/metamon-wm-dataset",
-        filename=f"indexes/{battle_format}.jsonl.gz",
+        filename=f"indexes/{key}.jsonl.gz",
         local_dir=wm_cache_dir,
         revision=version,
         repo_type="dataset",
@@ -330,17 +386,22 @@ def download_wm_dataset(
     os.remove(archive_path)
 
     source_commit = "unknown"
+    manifest_formats = formats
     if os.path.exists(manifest_path):
         with open(manifest_path, "rb") as f:
             manifest = orjson.loads(f.read())
         source_commit = manifest.get("source_repo_commit", source_commit)
+        manifest_formats = manifest.get("formats") or [
+            manifest.get("format") or key
+        ]
     if not os.path.exists(index_path):
         print(f"Warning: expected wm-dataset index missing: {index_path}")
 
     _update_version_reference(
         "wm-dataset",
-        battle_format,
-        f"{version}, source_repo_commit {source_commit}",
+        key,
+        f"{version}, formats={','.join(manifest_formats)}, "
+        f"source_repo_commit {source_commit}",
     )
     return wm_output_dir
 
@@ -720,7 +781,8 @@ Dataset to download:
         help="""
 Battle formats to download. Defaults depend on dataset type:
   - parsed-replays, parsed-wm-replays, teams, usage-stats: All Gen 1-4 formats (OU, UU, NU, Ubers) + Gen 9 OU
-  - wm-dataset: exactly one format, because it restores the flat make wm-dataset output layout
+  - wm-dataset: one or more formats; multi-format restores the combined flat
+    make wm-dataset layout (archives are keyed by the sorted '+'-joined tuple)
   - self-play: gen1ou, gen2ou, gen3ou, gen4ou, gen9ou (only OU available; defaults depend on subset)
 Examples:
     --formats gen1ou gen2ou    # Only Gen 1-2 OU
@@ -776,12 +838,9 @@ Available versions:
     elif args.dataset == "wm-dataset":
         version = args.version or LATEST_WM_DATASET_REVISION
         formats = args.formats or [SUPPORTED_BATTLE_FORMATS[0]]
-        if len(formats) != 1:
-            raise ValueError(
-                "wm-dataset downloads require exactly one --formats value because "
-                "the archive restores the flat make wm-dataset output layout."
-            )
-        download_wm_dataset(formats[0], version=version, force_download=True)
+        download_wm_dataset(
+            formats=formats, version=version, force_download=True
+        )
     elif args.dataset == "self-play":
         version = args.version or "main"
         downloads = iter_self_play_downloads(

@@ -196,9 +196,12 @@ WM_DATASET_REPO ?= sooham34/metamon-wm-dataset
 WM_DATASET_REVISION ?= main
 WM_DATASET_PRIVATE ?= 0
 WM_DATASET_DRY_RUN ?= 0
+# One or more formats, matching the make wm-dataset invocation:
+#   make upload-wm-dataset FORMATS="gen1ou gen9ou"
+# (single format: FORMATS=gen1ou still works)
 upload-wm-dataset:
 	uv run python scripts/upload_wm_dataset.py \
-		--format $(FORMAT) \
+		--formats $(FORMATS) \
 		--output_dir $(WM_OUTPUT_DIR) \
 		--repo_id $(WM_DATASET_REPO) \
 		--revision $(WM_DATASET_REVISION) \
