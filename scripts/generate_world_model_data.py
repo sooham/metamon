@@ -15,10 +15,14 @@ uncompressed NumPy ``.npz`` shards.
     p1_action_offsets / p2_action_offsets  (num_actions,)         int64
     p1_action_lengths / p2_action_lengths  (num_actions,)         int32
     p1_opponent_actions / p2_opponent_actions and offsets/lengths mirror these.
+    p1_legal_actions / p2_legal_actions    (num_actions, max_legal, max_action_tokens) int16
+    p1_legal_action_mask / p2_legal_action_mask (num_actions, max_legal) bool
+    p1_chosen_legal_action_idx / p2_chosen_legal_action_idx (num_actions,) int16
 
     p1_target_state_idx / p2_target_state_idx (num_samples, K) int32
     p1_next_state_idx / p2_next_state_idx     (num_samples, K) int32
     p1_action_idx / p2_action_idx             (num_samples, K) int32
+    p1_next_terminal_class                    (num_samples, K) int16
 
     battle_id                              (num_samples,)    int32
     turn_idx / turn_number / subturn_idx   (num_samples, K) int32/int16
@@ -122,6 +126,24 @@ _YOU_RE = re.compile(r"<you>(.*?)<end_you>", re.DOTALL)
 _BENCH_ENTRY_RE = re.compile(r"<poke\d+>\s*(.*?)\s*<end_poke\d+>", re.DOTALL)
 _FAINTED_STATUSES = {"fnt"}
 
+TERMINAL_CLASSES = (
+    "ongoing",
+    "won",
+    "lost",
+    "forfeit_won",
+    "forfeit_lost",
+    "tie",
+)
+TERMINAL_CLASS_TO_ID = {name: idx for idx, name in enumerate(TERMINAL_CLASSES)}
+TERMINAL_ID_TO_CLASS = {idx: name for name, idx in TERMINAL_CLASS_TO_ID.items()}
+
+
+def _terminal_class_from_state_text(state_text: str) -> int:
+    match = _TERMINAL_RE.search(state_text)
+    if match is None:
+        return TERMINAL_CLASS_TO_ID["ongoing"]
+    return TERMINAL_CLASS_TO_ID[match.group(1)]
+
 
 @dataclass
 class TokenizedPOV:
@@ -131,6 +153,9 @@ class TokenizedPOV:
     turn_numbers: list[int]
     path: str
     move_counts: dict[str, int] = field(default_factory=dict)
+    state_terminal_classes: list[int] = field(default_factory=list)  # header + states
+    legal_action_arrays: list[list[np.ndarray]] = field(default_factory=list)
+    chosen_legal_action_idx: list[int] = field(default_factory=list)
 
 
 def _tokenize_action_text(text: str) -> np.ndarray:
@@ -273,14 +298,17 @@ def _parse_single_battle_file_detailed(filepath: str) -> TokenizedPOV | None:
     state_token_arrays: list[np.ndarray] = []
     turn_numbers: list[int] = []
     state_texts: list[str] = []
+    state_terminal_classes: list[int] = []
 
     # Header is stored as "state -1" (always the first element)
     header_tokens = _tokenize_text_block(header_text)
     state_token_arrays.append(header_tokens)
+    state_terminal_classes.append(TERMINAL_CLASS_TO_ID["ongoing"])
 
     for start, end in zip(bos_positions, eos_positions):
         state_text = text[start:end]
         state_texts.append(state_text)
+        state_terminal_classes.append(_terminal_class_from_state_text(state_text))
         # Include the <bos> and <eos> tokens themselves
         tokens = _tokenize_text_block(state_text)
         state_token_arrays.append(tokens)
@@ -293,6 +321,7 @@ def _parse_single_battle_file_detailed(filepath: str) -> TokenizedPOV | None:
     # ── tokenize actions ───────────────────────────────────────────
     player_action_arrays: list[np.ndarray] = []
     opponent_action_arrays: list[np.ndarray] = []
+    chosen_action_texts: list[str] = []
     move_counts: Counter[str] = Counter()
 
     for start, end in zip(boa_positions, eoa_positions):
@@ -307,6 +336,7 @@ def _parse_single_battle_file_detailed(filepath: str) -> TokenizedPOV | None:
         else:
             chosen_text = "unknown unknown"
             player_action_arrays.append(_tokenize_action_text(chosen_text))
+        chosen_action_texts.append(chosen_text)
 
         # Opponent action
         om_match = _OPPONENT_CHOSEN_MOVE_RE.search(action_block)
@@ -317,11 +347,28 @@ def _parse_single_battle_file_detailed(filepath: str) -> TokenizedPOV | None:
         else:
             opponent_action_arrays.append(np.array([_UNKNOWN_ID], dtype=np.int16))
 
+    legal_action_arrays: list[list[np.ndarray]] = []
+    chosen_legal_action_idx: list[int] = []
+    for action_idx, chosen_text in enumerate(chosen_action_texts):
+        if action_idx >= len(state_texts):
+            break
+        legal_texts, chosen_idx = _legal_action_texts_from_state(
+            state_texts[action_idx],
+            chosen_text,
+        )
+        legal_action_arrays.append([
+            _tokenize_action_text(text) for text in legal_texts
+        ])
+        chosen_legal_action_idx.append(int(chosen_idx))
+
     return TokenizedPOV(
         state_token_arrays=state_token_arrays,
         player_action_arrays=player_action_arrays,
         opponent_action_arrays=opponent_action_arrays,
         move_counts=dict(move_counts),
+        state_terminal_classes=state_terminal_classes,
+        legal_action_arrays=legal_action_arrays,
+        chosen_legal_action_idx=chosen_legal_action_idx,
         turn_numbers=turn_numbers,
         path=filepath,
     )
@@ -559,10 +606,15 @@ class PairedShardAccumulator:
     p2_opponent_actions_flat: list[np.ndarray] = field(default_factory=list)
     p2_opponent_action_offsets: list[int] = field(default_factory=lambda: [0])
     p2_opponent_action_lengths: list[int] = field(default_factory=list)
+    p1_legal_action_candidates: list[list[np.ndarray]] = field(default_factory=list)
+    p1_chosen_legal_action_idx_flat: list[int] = field(default_factory=list)
+    p2_legal_action_candidates: list[list[np.ndarray]] = field(default_factory=list)
+    p2_chosen_legal_action_idx_flat: list[int] = field(default_factory=list)
 
     p1_state_idx: list[np.ndarray] = field(default_factory=list)
     p1_next_state_idx: list[np.ndarray] = field(default_factory=list)
     p1_action_idx: list[np.ndarray] = field(default_factory=list)
+    p1_next_terminal_class: list[np.ndarray] = field(default_factory=list)
     p2_state_idx: list[np.ndarray] = field(default_factory=list)
     p2_next_state_idx: list[np.ndarray] = field(default_factory=list)
     p2_action_idx: list[np.ndarray] = field(default_factory=list)
@@ -599,6 +651,51 @@ class PairedShardAccumulator:
     @property
     def num_actions(self) -> int:
         return len(self.p1_action_lengths)
+
+    @staticmethod
+    def _legal_actions_or_fallback(pov: TokenizedPOV) -> tuple[list[list[np.ndarray]], list[int]]:
+        if (
+            len(pov.legal_action_arrays) == len(pov.player_action_arrays)
+            and len(pov.chosen_legal_action_idx) == len(pov.player_action_arrays)
+        ):
+            return pov.legal_action_arrays, pov.chosen_legal_action_idx
+        return [[action] for action in pov.player_action_arrays], [0] * len(pov.player_action_arrays)
+
+    @staticmethod
+    def _terminal_classes_or_ongoing(pov: TokenizedPOV) -> list[int]:
+        if len(pov.state_terminal_classes) == len(pov.state_token_arrays):
+            return pov.state_terminal_classes
+        return [TERMINAL_CLASS_TO_ID["ongoing"]] * len(pov.state_token_arrays)
+
+    @staticmethod
+    def _pack_legal_actions(
+        candidates: list[list[np.ndarray]],
+        chosen_indices: list[int],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        max_legal = max((len(row) for row in candidates), default=1)
+        max_tokens = max(
+            (len(action) for row in candidates for action in row),
+            default=1,
+        )
+        max_legal = max(max_legal, 1)
+        max_tokens = max(max_tokens, 1)
+        packed = np.full(
+            (len(candidates), max_legal, max_tokens),
+            _PAD_ID,
+            dtype=np.int16,
+        )
+        mask = np.zeros((len(candidates), max_legal), dtype=np.bool_)
+        chosen = np.zeros(len(candidates), dtype=np.int16)
+        for action_idx, row in enumerate(candidates):
+            if not row:
+                row = [np.array([_UNKNOWN_ID], dtype=np.int16)]
+            chosen[action_idx] = int(chosen_indices[action_idx]) if action_idx < len(chosen_indices) else 0
+            chosen[action_idx] = min(max(int(chosen[action_idx]), 0), len(row) - 1)
+            for legal_idx, action in enumerate(row[:max_legal]):
+                tokens = np.asarray(action, dtype=np.int16)
+                packed[action_idx, legal_idx, :len(tokens)] = tokens[:max_tokens]
+                mask[action_idx, legal_idx] = True
+        return packed, mask, chosen
 
     def append(self, battle: PairedBattle) -> None:
         if any(len(window) != self.rollout_len for window in battle.rollout_windows):
@@ -671,8 +768,16 @@ class PairedShardAccumulator:
             self.p2_opponent_action_offsets.append(
                 self.p2_opponent_action_offsets[-1] + len(tok_arr)
             )
+        p1_legal, p1_chosen = self._legal_actions_or_fallback(battle.p1)
+        p2_legal, p2_chosen = self._legal_actions_or_fallback(battle.p2)
+        self.p1_legal_action_candidates.extend(p1_legal)
+        self.p1_chosen_legal_action_idx_flat.extend(int(v) for v in p1_chosen)
+        self.p2_legal_action_candidates.extend(p2_legal)
+        self.p2_chosen_legal_action_idx_flat.extend(int(v) for v in p2_chosen)
+
         if n_rollout_samples > 0:
             row_ordinal = {id(row): idx for idx, row in enumerate(battle.aligned_rows)}
+            p1_terminal_classes = self._terminal_classes_or_ongoing(battle.p1)
 
             self.p1_state_idx.append(np.array(
                 [[p1_state_base + row.p1_state_idx for row in window]
@@ -688,6 +793,11 @@ class PairedShardAccumulator:
                 [[p1_action_base + row.p1_action_idx for row in window]
                  for window in battle.rollout_windows],
                 dtype=np.int32,
+            ))
+            self.p1_next_terminal_class.append(np.array(
+                [[p1_terminal_classes[row.p1_next_state_idx] for row in window]
+                 for window in battle.rollout_windows],
+                dtype=np.int16,
             ))
             self.p2_state_idx.append(np.array(
                 [[p2_state_base + row.p2_state_idx for row in window]
@@ -752,6 +862,7 @@ class PairedShardAccumulator:
         p1_state_idx_arr = np.concatenate(self.p1_state_idx, axis=0).astype(np.int32)
         p1_next_state_idx_arr = np.concatenate(self.p1_next_state_idx, axis=0).astype(np.int32)
         p1_action_idx_arr = np.concatenate(self.p1_action_idx, axis=0).astype(np.int32)
+        p1_next_terminal_class_arr = np.concatenate(self.p1_next_terminal_class, axis=0).astype(np.int16)
         p2_state_idx_arr = np.concatenate(self.p2_state_idx, axis=0).astype(np.int32)
         p2_next_state_idx_arr = np.concatenate(self.p2_next_state_idx, axis=0).astype(np.int32)
         p2_action_idx_arr = np.concatenate(self.p2_action_idx, axis=0).astype(np.int32)
@@ -760,12 +871,21 @@ class PairedShardAccumulator:
         turn_number_arr = np.concatenate(self.turn_number, axis=0).astype(np.int32)
         subturn_idx_arr = np.concatenate(self.subturn_idx, axis=0).astype(np.int16)
         format_id_arr = np.concatenate(self.format_ids, axis=0).astype(np.int16)
+        p1_legal_actions_arr, p1_legal_mask_arr, p1_chosen_legal_idx_arr = self._pack_legal_actions(
+            self.p1_legal_action_candidates,
+            self.p1_chosen_legal_action_idx_flat,
+        )
+        p2_legal_actions_arr, p2_legal_mask_arr, p2_chosen_legal_idx_arr = self._pack_legal_actions(
+            self.p2_legal_action_candidates,
+            self.p2_chosen_legal_action_idx_flat,
+        )
 
         if rng is not None and len(p1_state_idx_arr) > 1:
             order = rng.permutation(len(p1_state_idx_arr))
             p1_state_idx_arr = p1_state_idx_arr[order]
             p1_next_state_idx_arr = p1_next_state_idx_arr[order]
             p1_action_idx_arr = p1_action_idx_arr[order]
+            p1_next_terminal_class_arr = p1_next_terminal_class_arr[order]
             p2_state_idx_arr = p2_state_idx_arr[order]
             p2_next_state_idx_arr = p2_next_state_idx_arr[order]
             p2_action_idx_arr = p2_action_idx_arr[order]
@@ -800,9 +920,16 @@ class PairedShardAccumulator:
             p1_target_state_idx=p1_state_idx_arr,
             p1_next_state_idx=p1_next_state_idx_arr,
             p1_action_idx=p1_action_idx_arr,
+            p1_next_terminal_class=p1_next_terminal_class_arr,
             p2_target_state_idx=p2_state_idx_arr,
             p2_next_state_idx=p2_next_state_idx_arr,
             p2_action_idx=p2_action_idx_arr,
+            p1_legal_actions=p1_legal_actions_arr,
+            p1_legal_action_mask=p1_legal_mask_arr,
+            p1_chosen_legal_action_idx=p1_chosen_legal_idx_arr,
+            p2_legal_actions=p2_legal_actions_arr,
+            p2_legal_action_mask=p2_legal_mask_arr,
+            p2_chosen_legal_action_idx=p2_chosen_legal_idx_arr,
             battle_id=battle_id_arr,
             turn_idx=turn_idx_arr,
             turn_number=turn_number_arr,

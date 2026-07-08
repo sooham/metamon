@@ -75,9 +75,9 @@ Each shard stores variable-length token arrays plus index matrices:
 | `p1_state_idx`, `p2_state_idx` | `(num_samples, K)` | Current state indices per rollout step |
 | `p1_next_state_idx`, `p2_next_state_idx` | `(num_samples, K)` | Next state indices per rollout step |
 | `p1_action_idx`, `p2_action_idx` | `(num_samples, K)` | Action indices per rollout step |
+| `p1_next_terminal_class` | `(num_samples, K)` | Class label for the next p1 state: `ongoing`, `won`, `lost`, `forfeit_won`, `forfeit_lost`, or `tie` |
 | `battle_id` | `(num_samples,)` | Local battle index for each rollout row |
 | `turn_idx`, `turn_number`, `subturn_idx`, `format_id` | `(num_samples, K)` | Metadata per rollout step |
-| `p1_won`, `p2_won`, `rank_valid` | `(num_battles,)` | Per-battle labels |
 | `p1_battle_start`, `p2_battle_start` | `(num_battles+1,)` | Per-POV cumulative state starts |
 | `p1_battle_action_start`, `p2_battle_action_start` | `(num_battles+1,)` | Per-POV cumulative action starts |
 | `rollout_len` | scalar | `K` for this shard |
@@ -109,7 +109,9 @@ included. Opponent legal candidates are not generated or required.
 ## Dataset Sample
 
 `PairedJEPADataset` yields one rollout sample at a time. Before collation, each
-value is a list of length `K`:
+value is a list of length `K`. Legal-action and terminal-class fields are
+included when the dataset is constructed with
+`include_simple_world_model_fields=True`:
 
 ```python
 {
@@ -137,9 +139,7 @@ value is a list of length `K`:
     "p2_legal_actions": [p2_legal_candidates_0, ...],
     "p2_legal_action_mask": [p2_legal_mask_0, ...],
     "p2_chosen_legal_action_idx": [idx_0, ...],
-    "p1_won": [bool, ..., bool],
-    "p2_won": [bool, ..., bool],
-    "rank_valid": [bool, ..., bool],
+    "p1_next_terminal_class": [class_id_0, ...],
 }
 ```
 
@@ -153,7 +153,7 @@ value is a list of length `K`:
 | Legal action tensors | `[B, K, max_legal, max_action_tokens]` |
 | Legal action masks | `[B, K, max_legal]` |
 | Chosen legal action indices | `[B, K]` |
-| `p1_won`, `p2_won`, `rank_valid` | `[B, K]` |
+| `p1_next_terminal_class` | `[B, K]` |
 
 `max_history_blocks=0` keeps full history. A positive value keeps the team
 header plus the last `N` state/action blocks for each rollout step.

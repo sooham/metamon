@@ -72,6 +72,7 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         structural_token_ids: dict[str, int],
         shuffle_shards: bool = True,
         max_history_blocks: int = 100,
+        include_simple_world_model_fields: bool = False,
     ):
         super().__init__()
         if not shard_paths:
@@ -81,6 +82,7 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         self.shuffle_shards = shuffle_shards
         self.shuffle_transitions = shuffle_shards
         self.max_history_blocks = max_history_blocks  # 0 = unlimited, default 100
+        self.include_simple_world_model_fields = include_simple_world_model_fields
 
         # Pre-processed shards — populated lazily by _get_shard()
         self._shards: dict[str, dict] = {}
@@ -266,7 +268,8 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
 
     @staticmethod
     def _iter_shard(data: dict, unknown_token: int | None,
-                    shuffle_transitions: bool, max_hist: int) -> Iterator[dict]:
+                    shuffle_transitions: bool, max_hist: int,
+                    include_simple_world_model_fields: bool = False) -> Iterator[dict]:
         p1_target_state_idx = np.asarray(data["p1_target_state_idx"])
         if p1_target_state_idx.ndim == 1:
             p1_target_state_idx = p1_target_state_idx[:, None]
@@ -285,11 +288,19 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
         p2_action_idx = np.asarray(data["p2_action_idx"])
         if p2_action_idx.ndim == 1:
             p2_action_idx = p2_action_idx[:, None]
+        p1_next_terminal_class = np.asarray(
+            data["p1_next_terminal_class"]
+            if "p1_next_terminal_class" in data
+            else np.zeros_like(p1_target_state_idx, dtype=np.int16)
+        )
+        if p1_next_terminal_class.ndim == 1:
+            p1_next_terminal_class = p1_next_terminal_class[:, None]
 
         n, rollout_len = p1_target_state_idx.shape
         for name, arr in [
             ("p1_next_state_idx", p1_next_state_idx),
             ("p1_action_idx", p1_action_idx),
+            ("p1_next_terminal_class", p1_next_terminal_class),
             ("p2_target_state_idx", p2_target_state_idx),
             ("p2_next_state_idx", p2_next_state_idx),
             ("p2_action_idx", p2_action_idx),
@@ -337,6 +348,11 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
             sample["p2_target_state_idx_meta"] = p2_target_state_idx[row].astype(np.int32, copy=True)
             sample["p2_next_state_idx_meta"] = p2_next_state_idx[row].astype(np.int32, copy=True)
             sample["p2_action_idx_meta"] = p2_action_idx[row].astype(np.int32, copy=True)
+            if include_simple_world_model_fields:
+                sample["p1_legal_actions"] = []
+                sample["p1_legal_action_mask"] = []
+                sample["p1_chosen_legal_action_idx"] = []
+                sample["p1_next_terminal_class"] = p1_next_terminal_class[row].astype(np.int16, copy=True)
 
             for step in range(rollout_len):
                 p1_si = int(p1_target_state_idx[row, step])
@@ -363,6 +379,18 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
                 sample["p2_action"].append(sv(data["p2_actions_combined"], data["p2_actions_combined_offsets"], data["p2_actions_combined_lengths"], p2_ai, p2_ai + 1)[0])
                 sample["actual_p2_action_from_p1_perspective"].append(sv(data["p1_opponent_actions_combined"], data["p1_opponent_actions_combined_offsets"], data["p1_opponent_actions_combined_lengths"], p1_ai, p1_ai + 1)[0])
                 sample["actual_p1_action_from_p2_perspective"].append(sv(data["p2_opponent_actions_combined"], data["p2_opponent_actions_combined_offsets"], data["p2_opponent_actions_combined_lengths"], p2_ai, p2_ai + 1)[0])
+                if include_simple_world_model_fields:
+                    if "p1_legal_actions" in data:
+                        sample["p1_legal_actions"].append(np.asarray(data["p1_legal_actions"][p1_ai], dtype=np.int16))
+                        sample["p1_legal_action_mask"].append(np.asarray(data["p1_legal_action_mask"][p1_ai], dtype=np.bool_))
+                        chosen_idx = int(np.asarray(data["p1_chosen_legal_action_idx"])[p1_ai])
+                    else:
+                        # Backward-compatible fallback for older shards: make the
+                        # replay action the only legal candidate.
+                        sample["p1_legal_actions"].append(np.asarray([sample["p1_action"][-1]], dtype=np.int16))
+                        sample["p1_legal_action_mask"].append(np.asarray([True], dtype=np.bool_))
+                        chosen_idx = 0
+                    sample["p1_chosen_legal_action_idx"].append(chosen_idx)
             yield sample
 
     def __iter__(self) -> Iterator[dict[str, object]]:
@@ -381,6 +409,7 @@ class PairedJEPADataset(torch.utils.data.IterableDataset):
             yield from self._iter_shard(
                 data, unknown_token,
                 self.shuffle_transitions, self.max_history_blocks,
+                self.include_simple_world_model_fields,
             )
 
 
@@ -466,6 +495,39 @@ def collate_paired_fn(
                 padded[batch_idx, step_idx, :len(tokens)] = tokens
         return padded
 
+    def pad_legal_action_rollouts(
+        legal_rollouts: list[list[np.ndarray]],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        max_legal = max(
+            (int(candidates.shape[0]) for rollout in legal_rollouts for candidates in rollout),
+            default=1,
+        )
+        max_tokens = max(
+            (
+                int(candidates.shape[1])
+                for rollout in legal_rollouts
+                for candidates in rollout
+                if candidates.ndim == 2
+            ),
+            default=1,
+        )
+        padded = torch.full(
+            (len(legal_rollouts), rollout_len, max_legal, max_tokens),
+            pad_id,
+            dtype=torch.int32,
+        )
+        mask = torch.zeros((len(legal_rollouts), rollout_len, max_legal), dtype=torch.bool)
+        for batch_idx, rollout in enumerate(legal_rollouts):
+            for step_idx, candidates in enumerate(rollout):
+                arr = np.asarray(candidates, dtype=np.int32)
+                if arr.ndim != 2:
+                    raise ValueError(f"Expected legal action candidates to be rank-2, got {arr.shape}")
+                l_count = min(arr.shape[0], max_legal)
+                tok_count = min(arr.shape[1], max_tokens)
+                padded[batch_idx, step_idx, :l_count, :tok_count] = torch.from_numpy(arr[:l_count, :tok_count])
+                mask[batch_idx, step_idx, :l_count] = True
+        return padded, mask
+
     out: dict[str, object] = {}
     for key in BLOCK_KEYS:
         blocks, valid = pad_block_rollouts([item[key] for item in batch])  # type: ignore[index]
@@ -473,6 +535,28 @@ def collate_paired_fn(
         out[f"{key}_valid"] = valid
     for key in (*SINGLE_BLOCK_KEYS, *ACTION_KEYS):
         out[key] = pad_action_rollouts([item[key] for item in batch])  # type: ignore[index]
+    if "p1_legal_actions" in batch[0]:
+        legal_actions, inferred_mask = pad_legal_action_rollouts([item["p1_legal_actions"] for item in batch])  # type: ignore[index]
+        out["p1_legal_actions"] = legal_actions
+        if "p1_legal_action_mask" in batch[0]:
+            legal_masks = [item["p1_legal_action_mask"] for item in batch]  # type: ignore[index]
+            explicit_mask = torch.zeros_like(inferred_mask)
+            for batch_idx, rollout in enumerate(legal_masks):
+                for step_idx, mask_arr in enumerate(rollout):
+                    mask_tensor = torch.from_numpy(np.asarray(mask_arr, dtype=np.bool_))
+                    count = min(mask_tensor.numel(), explicit_mask.shape[-1])
+                    explicit_mask[batch_idx, step_idx, :count] = mask_tensor[:count]
+            out["p1_legal_action_mask"] = inferred_mask & explicit_mask
+        else:
+            out["p1_legal_action_mask"] = inferred_mask
+        out["p1_chosen_legal_action_idx"] = torch.tensor(
+            np.stack([np.asarray(item["p1_chosen_legal_action_idx"], dtype=np.int64) for item in batch], axis=0),  # type: ignore[index]
+            dtype=torch.long,
+        )
+        out["p1_next_terminal_class"] = torch.tensor(
+            np.stack([np.asarray(item["p1_next_terminal_class"], dtype=np.int64) for item in batch], axis=0),  # type: ignore[index]
+            dtype=torch.long,
+        )
     out["battle_id"] = torch.tensor([int(item["battle_id"]) for item in batch], dtype=torch.int32)
     out["raw_battle_key"] = [str(item["raw_battle_key"]) for item in batch]  # type: ignore[assignment]
     for key in ROLLOUT_METADATA_KEYS:

@@ -16,7 +16,9 @@ FORMATS ?= $(FORMAT)
         wm-dataset upload-wm-dataset \
         test test-quick test-forward test-backward test-e2e \
         clean show-tokenizer clean-tokenizer \
-        train-jepa train-jepa-debug _train-jepa-inner play-jepa play-jepa-local \
+        train-jepa train-jepa-debug _train-jepa-inner \
+        train-simple-world-model train-simple-world-model-debug _train-simple-world-model-inner \
+        play-jepa play-jepa-local \
         showdown ensure-showdown showdown-daemon showdown-status showdown-stop \
         showdown-install-autostart showdown-uninstall-autostart bash-completion
 
@@ -338,6 +340,111 @@ _train-jepa-inner:
 		--belief_batch_size $(JEPA_BELIEF_BATCH_SIZE) \
 		--max_history_blocks $(JEPA_MAX_HISTORY) \
 		$(JEPA_PAIRED_EXTRA_ARGS)
+
+# ── Simple World Model Training ─────────────────────────────────────
+
+SIMPLE_WM_DATA_ROOT ?= $(WM_OUTPUT_DIR)
+SIMPLE_WM_TOKENIZER ?= $(TOKENIZER_FILE)
+SIMPLE_WM_SAVE_DIR ?= $(METAMON_CACHE_DIR)/simple-world-model-checkpoints
+SIMPLE_WM_CONFIG ?= metamon/simple_world_model/configs/default.yaml
+SIMPLE_WM_COMPONENTS ?= vm
+SIMPLE_WM_CHECKPOINT ?= $(SIMPLE_WM_SAVE_DIR)/simple_world_model_best.pt
+SIMPLE_WM_RESUME ?=
+SIMPLE_WM_LR ?= 5e-5
+SIMPLE_WM_EPOCHS ?= 10
+SIMPLE_WM_BATCH_SIZE ?= 32
+SIMPLE_WM_GRAD_ACCUM_STEPS ?= 1
+SIMPLE_WM_GRAD_CLIP ?= 1.0
+SIMPLE_WM_MAX_STEPS ?= 0
+SIMPLE_WM_NUM_WORKERS ?= $(shell python3 -c 'import os; n=len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 4); print(min(12, n))')
+SIMPLE_WM_PREFETCH_FACTOR ?= 4
+SIMPLE_WM_VAL_INTERVAL ?= 100
+SIMPLE_WM_VAL_MAX_BATCHES ?= 5
+SIMPLE_WM_CONSOLE_INTERVAL ?= 10
+SIMPLE_WM_WANDB_INTERVAL ?= 10
+SIMPLE_WM_COMPILE ?= true
+SIMPLE_WM_MAX_HISTORY ?= 1
+SIMPLE_WM_EXTRA_ARGS ?=
+
+SIMPLE_WM_DEBUG_BATCH_SIZE ?= 1
+SIMPLE_WM_DEBUG_MAX_STEPS ?= 1
+SIMPLE_WM_DEBUG_TENSOR_STEPS ?= 1
+SIMPLE_WM_DEBUG_TENSOR_VALUES ?= 64
+SIMPLE_WM_DEBUG_TENSOR_SAMPLES ?= 2
+
+train-simple-world-model:
+	@if [ -z "$$TMUX" ]; then \
+		if tmux has-session -t simple-world-model-train 2>/dev/null; then \
+			echo "tmux session 'simple-world-model-train' already exists."; \
+			echo "  Attach:  tmux attach -t simple-world-model-train"; \
+			echo "  Kill:    tmux kill-session -t simple-world-model-train"; \
+			exit 1; \
+		fi; \
+		echo "Launching training in tmux session 'simple-world-model-train'..."; \
+		tmux new-session -d -s simple-world-model-train "$(MAKE) _train-simple-world-model-inner FORMAT='$(FORMAT)' FORMATS='$(FORMATS)' WANDB='$(WANDB)' WANDB_PROJECT='$(WANDB_PROJECT)' WANDB_NAME='$(WANDB_NAME)' SIMPLE_WM_COMPONENTS='$(SIMPLE_WM_COMPONENTS)' SIMPLE_WM_COMPILE='$(SIMPLE_WM_COMPILE)' SIMPLE_WM_MAX_HISTORY='$(SIMPLE_WM_MAX_HISTORY)' SIMPLE_WM_BATCH_SIZE='$(SIMPLE_WM_BATCH_SIZE)' SIMPLE_WM_GRAD_ACCUM_STEPS='$(SIMPLE_WM_GRAD_ACCUM_STEPS)' SIMPLE_WM_LR='$(SIMPLE_WM_LR)' SIMPLE_WM_EPOCHS='$(SIMPLE_WM_EPOCHS)' SIMPLE_WM_NUM_WORKERS='$(SIMPLE_WM_NUM_WORKERS)' SIMPLE_WM_PREFETCH_FACTOR='$(SIMPLE_WM_PREFETCH_FACTOR)' SIMPLE_WM_GRAD_CLIP='$(SIMPLE_WM_GRAD_CLIP)' SIMPLE_WM_MAX_STEPS='$(SIMPLE_WM_MAX_STEPS)' SIMPLE_WM_VAL_INTERVAL='$(SIMPLE_WM_VAL_INTERVAL)' SIMPLE_WM_VAL_MAX_BATCHES='$(SIMPLE_WM_VAL_MAX_BATCHES)' SIMPLE_WM_CONSOLE_INTERVAL='$(SIMPLE_WM_CONSOLE_INTERVAL)' SIMPLE_WM_WANDB_INTERVAL='$(SIMPLE_WM_WANDB_INTERVAL)' SIMPLE_WM_EXTRA_ARGS='$(SIMPLE_WM_EXTRA_ARGS)' SIMPLE_WM_RESUME='$(SIMPLE_WM_RESUME)'"; \
+		echo ""; \
+		echo "  Attach:  tmux attach -t simple-world-model-train"; \
+		echo "  Detach:  Ctrl+B, D"; \
+		echo "  Kill:    tmux kill-session -t simple-world-model-train"; \
+	else \
+		$(MAKE) _train-simple-world-model-inner; \
+	fi
+
+train-simple-world-model-debug:
+	$(MAKE) _train-simple-world-model-inner \
+		FORMAT='$(FORMAT)' \
+		FORMATS='$(FORMATS)' \
+		WANDB=false \
+		SIMPLE_WM_COMPILE=false \
+		SIMPLE_WM_BATCH_SIZE='$(SIMPLE_WM_DEBUG_BATCH_SIZE)' \
+		SIMPLE_WM_GRAD_ACCUM_STEPS=1 \
+		SIMPLE_WM_MAX_STEPS='$(SIMPLE_WM_DEBUG_MAX_STEPS)' \
+		SIMPLE_WM_VAL_INTERVAL=0 \
+		SIMPLE_WM_VAL_MAX_BATCHES=0 \
+		SIMPLE_WM_CONSOLE_INTERVAL=1 \
+		SIMPLE_WM_WANDB_INTERVAL=0 \
+		SIMPLE_WM_NUM_WORKERS=0 \
+		SIMPLE_WM_PREFETCH_FACTOR=2 \
+		SIMPLE_WM_EXTRA_ARGS="--debug_tensors --debug_tensor_steps $(SIMPLE_WM_DEBUG_TENSOR_STEPS) --debug_tensor_values $(SIMPLE_WM_DEBUG_TENSOR_VALUES) --debug_tensor_samples $(SIMPLE_WM_DEBUG_TENSOR_SAMPLES) $(SIMPLE_WM_EXTRA_ARGS)"
+
+_train-simple-world-model-inner:
+	@if [ ! -d "$(SIMPLE_WM_DATA_ROOT)" ]; then \
+		echo "ERROR: No paired .npz data found at $(SIMPLE_WM_DATA_ROOT)."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(SIMPLE_WM_TOKENIZER)" ]; then \
+		echo "ERROR: Tokenizer not found at $(SIMPLE_WM_TOKENIZER)."; \
+		exit 1; \
+	fi
+	mkdir -p $(SIMPLE_WM_SAVE_DIR)
+	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+	uv run python -m metamon.simple_world_model.train \
+		--data_root $(SIMPLE_WM_DATA_ROOT) \
+		--formats $(FORMATS) \
+		--tokenizer_path $(SIMPLE_WM_TOKENIZER) \
+		--save_dir $(SIMPLE_WM_SAVE_DIR) \
+		--components $(SIMPLE_WM_COMPONENTS) \
+		--batch_size $(SIMPLE_WM_BATCH_SIZE) \
+		--grad_accum_steps $(SIMPLE_WM_GRAD_ACCUM_STEPS) \
+		--lr $(SIMPLE_WM_LR) \
+		--epochs $(SIMPLE_WM_EPOCHS) \
+		--max_steps $(SIMPLE_WM_MAX_STEPS) \
+		--grad_clip $(SIMPLE_WM_GRAD_CLIP) \
+		--num_workers $(SIMPLE_WM_NUM_WORKERS) \
+		--prefetch_factor $(SIMPLE_WM_PREFETCH_FACTOR) \
+		--print_interval $(SIMPLE_WM_CONSOLE_INTERVAL) \
+		$(if $(SIMPLE_WM_CHECKPOINT),--checkpoint $(SIMPLE_WM_CHECKPOINT)) \
+		$(if $(SIMPLE_WM_RESUME),--resume $(SIMPLE_WM_RESUME)) \
+		$(if $(SIMPLE_WM_CONFIG),--config $(SIMPLE_WM_CONFIG)) \
+		--log_interval $(SIMPLE_WM_WANDB_INTERVAL) \
+		$(if $(filter false,$(WANDB)),--no-wandb) \
+		$(if $(WANDB_PROJECT),--wandb_project $(WANDB_PROJECT)) \
+		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
+		--val_interval $(SIMPLE_WM_VAL_INTERVAL) \
+		--val_max_batches $(SIMPLE_WM_VAL_MAX_BATCHES) \
+		$(if $(filter true,$(SIMPLE_WM_COMPILE)),--compile,--no-compile) \
+		--max_history_blocks $(SIMPLE_WM_MAX_HISTORY) \
+		$(SIMPLE_WM_EXTRA_ARGS)
 
 # ── JEPA Showdown Play
 # Requires a checkpoint from train-jepa and a running Showdown server.

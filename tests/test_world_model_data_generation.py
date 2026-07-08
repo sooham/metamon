@@ -68,6 +68,13 @@ won
     assert match.group(1) == "won"
 
 
+def test_terminal_class_from_state_text_handles_all_targets():
+    assert wm_data._terminal_class_from_state_text("<bos><turn>1<end_turn><eos>") == wm_data.TERMINAL_CLASS_TO_ID["ongoing"]
+    for name in ("won", "lost", "forfeit_won", "forfeit_lost", "tie"):
+        text = f"<bos><terminal>{name}<end_terminal><eos>"
+        assert wm_data._terminal_class_from_state_text(text) == wm_data.TERMINAL_CLASS_TO_ID[name]
+
+
 def test_paired_jepa_dataset_discover_prefers_flat_split_layout(tmp_path):
     flat_train = tmp_path / "train"
     format_train = tmp_path / "gen1ou" / "train"
@@ -243,18 +250,19 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     np.testing.assert_array_equal(data["p2_target_state_idx"], np.array([[1], [4]], dtype=np.int32))
     np.testing.assert_array_equal(data["p2_next_state_idx"], np.array([[2], [5]], dtype=np.int32))
     np.testing.assert_array_equal(data["p2_action_idx"], np.array([[0], [3]], dtype=np.int32))
+    np.testing.assert_array_equal(data["p1_next_terminal_class"], np.array([[0], [0]], dtype=np.int16))
     np.testing.assert_array_equal(data["p1_battle_start"], np.array([0, 5], dtype=np.int64))
     np.testing.assert_array_equal(data["p2_battle_start"], np.array([0, 6], dtype=np.int64))
     np.testing.assert_array_equal(data["p1_battle_action_start"], np.array([0, 3], dtype=np.int64))
     np.testing.assert_array_equal(data["p2_battle_action_start"], np.array([0, 4], dtype=np.int64))
+    assert data["p1_legal_actions"].shape == (3, 1, 1)
+    assert data["p2_legal_actions"].shape == (4, 1, 1)
+    np.testing.assert_array_equal(data["p1_legal_action_mask"], np.ones((3, 1), dtype=np.bool_))
+    np.testing.assert_array_equal(data["p1_chosen_legal_action_idx"], np.zeros(3, dtype=np.int16))
     for removed_key in (
         "p1_won",
         "p2_won",
         "rank_valid",
-        "p1_legal_actions",
-        "p2_legal_actions",
-        "p1_chosen_legal_action_idx",
-        "p2_chosen_legal_action_idx",
     ):
         assert removed_key not in data
 
@@ -318,6 +326,19 @@ def test_paired_shard_accumulator_aligns_common_immediate_subturns(tmp_path):
     assert "p1_legal_actions" not in batch
     assert "p1_is_terminal" not in batch
     assert "rank_valid" not in batch
+
+    simple_dataset = PairedJEPADataset(
+        [str(tmp_path / "paired_shard_0000.npz")],
+        struct_ids,
+        shuffle_shards=False,
+        include_simple_world_model_fields=True,
+    )
+    simple_samples = list(simple_dataset)
+    simple_batch = collate_paired_fn(simple_samples, pad_id=0)
+    assert simple_batch["p1_legal_actions"].shape[:3] == (2, 1, 1)
+    assert torch.equal(simple_batch["p1_legal_action_mask"], torch.ones((2, 1, 1), dtype=torch.bool))
+    assert torch.equal(simple_batch["p1_chosen_legal_action_idx"], torch.zeros((2, 1), dtype=torch.long))
+    assert torch.equal(simple_batch["p1_next_terminal_class"], torch.zeros((2, 1), dtype=torch.long))
 
     capped_dataset = PairedJEPADataset(
         [str(tmp_path / "paired_shard_0000.npz")],
