@@ -287,7 +287,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Package and upload parser text outputs for world-model training."
     )
-    parser.add_argument("--format", required=True)
+    fmt_group = parser.add_mutually_exclusive_group(required=True)
+    fmt_group.add_argument(
+        "--formats",
+        nargs="+",
+        dest="formats",
+        help=(
+            "One or more battle formats to package and upload. Each format is "
+            "uploaded as its own per-format archive (e.g. "
+            "`archives/gen1ou.tar.gz`, `archives/gen9ou.tar.gz`). e.g. "
+            "--formats gen1ou gen9ou"
+        ),
+    )
+    # Backwards-compatible alias. Accepts one or more formats.
+    fmt_group.add_argument(
+        "--format",
+        nargs="+",
+        dest="formats",
+        help="Backwards-compatible alias for --formats (accepts one or more).",
+    )
     parser.add_argument(
         "--parsed_replay_root",
         default=(
@@ -319,31 +337,52 @@ def main() -> None:
     repo_root = _repo_root()
     _ensure_clean_git(repo_root)
 
-    with tempfile.TemporaryDirectory(prefix="metamon-parsed-wm-") as tmp:
-        staging_dir = Path(tmp)
-        archive_path, index_path, manifest_path, readme_path, manifest = package_format(
-            format_name=args.format,
-            parsed_replay_root=Path(args.parsed_replay_root),
-            staging_dir=staging_dir,
-            repo_root=repo_root,
-            repo_id=args.repo_id,
-        )
-        print(orjson.dumps(manifest, option=orjson.OPT_INDENT_2).decode("utf-8"))
-        if args.dry_run:
-            print("Dry run complete; no Hugging Face upload performed.")
-            return
-        upload_format(
-            repo_id=args.repo_id,
-            revision=args.revision,
-            private=args.private,
-            archive_path=archive_path,
-            index_path=index_path,
-            manifest_path=manifest_path,
-            readme_path=readme_path,
-            manifest=manifest,
-        )
+    # Dedupe while preserving sorted order for deterministic output.
+    formats = sorted(set(args.formats))
+    if not formats:
+        raise ValueError("At least one format is required")
+
+    uploaded = []
+    skipped = []
+    for format_name in formats:
+        with tempfile.TemporaryDirectory(prefix="metamon-parsed-wm-") as tmp:
+            staging_dir = Path(tmp)
+            archive_path, index_path, manifest_path, readme_path, manifest = package_format(
+                format_name=format_name,
+                parsed_replay_root=Path(args.parsed_replay_root),
+                staging_dir=staging_dir,
+                repo_root=repo_root,
+                repo_id=args.repo_id,
+            )
+            print(orjson.dumps(manifest, option=orjson.OPT_INDENT_2).decode("utf-8"))
+            if args.dry_run:
+                skipped.append(format_name)
+                continue
+            upload_format(
+                repo_id=args.repo_id,
+                revision=args.revision,
+                private=args.private,
+                archive_path=archive_path,
+                index_path=index_path,
+                manifest_path=manifest_path,
+                readme_path=readme_path,
+                manifest=manifest,
+            )
+            uploaded.append(format_name)
+            print(
+                f"Uploaded {format_name} parsed-wm-replays to "
+                f"{args.repo_id}@{args.revision}."
+            )
+
+    if args.dry_run:
         print(
-            f"Uploaded {args.format} parsed-wm-replays to {args.repo_id}@{args.revision}."
+            f"Dry run complete; packaged {len(skipped)} format(s) "
+            f"({', '.join(skipped)}), no Hugging Face upload performed."
+        )
+    else:
+        print(
+            f"Uploaded {len(uploaded)} parsed-wm-replays format(s) "
+            f"({', '.join(uploaded)}) to {args.repo_id}@{args.revision}."
         )
 
 

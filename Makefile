@@ -8,7 +8,7 @@ else
 METAMON_CACHE_DIR ?= /workspace/poke-datasets
 endif
 RAW_REPLAY_DIR ?= $(METAMON_CACHE_DIR)/raw-replays
-FORMAT ?= gen1ou
+FORMAT ?= gen1ou gen9ou
 FORMATS ?= $(FORMAT)
 
 .PHONY: parse parse-all upload-parsed-wm-replays show-battle show-rand-battle \
@@ -88,9 +88,11 @@ PARSED_WM_REPLAY_DRY_RUN ?= 0
 PARSED_WM_REPLAY_ROOT ?= $(METAMON_CACHE_DIR)/parsed-replays
 # Upload online-play saves with:
 #   make upload-parsed-wm-replays FORMAT=gen1ou PARSED_WM_REPLAY_ROOT=$(METAMON_CACHE_DIR)/online-play
+# Multiple formats at once:
+#   make upload-parsed-wm-replays FORMATS="gen1ou gen9ou"
 upload-parsed-wm-replays:
 	uv run python scripts/upload_parsed_wm_replays.py \
-		--format $(FORMAT) \
+		--formats $(FORMATS) \
 		--parsed_replay_root $(PARSED_WM_REPLAY_ROOT) \
 		--repo_id $(PARSED_WM_REPLAY_REPO) \
 		--revision $(PARSED_WM_REPLAY_REVISION) \
@@ -159,7 +161,7 @@ WM_OUTPUT_DIR ?= $(METAMON_CACHE_DIR)/world-model-samples
 WM_PROCESSES ?= $(N_THREADS)
 WM_VAL_SPLIT ?= 0.05
 WM_SEED ?= 42
-WM_ROLLOUT_LEN ?= 10
+WM_ROLLOUT_LEN ?= 1
 TOKENIZER_FILE := $(TOKENIZER_OUTPUT_DIR)/$(TOKENIZER_VERSION).json
 wm-dataset:
 	@# ---- 1. Check parsed replays exist for every format ----
