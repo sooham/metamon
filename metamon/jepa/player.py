@@ -108,6 +108,7 @@ class JEPAWorldModelPlayer(TuiMixin, MetamonPlayer):
         self._verbose = verbose
         self._max_history_blocks = max_history_blocks  # 0 = unlimited, default 100
         self._save_online_play_root = save_online_play_root
+        TuiMixin._repl_title = "JEPA REPL"
         TuiMixin._repl_verbose_blocks = verbose_blocks
         TuiMixin._repl_max_history_blocks = max_history_blocks
         self._histories: dict[str, BattleHistory] = {}

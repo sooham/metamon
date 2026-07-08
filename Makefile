@@ -18,6 +18,7 @@ FORMATS ?= $(FORMAT)
         clean show-tokenizer clean-tokenizer \
         train-jepa train-jepa-debug _train-jepa-inner \
         train-simple-world-model train-simple-world-model-debug _train-simple-world-model-inner \
+        play-simple-world-model play-simple-world-model-local \
         play-jepa play-jepa-local \
         showdown ensure-showdown showdown-daemon showdown-status showdown-stop \
         showdown-install-autostart showdown-uninstall-autostart bash-completion
@@ -445,6 +446,48 @@ _train-simple-world-model-inner:
 		$(if $(filter true,$(SIMPLE_WM_COMPILE)),--compile,--no-compile) \
 		--max_history_blocks $(SIMPLE_WM_MAX_HISTORY) \
 		$(SIMPLE_WM_EXTRA_ARGS)
+
+SIMPLE_WM_PLAY_CHECKPOINT ?= $(SIMPLE_WM_CHECKPOINT)
+SIMPLE_WM_PLAY_FORMAT ?= gen1randombattle
+SIMPLE_WM_PLAY_USERNAME ?= simplewmbot
+SIMPLE_WM_PLAY_TEAM_SET ?= competitive
+SIMPLE_WM_PLAY_NUM_BATTLES ?= 30
+SIMPLE_WM_PLAY_MAX_CONCURRENT_BATTLES ?= 100
+SIMPLE_WM_PLAY_KEEP_LADDER_BATTLES ?= 100
+SIMPLE_WM_PLAY_RANDOM_BATTLE_BOT ?= 0
+SIMPLE_WM_PLAY_LADDER ?=
+SIMPLE_WM_PLAY_VERBOSE_BLOCKS ?=
+SIMPLE_WM_PLAY_SERVER ?= showdown
+SIMPLE_WM_PLAY_PASSWORD ?= SIMPLEWM
+SIMPLE_WM_PLAY_TIMER ?= 1
+SIMPLE_WM_PLAY_SAVE ?= 1
+SIMPLE_WM_PLAY_SAVE_DIR ?=
+
+play-simple-world-model:
+	@if [ ! -f "$(SIMPLE_WM_PLAY_CHECKPOINT)" ]; then \
+		echo "ERROR: Checkpoint not found at $(SIMPLE_WM_PLAY_CHECKPOINT)."; \
+		echo "  Train first: make train-simple-world-model FORMATS=$(SIMPLE_WM_PLAY_FORMAT)"; \
+		exit 1; \
+	fi
+	uv run python -m metamon.simple_world_model.play \
+		--checkpoint $(SIMPLE_WM_PLAY_CHECKPOINT) \
+		--format $(SIMPLE_WM_PLAY_FORMAT) \
+		--username $(SIMPLE_WM_PLAY_USERNAME) \
+		--team_set $(SIMPLE_WM_PLAY_TEAM_SET) \
+		$(if $(SIMPLE_WM_PLAY_KEEP_LADDER_BATTLES),,--num_battles $(SIMPLE_WM_PLAY_NUM_BATTLES)) \
+		--max_concurrent_battles $(SIMPLE_WM_PLAY_MAX_CONCURRENT_BATTLES) \
+		$(if $(SIMPLE_WM_PLAY_KEEP_LADDER_BATTLES),--keep_ladder_battles $(SIMPLE_WM_PLAY_KEEP_LADDER_BATTLES)) \
+		$(if $(filter 0 false no,$(SIMPLE_WM_PLAY_RANDOM_BATTLE_BOT)),--no_random_battle_bot) \
+		$(if $(SIMPLE_WM_PLAY_LADDER),--ladder) \
+		$(if $(SIMPLE_WM_PLAY_VERBOSE_BLOCKS),--verbose_blocks) \
+		$(if $(filter 0 false no,$(SIMPLE_WM_PLAY_TIMER)),--no-timer) \
+		$(if $(SIMPLE_WM_PLAY_SAVE),--save) \
+		$(if $(SIMPLE_WM_PLAY_SAVE_DIR),--save-dir $(SIMPLE_WM_PLAY_SAVE_DIR)) \
+		--server $(SIMPLE_WM_PLAY_SERVER) \
+		$(if $(SIMPLE_WM_PLAY_PASSWORD),--password $(SIMPLE_WM_PLAY_PASSWORD))
+
+play-simple-world-model-local:
+	$(MAKE) play-simple-world-model SIMPLE_WM_PLAY_SERVER=localhost SIMPLE_WM_PLAY_PASSWORD=
 
 # ── JEPA Showdown Play
 # Requires a checkpoint from train-jepa and a running Showdown server.

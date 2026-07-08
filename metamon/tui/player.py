@@ -139,6 +139,7 @@ class TuiMixin:
     _repl_scroll_offset: int = 0
     _repl_save_raw_dir: Optional[str] = None  # set by play.py --save-raw-replay
     _repl_save_raw_by_format: bool = False
+    _repl_title: str = "Metamon REPL"
 
     # ── hooks that concrete players must provide ──────────────────────
 
@@ -222,7 +223,7 @@ class TuiMixin:
         _sys.stdout.flush()
         t = threading.Thread(target=cls._key_listener, daemon=True)
         t.start()
-        print("\n[JEPA REPL]  R=raw  P=blocks  V=verbose  O=overview  Q=quit")
+        print(f"\n[{TuiMixin._repl_title}]  R=raw  P=blocks  V=verbose  O=overview  Q=quit")
 
     @classmethod
     def _stop_repl(cls) -> None:
@@ -404,15 +405,15 @@ class TuiMixin:
         # ── header ──
         print(f"{'─' * width}")
         if view == "live":
-            print(f"  JEPA REPL · live mode · verbose_blocks: {'ON' if TuiMixin._repl_verbose_blocks else 'OFF'}")
+            print(f"  {TuiMixin._repl_title} · live mode · verbose_blocks: {'ON' if TuiMixin._repl_verbose_blocks else 'OFF'}")
         elif view == "raw":
             tag = getattr(self, "_last_active_battle_tag", None)
-            print(f"  JEPA REPL · raw protocol ({tag or 'no battle'})")
+            print(f"  {TuiMixin._repl_title} · raw protocol ({tag or 'no battle'})")
         elif view == "blocks":
             tag = getattr(self, "_last_active_battle_tag", None)
-            print(f"  JEPA REPL · state / action blocks ({tag or 'no battle'})")
+            print(f"  {TuiMixin._repl_title} · state / action blocks ({tag or 'no battle'})")
         elif view == "overview":
-            print("  JEPA REPL · battle overview")
+            print(f"  {TuiMixin._repl_title} · battle overview")
         print(f"{'─' * width}")
 
         # ── body ──
