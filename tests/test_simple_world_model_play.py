@@ -65,6 +65,7 @@ def test_simple_world_model_online_diagnostics_use_team_plus_current_state():
     player = SimpleWorldModelPlayer.__new__(SimpleWorldModelPlayer)
     player._tokenizer = tokenizer
     player._swm = _tiny_model(len(tokenizer), tokenizer.pad_token_id)
+    player._max_history_blocks = 1
 
     team = np.array([
         tokenizer["<begin_team>"],
@@ -94,6 +95,7 @@ def test_simple_world_model_online_diagnostics_use_team_plus_current_state():
 
     assert diag["team_token_count"] == len(team)
     assert diag["current_state_token_count"] == len(state)
-    assert diag["state_token_count"] == len(team) + len(state)
+    # with no prior actions, the interleaved seen history is team || current state
+    assert diag["history_token_count"] == len(team) + len(state)
     assert len(diag["rows"]) == 2
     assert {"score", "p_win", "p_loss", "p_ongoing", "next_norm"} <= set(diag["rows"][0])

@@ -53,6 +53,35 @@ class SimpleWorldModelPlayer(JEPAWorldModelPlayer):
         TuiMixin._repl_title = "Simple World Model REPL"
 
     @staticmethod
+    def _interleave_np_history(
+        prior_states: list[np.ndarray],
+        player_actions: list[np.ndarray],
+        opponent_actions: list[np.ndarray],
+        current_state: np.ndarray,
+    ) -> np.ndarray:
+        """Interleave the seen history into one 1-D token vector.
+
+        Matches ``_interleave_history`` in train.py and the layout in
+        ``AGENTS.md``::
+
+            team_header, state_0, p_act_0, o_act_0, ...,
+            state_{T-1}, p_act_{T-1}, o_act_{T-1}, state_T
+
+        ``prior_states[0]`` is the team header; the current state is appended
+        last.
+        """
+        seq: list[np.ndarray] = []
+        if prior_states:
+            seq.append(prior_states[0].astype(np.int32, copy=False))
+        n = min(max(len(prior_states) - 1, 0), len(player_actions), len(opponent_actions))
+        for i in range(n):
+            seq.append(prior_states[i + 1].astype(np.int32, copy=False))
+            seq.append(player_actions[i].astype(np.int32, copy=False))
+            seq.append(opponent_actions[i].astype(np.int32, copy=False))
+        seq.append(current_state.astype(np.int32, copy=False))
+        return np.concatenate(seq)
+
+    @staticmethod
     def _concat_np_blocks(left: np.ndarray, right: np.ndarray) -> np.ndarray:
         return np.concatenate([left.astype(np.int16, copy=False), right.astype(np.int16, copy=False)])
 
@@ -86,13 +115,19 @@ class SimpleWorldModelPlayer(JEPAWorldModelPlayer):
         if not hist.state_blocks:
             raise ValueError("Battle history has no state blocks")
 
-        team_header = hist.state_blocks[0]
-        current_state = hist.state_blocks[-1]
-        state_tokens_np = self._concat_np_blocks(team_header, current_state)
-        state_tokens = torch.as_tensor(
-            state_tokens_np.astype(np.int64, copy=False),
-            dtype=torch.long,
-            device=device,
+        # Build the full interleaved seen history the same way training does
+        # (team header + prior states + prior player/opponent actions + current
+        # state), windowed to the same length used at train time.
+        states, p_actions, o_actions = self._window_history(
+            hist.state_blocks, hist.player_actions, hist.opponent_actions,
+            self._max_history_blocks,
+        )
+        current_state = states[-1]
+        prior_states = states[:-1]
+        history_np = self._interleave_np_history(prior_states, p_actions, o_actions, current_state)
+        history_tokens = torch.as_tensor(
+            history_np.astype(np.int64, copy=False),
+            dtype=torch.long, device=device,
         ).unsqueeze(0)
 
         action_blocks = [
@@ -105,7 +140,7 @@ class SimpleWorldModelPlayer(JEPAWorldModelPlayer):
             device=device,
         )
 
-        controller_out = self._swm.forward_controller(state_tokens, legal_tokens)
+        controller_out = self._swm.forward_controller(history_tokens, legal_tokens)
         logits = controller_out["controller_logits"][0].float()
         probs = F.softmax(logits, dim=-1)
         z_mu = controller_out["controller_z_mu"]
@@ -146,8 +181,8 @@ class SimpleWorldModelPlayer(JEPAWorldModelPlayer):
             "scorer": "controller_bc",
             "z_norm": float(z_mu.float().norm(dim=-1).mean().item()),
             "h_norm": float(h.float().norm(dim=-1).mean().item()),
-            "state_token_count": int(state_tokens.shape[-1]),
-            "team_token_count": int(len(team_header)),
+            "history_token_count": int(history_tokens.shape[-1]),
+            "team_token_count": int(len(hist.state_blocks[0])),
             "current_state_token_count": int(len(current_state)),
             "rows": rows,
         }
@@ -206,8 +241,8 @@ class SimpleWorldModelPlayer(JEPAWorldModelPlayer):
             chosen_idx=best_row_pos,
             chosen_label=action_names.get(best_idx, "?"),
             context_lines=[
-                f"input: team||state  tokens={diag['state_token_count']} "
-                f"(team={diag['team_token_count']}, state={diag['current_state_token_count']})",
+                f"input: seen-history tokens={diag['history_token_count']} "
+                f"(team={diag['team_token_count']}, current state={diag['current_state_token_count']})",
                 f"|z|={diag['z_norm']:.4f}  |h|={diag['h_norm']:.4f}",
                 "score: C behavior-cloning logit; terminal columns are M predictions for each legal action",
             ],

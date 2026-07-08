@@ -148,43 +148,155 @@ def _loss_cfg(cfg: dict[str, Any], args: argparse.Namespace) -> dict[str, float]
     }
 
 
-def _concat_padded_blocks(left: torch.Tensor, right: torch.Tensor, pad_id: int) -> torch.Tensor:
-    """Pack two padded token blocks as ``left_nonpad || right_nonpad``."""
-    if left.shape[0] != right.shape[0]:
-        raise ValueError(
-            f"Batch mismatch while concatenating token blocks: {left.shape} vs {right.shape}"
-        )
-    lengths = (left != pad_id).sum(dim=-1) + (right != pad_id).sum(dim=-1)
-    max_len = max(int(lengths.max().item()) if lengths.numel() else 1, 1)
-    out = torch.full(
-        (left.shape[0], max_len),
-        pad_id,
-        dtype=left.dtype,
-        device=left.device,
-    )
-    for batch_idx in range(left.shape[0]):
-        left_tokens = left[batch_idx, left[batch_idx] != pad_id]
-        right_tokens = right[batch_idx, right[batch_idx] != pad_id]
-        combined = torch.cat([left_tokens, right_tokens], dim=0)
-        out[batch_idx, :combined.numel()] = combined
+def _gather_valid_blocks(tokens: torch.Tensor, valid: torch.Tensor, pad_id: int) -> list[torch.Tensor]:
+    """Extract the non-pad 1-D token vectors for the ``True`` blocks.
+
+    ``tokens`` is ``(max_blocks, max_tokens)`` and ``valid`` is ``(max_blocks,)``.
+    Returns a list (one per valid block) of ``[non-pad tokens]`` long tensors.
+    """
+    blocks: list[torch.Tensor] = []
+    for b in range(tokens.shape[0]):
+        if bool(valid[b]):
+            row = tokens[b]
+            blocks.append(row[row != pad_id])
+    return blocks
+
+
+def _interleave_history(
+    history_states: list[torch.Tensor],
+    player_actions: list[torch.Tensor],
+    opponent_actions: list[torch.Tensor],
+    current_state: torch.Tensor,
+) -> torch.Tensor:
+    """Build the full seen-history token sequence for the POV player.
+
+    Layout (matching ``AGENTS.md``): block 0 of ``history_states`` is the team
+    header, then per step ``[state_i, p_action_i, o_action_i]``, and finally
+    the current state ``state_T`` as the last block::
+
+        team_header, state_0, p_act_0, o_act_0, state_1, ..., state_{T-1},
+        p_act_{T-1}, o_act_{T-1}, state_T
+    """
+    seq: list[torch.Tensor] = []
+    if history_states:
+        seq.append(history_states[0])  # team header (always retained)
+    n_steps = min(max(len(history_states) - 1, 0), len(player_actions), len(opponent_actions))
+    for i in range(n_steps):
+        seq.append(history_states[i + 1])
+        seq.append(player_actions[i])
+        seq.append(opponent_actions[i])
+    seq.append(current_state)
+    return torch.cat(seq, dim=0)
+
+
+def _pad_to_batch(seqs: list[torch.Tensor], pad_id: int, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    max_len = max(int(t.shape[-1]) for t in seqs) if seqs else 1
+    max_len = max(max_len, 1)
+    out = torch.full((len(seqs), max_len), pad_id, dtype=dtype, device=device)
+    for i, t in enumerate(seqs):
+        n = int(t.shape[-1])
+        out[i, :n] = t
     return out
 
 
 def _prepare_batch(batch: dict[str, object], pad_id: int) -> dict[str, torch.Tensor]:
-    team_header = batch["p1_history_T"][:, 0, 0]
+    """Build the interleaved seen-history token sequences for V.
+
+    Consumes the collated paired-shard fields and produces, per battle:
+
+    * ``history_tokens``      — ``[team_header, prior states, prior p/o actions,
+      ..., current state_T]`` (V encodes this into ``z_T``).
+    * ``next_history_tokens`` — the above extended with the current player
+      action, opponent action, and next state ``state_{T+1}`` (V encodes it
+      into the MDN target ``z_{T+1}``).
+    * ``state_tokens``        — the current state ``state_T`` (recon target).
+    * ``action_tokens``       — the current POV action.
+    """
+    rollout_axis = 0
+    hist = batch["p1_history_T"][:, rollout_axis]
+    hist_valid = batch["p1_history_T_valid"][:, rollout_axis]
+    player_hist = batch["p1_player_hist_T"][:, rollout_axis]
+    player_valid = batch["p1_player_hist_T_valid"][:, rollout_axis]
+    opponent_hist = batch["p1_opponent_hist_T"][:, rollout_axis]
+    opponent_valid = batch["p1_opponent_hist_T_valid"][:, rollout_axis]
+    target_state = batch["p1_target_state_T"][:, rollout_axis].long()
+    next_state = batch["p1_next_state_T1"][:, rollout_axis].long()
+    cur_action = batch["p1_action"][:, rollout_axis].long()
+    # Opponent's current action for this transition, from p1's perspective.
+    opp_cur_key = "actual_p2_action_from_p1_perspective"
+    opp_cur_action = batch[opp_cur_key][:, rollout_axis].long() if opp_cur_key in batch else cur_action
+
+    history_seqs: list[torch.Tensor] = []
+    next_history_seqs: list[torch.Tensor] = []
+    device = hist.device
+    for b in range(hist.shape[0]):
+        h_states = _gather_valid_blocks(hist[b], hist_valid[b], pad_id)
+        p_acts = _gather_valid_blocks(player_hist[b], player_valid[b], pad_id)
+        o_acts = _gather_valid_blocks(opponent_hist[b], opponent_valid[b], pad_id)
+        cur_st = target_state[b][target_state[b] != pad_id]
+        if cur_st.numel() == 0:
+            cur_st = target_state[b][:1].clone()
+        history_tokens = _interleave_history(h_states, p_acts, o_acts, cur_st)
+        # Extend to the next history: history_T || p_act_T || o_act_T || state_{T+1}
+        p_T = cur_action[b][cur_action[b] != pad_id]
+        o_T = opp_cur_action[b][opp_cur_action[b] != pad_id]
+        ns = next_state[b][next_state[b] != pad_id]
+        ext = [p_T if p_T.numel() else cur_action[b][:1].clone(),
+               o_T if o_T.numel() else cur_action[b][:1].clone(),
+               ns if ns.numel() else next_state[b][:1].clone()]
+        next_history_tokens = torch.cat([history_tokens, *ext], dim=0)
+        history_seqs.append(history_tokens)
+        next_history_seqs.append(next_history_tokens)
+
+    history_tokens = _pad_to_batch(history_seqs, pad_id, torch.long, device)
+    next_history_tokens = _pad_to_batch(next_history_seqs, pad_id, torch.long, device)
+
     out: dict[str, torch.Tensor] = {
-        "state_tokens": _concat_padded_blocks(team_header, batch["p1_target_state_T"][:, 0], pad_id),
-        "next_state_tokens": _concat_padded_blocks(team_header, batch["p1_next_state_T1"][:, 0], pad_id),
-        "action_tokens": batch["p1_action"][:, 0],
+        "history_tokens": history_tokens,
+        "next_history_tokens": next_history_tokens,
+        "state_tokens": target_state,
+        "action_tokens": cur_action,
         "terminal_class": batch["p1_next_terminal_class"][:, 0],
     }
     if "p1_legal_actions" in batch:
         out.update({
-            "legal_action_tokens": batch["p1_legal_actions"][:, 0],
+            "legal_action_tokens": batch["p1_legal_actions"][:, 0].long(),
             "legal_action_mask": batch["p1_legal_action_mask"][:, 0],
             "chosen_legal_action_idx": batch["p1_chosen_legal_action_idx"][:, 0],
         })
     return out
+
+
+def _count_processed_tokens(
+    prepared: dict[str, torch.Tensor],
+    components: str,
+    pad_id: int,
+) -> int:
+    """Count non-pad tokens the model actually consumes, weighted by pass count.
+
+    V now encodes the full seen history as one sequence:
+
+    * vm: ``history_tokens`` (V encode, grad) + ``history_tokens`` again
+      (V decode reconstructing the FULL history, grad) + ``next_history_tokens``
+      (V encode, no grad, for the MDN target) + ``action_tokens``
+      (action encoder).
+    * c/all: additionally ``history_tokens`` (V encode, no grad) +
+      ``legal_action_tokens`` (action encoder). In ``vm`` the legal-action
+      fields are prepared but unused, so they are not counted.
+    """
+    def _nonpad(t: torch.Tensor) -> int:
+        return int((t != pad_id).sum().item())
+
+    n = 0
+    if components in {"vm", "all"}:
+        n += _nonpad(prepared["history_tokens"])        # V encode (full history, grad)
+        n += _nonpad(prepared["history_tokens"])        # V decode (reconstruct full history, grad)
+        n += _nonpad(prepared["next_history_tokens"])   # V encode (no grad, MDN target)
+        n += _nonpad(prepared["action_tokens"])         # action encoder
+    if components in {"c", "all"} and "legal_action_tokens" in prepared:
+        n += _nonpad(prepared["history_tokens"])          # V encode (controller)
+        n += _nonpad(prepared["legal_action_tokens"])    # action encoder (controller)
+    return n
 
 
 def _forward(
@@ -195,13 +307,13 @@ def _forward(
     outputs: dict[str, torch.Tensor] = {}
     if components in {"vm", "all"}:
         outputs.update(model.forward_vm(
-            prepared["state_tokens"],
-            prepared["next_state_tokens"],
+            prepared["history_tokens"],
+            prepared["next_history_tokens"],
             prepared["action_tokens"],
         ))
     if components in {"c", "all"}:
         outputs.update(model.forward_controller(
-            prepared["state_tokens"],
+            prepared["history_tokens"],
             prepared["legal_action_tokens"],
         ))
     return outputs
@@ -290,8 +402,19 @@ def train(args: argparse.Namespace) -> None:
     seq_stats = _load_sequence_stats(args.data_root)
     state_block_max = int(seq_stats.get("state_block_len", {}).get("max", model_cfg.get("v", {}).get("max_seq_len", 1024)))
     configured_v_max = int(model_cfg.get("v", {}).get("max_seq_len", 0) or 0)
-    model_cfg.setdefault("v", {})["max_seq_len"] = max(configured_v_max, 2 * state_block_max)
     action_max = _max_action_len_from_shards(train_shards_probe)
+    # V now encodes the full interleaved seen history as one sequence. Bound
+    # the sequence length by the block counts implied by --max_history_blocks:
+    #   prior states = N -> blocks = 1 team header + N prior states + 1 current
+    #   state (+ for next history: +1 player act +1 opponent act +1 next state).
+    nh = args.max_history_blocks
+    if nh <= 0:
+        nh = int(seq_stats.get("temporal_sequence_len", {}).get("max", 256)) // 3
+    nh = max(nh, 1)
+    v_state_blocks = nh + 3              # header + N prior + current (+ next)
+    v_action_blocks = 2 * nh + 2         # N prior player + N prior opp + cur player + cur opp
+    v_bound = v_state_blocks * state_block_max + v_action_blocks * action_max + 8
+    model_cfg.setdefault("v", {})["max_seq_len"] = max(configured_v_max, v_bound)
     model_cfg.setdefault("action_encoder", {})["max_seq_len"] = max(
         int(model_cfg.get("action_encoder", {}).get("max_seq_len", 32)),
         action_max,
@@ -432,7 +555,7 @@ def train(args: argparse.Namespace) -> None:
     elif args.wandb and not _wandb_available:
         print("WARNING: --wandb enabled but wandb is not installed")
 
-    def loss_for_batch(batch: dict[str, object]) -> tuple[torch.Tensor, dict[str, float], dict[str, torch.Tensor]]:
+    def loss_for_batch(batch: dict[str, object]) -> tuple[torch.Tensor, dict[str, float], dict[str, torch.Tensor], int]:
         prepared = _prepare_batch(batch, pad_id)
         outputs = _forward(model, prepared, args.components)
         loss, metrics = compute_simple_world_model_losses(
@@ -442,7 +565,8 @@ def train(args: argparse.Namespace) -> None:
             components=args.components,
             **loss_cfg,
         )
-        return loss, metrics, {**prepared, **outputs}
+        batch_tokens = _count_processed_tokens(prepared, args.components, pad_id)
+        return loss, metrics, {**prepared, **outputs}, batch_tokens
 
     @torch.no_grad()
     def validate(max_batches: int) -> dict[str, float]:
@@ -455,7 +579,7 @@ def train(args: argparse.Namespace) -> None:
             if max_batches > 0 and batch_idx >= max_batches:
                 break
             batch = _batch_to_device(batch, device)
-            _, metrics, _ = loss_for_batch(batch)
+            _, metrics, _, _ = loss_for_batch(batch)
             for key, value in metrics.items():
                 totals[key] = totals.get(key, 0.0) + float(value)
             steps += 1
@@ -483,11 +607,12 @@ def train(args: argparse.Namespace) -> None:
     for epoch in range(start_epoch, args.epochs):
         model.train()
         epoch_totals: dict[str, float] = {}
+        epoch_counts: dict[str, int] = {}
         epoch_steps = 0
         for batch in train_loader:
             batch = _batch_to_device(batch, device)
             debug_this_step = args.debug_tensors and global_step < args.debug_tensor_steps
-            loss, metrics, debug_tensors = loss_for_batch(batch)
+            loss, metrics, debug_tensors, batch_tokens = loss_for_batch(batch)
             if debug_this_step:
                 _debug_dump(
                     f"train step {global_step + 1}",
@@ -497,22 +622,26 @@ def train(args: argparse.Namespace) -> None:
                 )
             (loss / args.grad_accum_steps).backward()
             grad_norm_value = 0.0
+            grad_norm_logged = False
             if (global_step + 1) % args.grad_accum_steps == 0:
                 grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, args.grad_clip)
                 grad_norm_value = float(grad_norm.detach().float().cpu().item())
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
-            metrics["grad_norm"] = grad_norm_value
+                grad_norm_logged = True
+            # Only record grad_norm on actual optimizer steps so per-step wandb
+            # logging and epoch averaging aren't diluted by zeros (which would
+            # otherwise happen on non-accumulation steps).
+            if grad_norm_logged:
+                metrics["grad_norm"] = grad_norm_value
+            elif "grad_norm" in metrics:
+                del metrics["grad_norm"]
             global_step += 1
             epoch_steps += 1
             for key, value in metrics.items():
                 epoch_totals[key] = epoch_totals.get(key, 0.0) + float(value)
+                epoch_counts[key] = epoch_counts.get(key, 0) + 1
 
-            batch_tokens = int((batch["p1_target_state_T"] != pad_id).sum().item())
-            batch_tokens += int((batch["p1_next_state_T1"] != pad_id).sum().item())
-            batch_tokens += int((batch["p1_action"] != pad_id).sum().item())
-            if "p1_legal_actions" in batch:
-                batch_tokens += int((batch["p1_legal_actions"] != pad_id).sum().item())
             tokens_since_print += batch_tokens
             tokens_since_wandb += batch_tokens
 
@@ -629,8 +758,12 @@ def train(args: argparse.Namespace) -> None:
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             epoch_totals["grad_norm"] = epoch_totals.get("grad_norm", 0.0) + float(grad_norm.detach().float().cpu().item())
+            epoch_counts.setdefault("grad_norm", 0)
+            epoch_counts["grad_norm"] += 1
 
-        avg = {key: value / max(epoch_steps, 1) for key, value in epoch_totals.items()}
+        # Average each metric over the number of steps that actually produced it
+        # (grad_norm is only recorded on optimizer steps under grad accumulation).
+        avg = {key: value / max(epoch_counts.get(key, epoch_steps), 1) for key, value in epoch_totals.items()}
         val_metrics = validate(args.val_max_batches)
         if val_metrics:
             update_best_val(epoch, global_step, val_metrics)
@@ -728,8 +861,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug_tensor_samples", type=int, default=2)
     parser.add_argument("--encoder_chunk_tokens", type=int, default=65536,
                         help="Accepted for JEPA CLI parity; simple-world-model v1 encodes state batches directly.")
-    parser.add_argument("--max_history_blocks", type=int, default=1,
-                        help="Dataset history window to materialize. M ignores history in v1; keep small for speed.")
+    parser.add_argument("--max_history_blocks", type=int, default=64,
+                        help="Number of prior state blocks V sees (windowed by the dataset, matching the JEPA trainer). 0 = unlimited/full battle history. Default 64.")
     parser.add_argument("--compile", default=False, action=argparse.BooleanOptionalAction)
     parser.add_argument("--wandb", default=True, action=argparse.BooleanOptionalAction)
     parser.add_argument("--wandb_project", type=str, default=None)

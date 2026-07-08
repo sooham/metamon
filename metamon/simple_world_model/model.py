@@ -2,11 +2,18 @@
 
 The model follows the World Models split:
 
-* V: beta-VAE over the current p1 state token block.
-* M: transformer mixture-density transition model for z_{t+1}.
-* C: small MLP controller over z_t and M's no-action context.
-
-M intentionally does not consume the full p1 history in v1.
+* V: a transformer beta-VAE over the FULL seen history for the POV player —
+  the interleaved sequence ``[team_header, state_0, p_action_0, o_action_0,
+  state_1, ..., p_action_{T-1}, o_action_{T-1}, state_T]`` (everything
+  observed up to and including the current state) — compressed into a latent
+  ``z_T``. The decoder reconstructs the ENTIRE history sequence from ``z_T``
+  (the bottleneck is the beta-VAE latent), so ``z_T`` must carry the full
+  observed context. The history window is capped by ``--max_history_blocks``
+  (default 64) at the dataset level, matching the JEPA trainer's windowing.
+* M: an MLP mixture-density transition model ``p(z_{T+1} | z_T, a_T)``. Since
+  the full history context now lives inside ``z_T`` via V, M only needs the
+  latest latent + the chosen action — no transformer needed.
+* C: small MLP controller over z_T and M's no-action context.
 """
 
 from __future__ import annotations
@@ -53,7 +60,15 @@ def _restore_leading(x: torch.Tensor, leading: tuple[int, ...]) -> torch.Tensor:
 
 
 class StateVAE(nn.Module):
-    """Transformer beta-VAE over one state token block."""
+    """Transformer beta-VAE over the full seen history sequence.
+
+    ``encode`` sees the interleaved ``[team_header, states, player/opponent
+    actions, ..., current_state_T]`` token sequence (capped to
+    ``--max_history_blocks`` prior states by the dataset) and compresses it
+    into a latent ``z_T`` via attention pooling. ``decode`` reconstructs the
+    ENTIRE history sequence from ``z_T`` (the bottleneck is the beta-VAE
+    latent), forcing ``z_T`` to carry the full observed context.
+    """
 
     def __init__(
         self,
@@ -111,24 +126,27 @@ class StateVAE(nn.Module):
                 f"State sequence length {seq_len} exceeds V max_seq_len={self.max_seq_len}"
             )
 
-    def _encode_flat(self, token_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _encode_flat(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """Run the encoder body over the full history sequence and pool."""
         self._check_len(token_ids.shape[-1])
         valid_mask = token_ids != self.pad_id
         x = self.token_embedding(token_ids)
         for block in self.encoder_blocks:
             x = block(x, key_padding_mask=valid_mask)
         x = self.encoder_ln(x)
-        pooled = self.pool(x, valid_mask)
-        return self.mu_head(pooled), self.logvar_head(pooled).clamp(-12.0, 8.0)
+        return self.pool(x, valid_mask)
 
     def encode(self, token_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode the full history into ``(mu, logvar)`` for ``z_T``."""
         flat, leading = _flatten_tokens(token_ids)
         if self.gradient_checkpointing and self.training:
-            mu, logvar = torch.utils.checkpoint.checkpoint(
+            pooled = torch.utils.checkpoint.checkpoint(
                 self._encode_flat, flat, use_reentrant=False,
             )
         else:
-            mu, logvar = self._encode_flat(flat)
+            pooled = self._encode_flat(flat)
+        mu = self.mu_head(pooled)
+        logvar = self.logvar_head(pooled).clamp(-12.0, 8.0)
         return _restore_leading(mu, leading), _restore_leading(logvar, leading)
 
     @staticmethod
@@ -154,10 +172,15 @@ class StateVAE(nn.Module):
         logits = self._decode_flat(flat_z, seq_len)
         return _restore_leading(logits, leading)
 
-    def forward(self, token_ids: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(
+        self,
+        token_ids: torch.Tensor,
+        reconstruct_len: int | None = None,
+    ) -> dict[str, torch.Tensor]:
         mu, logvar = self.encode(token_ids)
         z = self.reparameterize(mu, logvar)
-        logits = self.decode(z, token_ids.shape[-1])
+        seq_len = reconstruct_len if reconstruct_len is not None else token_ids.shape[-1]
+        logits = self.decode(z, seq_len)
         return {"logits": logits, "mu": mu, "logvar": logvar, "z": z}
 
 
@@ -221,7 +244,13 @@ class ActionEncoder(nn.Module):
 
 
 class MemoryMDN(nn.Module):
-    """Short-context transformer MDN for p(z_{t+1} | z_t, a_t)."""
+    """MLP mixture-density transition model for p(z_{t+1} | z_t, a_t).
+
+    Since V now encodes the FULL seen history into ``z_T``, the transition
+    model no longer needs a transformer to carry temporal context — everything
+    is already in ``z_T``. A plain MLP from ``(z_T, action_emb)`` to the MDN
+    parameters suffices.
+    """
 
     def __init__(
         self,
@@ -229,9 +258,9 @@ class MemoryMDN(nn.Module):
         latent_dim: int = 1024,
         action_dim: int = 256,
         d_model: int = 1024,
-        n_heads: int = 8,
+        n_heads: int = 8,          # unused (MLP); kept for config compatibility
         n_layers: int = 4,
-        d_ff: int = 4096,
+        d_ff: int = 4096,          # unused (MLP); kept for config compatibility
         dropout: float = 0.0,
         num_mixtures: int = 5,
         ffn_activation: str = "gelu",
@@ -243,17 +272,20 @@ class MemoryMDN(nn.Module):
         self.d_model = d_model
         self.num_mixtures = num_mixtures
         self.gradient_checkpointing = gradient_checkpointing
-        self.z_proj = nn.Linear(latent_dim, d_model)
-        self.action_proj = nn.Linear(action_dim, d_model)
-        self.no_action_embedding = nn.Parameter(torch.zeros(d_model))
-        self.blocks = nn.ModuleList([
-            TransformerBlock(
-                d_model, n_heads, d_ff, dropout, 2,
-                causal=False, ffn_activation=ffn_activation, use_rope=True,
-            )
-            for _ in range(n_layers)
-        ])
+        act = {"gelu": nn.GELU, "relu": nn.ReLU}.get(ffn_activation, nn.GELU)
+        in_dim = latent_dim + action_dim
+        layers: list[nn.Module] = [nn.Linear(in_dim, d_model), act()]
+        for _ in range(max(0, n_layers - 1)):
+            layers.append(nn.Linear(d_model, d_model))
+            if dropout > 0.0:
+                layers.append(nn.Dropout(dropout))
+            layers.append(act())
+        layers.append(nn.Linear(d_model, d_model))
+        if dropout > 0.0:
+            layers.append(nn.Dropout(dropout))
+        self.trunk = nn.Sequential(*layers)
         self.ln_final = nn.LayerNorm(d_model)
+        self.no_action_embedding = nn.Parameter(torch.zeros(action_dim))
         self.mixture_logits = nn.Linear(d_model, num_mixtures)
         self.mixture_means = nn.Linear(d_model, num_mixtures * latent_dim)
         self.mixture_log_scales = nn.Linear(d_model, num_mixtures * latent_dim)
@@ -261,25 +293,15 @@ class MemoryMDN(nn.Module):
         self.apply(_init_weights)
 
     def context(self, z: torch.Tensor, action_emb: torch.Tensor | None = None) -> torch.Tensor:
+        """MLP over ``(z, action_emb)`` -> no-action context h (for controller)."""
         leading = tuple(z.shape[:-1])
         z_flat = z.reshape(-1, z.shape[-1])
-        z_tok = self.z_proj(z_flat)
         if action_emb is None:
-            action_tok = self.no_action_embedding.to(dtype=z_tok.dtype, device=z_tok.device).expand_as(z_tok)
+            a_flat = self.no_action_embedding.to(dtype=z_flat.dtype, device=z_flat.device).expand(z_flat.shape[0], -1)
         else:
-            action_tok = self.action_proj(action_emb.reshape(-1, action_emb.shape[-1]))
-        x = torch.stack([z_tok, action_tok], dim=1)
-        if self.gradient_checkpointing and self.training:
-            h = torch.utils.checkpoint.checkpoint(self._transformer_forward, x, use_reentrant=False)
-        else:
-            h = self._transformer_forward(x)
+            a_flat = action_emb.reshape(-1, action_emb.shape[-1])
+        h = self.ln_final(self.trunk(torch.cat([z_flat, a_flat], dim=-1)))
         return h.reshape(*leading, self.d_model)
-
-    def _transformer_forward(self, x: torch.Tensor) -> torch.Tensor:
-        for block in self.blocks:
-            x = block(x)
-        x = self.ln_final(x)
-        return x[:, 0, :]
 
     def forward(self, z: torch.Tensor, action_emb: torch.Tensor) -> dict[str, torch.Tensor]:
         h = self.context(z, action_emb)
@@ -389,32 +411,56 @@ class SimpleWorldModel(nn.Module):
 
     def forward_vm(
         self,
-        state_tokens: torch.Tensor,
-        next_state_tokens: torch.Tensor,
+        history_tokens: torch.Tensor,
+        next_history_tokens: torch.Tensor,
         action_tokens: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        v_out = self.v(state_tokens)
+        """V/M training step.
+
+        ``history_tokens`` is the FULL interleaved seen history up to and
+        including the current state ``state_T`` (team header + prior states +
+        prior player/opponent actions + current state), capped to
+        ``--max_history_blocks`` by the dataset. V encodes it into ``z_T``
+        (with grad) and the decoder reconstructs the ENTIRE history sequence
+        from ``z_T`` (the bottleneck is the beta-VAE latent).
+
+        ``next_history_tokens`` is the same history extended with the current
+        player action, opponent action, and next state ``state_{T+1}``; V
+        encodes it (no grad) into the MDN target ``z_{T+1}``, re-sampled each
+        step (Ha & Schmidhuber 2018, App. A.2).
+
+        ``action_tokens`` is the current POV action, encoded by the action
+        encoder and fed to the MLP MDN ``M``.
+        """
+        mu, logvar = self.v.encode(history_tokens)
+        z = StateVAE.reparameterize(mu, logvar)
+        # Decode/reconstruct the ENTIRE history fed to the encoder.
+        state_logits = self.v.decode(z, history_tokens.shape[-1])
         with torch.no_grad():
-            next_mu, next_logvar = self.v.encode(next_state_tokens)
+            next_mu, next_logvar = self.v.encode(next_history_tokens)
+            next_std = torch.exp(0.5 * next_logvar)
+            next_z = next_mu + torch.randn_like(next_std) * next_std
         action_emb = self.action_encoder(action_tokens)
-        m_out = self.m(v_out["z"], action_emb)
+        m_out = self.m(z, action_emb)
         return {
-            "state_logits": v_out["logits"],
-            "z": v_out["z"],
-            "z_mu": v_out["mu"],
-            "z_logvar": v_out["logvar"],
+            "state_logits": state_logits,
+            "history_tokens": history_tokens,
+            "z": z,
+            "z_mu": mu,
+            "z_logvar": logvar,
             "next_z_mu": next_mu,
             "next_z_logvar": next_logvar,
+            "next_z": next_z,
             "action_emb": action_emb,
             **m_out,
         }
 
     def forward_controller(
         self,
-        state_tokens: torch.Tensor,
+        history_tokens: torch.Tensor,
         legal_action_tokens: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        mu, _ = self.v.encode(state_tokens)
+        mu, _ = self.v.encode(history_tokens)
         h = self.m.context(mu, action_emb=None)
         legal_embs = self.action_encoder(legal_action_tokens)
         logits = self.c(mu, h, legal_embs)
@@ -503,10 +549,18 @@ def compute_simple_world_model_losses(
     total = torch.zeros((), device=next(iter(outputs.values())).device)
 
     if components in {"vm", "all"}:
-        state_tokens = batch["state_tokens"].long()
+        # Reconstruction target is the ENTIRE history sequence fed to the
+        # encoder (team header + states + actions + current state), so z_T must
+        # carry the full observed context. Prefer the history tensor returned
+        # by the model (matches the decoded length exactly).
+        recon_target = (
+            outputs["history_tokens"].long()
+            if "history_tokens" in outputs
+            else batch["history_tokens"].long()
+        )
         recon_ce = F.cross_entropy(
             outputs["state_logits"].reshape(-1, outputs["state_logits"].shape[-1]),
-            state_tokens.reshape(-1),
+            recon_target.reshape(-1),
             ignore_index=pad_id,
         )
         kl_per_sample = -0.5 * (
@@ -514,7 +568,7 @@ def compute_simple_world_model_losses(
         ).sum(dim=-1)
         kl = kl_per_sample.mean()
         nll = mdn_nll(
-            outputs["next_z_mu"].detach(),
+            outputs["next_z"].detach(),
             outputs["mixture_logits"],
             outputs["mixture_means"],
             outputs["mixture_log_scales"],
@@ -536,7 +590,7 @@ def compute_simple_world_model_losses(
         metrics.update({
             "loss_vm": vm_loss.item(),
             "recon_ce": recon_ce.item(),
-            "recon_token_acc": _masked_token_accuracy(outputs["state_logits"], state_tokens, pad_id).item(),
+            "recon_token_acc": _masked_token_accuracy(outputs["state_logits"], recon_target, pad_id).item(),
             "kl": kl.item(),
             "kl_per_dim": (kl / outputs["z_mu"].shape[-1]).item(),
             "kl_weighted": (beta_kl * kl).item(),
@@ -546,7 +600,9 @@ def compute_simple_world_model_losses(
             "vae_logvar_mean": outputs["z_logvar"].detach().float().mean().item(),
             "vae_logvar_min": outputs["z_logvar"].detach().float().min().item(),
             "vae_logvar_max": outputs["z_logvar"].detach().float().max().item(),
-            "nonpad_state_tokens": float((state_tokens != pad_id).sum().item()),
+            # Per-sample mean (not a batch-raw count) so averaging across
+            # validation/epoch steps is meaningful.
+            "nonpad_state_tokens": float((recon_target != pad_id).float().sum(dim=-1).mean().item()),
         })
         metrics.update(_latent_diagnostics("z_mu", outputs["z_mu"]))
         metrics.update(_latent_diagnostics("next_z_mu", outputs["next_z_mu"]))

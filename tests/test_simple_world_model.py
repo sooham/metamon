@@ -3,12 +3,13 @@ import torch
 import yaml
 
 from scripts.generate_world_model_data import PairedBattle, PairedShardAccumulator, TokenizedPOV, _contiguous_rollout_windows, _paired_transition_rows
-from metamon.simple_world_model.train import _prepare_batch, build_arg_parser, train
+from metamon.simple_world_model.train import _count_processed_tokens, _prepare_batch, build_arg_parser, train
 from metamon.simple_world_model.checkpointing import (
     resume_training_state,
     save_simple_world_model_checkpoint,
 )
 from metamon.simple_world_model.model import (
+    NUM_TERMINAL_CLASSES,
     SimpleWorldModel,
     _latent_diagnostics,
     compute_simple_world_model_losses,
@@ -56,36 +57,41 @@ def _tiny_model() -> SimpleWorldModel:
     )
 
 
-def _tokens() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    state = torch.tensor([
+def _vm_inputs() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # Batch=2. Each row: the full interleaved seen history as one sequence
+    # (team header block + any prior states/actions + the current state), with
+    # the current state present at the END of the sequence.
+    history = torch.tensor([
         [1, 2, 3, 4, 0, 0],
         [1, 5, 6, 7, 8, 0],
     ], dtype=torch.long)
-    next_state = torch.tensor([
-        [1, 2, 9, 4, 0, 0],
-        [1, 5, 6, 10, 8, 0],
+    next_history = torch.tensor([
+        [1, 2, 3, 4, 9, 0],
+        [1, 5, 6, 7, 8, 10],
     ], dtype=torch.long)
     action = torch.tensor([
         [11, 12, 0],
         [13, 14, 0],
     ], dtype=torch.long)
-    return state, next_state, action
+    return history, next_history, action
 
 
 def test_vm_forward_and_loss_are_finite():
     model = _tiny_model()
-    state, next_state, action = _tokens()
-    outputs = model.forward_vm(state, next_state, action)
+    history, next_history, action = _vm_inputs()
+    outputs = model.forward_vm(history, next_history, action)
 
-    assert outputs["state_logits"].shape == (2, 6, 33)
+    # Decoder reconstructs the ENTIRE history sequence.
+    assert outputs["state_logits"].shape == (2, history.shape[-1], 33)
+    assert outputs["history_tokens"].shape == history.shape
     assert outputs["z_mu"].shape == (2, 8)
     assert outputs["mixture_means"].shape == (2, 3, 8)
-    assert outputs["terminal_logits"].shape == (2, 6)
+    assert outputs["terminal_logits"].shape == (2, NUM_TERMINAL_CLASSES)
 
     loss, metrics = compute_simple_world_model_losses(
         outputs,
         {
-            "state_tokens": state,
+            "history_tokens": history,
             "terminal_class": torch.tensor([0, 1], dtype=torch.long),
         },
         pad_id=0,
@@ -97,10 +103,27 @@ def test_vm_forward_and_loss_are_finite():
     assert 0.0 <= metrics["terminal_acc"] <= 1.0
 
 
+def test_vm_decoder_reconstructs_full_history_not_just_current_state():
+    model = _tiny_model()
+    history, next_history, action = _vm_inputs()
+    outputs = model.forward_vm(history, next_history, action)
+    # state_logits must span the full history length, proving the decoder
+    # reconstructs the entire input sequence (not a single current-state block).
+    assert outputs["state_logits"].shape[1] == history.shape[-1]
+    loss, metrics = compute_simple_world_model_losses(
+        outputs,
+        {"history_tokens": history, "terminal_class": torch.tensor([0, 0], dtype=torch.long)},
+        pad_id=0, components="vm",
+    )
+    # recon accuracy is computed over the full history (non-pad tokens).
+    assert metrics["recon_token_acc"] >= 0.0
+    assert torch.isfinite(loss)
+
+
 def test_mdn_temperature_sampling_shape_is_stable():
     model = _tiny_model()
-    state, next_state, action = _tokens()
-    outputs = model.forward_vm(state, next_state, action)
+    history, next_history, action = _vm_inputs()
+    outputs = model.forward_vm(history, next_history, action)
 
     for tau in (0.5, 1.0, 1.5):
         sample = model.m.sample_next_z(
@@ -115,7 +138,7 @@ def test_mdn_temperature_sampling_shape_is_stable():
 
 def test_controller_masks_legal_actions_and_computes_loss():
     model = _tiny_model()
-    state, _, _ = _tokens()
+    history, next_history, action = _vm_inputs()
     legal = torch.tensor([
         [[11, 12, 0], [15, 16, 0], [0, 0, 0]],
         [[13, 14, 0], [17, 18, 0], [19, 20, 0]],
@@ -125,7 +148,7 @@ def test_controller_masks_legal_actions_and_computes_loss():
         [True, True, True],
     ])
     chosen = torch.tensor([1, 2], dtype=torch.long)
-    outputs = model.forward_controller(state, legal)
+    outputs = model.forward_controller(history, legal)
 
     loss, metrics = compute_simple_world_model_losses(
         outputs,
@@ -150,19 +173,73 @@ def test_latent_diagnostics_detect_collapsed_zero_latents():
     assert metrics["z_active_dims"] == 0.0
 
 
-def test_prepare_batch_concatenates_team_header_with_every_state():
-    batch = {
+def _collated_batch() -> dict:
+    """A minimal collated batch with one battle, rollout_len=1.
+
+    Layout (one battle):
+      p1_history_T blocks: [team_header (21,22), prior_state (99)], valid=[T,T]
+      p1_player_hist_T / p1_opponent_hist_T blocks: one action each
+      target_state_T (current state) = (31,32)
+      next_state_T1 = (41,42,43)
+      p1_action = current player action (51)
+      actual_p2_action_from_p1_perspective = current opponent action (52,53)
+    Interleaved history_T = header(21,22) state(99) p_act(61) o_act(62) state_T(31,32)
+    next_history_T       = history_T + p_T(51) o_T(52,53) next(41,42,43)
+    """
+    return {
         "p1_history_T": torch.tensor([[[[21, 22, 0], [99, 0, 0]]]], dtype=torch.int32),
+        "p1_history_T_valid": torch.tensor([[[True, True]]], dtype=torch.bool),
+        "p1_player_hist_T": torch.tensor([[[[61, 0, 0]]]], dtype=torch.int32),
+        "p1_player_hist_T_valid": torch.tensor([[[True]]], dtype=torch.bool),
+        "p1_opponent_hist_T": torch.tensor([[[[62, 0, 0]]]], dtype=torch.int32),
+        "p1_opponent_hist_T_valid": torch.tensor([[[True]]], dtype=torch.bool),
         "p1_target_state_T": torch.tensor([[[31, 32, 0]]], dtype=torch.int32),
         "p1_next_state_T1": torch.tensor([[[41, 42, 43]]], dtype=torch.int32),
         "p1_action": torch.tensor([[[51, 0]]], dtype=torch.int32),
+        "actual_p2_action_from_p1_perspective": torch.tensor([[[52, 53, 0]]], dtype=torch.int32),
         "p1_next_terminal_class": torch.tensor([[0]], dtype=torch.long),
     }
 
-    prepared = _prepare_batch(batch, pad_id=0)
 
-    assert torch.equal(prepared["state_tokens"], torch.tensor([[21, 22, 31, 32]], dtype=torch.int32))
-    assert torch.equal(prepared["next_state_tokens"], torch.tensor([[21, 22, 41, 42, 43]], dtype=torch.int32))
+def test_prepare_batch_builds_interleaved_seen_history():
+    prepared = _prepare_batch(_collated_batch(), pad_id=0)
+    # history_T = team_header(21,22) || prior_state(99) || p_act(61) || o_act(62) || current_state(31,32)
+    expected_hist = torch.tensor([[21, 22, 99, 61, 62, 31, 32]], dtype=torch.long)
+    assert torch.equal(prepared["history_tokens"], expected_hist)
+    # next_history_T = history_T || p_T(51) || o_T(52,53) || next(41,42,43)
+    expected_next = torch.tensor([[21, 22, 99, 61, 62, 31, 32, 51, 52, 53, 41, 42, 43]], dtype=torch.long)
+    assert torch.equal(prepared["next_history_tokens"], expected_next)
+    # state_tokens is the raw current-state block (padded to its own width)
+    assert torch.equal(prepared["state_tokens"], torch.tensor([[31, 32, 0]], dtype=torch.long))
+    # current player action is carried through
+    assert torch.equal(prepared["action_tokens"], torch.tensor([[51, 0]], dtype=torch.long))
+
+
+def test_count_processed_tokens_vm_counts_history_encode_decode_next_and_action():
+    prepared = _prepare_batch(_collated_batch(), pad_id=0)
+    # vm consumes: history_tokens (V encode) + history_tokens AGAIN (V decode,
+    # reconstructing the FULL history) + next_history_tokens (V encode, MDN
+    # target) + action_tokens (action enc).
+    hist_nonpad = 7      # 21,22,99,61,62,31,32
+    next_nonpad = 13     # full next_history
+    action_nonpad = 1    # 51
+    expected_vm = 2 * hist_nonpad + next_nonpad + action_nonpad
+    assert _count_processed_tokens(prepared, "vm", pad_id=0) == expected_vm
+
+
+def test_count_processed_tokens_ignores_legal_actions_in_vm_mode():
+    base = _collated_batch()
+    prepared = _prepare_batch(base, pad_id=0)
+    with_legal = dict(base)
+    # Adding legal-action fields must not change the vm count (they are unused
+    # in vm and only counted for c/all).
+    with_legal["p1_legal_actions"] = torch.tensor([[[[61, 62], [0, 0]]]], dtype=torch.int32)
+    with_legal["p1_legal_action_mask"] = torch.tensor([[[True, False]]], dtype=torch.bool)
+    with_legal["p1_chosen_legal_action_idx"] = torch.tensor([[0]], dtype=torch.long)
+    prepared_with = _prepare_batch(with_legal, pad_id=0)
+    assert _count_processed_tokens(prepared_with, "vm", pad_id=0) == _count_processed_tokens(prepared, "vm", pad_id=0)
+    # c counts history + legal actions only: 7 nonpad history + 2 nonpad legal
+    assert _count_processed_tokens(prepared_with, "c", pad_id=0) == 9
 
 
 def test_strict_resume_restores_optimizer_and_rejects_config_changes(tmp_path):
