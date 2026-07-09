@@ -32,19 +32,17 @@ from metamon.simple_world_model.checkpointing import (
     save_simple_world_model_checkpoint,
 )
 from metamon.simple_world_model.data import (
-    MODEL_VERSION,
     BalancedFormatBatchSampler,
+    CompactFormatBatchSampler,
     LatentTransitionDataset,
     VStateDataset,
     assert_matching_cache,
-    build_action_vocabulary,
     collate_latent,
     collate_v,
     dataset_manifest_hash,
     discover_source_shards,
     format_id_to_name,
     load_cache_manifest,
-    load_dataset_metadata,
     move_batch_to_device,
 )
 from metamon.simple_world_model.model import (
@@ -174,6 +172,8 @@ def _save(
 
 
 def _fixed_subset(dataset: Any, max_samples: int) -> Any:
+    if max_samples > 0 and hasattr(dataset, "fixed_subset"):
+        return dataset.fixed_subset(max_samples)
     if max_samples <= 0 or len(dataset) <= max_samples:
         return dataset
     # Deterministic evenly spaced refs; source train/val is already battle
@@ -184,6 +184,9 @@ def _fixed_subset(dataset: Any, max_samples: int) -> Any:
 
 
 def _dataset_formats_and_lengths(dataset: Any) -> tuple[list[str], list[int]]:
+    refs = getattr(dataset, "refs", None)
+    if refs is not None:
+        return [ref.fmt for ref in refs], [ref.length for ref in refs]
     base = dataset.dataset if isinstance(dataset, Subset) else dataset
     indices = dataset.indices if isinstance(dataset, Subset) else range(len(base))
     refs = base.refs
@@ -199,7 +202,22 @@ def _loader(
     seed: int,
     collate: Callable[[Sequence[Any]], dict[str, Any]],
     num_workers: int,
-) -> tuple[DataLoader, BalancedFormatBatchSampler]:
+) -> tuple[DataLoader, Any]:
+    if hasattr(dataset, "draw_ref") and hasattr(dataset, "total_by_format"):
+        sampler: Any = CompactFormatBatchSampler(
+            dataset, batch_size=batch_size, balanced=balanced_formats, shuffle=shuffle, seed=seed,
+        )
+        return (
+            DataLoader(
+                dataset,
+                batch_sampler=sampler,
+                collate_fn=collate,
+                num_workers=num_workers,
+                pin_memory=torch.cuda.is_available(),
+                persistent_workers=num_workers > 0,
+            ),
+            sampler,
+        )
     formats, lengths = _dataset_formats_and_lengths(dataset)
     sampler = BalancedFormatBatchSampler(
         formats, lengths, batch_size=batch_size, balanced=balanced_formats, shuffle=shuffle, seed=seed
@@ -586,7 +604,7 @@ def _training_loop(
     stage: str,
     model: SimpleWorldModel,
     train_loader: DataLoader,
-    train_sampler: BalancedFormatBatchSampler,
+    train_sampler: Any,
     validation: Callable[[], dict[str, float]],
     batch_loss: Callable[[Mapping[str, Any], bool], tuple[torch.Tensor, dict[str, float]]],
     optimizer: torch.optim.Optimizer,
@@ -600,12 +618,20 @@ def _training_loop(
     micro = 0
     optimizer.zero_grad(set_to_none=True)
     started = time.time()
+    print(
+        f"[{stage}] starting {updates_budget:,} optimizer updates "
+        f"(batch_size={args.batch_size}, grad_accum={args.grad_accum_steps}, workers={args.num_workers}).",
+        flush=True,
+    )
     for epoch in itertools.count():
         train_sampler.set_epoch(epoch)
         base_dataset = train_loader.dataset.dataset if isinstance(train_loader.dataset, Subset) else train_loader.dataset
         if hasattr(base_dataset, "set_epoch"):
             base_dataset.set_epoch(epoch)
         for batch in train_loader:
+            if update == 0 and micro == 0:
+                compile_note = "; first compiled step may take a little longer" if args.compile else ""
+                print(f"[{stage}] first batch loaded; beginning forward/backward{compile_note}.", flush=True)
             model.train()
             batch = move_batch_to_device(batch, device)
             setattr(batch_loss, "optimizer_update", update)
@@ -644,7 +670,12 @@ def _train_v(args: argparse.Namespace) -> None:
     tokenizer = _load_tokenizer(args.tokenizer_path)
     config = _load_config(args.config)
     _apply_loss_config(args, config)
-    vocab = build_action_vocabulary(args.data_root, tokenizer=tokenizer, pad_id=tokenizer.pad_token_id, formats=args.formats)
+    # V only sees headers/current states.  Scanning 70M action and legal
+    # candidates here delayed the first optimizer step by many minutes while
+    # serving no V objective.  The full canonical vocabulary is built once in
+    # the cache stage, before M/C ever consume it.
+    vocab = ActionVocabulary()
+    print("[v] action vocabulary is deferred to --stage cache; starting state-posterior indexing.", flush=True)
     model = _model_from_config(config, tokenizer=tokenizer, action_vocabulary=vocab, max_context_transitions=args.max_context_transitions, device=device)
     _freeze(model.m); _freeze(model.action_embedding); _freeze(model.opponent_head); _freeze(model.transition_head); _freeze(model.done_head); _freeze(model.value_head); _freeze(model.c)
     if args.compile and device.type == "cuda":
@@ -652,11 +683,13 @@ def _train_v(args: argparse.Namespace) -> None:
         print("torch.compile enabled on V")
     train_ds = VStateDataset(
         discover_source_shards(args.data_root, "train", args.formats), data_root=args.data_root,
-        max_state_tokens=model.v.max_state_tokens,
+        max_state_tokens=model.v.max_state_tokens, formats=args.formats,
     )
     val_paths = discover_source_shards(args.data_root, "val", args.formats)
     val_ds = _fixed_subset(
-        VStateDataset(val_paths, data_root=args.data_root, max_state_tokens=model.v.max_state_tokens), args.val_samples
+        VStateDataset(
+            val_paths, data_root=args.data_root, max_state_tokens=model.v.max_state_tokens, formats=args.formats,
+        ), args.val_samples
     ) if val_paths else None
     train_loader, train_sampler = _loader(
         train_ds, batch_size=args.batch_size, balanced_formats=args.balanced_formats, shuffle=True, seed=args.seed,
@@ -721,9 +754,15 @@ def _load_for_m_or_c(args: argparse.Namespace, stage: str) -> tuple[SimpleWorldM
 
 def _latent_loaders(args: argparse.Namespace, manifest: Mapping[str, Any]) -> tuple[Any, Any, DataLoader, BalancedFormatBatchSampler, DataLoader]:
     mapping = format_id_to_name(manifest.get("format_id_map", {}))
-    train_ds = LatentTransitionDataset(args.latent_cache_root, split="train", max_context_transitions=args.max_context_transitions, format_id_map=mapping)
+    train_ds = LatentTransitionDataset(
+        args.latent_cache_root, split="train", max_context_transitions=args.max_context_transitions,
+        format_id_map=mapping, formats=args.formats,
+    )
     val_ds = _fixed_subset(
-        LatentTransitionDataset(args.latent_cache_root, split="val", max_context_transitions=args.max_context_transitions, format_id_map=mapping),
+        LatentTransitionDataset(
+            args.latent_cache_root, split="val", max_context_transitions=args.max_context_transitions,
+            format_id_map=mapping, formats=args.formats,
+        ),
         args.val_samples,
     )
     train_loader, train_sampler = _loader(train_ds, batch_size=args.batch_size, balanced_formats=args.balanced_formats,

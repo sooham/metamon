@@ -54,6 +54,32 @@ checkpoint hash, latent dimension, dtype, schema version, canonical action
 vocabulary, and sidecar coverage.  M/C refuse a cache that differs from the
 requested dataset or V checkpoint.
 
+## Make targets
+
+Run the stages in order:
+
+```bash
+make train-simple-world-model-v
+make cache-simple-world-model-latents
+make train-simple-world-model-m
+make train-simple-world-model-c
+```
+
+Each training target launches a `simple-world-model-train` tmux session and
+writes a per-stage log under `simple-world-model-checkpoints`:
+
+```bash
+tmux attach -t simple-world-model-train
+tail -f "$METAMON_CACHE_DIR/simple-world-model-checkpoints/v.log"
+```
+
+V indexes the production shards compactly before its first batch; this is a
+short startup scan, not a stalled GPU job.  Its action vocabulary is deferred
+to the cache stage because V has no action objective.  The cache stage performs
+the one-time full observed-and-legal-action scan.  With `SIMPLE_WM_COMPILE=true`
+(the default), the first V optimizer step also includes PyTorch compilation.
+Use `SIMPLE_WM_COMPILE=false` for a quick diagnostic run.
+
 At play time, C checkpoints use horizon-4, eight-rollout action evaluation by
 default.  Their final score is `0.75 * risk-adjusted rollout value + 0.25 *
 normalized C prior`.

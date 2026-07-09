@@ -10,7 +10,9 @@ from metamon.simple_world_model.action_vocab import ActionVocabulary
 from metamon.simple_world_model.cache_latents import atomic_savez
 from metamon.simple_world_model.data import (
     BalancedFormatBatchSampler,
+    CompactFormatBatchSampler,
     LatentTransitionDataset,
+    VStateDataset,
     assert_matching_cache,
     collate_latent,
     format_id_to_name,
@@ -228,6 +230,25 @@ def _write_tiny_paired_dataset(tmp_path: Path) -> tuple[Path, Path]:
     return tokenizer_path, config_path
 
 
+def test_compact_v_loader_samples_without_materializing_every_state_ref(tmp_path):
+    tokenizer_path, _ = _write_tiny_paired_dataset(tmp_path)
+    tokenizer = PokemonTokenizer().load_tokens_from_disk(str(tokenizer_path))
+    dataset = VStateDataset(
+        [str(tmp_path / "train" / "paired_shard_0000.npz")], data_root=tmp_path,
+        max_state_tokens=8, formats=["gen1ou"],
+    )
+    assert len(dataset) == 4  # two non-header states from each POV
+    assert not hasattr(dataset, "refs")
+    sampler = CompactFormatBatchSampler(dataset, batch_size=2, balanced=False, shuffle=False)
+    refs = next(iter(sampler))
+    rows = [dataset[ref] for ref in refs]
+    assert {row["fmt"] for row in rows} == {"gen1ou"}
+    assert all(len(row["state"]) == 2 for row in rows)
+    # Validation draws at most one sample from the raw battle, not p1+p2
+    # duplicates, so its battle split remains genuinely disjoint.
+    assert len(dataset.fixed_subset(4)) == 1
+
+
 def test_cache_atomicity(monkeypatch, tmp_path):
     path = tmp_path / "sidecar.npz"
 
@@ -263,6 +284,9 @@ def test_v_cache_m_c_smoke_and_perspective_inversion(tmp_path):
     ]))
     assert (cache_root / "manifest.json").exists()
     dataset = LatentTransitionDataset(cache_root, split="train", max_context_transitions=32, format_id_map={0: "gen1ou"})
+    assert not hasattr(dataset, "refs")
+    sampled_refs = next(iter(CompactFormatBatchSampler(dataset, batch_size=2, balanced=False, shuffle=False)))
+    assert {ref.side for ref in sampled_refs} == {"p1", "p2"}
     p1 = dataset.sample_with_perspective(0, "p1")
     p2 = dataset.sample_with_perspective(0, "p2")
     assert p1["outcome"] == 0
@@ -294,6 +318,10 @@ def test_v_cache_m_c_smoke_and_perspective_inversion(tmp_path):
 
     manifest_path = cache_root / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
+    vocabulary = ActionVocabulary.from_state(manifest["action_vocabulary"])
+    # ``move growl`` is only a legal candidate in the tiny fixture, proving
+    # cache-stage vocabulary construction includes legal actions, not clicks.
+    assert vocabulary.decode(vocabulary.encode("move growl")) == "move growl"
     manifest["v_checkpoint_hash"] = "wrong"
     manifest_path.write_text(json.dumps(manifest))
     tokenizer = PokemonTokenizer().load_tokens_from_disk(str(tokenizer_path))
