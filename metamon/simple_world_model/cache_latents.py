@@ -25,6 +25,7 @@ from metamon.simple_world_model.data import (
     build_action_vocabulary,
     discover_source_shards,
     expected_cache_manifest,
+    format_id_to_name,
     load_dataset_metadata,
     sha256_file,
 )
@@ -317,7 +318,7 @@ def build_cache(args: argparse.Namespace) -> None:
     _check_storage(cache_root, _estimate_cache_bytes(shard_paths, model.latent_dim), allow_low_disk=args.allow_low_disk)
     coverage: list[dict[str, Any]] = []
     metadata = load_dataset_metadata(args.data_root)
-    id_map = {int(key): str(value) for key, value in dict(metadata.get("format_id_map", {})).items()}
+    id_map = format_id_to_name(metadata.get("format_id_map", {}))
     for split in ("train", "val"):
         for source_path in discover_source_shards(args.data_root, split, args.formats):
             source = Path(source_path)

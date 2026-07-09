@@ -79,9 +79,27 @@ def discover_source_shards(data_root: str | Path, split: str, formats: Sequence[
     return [str(path) for path in paths]
 
 
+def format_id_to_name(raw: Mapping[object, object] | None) -> dict[int, str]:
+    """Normalize either generator spelling of ``format_id_map``.
+
+    Current generated metadata uses ``{"gen1ou": 0}``, while earlier
+    manifests used ``{"0": "gen1ou"}``.  Cache and training loaders accept
+    both so a valid paired dataset does not make the launcher exit instantly.
+    """
+    result: dict[int, str] = {}
+    for key, value in dict(raw or {}).items():
+        try:
+            result[int(key)] = str(value)
+        except (TypeError, ValueError):
+            try:
+                result[int(value)] = str(key)
+            except (TypeError, ValueError):
+                continue
+    return result
+
+
 def _format_id_map(data_root: str | Path) -> dict[int, str]:
-    raw = load_dataset_metadata(data_root).get("format_id_map", {})
-    return {int(key): str(value) for key, value in dict(raw).items()}
+    return format_id_to_name(load_dataset_metadata(data_root).get("format_id_map", {}))
 
 
 def _normalise_matrix(value: np.ndarray) -> np.ndarray:

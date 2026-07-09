@@ -42,6 +42,7 @@ from metamon.simple_world_model.data import (
     collate_v,
     dataset_manifest_hash,
     discover_source_shards,
+    format_id_to_name,
     load_cache_manifest,
     load_dataset_metadata,
     move_batch_to_device,
@@ -719,7 +720,7 @@ def _load_for_m_or_c(args: argparse.Namespace, stage: str) -> tuple[SimpleWorldM
 
 
 def _latent_loaders(args: argparse.Namespace, manifest: Mapping[str, Any]) -> tuple[Any, Any, DataLoader, BalancedFormatBatchSampler, DataLoader]:
-    mapping = {int(key): str(value) for key, value in dict(manifest.get("format_id_map", {})).items()}
+    mapping = format_id_to_name(manifest.get("format_id_map", {}))
     train_ds = LatentTransitionDataset(args.latent_cache_root, split="train", max_context_transitions=args.max_context_transitions, format_id_map=mapping)
     val_ds = _fixed_subset(
         LatentTransitionDataset(args.latent_cache_root, split="val", max_context_transitions=args.max_context_transitions, format_id_map=mapping),

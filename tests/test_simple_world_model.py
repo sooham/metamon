@@ -13,6 +13,7 @@ from metamon.simple_world_model.data import (
     LatentTransitionDataset,
     assert_matching_cache,
     collate_latent,
+    format_id_to_name,
 )
 from metamon.simple_world_model.model import (
     CausalLatentTransformer,
@@ -112,6 +113,11 @@ def test_action_vocabulary_round_trip_and_format_masks():
     assert not vocab.format_mask("gen1ou")[vocab.encode("move thunderbolt")]
     restored = ActionVocabulary.from_state(vocab.to_state())
     assert restored.to_state() == vocab.to_state()
+
+
+def test_format_id_map_accepts_current_and_legacy_metadata_spellings():
+    assert format_id_to_name({"gen1ou": 0, "gen9ou": 1}) == {0: "gen1ou", 1: "gen9ou"}
+    assert format_id_to_name({"0": "gen1ou", "1": "gen9ou"}) == {0: "gen1ou", 1: "gen9ou"}
 
 
 def test_none_remains_in_m_but_is_excluded_from_controller_bc():
