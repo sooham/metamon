@@ -1,13 +1,21 @@
-"""Simple p1-only world model package."""
+"""Staged V/M/C Pokémon world model package."""
 
 from .model import (
+    OUTCOME_CLASSES,
     TERMINAL_CLASSES,
     SimpleWorldModel,
-    compute_simple_world_model_losses,
+    StateVAE,
+    c_losses,
+    m_losses,
+    vae_losses,
 )
 
 __all__ = [
+    "OUTCOME_CLASSES",
     "TERMINAL_CLASSES",
     "SimpleWorldModel",
-    "compute_simple_world_model_losses",
+    "StateVAE",
+    "vae_losses",
+    "m_losses",
+    "c_losses",
 ]

@@ -20,7 +20,6 @@ import random
 import string
 
 import torch
-import yaml
 from poke_env.ps_client import AccountConfiguration
 from poke_env.ps_client.server_configuration import (
     LocalhostServerConfiguration,
@@ -33,7 +32,8 @@ from metamon.jepa.play import (
     random_battle_format_for,
     uses_random_battle_team,
 )
-from metamon.simple_world_model.checkpointing import _strip_compile_prefixes
+from metamon.simple_world_model.action_vocab import ActionVocabulary
+from metamon.simple_world_model.checkpointing import _strip_compile_prefixes, load_stage_checkpoint
 from metamon.simple_world_model.model import SimpleWorldModel
 from metamon.simple_world_model.player import SimpleWorldModelPlayer
 from metamon.tokenizer import PokemonTokenizer
@@ -62,8 +62,8 @@ async def main() -> None:
     parser.add_argument("--num_battles", type=int, default=30)
     parser.add_argument("--max_concurrent_battles", type=int, default=30)
     parser.add_argument("--team_set", default="competitive")
-    parser.add_argument("--config",
-                        default=os.path.join(os.path.dirname(__file__), "configs", "default.yaml"))
+    parser.add_argument("--rollout_horizon", type=int, default=4)
+    parser.add_argument("--rollouts_per_action", type=int, default=8)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--verbose_blocks", action="store_true")
     parser.add_argument("--ladder", action="store_true")
@@ -90,6 +90,8 @@ async def main() -> None:
             "Increasing max_concurrent_battles to "
             f"{args.max_concurrent_battles} for --keep_ladder_battles"
         )
+    if args.rollout_horizon < 1 or args.rollouts_per_action < 1:
+        parser.error("--rollout_horizon and --rollouts_per_action must be >= 1")
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -98,24 +100,26 @@ async def main() -> None:
     else:
         device = torch.device("cpu")
 
-    ckpt = torch.load(args.checkpoint, map_location=device)
-    model_cfg = ckpt.get("model_config")
-    if not model_cfg:
-        with open(args.config, "r", encoding="utf-8") as f:
-            model_cfg = yaml.safe_load(f)["model"]
+    ckpt = load_stage_checkpoint(args.checkpoint, device=device, expected_stage="c")
+    model_cfg = ckpt["model_config"]
 
     tokenizer = _load_tokenizer_from_checkpoint(ckpt, args.checkpoint)
     print(f"Loaded tokenizer from checkpoint (vocab={len(tokenizer)}, name={tokenizer.name})")
 
     vocab_size = int(ckpt.get("vocab_size", len(tokenizer)))
     pad_id = int(ckpt.get("pad_id", tokenizer.pad_token_id))
-    max_history_blocks = int(ckpt.get("max_history_blocks", 1))
-    print(f"Using max_history_blocks={max_history_blocks} from checkpoint")
+    max_context_transitions = int(ckpt.get("max_context_transitions", 32))
+    action_vocab_state = ckpt.get("action_vocabulary")
+    if action_vocab_state is None:
+        raise ValueError("C checkpoint is missing canonical action_vocabulary")
+    action_vocabulary = ActionVocabulary.from_state(action_vocab_state)
+    print(f"Using max_context_transitions={max_context_transitions} from checkpoint")
 
     model = SimpleWorldModel(
         vocab_size=vocab_size,
         pad_id=pad_id,
-        latent_dim=int(model_cfg.get("latent_dim", 1024)),
+        action_vocab_size=len(action_vocabulary),
+        latent_dim=int(model_cfg.get("latent_dim", 128)),
         v_cfg=model_cfg.get("v", {}),
         action_encoder_cfg=model_cfg.get("action_encoder", {}),
         m_cfg=model_cfg.get("m", {}),
@@ -174,7 +178,10 @@ async def main() -> None:
         fmt=main_format,
         verbose=not args.quiet,
         verbose_blocks=args.verbose_blocks,
-        max_history_blocks=max_history_blocks,
+        action_vocabulary=action_vocabulary,
+        max_context_transitions=max_context_transitions,
+        rollout_horizon=args.rollout_horizon,
+        rollouts_per_action=args.rollouts_per_action,
         save_online_play_root=parsed_save_root,
         account_configuration=AccountConfiguration(username, args.password),
         server_configuration=server_config,
@@ -191,7 +198,10 @@ async def main() -> None:
             fmt=random_format,
             verbose=not args.quiet,
             verbose_blocks=args.verbose_blocks,
-            max_history_blocks=max_history_blocks,
+            action_vocabulary=action_vocabulary,
+            max_context_transitions=max_context_transitions,
+            rollout_horizon=args.rollout_horizon,
+            rollouts_per_action=args.rollouts_per_action,
             save_online_play_root=parsed_save_root,
             account_configuration=AccountConfiguration(username_rb, args.password),
             server_configuration=server_config,

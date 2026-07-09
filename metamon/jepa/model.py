@@ -255,16 +255,27 @@ class SelfAttention(nn.Module):
             k = self.rope(k)
 
         attn_mask = None
+        is_causal = self.causal
         if key_padding_mask is not None:
             # SDPA bool masks use True for positions that participate in attention.
-            # Shape broadcasts across query positions and attention heads.
-            attn_mask = key_padding_mask[:, None, None, :]
+            # CUDA fused kernels reject `attn_mask` together with
+            # `is_causal=True`, so compose the causal triangle and key padding
+            # into one explicit mask in that case.  This is also the correct
+            # contract for causal latent histories with right padding.
+            key_mask = key_padding_mask[:, None, None, :]
+            if self.causal:
+                causal_mask = torch.ones(S, S, dtype=torch.bool, device=x.device).tril()
+                attn_mask = causal_mask[None, None, :, :] & key_mask
+                is_causal = False
+            else:
+                # Shape broadcasts across query positions and attention heads.
+                attn_mask = key_mask
 
         y = F.scaled_dot_product_attention(
             q, k, v,
             attn_mask=attn_mask,
             dropout_p=self.dropout.p if self.training else 0.0,
-            is_causal=self.causal,
+            is_causal=is_causal,
         )
         y = y.transpose(1, 2).contiguous().view(B, S, D)
         return self.out_proj(y)

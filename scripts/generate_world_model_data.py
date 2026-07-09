@@ -1623,7 +1623,7 @@ def main() -> None:
         os.path.basename(args.tokenizer_path)
     )[0]
     metadata = {
-        "schema_version": "paired_pov_rollout_v3",
+        "schema_version": "paired_pov_rollout_v4",
         "tokenizer_version": tokenizer_version,
         "format": ",".join(sorted(args.formats)),
         "formats": sorted(args.formats),
@@ -1653,7 +1653,8 @@ def main() -> None:
         "total_transition_steps": total_transitions,
         "total_rollout_samples": total_rollout_samples,
         "max_battle_len": fmt_battle_max,
-        "storage": "paired_pov_rollout_indexed_variable_length_v3",
+        "storage": "paired_pov_rollout_indexed_variable_length_v4",
+        "includes_legal_action_candidates": True,
         "compressed": False,
         "train_skip_reasons": train_totals.get("skip_reasons", {}),
         "val_skip_reasons": val_totals.get("skip_reasons", {}),

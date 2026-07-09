@@ -2,7 +2,7 @@
 
 `scripts/generate_world_model_data.py` converts paired parsed-replay `.txt`
 files into tokenized `paired_shard_*.npz` files for `metamon.jepa.train_paired`.
-The current schema is `paired_pov_rollout_v2`.
+The current schema is `paired_pov_rollout_v4`.
 
 ## Generation
 

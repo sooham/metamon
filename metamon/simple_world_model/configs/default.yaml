@@ -1,68 +1,44 @@
+# V/M/C world-model defaults.  V sees only `team_header + current_state`; all
+# observed temporal context is retained by M's causal latent transformer.
 model:
-  # Latent size for z_T. V must compress and reconstruct the entire seen
-  # history (team header + up to 64 prior states/actions + current state) into
-  # z_T, so a 100-dim bottleneck is too tight. 256 gives the beta-VAE room to
-  # retain battle context without forcing posterior collapse.
-  latent_dim: 256
+  latent_dim: 128
 
-  # V: transformer beta-VAE over the full interleaved seen-history token
-  # sequence (≤ ~13k tokens at max_history_blocks=64). Self-attention is O(L^2)
-  # in the sequence length, so this is the dominant cost/memory driver. A
-  # smaller d_model + fewer layers keeps long-history batches tractable on a
-  # 32 GB GPU. Batch size is reduced (default 64) instead of using gradient
-  # checkpointing, so the encoder's forward is NOT recomputed in backward.
   v:
     d_model: 256
-    n_heads: 8            # 32-dim heads at d_model=256
+    n_heads: 8
     n_layers: 4
     d_ff: 1024
     dropout: 0.0
-    theta: 10000.0
+    # This caps header + one state, independently of M history length.
+    max_seq_len: 1024
+    max_state_tokens: 512
     ffn_activation: gelu
-    gradient_checkpointing: false
+    gradient_checkpointing: true
 
-  # Action encoder for short action token sequences (≤ a few tokens). Light
-  # and cheap; checkpointing off.
+  # Kept under this historical key, but now configures an embedding table over
+  # canonical actions rather than a token-level action Transformer.
   action_encoder:
     action_dim: 128
-    d_model: 96
-    n_heads: 4            # 24-dim heads
-    n_layers: 2
-    d_ff: 384
-    dropout: 0.0
-    max_seq_len: 32
-    ffn_activation: gelu
-    gradient_checkpointing: false
 
-  # M: an MLP mixture-density transition model p(z_{T+1} | z_T, a_T). The full
-  # history context now lives in z_T via V, so M is a small MLP — no
-  # transformer needed. Sized to map (z_T, action_emb) -> MDN params; cheap.
   m:
-    d_model: 512
-    n_heads: 8            # unused (MLP); kept for config compatibility
-    n_layers: 2
-    d_ff: 2048            # unused (MLP); kept for config compatibility
+    d_model: 256
+    n_heads: 8
+    n_layers: 6
+    d_ff: 1024
     dropout: 0.0
     num_mixtures: 5
     ffn_activation: gelu
-    gradient_checkpointing: false
+    gradient_checkpointing: true
 
   controller:
     hidden_dim: 512
     dropout: 0.0
 
+# Stage-specific loss weights are CLI-overridable.  V KL warms from zero to
+# beta_kl; free bits are configured on the CLI because they are a schedule.
 loss:
-  # Reconstruction of the full history through the latent is the primary
-  # signal forcing z_T to carry observed context.
-  lambda_recon: 1.0
-  # Higher KL than the old 0.01: with a long-history recon target the VAE is
-  # tempted to ignore the prior and overfit; a modest bump keeps the latent
-  # structured and slows posterior collapse.
-  beta_kl: 0.05
-  # MDN NLL is re-sampled (stochastic target) post Ha&Schmidhuber fix, so it is
-  # noisier and shouldn't be let to dominate / dive to -inf on scale collapse.
+  beta_kl: 0.01
+  lambda_opponent: 1.0
   lambda_mdn: 1.0
-  # Terminal-class prediction (win/lose/ongoing) from h — auxiliary signal.
-  lambda_terminal: 0.25
-  # Controller behavior cloning over legal actions (only used for --components c/all).
-  lambda_controller_bc: 1.0
+  lambda_done: 0.25
+  lambda_value: 0.25

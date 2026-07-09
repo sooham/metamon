@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 
+from metamon.simple_world_model.data import MODEL_VERSION
 from metamon.tokenizer import PokemonTokenizer
 
 
@@ -48,8 +49,13 @@ def save_simple_world_model_checkpoint(
     vocab_size: int,
     pad_id: int,
     tokenizer: PokemonTokenizer,
-    components: str,
-    max_history_blocks: int,
+    components: str | None = None,
+    max_history_blocks: int | None = None,
+    stage: str | None = None,
+    action_vocabulary: dict[str, Any] | None = None,
+    dataset_manifest_hash: str | None = None,
+    latent_cache_manifest_hash: str | None = None,
+    max_context_transitions: int | None = None,
     best_val_loss: float | None = None,
     best_val_epoch: int | None = None,
     best_val_global_step: int | None = None,
@@ -67,8 +73,17 @@ def save_simple_world_model_checkpoint(
             "vocab_size": int(vocab_size),
             "pad_id": int(pad_id),
             "tokenizer_state": tokenizer.to_state(),
+            # `components` / `max_history_blocks` remain for explicit
+            # incompatibility with pre-V/M/C checkpoints.  New callers use
+            # stage and max_context_transitions instead.
             "components": components,
-            "max_history_blocks": int(max_history_blocks),
+            "max_history_blocks": None if max_history_blocks is None else int(max_history_blocks),
+            "model_version": MODEL_VERSION,
+            "stage": stage or components,
+            "action_vocabulary": action_vocabulary,
+            "dataset_manifest_hash": dataset_manifest_hash,
+            "latent_cache_manifest_hash": latent_cache_manifest_hash,
+            "max_context_transitions": None if max_context_transitions is None else int(max_context_transitions),
             "model_signature": model_signature(
                 model_config=model_config,
                 vocab_size=vocab_size,
@@ -82,6 +97,50 @@ def save_simple_world_model_checkpoint(
         },
         path,
     )
+
+
+def load_stage_checkpoint(
+    checkpoint_path: str,
+    *,
+    device: torch.device,
+    expected_stage: str | None = None,
+) -> dict[str, Any]:
+    """Load a V/M/C checkpoint and reject old simple-world-model artifacts."""
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if checkpoint.get("model_version") != MODEL_VERSION:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} is not a {MODEL_VERSION} checkpoint. "
+            "Old simple-world-model checkpoints are intentionally incompatible."
+        )
+    if expected_stage is not None and checkpoint.get("stage") != expected_stage:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} has stage={checkpoint.get('stage')!r}, "
+            f"expected {expected_stage!r}"
+        )
+    return checkpoint
+
+
+def load_stage_weights(
+    model: Any,
+    checkpoint: dict[str, Any],
+    *,
+    prefixes: tuple[str, ...] | None = None,
+    strict_prefixes: bool = True,
+) -> None:
+    """Load selected stage modules while allowing future-stage random heads."""
+    state = _strip_compile_prefixes(checkpoint["model_state_dict"])
+    if prefixes is not None:
+        state = {key: value for key, value in state.items() if key.startswith(prefixes)}
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if unexpected:
+        raise ValueError(f"Unexpected checkpoint tensors: {unexpected[:8]}")
+    if strict_prefixes and prefixes is not None:
+        missing_required = [
+            key for key in missing
+            if key.startswith(prefixes)
+        ]
+        if missing_required:
+            raise ValueError(f"Missing required stage tensors: {missing_required[:8]}")
 
 
 def load_matching_weights(model: Any, checkpoint_path: str, device: torch.device) -> dict[str, Any]:

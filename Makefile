@@ -18,10 +18,13 @@ FORMATS ?= $(FORMAT)
         clean show-tokenizer clean-tokenizer \
         train-jepa train-jepa-debug _train-jepa-inner \
         train-simple-world-model train-simple-world-model-debug _train-simple-world-model-inner \
+        train-simple-world-model-v cache-simple-world-model-latents \
+        train-simple-world-model-m train-simple-world-model-c \
         play-simple-world-model play-simple-world-model-local \
         play-jepa play-jepa-local \
         showdown ensure-showdown showdown-daemon showdown-status showdown-stop \
-        showdown-install-autostart showdown-uninstall-autostart bash-completion
+        showdown-install-autostart showdown-uninstall-autostart \
+        save-checkpoint save-checkpoints bash-completion
 
 # Start a local Pokemon Showdown server (no auth, port 8000)
 # Requires the server/pokemon-showdown submodule to be initialized.
@@ -348,23 +351,23 @@ SIMPLE_WM_DATA_ROOT ?= $(WM_OUTPUT_DIR)
 SIMPLE_WM_TOKENIZER ?= $(TOKENIZER_FILE)
 SIMPLE_WM_SAVE_DIR ?= $(METAMON_CACHE_DIR)/simple-world-model-checkpoints
 SIMPLE_WM_CONFIG ?= metamon/simple_world_model/configs/default.yaml
-SIMPLE_WM_COMPONENTS ?= vm
-SIMPLE_WM_CHECKPOINT ?= $(SIMPLE_WM_SAVE_DIR)/simple_world_model_best.pt
-SIMPLE_WM_RESUME ?=
+SIMPLE_WM_STAGE ?= v
+SIMPLE_WM_CACHE_ROOT ?= $(METAMON_CACHE_DIR)/simple-world-model-latents
+SIMPLE_WM_V_CHECKPOINT ?= $(SIMPLE_WM_SAVE_DIR)/v_best.pt
+SIMPLE_WM_M_CHECKPOINT ?= $(SIMPLE_WM_SAVE_DIR)/m_best.pt
+SIMPLE_WM_C_CHECKPOINT ?= $(SIMPLE_WM_SAVE_DIR)/c_best.pt
+SIMPLE_WM_CHECKPOINT ?= $(SIMPLE_WM_SAVE_DIR)/$(SIMPLE_WM_STAGE)_best.pt
 SIMPLE_WM_LR ?= 5e-5
-SIMPLE_WM_EPOCHS ?= 10
-SIMPLE_WM_BATCH_SIZE ?= 64
+SIMPLE_WM_BATCH_SIZE ?= 32
 SIMPLE_WM_GRAD_ACCUM_STEPS ?= 1
 SIMPLE_WM_GRAD_CLIP ?= 1.0
-SIMPLE_WM_MAX_STEPS ?= 0
+SIMPLE_WM_MAX_UPDATES ?= 0
 SIMPLE_WM_NUM_WORKERS ?= $(shell python3 -c 'import os; n=len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 4); print(min(12, n))')
-SIMPLE_WM_PREFETCH_FACTOR ?= 4
-SIMPLE_WM_VAL_INTERVAL ?= 100
-SIMPLE_WM_VAL_MAX_BATCHES ?= 5
-SIMPLE_WM_CONSOLE_INTERVAL ?= 10
-SIMPLE_WM_WANDB_INTERVAL ?= 10
+SIMPLE_WM_VAL_INTERVAL ?= 5000
+SIMPLE_WM_VAL_SAMPLES ?= 10000
+SIMPLE_WM_CONSOLE_INTERVAL ?= 100
 SIMPLE_WM_COMPILE ?= true
-SIMPLE_WM_MAX_HISTORY ?= 64
+SIMPLE_WM_MAX_CONTEXT_TRANSITIONS ?= 32
 SIMPLE_WM_EXTRA_ARGS ?=
 
 SIMPLE_WM_DEBUG_BATCH_SIZE ?= 1
@@ -382,7 +385,7 @@ train-simple-world-model:
 			exit 1; \
 		fi; \
 		echo "Launching training in tmux session 'simple-world-model-train'..."; \
-		tmux new-session -d -s simple-world-model-train "$(MAKE) _train-simple-world-model-inner FORMAT='$(FORMAT)' FORMATS='$(FORMATS)' WANDB='$(WANDB)' WANDB_PROJECT='$(WANDB_PROJECT)' WANDB_NAME='$(WANDB_NAME)' SIMPLE_WM_COMPONENTS='$(SIMPLE_WM_COMPONENTS)' SIMPLE_WM_COMPILE='$(SIMPLE_WM_COMPILE)' SIMPLE_WM_MAX_HISTORY='$(SIMPLE_WM_MAX_HISTORY)' SIMPLE_WM_BATCH_SIZE='$(SIMPLE_WM_BATCH_SIZE)' SIMPLE_WM_GRAD_ACCUM_STEPS='$(SIMPLE_WM_GRAD_ACCUM_STEPS)' SIMPLE_WM_LR='$(SIMPLE_WM_LR)' SIMPLE_WM_EPOCHS='$(SIMPLE_WM_EPOCHS)' SIMPLE_WM_NUM_WORKERS='$(SIMPLE_WM_NUM_WORKERS)' SIMPLE_WM_PREFETCH_FACTOR='$(SIMPLE_WM_PREFETCH_FACTOR)' SIMPLE_WM_GRAD_CLIP='$(SIMPLE_WM_GRAD_CLIP)' SIMPLE_WM_MAX_STEPS='$(SIMPLE_WM_MAX_STEPS)' SIMPLE_WM_VAL_INTERVAL='$(SIMPLE_WM_VAL_INTERVAL)' SIMPLE_WM_VAL_MAX_BATCHES='$(SIMPLE_WM_VAL_MAX_BATCHES)' SIMPLE_WM_CONSOLE_INTERVAL='$(SIMPLE_WM_CONSOLE_INTERVAL)' SIMPLE_WM_WANDB_INTERVAL='$(SIMPLE_WM_WANDB_INTERVAL)' SIMPLE_WM_EXTRA_ARGS='$(SIMPLE_WM_EXTRA_ARGS)' SIMPLE_WM_RESUME='$(SIMPLE_WM_RESUME)'"; \
+		tmux new-session -d -s simple-world-model-train "$(MAKE) _train-simple-world-model-inner FORMAT='$(FORMAT)' FORMATS='$(FORMATS)' SIMPLE_WM_STAGE='$(SIMPLE_WM_STAGE)' SIMPLE_WM_CACHE_ROOT='$(SIMPLE_WM_CACHE_ROOT)' SIMPLE_WM_V_CHECKPOINT='$(SIMPLE_WM_V_CHECKPOINT)' SIMPLE_WM_M_CHECKPOINT='$(SIMPLE_WM_M_CHECKPOINT)' SIMPLE_WM_CHECKPOINT='$(SIMPLE_WM_CHECKPOINT)' SIMPLE_WM_COMPILE='$(SIMPLE_WM_COMPILE)' SIMPLE_WM_MAX_CONTEXT_TRANSITIONS='$(SIMPLE_WM_MAX_CONTEXT_TRANSITIONS)' SIMPLE_WM_BATCH_SIZE='$(SIMPLE_WM_BATCH_SIZE)' SIMPLE_WM_GRAD_ACCUM_STEPS='$(SIMPLE_WM_GRAD_ACCUM_STEPS)' SIMPLE_WM_LR='$(SIMPLE_WM_LR)' SIMPLE_WM_NUM_WORKERS='$(SIMPLE_WM_NUM_WORKERS)' SIMPLE_WM_GRAD_CLIP='$(SIMPLE_WM_GRAD_CLIP)' SIMPLE_WM_MAX_UPDATES='$(SIMPLE_WM_MAX_UPDATES)' SIMPLE_WM_VAL_INTERVAL='$(SIMPLE_WM_VAL_INTERVAL)' SIMPLE_WM_VAL_SAMPLES='$(SIMPLE_WM_VAL_SAMPLES)' SIMPLE_WM_CONSOLE_INTERVAL='$(SIMPLE_WM_CONSOLE_INTERVAL)' SIMPLE_WM_EXTRA_ARGS='$(SIMPLE_WM_EXTRA_ARGS)'"; \
 		echo ""; \
 		echo "  Attach:  tmux attach -t simple-world-model-train"; \
 		echo "  Detach:  Ctrl+B, D"; \
@@ -391,22 +394,46 @@ train-simple-world-model:
 		$(MAKE) _train-simple-world-model-inner; \
 	fi
 
+# Staged V/M/C pipeline. Run these in order; cache creation validates free
+# space before writing the full fp16 posterior sidecars.
+#
+#   make train-simple-world-model-v
+#   make cache-simple-world-model-latents
+#   make train-simple-world-model-m
+#   make train-simple-world-model-c
+train-simple-world-model-v:
+	$(MAKE) train-simple-world-model \
+		SIMPLE_WM_STAGE=v \
+		SIMPLE_WM_CHECKPOINT='$(SIMPLE_WM_V_CHECKPOINT)'
+
+cache-simple-world-model-latents:
+	$(MAKE) train-simple-world-model \
+		SIMPLE_WM_STAGE=cache \
+		SIMPLE_WM_CHECKPOINT=
+
+train-simple-world-model-m:
+	$(MAKE) train-simple-world-model \
+		SIMPLE_WM_STAGE=m \
+		SIMPLE_WM_CHECKPOINT='$(SIMPLE_WM_M_CHECKPOINT)'
+
+train-simple-world-model-c:
+	$(MAKE) train-simple-world-model \
+		SIMPLE_WM_STAGE=c \
+		SIMPLE_WM_CHECKPOINT='$(SIMPLE_WM_C_CHECKPOINT)'
+
 train-simple-world-model-debug:
 	$(MAKE) _train-simple-world-model-inner \
 		FORMAT='$(FORMAT)' \
 		FORMATS='$(FORMATS)' \
-		WANDB=false \
+		SIMPLE_WM_STAGE=v \
 		SIMPLE_WM_COMPILE=false \
 		SIMPLE_WM_BATCH_SIZE='$(SIMPLE_WM_DEBUG_BATCH_SIZE)' \
 		SIMPLE_WM_GRAD_ACCUM_STEPS=1 \
-		SIMPLE_WM_MAX_STEPS='$(SIMPLE_WM_DEBUG_MAX_STEPS)' \
+		SIMPLE_WM_MAX_UPDATES='$(SIMPLE_WM_DEBUG_MAX_STEPS)' \
 		SIMPLE_WM_VAL_INTERVAL=0 \
-		SIMPLE_WM_VAL_MAX_BATCHES=0 \
 		SIMPLE_WM_CONSOLE_INTERVAL=1 \
-		SIMPLE_WM_WANDB_INTERVAL=0 \
 		SIMPLE_WM_NUM_WORKERS=0 \
-		SIMPLE_WM_PREFETCH_FACTOR=2 \
-		SIMPLE_WM_EXTRA_ARGS="--debug_tensors --debug_tensor_steps $(SIMPLE_WM_DEBUG_TENSOR_STEPS) --debug_tensor_values $(SIMPLE_WM_DEBUG_TENSOR_VALUES) --debug_tensor_samples $(SIMPLE_WM_DEBUG_TENSOR_SAMPLES) $(SIMPLE_WM_EXTRA_ARGS)"
+		SIMPLE_WM_EXTRA_ARGS="$(SIMPLE_WM_EXTRA_ARGS)"
 
 _train-simple-world-model-inner:
 	@if [ ! -d "$(SIMPLE_WM_DATA_ROOT)" ]; then \
@@ -420,34 +447,30 @@ _train-simple-world-model-inner:
 	mkdir -p $(SIMPLE_WM_SAVE_DIR)
 	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 	uv run python -m metamon.simple_world_model.train \
+		--stage $(SIMPLE_WM_STAGE) \
 		--data_root $(SIMPLE_WM_DATA_ROOT) \
 		--formats $(FORMATS) \
 		--tokenizer_path $(SIMPLE_WM_TOKENIZER) \
 		--save_dir $(SIMPLE_WM_SAVE_DIR) \
-		--components $(SIMPLE_WM_COMPONENTS) \
+		--latent_cache_root $(SIMPLE_WM_CACHE_ROOT) \
+		--v_checkpoint $(SIMPLE_WM_V_CHECKPOINT) \
+		--m_checkpoint $(SIMPLE_WM_M_CHECKPOINT) \
 		--batch_size $(SIMPLE_WM_BATCH_SIZE) \
 		--grad_accum_steps $(SIMPLE_WM_GRAD_ACCUM_STEPS) \
 		--lr $(SIMPLE_WM_LR) \
-		--epochs $(SIMPLE_WM_EPOCHS) \
-		--max_steps $(SIMPLE_WM_MAX_STEPS) \
+		--max_updates $(SIMPLE_WM_MAX_UPDATES) \
 		--grad_clip $(SIMPLE_WM_GRAD_CLIP) \
 		--num_workers $(SIMPLE_WM_NUM_WORKERS) \
-		--prefetch_factor $(SIMPLE_WM_PREFETCH_FACTOR) \
 		--print_interval $(SIMPLE_WM_CONSOLE_INTERVAL) \
 		$(if $(SIMPLE_WM_CHECKPOINT),--checkpoint $(SIMPLE_WM_CHECKPOINT)) \
-		$(if $(SIMPLE_WM_RESUME),--resume $(SIMPLE_WM_RESUME)) \
 		$(if $(SIMPLE_WM_CONFIG),--config $(SIMPLE_WM_CONFIG)) \
-		--log_interval $(SIMPLE_WM_WANDB_INTERVAL) \
-		$(if $(filter false,$(WANDB)),--no-wandb) \
-		$(if $(WANDB_PROJECT),--wandb_project $(WANDB_PROJECT)) \
-		$(if $(WANDB_NAME),--wandb_name $(WANDB_NAME)) \
 		--val_interval $(SIMPLE_WM_VAL_INTERVAL) \
-		--val_max_batches $(SIMPLE_WM_VAL_MAX_BATCHES) \
+		--val_samples $(SIMPLE_WM_VAL_SAMPLES) \
 		$(if $(filter true,$(SIMPLE_WM_COMPILE)),--compile,--no-compile) \
-		--max_history_blocks $(SIMPLE_WM_MAX_HISTORY) \
+		--max_context_transitions $(SIMPLE_WM_MAX_CONTEXT_TRANSITIONS) \
 		$(SIMPLE_WM_EXTRA_ARGS)
 
-SIMPLE_WM_PLAY_CHECKPOINT ?= $(SIMPLE_WM_CHECKPOINT)
+SIMPLE_WM_PLAY_CHECKPOINT ?= $(SIMPLE_WM_C_CHECKPOINT)
 SIMPLE_WM_PLAY_FORMAT ?= gen1randombattle
 SIMPLE_WM_PLAY_USERNAME ?= simplewmbot
 SIMPLE_WM_PLAY_TEAM_SET ?= competitive
@@ -602,7 +625,7 @@ test-jepa-all-baselines: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure
 
 # ── Checkpoint backup ───────────────────────────────────────────────
 
-# Copy all world-model checkpoints (JEPA) to a timestamped backup
+# Copy all world-model checkpoints (JEPA and simple-world-model) to a timestamped backup
 # directory under the project root so they can be committed to git.
 # The original checkpoints in train save-dirs are left untouched.
 #
@@ -611,6 +634,8 @@ test-jepa-all-baselines: $(if $(filter localhost,$(JEPA_BASELINE_SERVER)),ensure
 #   make save-checkpoints BACKUP_NAME=experiment-v2
 SAVE_CHECKPOINTS_DIR ?= checkpoints
 BACKUP_NAME ?=
+save-checkpoint: save-checkpoints
+
 save-checkpoints:
 	@now=$$(date +%Y-%m-%d_%H%M%S); \
 	commit=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown-git); \
@@ -619,7 +644,7 @@ save-checkpoints:
 	mkdir -p "$$dest"; \
 	echo "Backing up checkpoints to $$dest"; \
 	copied=0; \
-	for src_dir in $(JEPA_SAVE_DIR); do \
+	for src_dir in $(JEPA_SAVE_DIR) $(SIMPLE_WM_SAVE_DIR); do \
 		if [ -d "$$src_dir" ]; then \
 			label=$$(basename "$$src_dir"); \
 			for f in "$$src_dir"/*.pt; do \
