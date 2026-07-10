@@ -145,16 +145,40 @@ class StateVAE(nn.Module):
         header_mask: torch.Tensor,
         state_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        if state_tokens is None:
-            tokens = header_tokens
-            valid = header_mask
-            segment_ids = torch.zeros_like(tokens)
-        else:
-            tokens = torch.cat([header_tokens, state_tokens], dim=-1)
-            valid = torch.cat([header_mask, state_mask], dim=-1)  # type: ignore[arg-type]
-            segment_ids = torch.cat(
-                [torch.zeros_like(header_tokens), torch.ones_like(state_tokens)], dim=-1
-            )
+        # ``header_tokens`` and ``state_tokens`` arrive independently right
+        # padded by the collator.  Concatenating their rectangular tensors
+        # would put header padding *between* the two real segments for shorter
+        # samples.  That changes RoPE positions according to the other rows in
+        # the batch, making posterior latents batch-composition dependent.
+        # Compact each row into ``[valid header, valid state, right padding]``
+        # before the transformer so every real state starts after its own
+        # header, regardless of neighbouring sequence lengths.
+        width = header_tokens.shape[-1] + (0 if state_tokens is None else state_tokens.shape[-1])
+        tokens = torch.full(
+            (header_tokens.shape[0], width + 1), self.pad_id,
+            dtype=header_tokens.dtype, device=header_tokens.device,
+        )
+        segment_ids = torch.zeros_like(tokens)
+        header_lengths = header_mask.long().sum(dim=-1)
+        total_lengths = header_lengths.clone()
+        sentinel = torch.full_like(header_tokens, width)
+        header_positions = header_mask.long().cumsum(dim=-1).sub(1).clamp_min(0)
+        header_positions = torch.where(header_mask, header_positions, sentinel)
+        tokens.scatter_(1, header_positions, header_tokens)
+
+        if state_tokens is not None:
+            assert state_mask is not None
+            state_lengths = state_mask.long().sum(dim=-1)
+            total_lengths = total_lengths + state_lengths
+            state_positions = header_lengths[:, None] + state_mask.long().cumsum(dim=-1).sub(1).clamp_min(0)
+            state_sentinel = torch.full_like(state_positions, width)
+            state_positions = torch.where(state_mask, state_positions, state_sentinel)
+            tokens.scatter_(1, state_positions, state_tokens)
+            segment_ids.scatter_(1, state_positions, torch.ones_like(state_tokens))
+
+        tokens = tokens[:, :width]
+        segment_ids = segment_ids[:, :width]
+        valid = torch.arange(width, device=tokens.device)[None, :] < total_lengths[:, None]
         self._check_encoder_len(tokens.shape[-1])
         x = self.token_embedding(tokens) + self.segment_embedding(segment_ids)
         for block in self.encoder_blocks:
@@ -669,6 +693,7 @@ def vae_losses(
         "kl_per_dim": float((raw_kl / outputs["mu"].shape[-1]).detach()),
         "free_kl": float(free_kl.detach()),
         "beta_kl": float(beta_kl),
+        "weighted_kl": float((float(beta_kl) * free_kl).detach()),
         "capacity_term": float(capacity_term.detach()),
         "z_norm": float(outputs["mu"].detach().float().norm(dim=-1).mean()),
     }

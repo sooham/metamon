@@ -24,6 +24,11 @@ import torch
 import yaml
 from torch.utils.data import DataLoader, Subset
 
+try:  # Keep local training usable if an optional environment lacks wandb.
+    import wandb as _wandb
+except ImportError:  # pragma: no cover - wandb is a declared dependency.
+    _wandb = None
+
 from metamon.simple_world_model.action_vocab import ActionVocabulary
 from metamon.simple_world_model.cache_latents import build_cache
 from metamon.simple_world_model.checkpointing import (
@@ -57,7 +62,118 @@ from metamon.simple_world_model.model import (
 from metamon.tokenizer import PokemonTokenizer
 
 
-DEFAULT_UPDATES = {"v": 50_000, "m": 100_000, "c": 50_000}
+DEFAULT_UPDATES = {"v": 100_000, "m": 100_000, "c": 50_000}
+
+
+def _resolve_updates_budget(args: argparse.Namespace, stage: str, *, start_update: int = 0) -> int:
+    additional = int(getattr(args, "additional_updates", 0) or 0)
+    absolute = int(args.max_updates or args.max_steps or 0)
+    if additional < 0:
+        raise ValueError("--additional_updates must be non-negative")
+    if additional and absolute:
+        raise ValueError("Use either --additional_updates or --max_updates, not both")
+    if additional:
+        return int(start_update) + additional
+    return absolute or DEFAULT_UPDATES[stage]
+
+
+class _WandbLogger:
+    """Failure-tolerant W&B run wrapper for the staged trainers."""
+
+    def __init__(self, run: Any):
+        self.run = run
+        self._disabled_after_error = False
+
+    def log(self, payload: Mapping[str, Any], *, step: int) -> None:
+        if self._disabled_after_error:
+            return
+        try:
+            self.run.log(dict(payload), step=int(step))
+        except Exception as exc:  # Network/auth failures must not stop a long run.
+            self._disabled_after_error = True
+            print(f"WARNING: W&B logging failed; continuing local-only ({type(exc).__name__}: {exc})", flush=True)
+
+    def finish(self) -> None:
+        try:
+            self.run.finish()
+        except Exception as exc:  # pragma: no cover - defensive cleanup only.
+            print(f"WARNING: W&B finish failed ({type(exc).__name__}: {exc})", flush=True)
+
+
+def _numeric_metrics(prefix: str, metrics: Mapping[str, Any]) -> dict[str, float]:
+    """Namespace scalar metrics without pushing batch tensors to W&B."""
+    return {
+        f"{prefix}/{key}": float(value)
+        for key, value in metrics.items()
+        if isinstance(value, (int, float))
+    }
+
+
+def _start_wandb(
+    args: argparse.Namespace,
+    *,
+    stage: str,
+    model: SimpleWorldModel,
+    model_config: Mapping[str, Any],
+    source_hash: str,
+    cache_hash: str | None,
+    device: torch.device,
+    start_update: int = 0,
+) -> _WandbLogger | None:
+    """Create one stage-scoped W&B run, or retain local logging."""
+    if not getattr(args, "wandb", False):
+        return None
+    if _wandb is None:
+        print("WARNING: W&B requested but the wandb package is unavailable; continuing local-only.", flush=True)
+        return None
+    project = getattr(args, "wandb_project", None) or "metamon-simple-world-model"
+    config = {
+        "stage": stage,
+        "formats": list(args.formats),
+        "model_config": dict(model_config),
+        "dataset_manifest_hash": source_hash,
+        "latent_cache_manifest_hash": cache_hash,
+        "batch_size": int(args.batch_size),
+        "grad_accum_steps": int(args.grad_accum_steps),
+        "effective_batch_size": int(args.batch_size * args.grad_accum_steps),
+        "lr": float(args.lr),
+        "weight_decay": float(args.weight_decay),
+        "grad_clip": float(args.grad_clip),
+        "start_update": int(start_update),
+        "additional_updates": int(getattr(args, "additional_updates", 0) or 0),
+        "max_updates": _resolve_updates_budget(args, stage, start_update=start_update),
+        "val_interval": int(args.val_interval),
+        "val_samples": int(args.val_samples),
+        "wandb_log_interval": int(args.wandb_log_interval),
+        "balanced_formats": bool(args.balanced_formats),
+        "max_context_transitions": int(args.max_context_transitions),
+        "compile": bool(args.compile),
+        "seed": int(args.seed),
+        "device": str(device),
+        "model_parameters": sum(parameter.numel() for parameter in model.parameters()),
+        "trainable_parameters": sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad),
+        "config_path": str(args.config),
+    }
+    init_kwargs: dict[str, Any] = {
+        "project": project,
+        "job_type": stage,
+        "tags": ["simple-world-model", stage, *map(str, args.formats)],
+        "config": config,
+    }
+    if getattr(args, "wandb_name", None):
+        init_kwargs["name"] = args.wandb_name
+    try:
+        run = _wandb.init(**init_kwargs)
+        if hasattr(run, "define_metric"):
+            run.define_metric("global_step")
+            run.define_metric("train/*", step_metric="global_step")
+            run.define_metric("val/*", step_metric="global_step")
+            run.define_metric("checkpoint/*", step_metric="global_step")
+    except Exception as exc:
+        print(f"WARNING: W&B initialization failed; continuing local-only ({type(exc).__name__}: {exc})", flush=True)
+        return None
+    print(f"[{stage}] W&B enabled: project={project}", flush=True)
+    return _WandbLogger(run)
 
 
 def _device() -> torch.device:
@@ -611,25 +727,38 @@ def _training_loop(
     args: argparse.Namespace,
     save_callback: Callable[[int, Mapping[str, float], bool], None],
     device: torch.device,
+    wandb_logger: _WandbLogger | None = None,
+    start_update: int = 0,
+    initial_best: float = float("inf"),
 ) -> None:
-    updates_budget = args.max_updates or args.max_steps or DEFAULT_UPDATES[stage]
-    best = float("inf")
-    update = 0
+    updates_budget = _resolve_updates_budget(args, stage, start_update=start_update)
+    best = float(initial_best)
+    update = int(start_update)
     micro = 0
     optimizer.zero_grad(set_to_none=True)
     started = time.time()
+    if update >= updates_budget:
+        print(
+            f"[{stage}] checkpoint is already at update {update:,}; "
+            f"target is {updates_budget:,}, so no training is needed.",
+            flush=True,
+        )
+        return
     print(
-        f"[{stage}] starting {updates_budget:,} optimizer updates "
+        f"[{stage}] {'resuming' if update else 'starting'} at update {update:,}; "
+        f"target={updates_budget:,} optimizer updates "
         f"(batch_size={args.batch_size}, grad_accum={args.grad_accum_steps}, workers={args.num_workers}).",
         flush=True,
     )
-    for epoch in itertools.count():
+    # A resumed compact sampler starts from a new deterministic seed instead
+    # of replaying the original run's first ``start_update`` batches.
+    for epoch in itertools.count(start_update):
         train_sampler.set_epoch(epoch)
         base_dataset = train_loader.dataset.dataset if isinstance(train_loader.dataset, Subset) else train_loader.dataset
         if hasattr(base_dataset, "set_epoch"):
             base_dataset.set_epoch(epoch)
         for batch in train_loader:
-            if update == 0 and micro == 0:
+            if update == start_update and micro == 0:
                 compile_note = "; first compiled step may take a little longer" if args.compile else ""
                 print(f"[{stage}] first batch loaded; beginning forward/backward{compile_note}.", flush=True)
             model.train()
@@ -646,11 +775,25 @@ def _training_loop(
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             update += 1
+            elapsed = max(time.time() - started, 1e-6)
+            updates_per_second = (update - start_update) / elapsed
+            log_interval = args.wandb_log_interval or args.print_interval
+            if wandb_logger is not None and log_interval > 0 and update % log_interval == 0:
+                payload = {
+                    "global_step": update,
+                    **_numeric_metrics("train", metrics),
+                    "train/grad_norm": float(grad_norm),
+                    "train/updates_per_second": updates_per_second,
+                    "train/lr": float(optimizer.param_groups[0]["lr"]),
+                }
+                if device.type == "cuda":
+                    payload["system/cuda_memory_allocated_gib"] = torch.cuda.memory_allocated(device) / 1024 ** 3
+                    payload["system/cuda_memory_reserved_gib"] = torch.cuda.memory_reserved(device) / 1024 ** 3
+                wandb_logger.log(payload, step=update)
             if args.print_interval and update % args.print_interval == 0:
-                elapsed = max(time.time() - started, 1e-6)
                 print(
                     f"[{stage}] update {update:6d}/{updates_budget} loss={metrics.get('loss', 0.0):.4f} "
-                    f"grad={float(grad_norm):.3f} updates/s={update / elapsed:.2f}", flush=True
+                    f"grad={float(grad_norm):.3f} updates/s={updates_per_second:.2f}", flush=True
                 )
             should_validate = args.val_interval > 0 and update % args.val_interval == 0
             if should_validate or update >= updates_budget:
@@ -660,9 +803,90 @@ def _training_loop(
                 if improved:
                     best = score
                 print(f"[{stage}] validation @ {update}: {json.dumps(val_metrics, sort_keys=True)}", flush=True)
+                if wandb_logger is not None:
+                    wandb_logger.log(
+                        {
+                            "global_step": update,
+                            **_numeric_metrics("val", val_metrics),
+                            "checkpoint/is_best": float(improved),
+                            "checkpoint/best_selection_score": float(best),
+                        },
+                        step=update,
+                    )
                 save_callback(update, val_metrics, improved)
             if update >= updates_budget:
                 return
+
+
+def _check_v_resume_compatibility(
+    checkpoint: Mapping[str, Any],
+    *,
+    path: str | Path,
+    tokenizer: PokemonTokenizer,
+    source_hash: str,
+    model_config: Mapping[str, Any],
+) -> None:
+    mismatches: list[str] = []
+    if checkpoint.get("tokenizer_state") != tokenizer.to_state():
+        mismatches.append("tokenizer_state")
+    if checkpoint.get("dataset_manifest_hash") != source_hash:
+        mismatches.append("dataset_manifest_hash")
+    if checkpoint.get("model_config") != dict(model_config):
+        mismatches.append("model_config")
+    if int(checkpoint.get("vocab_size", -1)) != len(tokenizer):
+        mismatches.append("vocab_size")
+    if int(checkpoint.get("pad_id", -1)) != tokenizer.pad_token_id:
+        mismatches.append("pad_id")
+    if mismatches:
+        raise ValueError(
+            f"V resume checkpoint {path} is incompatible with this run: {', '.join(mismatches)}"
+        )
+
+
+def _resume_v(
+    args: argparse.Namespace,
+    *,
+    model: SimpleWorldModel,
+    optimizer: torch.optim.Optimizer,
+    tokenizer: PokemonTokenizer,
+    source_hash: str,
+    model_config: Mapping[str, Any],
+    device: torch.device,
+) -> tuple[int, float]:
+    if not args.resume_checkpoint:
+        return 0, float("inf")
+    resume_path = Path(args.resume_checkpoint)
+    if not resume_path.is_file():
+        raise FileNotFoundError(f"V resume checkpoint not found: {resume_path}")
+    checkpoint = load_stage_checkpoint(str(resume_path), device=device, expected_stage="v")
+    _check_v_resume_compatibility(
+        checkpoint, path=resume_path, tokenizer=tokenizer, source_hash=source_hash,
+        model_config=model_config,
+    )
+    load_stage_weights(model, checkpoint)
+    optimizer_state = checkpoint.get("optimizer_state_dict")
+    if optimizer_state is None:
+        raise ValueError(f"V resume checkpoint {resume_path} has no optimizer state")
+    optimizer.load_state_dict(optimizer_state)
+    start_update = int(checkpoint.get("global_step", 0))
+    best_score = float(checkpoint.get("best_val_loss") or float("inf"))
+
+    # ``v_latest.pt`` stores the latest score.  Preserve the historical best
+    # from the selection checkpoint when it is available.
+    best_path = Path(args.checkpoint) if args.checkpoint else None
+    if best_path is not None and best_path.is_file() and best_path.resolve() != resume_path.resolve():
+        best_checkpoint = load_stage_checkpoint(str(best_path), device=device, expected_stage="v")
+        _check_v_resume_compatibility(
+            best_checkpoint, path=best_path, tokenizer=tokenizer, source_hash=source_hash,
+            model_config=model_config,
+        )
+        best_score = min(best_score, float(best_checkpoint.get("best_val_loss") or float("inf")))
+    print(
+        f"[v] resumed model and optimizer from {resume_path} at update {start_update:,}; "
+        f"best reconstruction CE={best_score:.6f}",
+        flush=True,
+    )
+    return start_update, best_score
 
 
 def _train_v(args: argparse.Namespace) -> None:
@@ -678,9 +902,6 @@ def _train_v(args: argparse.Namespace) -> None:
     print("[v] action vocabulary is deferred to --stage cache; starting state-posterior indexing.", flush=True)
     model = _model_from_config(config, tokenizer=tokenizer, action_vocabulary=vocab, max_context_transitions=args.max_context_transitions, device=device)
     _freeze(model.m); _freeze(model.action_embedding); _freeze(model.opponent_head); _freeze(model.transition_head); _freeze(model.done_head); _freeze(model.value_head); _freeze(model.c)
-    if args.compile and device.type == "cuda":
-        model.v = torch.compile(model.v, dynamic=True)
-        print("torch.compile enabled on V")
     train_ds = VStateDataset(
         discover_source_shards(args.data_root, "train", args.formats), data_root=args.data_root,
         max_state_tokens=model.v.max_state_tokens, formats=args.formats,
@@ -704,6 +925,14 @@ def _train_v(args: argparse.Namespace) -> None:
     optimizer = torch.optim.AdamW([parameter for parameter in model.parameters() if parameter.requires_grad], lr=args.lr, weight_decay=args.weight_decay)
     source_hash = dataset_manifest_hash(args.data_root)
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
+    model_config = _full_model_config(config, args.max_context_transitions)
+    start_update, initial_best = _resume_v(
+        args, model=model, optimizer=optimizer, tokenizer=tokenizer, source_hash=source_hash,
+        model_config=model_config, device=device,
+    )
+    if args.compile and device.type == "cuda":
+        model.v = torch.compile(model.v, dynamic=True)
+        print("torch.compile enabled on V")
 
     def batch_loss(batch: Mapping[str, Any], _: bool) -> tuple[torch.Tensor, dict[str, float]]:
         warmup = min(1.0, (getattr(batch_loss, "optimizer_update", 0) + 1) / max(args.kl_warmup_updates, 1))
@@ -722,8 +951,19 @@ def _train_v(args: argparse.Namespace) -> None:
                   tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=None,
                   max_context_transitions=args.max_context_transitions, metrics=metrics)
 
-    _training_loop(stage="v", model=model, train_loader=train_loader, train_sampler=train_sampler, validation=validate,
-                   batch_loss=batch_loss, optimizer=optimizer, args=args, save_callback=save_callback, device=device)
+    wandb_logger = _start_wandb(
+        args, stage="v", model=model, model_config=_full_model_config(config, args.max_context_transitions),
+        source_hash=source_hash, cache_hash=None, device=device, start_update=start_update,
+    )
+    try:
+        _training_loop(
+            stage="v", model=model, train_loader=train_loader, train_sampler=train_sampler, validation=validate,
+            batch_loss=batch_loss, optimizer=optimizer, args=args, save_callback=save_callback, device=device,
+            wandb_logger=wandb_logger, start_update=start_update, initial_best=initial_best,
+        )
+    finally:
+        if wandb_logger is not None:
+            wandb_logger.finish()
 
 
 def _load_for_m_or_c(args: argparse.Namespace, stage: str) -> tuple[SimpleWorldModel, PokemonTokenizer, ActionVocabulary, dict[str, Any], str, str, torch.device]:
@@ -799,8 +1039,19 @@ def _train_m(args: argparse.Namespace) -> None:
                   tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=cache_hash,
                   max_context_transitions=args.max_context_transitions, metrics=metrics)
 
-    _training_loop(stage="m", model=model, train_loader=train_loader, train_sampler=train_sampler, validation=validate,
-                   batch_loss=batch_loss, optimizer=optimizer, args=args, save_callback=save_callback, device=device)
+    wandb_logger = _start_wandb(
+        args, stage="m", model=model, model_config=_full_model_config(config, args.max_context_transitions),
+        source_hash=source_hash, cache_hash=cache_hash, device=device,
+    )
+    try:
+        _training_loop(
+            stage="m", model=model, train_loader=train_loader, train_sampler=train_sampler, validation=validate,
+            batch_loss=batch_loss, optimizer=optimizer, args=args, save_callback=save_callback, device=device,
+            wandb_logger=wandb_logger,
+        )
+    finally:
+        if wandb_logger is not None:
+            wandb_logger.finish()
 
 
 def _train_c(args: argparse.Namespace) -> None:
@@ -840,8 +1091,19 @@ def _train_c(args: argparse.Namespace) -> None:
                   tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=cache_hash,
                   max_context_transitions=args.max_context_transitions, metrics=metrics)
 
-    _training_loop(stage="c", model=model, train_loader=train_loader, train_sampler=train_sampler, validation=validate,
-                   batch_loss=batch_loss, optimizer=optimizer, args=args, save_callback=save_callback, device=device)
+    wandb_logger = _start_wandb(
+        args, stage="c", model=model, model_config=_full_model_config(config, args.max_context_transitions),
+        source_hash=source_hash, cache_hash=cache_hash, device=device,
+    )
+    try:
+        _training_loop(
+            stage="c", model=model, train_loader=train_loader, train_sampler=train_sampler, validation=validate,
+            batch_loss=batch_loss, optimizer=optimizer, args=args, save_callback=save_callback, device=device,
+            wandb_logger=wandb_logger,
+        )
+    finally:
+        if wandb_logger is not None:
+            wandb_logger.finish()
 
 
 def train(args: argparse.Namespace) -> None:
@@ -869,6 +1131,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=os.path.join(os.path.dirname(__file__), "configs", "default.yaml"))
     parser.add_argument("--save_dir", default="simple-world-model-checkpoints")
     parser.add_argument("--checkpoint", default=None, help="Best checkpoint output for the active training stage.")
+    parser.add_argument(
+        "--resume_checkpoint", default=None,
+        help="Resume V model, optimizer, and global update from this stage checkpoint.",
+    )
     parser.add_argument("--v_checkpoint", default=None)
     parser.add_argument("--m_checkpoint", default=None)
     parser.add_argument("--latent_cache_root", default=None)
@@ -878,6 +1144,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad_accum_steps", type=int, default=1)
     parser.add_argument("--max_updates", type=int, default=0, help="Optimizer updates; defaults to the stage pilot budget.")
     parser.add_argument("--max_steps", type=int, default=0, help="Deprecated alias for --max_updates.")
+    parser.add_argument(
+        "--additional_updates", type=int, default=0,
+        help="Train this many optimizer updates beyond the resumed global step.",
+    )
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--grad_clip", type=float, default=1.0)
@@ -887,7 +1157,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--print_interval", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--compile", default=False, action=argparse.BooleanOptionalAction)
-    parser.add_argument("--wandb", default=False, action=argparse.BooleanOptionalAction, help="Accepted for CLI compatibility; logging is local.")
+    parser.add_argument(
+        "--wandb", default=True, action=argparse.BooleanOptionalAction,
+        help="Enable Weights & Biases logging for V/M/C stages (default: enabled). Use --no-wandb to disable.",
+    )
+    parser.add_argument("--wandb_project", default=None, help="W&B project (default: metamon-simple-world-model).")
+    parser.add_argument("--wandb_name", default=None, help="Optional W&B run name.")
+    parser.add_argument(
+        "--wandb_log_interval", type=int, default=0,
+        help="Log train metrics every N optimizer updates (0 = --print_interval).",
+    )
     # V objective
     parser.add_argument("--beta_kl", type=float, default=None)
     parser.add_argument("--kl_warmup_updates", type=int, default=10_000)

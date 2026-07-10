@@ -24,6 +24,7 @@ from metamon.simple_world_model.model import (
     c_losses,
     interleave_latent_history,
 )
+import metamon.simple_world_model.train as simple_world_model_train
 from metamon.simple_world_model.train import build_arg_parser, train
 from metamon.tokenizer import PokemonTokenizer
 
@@ -59,6 +60,66 @@ def _tiny_model(action_vocab_size: int = 8) -> SimpleWorldModel:
     )
 
 
+def test_wandb_stage_run_records_config_and_metrics(monkeypatch):
+    class FakeRun:
+        def __init__(self):
+            self.defined_metrics = []
+            self.logged = []
+            self.finished = False
+
+        def define_metric(self, name, **kwargs):
+            self.defined_metrics.append((name, kwargs))
+
+        def log(self, payload, *, step):
+            self.logged.append((dict(payload), step))
+
+        def finish(self):
+            self.finished = True
+
+    class FakeWandb:
+        def __init__(self):
+            self.run = FakeRun()
+            self.init_kwargs = None
+
+        def init(self, **kwargs):
+            self.init_kwargs = kwargs
+            return self.run
+
+    fake_wandb = FakeWandb()
+    monkeypatch.setattr(simple_world_model_train, "_wandb", fake_wandb)
+    args = build_arg_parser().parse_args([
+        "--stage", "m", "--data_root", "data", "--formats", "gen1ou", "gen9ou",
+        "--tokenizer_path", "tokenizer.json", "--wandb_project", "test-project",
+        "--wandb_name", "m-smoke", "--wandb_log_interval", "17",
+    ])
+
+    logger = simple_world_model_train._start_wandb(
+        args,
+        stage="m",
+        model=_tiny_model(),
+        model_config={"latent_dim": 8},
+        source_hash="dataset-hash",
+        cache_hash="cache-hash",
+        device=torch.device("cpu"),
+    )
+
+    assert logger is not None
+    assert fake_wandb.init_kwargs["project"] == "test-project"
+    assert fake_wandb.init_kwargs["job_type"] == "m"
+    assert fake_wandb.init_kwargs["name"] == "m-smoke"
+    assert fake_wandb.init_kwargs["tags"] == ["simple-world-model", "m", "gen1ou", "gen9ou"]
+    config = fake_wandb.init_kwargs["config"]
+    assert config["dataset_manifest_hash"] == "dataset-hash"
+    assert config["latent_cache_manifest_hash"] == "cache-hash"
+    assert config["model_config"] == {"latent_dim": 8}
+    assert ("train/*", {"step_metric": "global_step"}) in fake_wandb.run.defined_metrics
+
+    logger.log({"global_step": 17, "train/loss": 1.25}, step=17)
+    logger.finish()
+    assert fake_wandb.run.logged == [({"global_step": 17, "train/loss": 1.25}, 17)]
+    assert fake_wandb.run.finished
+
+
 def test_decoder_padding_does_not_change_valid_prefix_logits():
     torch.manual_seed(3)
     vae = StateVAE(
@@ -69,6 +130,27 @@ def test_decoder_padding_does_not_change_valid_prefix_logits():
     prefix = vae.decode(z, torch.tensor([[True, True, True]]))
     right_padded = vae.decode(z, torch.tensor([[True, True, True, False, False, False]]))
     torch.testing.assert_close(prefix, right_padded[:, :3], atol=1e-6, rtol=1e-6)
+
+
+def test_encoder_header_state_padding_is_batch_invariant():
+    torch.manual_seed(5)
+    vae = StateVAE(
+        vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, max_seq_len=16, max_state_tokens=8,
+    ).eval()
+    single = vae(
+        torch.tensor([[1, 2]]), torch.tensor([[3, 4]]),
+        header_valid_mask=torch.tensor([[True, True]]),
+        state_valid_mask=torch.tensor([[True, True]]), deterministic=True,
+    )
+    batched = vae(
+        torch.tensor([[1, 2, 0, 0, 0], [5, 6, 7, 8, 9]]),
+        torch.tensor([[3, 4, 0, 0], [10, 11, 12, 13]]),
+        header_valid_mask=torch.tensor([[True, True, False, False, False], [True, True, True, True, True]]),
+        state_valid_mask=torch.tensor([[True, True, False, False], [True, True, True, True]]), deterministic=True,
+    )
+    torch.testing.assert_close(single["mu"], batched["mu"][:1], atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(single["logits"], batched["logits"][:1, :2], atol=1e-6, rtol=1e-6)
 
 
 def test_causal_transformer_has_no_future_leakage():
@@ -273,9 +355,20 @@ def test_v_cache_m_c_smoke_and_perspective_inversion(tmp_path):
         "--stage", "v", "--data_root", str(tmp_path), "--formats", "gen1ou",
         "--tokenizer_path", str(tokenizer_path), "--config", str(config_path), "--save_dir", str(checkpoint_dir),
         "--checkpoint", str(v_checkpoint), "--batch_size", "1", "--max_updates", "1", "--val_interval", "1",
-        "--val_samples", "4", "--print_interval", "0", "--no-compile",
+        "--val_samples", "4", "--print_interval", "0", "--no-compile", "--no-wandb",
     ]))
     assert v_checkpoint.exists()
+    v_latest = checkpoint_dir / "v_latest.pt"
+    assert torch.load(v_latest, map_location="cpu")["global_step"] == 1
+
+    train(parser.parse_args([
+        "--stage", "v", "--data_root", str(tmp_path), "--formats", "gen1ou",
+        "--tokenizer_path", str(tokenizer_path), "--config", str(config_path), "--save_dir", str(checkpoint_dir),
+        "--checkpoint", str(v_checkpoint), "--resume_checkpoint", str(v_latest),
+        "--batch_size", "1", "--additional_updates", "1", "--val_interval", "1",
+        "--val_samples", "4", "--print_interval", "0", "--no-compile", "--no-wandb",
+    ]))
+    assert torch.load(v_latest, map_location="cpu")["global_step"] == 2
 
     train(parser.parse_args([
         "--stage", "cache", "--data_root", str(tmp_path), "--formats", "gen1ou",
@@ -299,7 +392,7 @@ def test_v_cache_m_c_smoke_and_perspective_inversion(tmp_path):
         "--tokenizer_path", str(tokenizer_path), "--config", str(config_path), "--save_dir", str(checkpoint_dir),
         "--checkpoint", str(m_checkpoint), "--v_checkpoint", str(v_checkpoint), "--latent_cache_root", str(cache_root),
         "--batch_size", "1", "--max_updates", "1", "--val_interval", "1", "--val_samples", "2",
-        "--print_interval", "0", "--no-compile",
+        "--print_interval", "0", "--no-compile", "--no-wandb",
     ]))
     c_checkpoint = checkpoint_dir / "c.pt"
     train(parser.parse_args([
@@ -307,7 +400,7 @@ def test_v_cache_m_c_smoke_and_perspective_inversion(tmp_path):
         "--tokenizer_path", str(tokenizer_path), "--config", str(config_path), "--save_dir", str(checkpoint_dir),
         "--checkpoint", str(c_checkpoint), "--v_checkpoint", str(v_checkpoint), "--m_checkpoint", str(m_checkpoint),
         "--latent_cache_root", str(cache_root), "--batch_size", "1", "--max_updates", "1", "--val_interval", "1",
-        "--val_samples", "2", "--print_interval", "0", "--no-compile",
+        "--val_samples", "2", "--print_interval", "0", "--no-compile", "--no-wandb",
     ]))
     assert c_checkpoint.exists()
     checkpoint = torch.load(c_checkpoint, map_location="cpu")
