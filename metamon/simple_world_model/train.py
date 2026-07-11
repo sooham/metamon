@@ -1634,7 +1634,7 @@ def _resume_v(
 
 def _v_decoder_config(
     model_config: Mapping[str, Any],
-) -> tuple[int, dict[str, Any], str, str, float | None]:
+) -> tuple[int, dict[str, Any], str, str, str, float | None]:
     """Return V bottleneck/base config and normalized posterior options."""
     latent_dim = int(model_config.get("latent_dim", -1))
     v_config = dict(model_config.get("v", {}))
@@ -1642,9 +1642,19 @@ def _v_decoder_config(
     header_conditioning = str(
         v_config.pop("decoder_header_conditioning", "none")
     ).lower()
+    token_conditioning = str(
+        v_config.pop("decoder_token_conditioning", "none")
+    ).lower()
     fixed_std_value = v_config.pop("fixed_posterior_std", None)
     fixed_std = None if fixed_std_value is None else float(fixed_std_value)
-    return latent_dim, v_config, conditioning, header_conditioning, fixed_std
+    return (
+        latent_dim,
+        v_config,
+        conditioning,
+        header_conditioning,
+        token_conditioning,
+        fixed_std,
+    )
 
 
 def _warm_start_v(
@@ -1662,10 +1672,11 @@ def _warm_start_v(
     loads model weights but starts a fresh optimizer and update schedule.  All
     data/tokenizer/base-V compatibility checks remain strict, and the only
     architecture differences accepted are the function-preserving AdaLN branch,
-    raw-header decoder cross-attention behind a zero gate, and, with otherwise
-    identical decoder/base settings, replacing a learned posterior scale with a
-    fixed positive scale.  Each transition is isolated: simultaneous changes
-    are rejected so the expected new state-dict surface stays auditable.
+    raw-header decoder cross-attention behind a zero gate, MaskGIT token
+    conditioning behind a zero gate, and, with otherwise identical decoder/base
+    settings, replacing a learned posterior scale with a fixed positive scale.
+    Each transition is isolated: simultaneous changes are rejected so the
+    expected new state-dict surface stays auditable.
     """
     if not args.warm_start_checkpoint:
         return None
@@ -1689,6 +1700,7 @@ def _warm_start_v(
         source_v_config,
         source_conditioning,
         source_header_conditioning,
+        source_token_conditioning,
         source_fixed_std,
     ) = _v_decoder_config(checkpoint.get("model_config", {}))
     (
@@ -1696,6 +1708,7 @@ def _warm_start_v(
         target_v_config,
         target_conditioning,
         target_header_conditioning,
+        target_token_conditioning,
         target_fixed_std,
     ) = _v_decoder_config(model_config)
     if source_latent_dim != target_latent_dim:
@@ -1712,6 +1725,14 @@ def _warm_start_v(
         mismatches.append(
             f"target_decoder_header_conditioning({target_header_conditioning})"
         )
+    if source_token_conditioning not in {"none", "maskgit"}:
+        mismatches.append(
+            f"source_decoder_token_conditioning({source_token_conditioning})"
+        )
+    if target_token_conditioning not in {"none", "maskgit"}:
+        mismatches.append(
+            f"target_decoder_token_conditioning({target_token_conditioning})"
+        )
     if source_fixed_std is not None and (
         not math.isfinite(source_fixed_std) or source_fixed_std <= 0.0
     ):
@@ -1724,6 +1745,9 @@ def _warm_start_v(
     header_conditioning_changed = (
         source_header_conditioning != target_header_conditioning
     )
+    token_conditioning_changed = (
+        source_token_conditioning != target_token_conditioning
+    )
     allowed_transition = (
         source_conditioning == target_conditioning
         or (
@@ -1731,6 +1755,7 @@ def _warm_start_v(
             and target_conditioning == "adaln"
             and not fixed_std_changed
             and not header_conditioning_changed
+            and not token_conditioning_changed
         )
     )
     if not allowed_transition:
@@ -1746,6 +1771,7 @@ def _warm_start_v(
             and target_fixed_std > 0.0
             and source_conditioning == target_conditioning
             and not header_conditioning_changed
+            and not token_conditioning_changed
         )
     )
     if not allowed_fixed_std_transition:
@@ -1759,12 +1785,28 @@ def _warm_start_v(
             and target_header_conditioning == "cross_attention"
             and source_conditioning == target_conditioning
             and not fixed_std_changed
+            and not token_conditioning_changed
         )
     )
     if not allowed_header_conditioning_transition:
         mismatches.append(
             "decoder_header_conditioning("
             f"{source_header_conditioning}->{target_header_conditioning})"
+        )
+    allowed_token_conditioning_transition = (
+        not token_conditioning_changed
+        or (
+            source_token_conditioning == "none"
+            and target_token_conditioning == "maskgit"
+            and source_conditioning == target_conditioning
+            and not header_conditioning_changed
+            and not fixed_std_changed
+        )
+    )
+    if not allowed_token_conditioning_transition:
+        mismatches.append(
+            "decoder_token_conditioning("
+            f"{source_token_conditioning}->{target_token_conditioning})"
         )
     if mismatches:
         raise ValueError(
@@ -1788,6 +1830,11 @@ def _warm_start_v(
         if not header_missing:
             raise ValueError("Header-conditioned warm start found no target conditioner tensors")
         allowed_missing.update(header_missing)
+    if source_token_conditioning == "none" and target_token_conditioning == "maskgit":
+        token_missing = {"v.decoder_token_gate"}
+        if not token_missing.issubset(model.state_dict()):
+            raise ValueError("MaskGIT warm start found no target decoder_token_gate")
+        allowed_missing.update(token_missing)
     load_stage_weights(
         model,
         checkpoint,
@@ -1799,6 +1846,8 @@ def _warm_start_v(
         f"decoder conditioning {source_conditioning}->{target_conditioning}; "
         "decoder header conditioning "
         f"{source_header_conditioning}->{target_header_conditioning}; "
+        "decoder token conditioning "
+        f"{source_token_conditioning}->{target_token_conditioning}; "
         f"fixed posterior std {source_fixed_std}->{target_fixed_std}; "
         "optimizer and update schedule start fresh.",
         flush=True,
@@ -2078,7 +2127,24 @@ def _train_v(args: argparse.Namespace) -> None:
         train_eval_metrics = _validate_v(model, train_eval_loader, device, args, tokenizer)
         return _merge_v_train_eval_metrics(validation_metrics, train_eval_metrics)
 
+    best_accuracy_path = save_dir / "v_best_accuracy.pt"
+    best_accuracy_metadata_path = save_dir / "v_best_accuracy.json"
+    best_accuracy = float("-inf")
+    if best_accuracy_metadata_path.is_file():
+        try:
+            best_accuracy = float(
+                json.loads(best_accuracy_metadata_path.read_text(encoding="utf-8"))[
+                    "recon_token_acc"
+                ]
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            print(
+                f"WARNING: ignoring invalid {best_accuracy_metadata_path}",
+                flush=True,
+            )
+
     def save_callback(update: int, metrics: Mapping[str, float], improved: bool) -> None:
+        nonlocal best_accuracy
         _save(save_dir / "v_latest.pt", model=model, optimizer=optimizer, stage="v", update=update, config=config,
               tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=None,
               max_context_transitions=args.max_context_transitions, metrics=metrics,
@@ -2088,6 +2154,17 @@ def _train_v(args: argparse.Namespace) -> None:
                   tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=None,
                   max_context_transitions=args.max_context_transitions, metrics=metrics,
                   training_config=vars(args))
+        accuracy = float(metrics.get("recon_token_acc", float("-inf")))
+        if accuracy > best_accuracy:
+            best_accuracy = accuracy
+            _save(best_accuracy_path, model=model, optimizer=optimizer, stage="v", update=update, config=config,
+                  tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=None,
+                  max_context_transitions=args.max_context_transitions, metrics=metrics,
+                  training_config=vars(args))
+            best_accuracy_metadata_path.write_text(
+                json.dumps({"global_step": int(update), "recon_token_acc": accuracy}, sort_keys=True),
+                encoding="utf-8",
+            )
 
     if warm_start_checkpoint is not None:
         # AdaLN is an exact identity at initialization.  Persist and select an

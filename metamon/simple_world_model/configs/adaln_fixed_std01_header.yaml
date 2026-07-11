@@ -37,7 +37,9 @@ model:
     dropout: 0.0
 
 loss:
-  beta_kl: 0.01
+  # Use the separate state/team aggregate characteristic-function losses;
+  # pointwise KL would tax the mutual information required for reconstruction.
+  beta_kl: 0.0
   lambda_opponent: 1.0
   lambda_mdn: 1.0
   lambda_done: 0.25

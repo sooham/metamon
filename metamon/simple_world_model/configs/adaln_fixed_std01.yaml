@@ -36,7 +36,9 @@ model:
     dropout: 0.0
 
 loss:
-  beta_kl: 0.01
+  # Pointwise KL would shrink informative means and conflicts with the fixed
+  # narrow posterior + aggregate-q objective used by this variant.
+  beta_kl: 0.0
   lambda_opponent: 1.0
   lambda_mdn: 1.0
   lambda_done: 0.25

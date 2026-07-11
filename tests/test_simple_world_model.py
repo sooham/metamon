@@ -40,6 +40,7 @@ def _tiny_model(
     *,
     decoder_conditioning: str = "additive",
     decoder_header_conditioning: str = "none",
+    decoder_token_conditioning: str = "none",
     fixed_posterior_std: float | None = None,
     vocab_size: int = 48,
     pad_id: int = 0,
@@ -60,6 +61,7 @@ def _tiny_model(
             "gradient_checkpointing": False,
             "decoder_conditioning": decoder_conditioning,
             "decoder_header_conditioning": decoder_header_conditioning,
+            "decoder_token_conditioning": decoder_token_conditioning,
             "fixed_posterior_std": fixed_posterior_std,
         },
         action_encoder_cfg={"action_dim": 8},
@@ -214,6 +216,209 @@ def test_state_vae_rejects_unknown_decoder_conditioning():
             n_layers=1, d_ff=32, max_seq_len=16, max_state_tokens=8,
             decoder_conditioning="memory",
         )
+
+
+def test_maskgit_decoder_input_contract_rejects_noncanonical_tokens():
+    with pytest.raises(ValueError, match="decoder_token_conditioning"):
+        StateVAE(
+            vocab_size=32, pad_id=32, latent_dim=8, d_model=16, n_heads=4,
+            n_layers=1, d_ff=32, max_seq_len=16, max_state_tokens=8,
+            decoder_token_conditioning="autoregressive",
+        )
+    with pytest.raises(ValueError, match="MASK_ID"):
+        StateVAE(
+            vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+            n_layers=1, d_ff=32, max_seq_len=16, max_state_tokens=8,
+            decoder_token_conditioning="maskgit",
+        )
+
+    legacy = StateVAE(
+        vocab_size=32, pad_id=32, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=1, d_ff=32, max_seq_len=16, max_state_tokens=8,
+    )
+    maskgit = StateVAE(
+        vocab_size=32, pad_id=32, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=1, d_ff=32, max_seq_len=16, max_state_tokens=8,
+        decoder_token_conditioning="maskgit",
+    )
+    z = torch.randn(1, 8)
+    valid = torch.tensor([[True, True, False]])
+    canonical = torch.tensor([[0, 7, 32]])
+    with pytest.raises(TypeError, match="only valid"):
+        legacy.decode(z, valid, decoder_input_tokens=canonical)
+    with pytest.raises(TypeError, match="requires decoder_input_tokens"):
+        maskgit.decode(z, valid)
+    with pytest.raises(ValueError, match="shape"):
+        maskgit.decode(z, valid, decoder_input_tokens=canonical[:, :2])
+    with pytest.raises(TypeError, match="integer"):
+        maskgit.decode(z, valid, decoder_input_tokens=canonical.float())
+    with pytest.raises(ValueError, match="IDs"):
+        maskgit.decode(z, valid, decoder_input_tokens=torch.tensor([[0, 33, 32]]))
+    with pytest.raises(ValueError, match="valid decoder input"):
+        maskgit.decode(z, valid, decoder_input_tokens=torch.tensor([[0, 32, 32]]))
+    with pytest.raises(ValueError, match="invalid decoder input"):
+        maskgit.decode(z, valid, decoder_input_tokens=torch.tensor([[0, 7, 8]]))
+
+    logits = maskgit.decode(z, valid, decoder_input_tokens=canonical)
+    assert logits.shape == (1, 3, 33)
+
+
+def test_maskgit_zero_gate_is_bit_exact_then_token_inputs_receive_gradients():
+    torch.manual_seed(36)
+    legacy = StateVAE(
+        vocab_size=32, pad_id=32, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, max_seq_len=16, max_state_tokens=8,
+    )
+    maskgit = StateVAE(
+        vocab_size=32, pad_id=32, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, max_seq_len=16, max_state_tokens=8,
+        decoder_token_conditioning="maskgit",
+    )
+    missing, unexpected = maskgit.load_state_dict(legacy.state_dict(), strict=False)
+    assert unexpected == []
+    assert missing == ["decoder_token_gate"]
+    assert maskgit.decoder_token_gate is not None
+    assert torch.count_nonzero(maskgit.decoder_token_gate) == 0
+
+    z = torch.randn(2, 8)
+    valid = torch.tensor([
+        [True, True, True, False],
+        [True, True, True, True],
+    ])
+    decoder_tokens = maskgit.initialize_maskgit_tokens(valid)
+    torch.testing.assert_close(
+        maskgit.decode(z, valid, decoder_input_tokens=decoder_tokens),
+        legacy.decode(z, valid),
+        atol=0.0,
+        rtol=0.0,
+    )
+
+    with torch.no_grad():
+        maskgit.decoder_token_gate.fill_(1.0)
+    visible_tokens = decoder_tokens.clone()
+    visible_tokens[0, 1] = 5
+    visible_tokens[1, 2] = 9
+    all_mask_logits = maskgit.decode(z, valid, decoder_input_tokens=decoder_tokens)
+    visible_logits = maskgit.decode(z, valid, decoder_input_tokens=visible_tokens)
+    assert not torch.equal(all_mask_logits[valid], visible_logits[valid])
+    torch.nn.functional.cross_entropy(
+        visible_logits[valid],
+        torch.randint(1, 32, (int(valid.sum()),)),
+    ).backward()
+    gate_grad = maskgit.decoder_token_gate.grad
+    embedding_grad = maskgit.token_embedding.weight.grad
+    assert gate_grad is not None and float(gate_grad.abs().sum()) > 0.0
+    assert embedding_grad is not None
+    assert float(embedding_grad[[0, 5, 9]].abs().sum()) > 0.0
+
+
+def test_maskgit_token_conditioning_preserves_right_padding_invariance():
+    torch.manual_seed(37)
+    vae = StateVAE(
+        vocab_size=32, pad_id=32, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, max_seq_len=16, max_state_tokens=8,
+        decoder_token_conditioning="maskgit",
+    ).eval()
+    assert vae.decoder_token_gate is not None
+    with torch.no_grad():
+        vae.decoder_token_gate.normal_(std=0.3)
+    z = torch.randn(1, 8)
+    prefix_mask = torch.tensor([[True, True, True]])
+    padded_mask = torch.tensor([[True, True, True, False, False]])
+    prefix = vae.decode(
+        z,
+        prefix_mask,
+        decoder_input_tokens=torch.tensor([[0, 5, 7]]),
+    )
+    padded = vae.decode(
+        z,
+        padded_mask,
+        decoder_input_tokens=torch.tensor([[0, 5, 7, 32, 32]]),
+    )
+    torch.testing.assert_close(prefix, padded[:, :3], atol=1e-6, rtol=1e-6)
+
+
+def test_maskgit_refinement_is_monotone_deterministic_and_fills_valid_tokens():
+    torch.manual_seed(38)
+    vae = StateVAE(
+        vocab_size=32, pad_id=32, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, dropout=0.2, max_seq_len=16, max_state_tokens=8,
+        decoder_token_conditioning="maskgit",
+    ).train()
+    assert vae.decoder_token_gate is not None
+    with torch.no_grad():
+        vae.decoder_token_gate.normal_(std=0.2)
+    z = torch.randn(2, 8)
+    valid = torch.tensor([
+        [True, True, True, False, False],
+        [True, True, True, True, True],
+    ])
+    first, trace = vae.reconstruct(z, valid, num_steps=4, return_trace=True)
+    second = vae.reconstruct(z, valid, num_steps=4)
+    assert vae.training  # inference temporarily disables dropout, then restores mode
+    torch.testing.assert_close(first, second, atol=0.0, rtol=0.0)
+
+    commits = trace["commit_masks"]
+    masked_counts = trace["masked_counts"]
+    assert commits.shape == (4, *valid.shape)
+    assert masked_counts.shape == (5, valid.shape[0])
+    assert bool((masked_counts[1:] <= masked_counts[:-1]).all())
+    assert bool(masked_counts[-1].eq(0).all())
+    assert bool(trace["scheduled_remaining_counts"][-1].eq(0).all())
+    assert not bool((commits.long().cumsum(dim=0) > 1).any())
+    assert not bool((commits & ~valid.unsqueeze(0)).any())
+    assert not bool((first[valid] == 0).any())
+    assert not bool((first[valid] == vae.pad_id).any())
+    assert bool(first[~valid].eq(vae.pad_id).all())
+
+
+def test_maskgit_refinement_trace_has_no_target_token_path(monkeypatch):
+    vae = StateVAE(
+        vocab_size=16, pad_id=16, latent_dim=4, d_model=8, n_heads=2,
+        n_layers=1, d_ff=16, max_seq_len=8, max_state_tokens=6,
+        decoder_token_conditioning="maskgit",
+    )
+    z = torch.zeros(1, 4)
+    valid = torch.tensor([[True, True, True, True, False]])
+    raw_header = torch.tensor([[5, 6, 16]])
+    raw_header_mask = raw_header.ne(16)
+    decoder_inputs = []
+    seen_headers = []
+
+    def traced_decode(
+        z_arg,
+        valid_arg,
+        *,
+        header_tokens=None,
+        header_valid_mask=None,
+        decoder_input_tokens=None,
+    ):
+        del z_arg, header_valid_mask
+        decoder_inputs.append(decoder_input_tokens.detach().clone())
+        seen_headers.append(header_tokens.detach().clone())
+        logits = torch.zeros((*valid_arg.shape, vae.vocab_size + 1))
+        # Each call predicts a fresh known ID; there is no target argument from
+        # which the refinement helper could copy content.
+        logits[..., 2 + len(decoder_inputs)] = 10.0
+        return logits
+
+    monkeypatch.setattr(vae, "decode", traced_decode)
+    output = vae.reconstruct(
+        z,
+        valid,
+        header_tokens=raw_header,
+        header_valid_mask=raw_header_mask,
+        num_steps=4,
+    )
+    assert len(decoder_inputs) == 4
+    assert bool(decoder_inputs[0][valid].eq(0).all())
+    assert bool(decoder_inputs[0][~valid].eq(vae.pad_id).all())
+    for step, decoder_input in enumerate(decoder_inputs):
+        allowed = torch.tensor([0, *range(3, 3 + step)])
+        assert bool(torch.isin(decoder_input[valid], allowed).all())
+    assert all(torch.equal(header, raw_header) for header in seen_headers)
+    assert not bool((output[valid] == 0).any())
+    assert not bool((output[valid] == vae.pad_id).any())
 
 
 def test_header_cross_attention_zero_gate_is_exact_and_valid_header_changes_logits():
@@ -787,6 +992,95 @@ def test_v_additive_checkpoint_safely_warm_starts_adaln(tmp_path):
             tokenizer=tokenizer,
             source_hash="different-dataset",
             model_config=target_config,
+            device=torch.device("cpu"),
+        )
+
+
+def test_v_checkpoint_safely_warm_starts_maskgit_in_isolation(tmp_path):
+    tokenizer = PokemonTokenizer().load_tokens({"foo": 1, "bar": 2})
+    source_model = _tiny_model(
+        vocab_size=len(tokenizer),
+        pad_id=tokenizer.pad_token_id,
+    )
+    target_model = _tiny_model(
+        decoder_token_conditioning="maskgit",
+        vocab_size=len(tokenizer),
+        pad_id=tokenizer.pad_token_id,
+    )
+    v_base = {
+        "d_model": 16,
+        "n_heads": 4,
+        "n_layers": 1,
+        "d_ff": 32,
+        "dropout": 0.0,
+        "max_seq_len": 16,
+        "max_state_tokens": 8,
+        "gradient_checkpointing": False,
+    }
+    source_config = {"latent_dim": 8, "v": dict(v_base)}
+    target_config = {
+        "latent_dim": 8,
+        "v": {**v_base, "decoder_token_conditioning": "maskgit"},
+    }
+    checkpoint_path = tmp_path / "no_token_conditioning_v.pt"
+    torch.save({
+        "model_version": MODEL_VERSION,
+        "stage": "v",
+        "model_state_dict": source_model.state_dict(),
+        "model_config": source_config,
+        "tokenizer_state": tokenizer.to_state(),
+        "dataset_manifest_hash": "dataset-hash",
+        "vocab_size": len(tokenizer),
+        "pad_id": tokenizer.pad_token_id,
+    }, checkpoint_path)
+    args = SimpleNamespace(warm_start_checkpoint=str(checkpoint_path))
+    loaded = simple_world_model_train._warm_start_v(
+        args,
+        model=target_model,
+        tokenizer=tokenizer,
+        source_hash="dataset-hash",
+        model_config=target_config,
+        device=torch.device("cpu"),
+    )
+    assert loaded is not None
+    assert target_model.v.decoder_token_gate is not None
+    assert torch.count_nonzero(target_model.v.decoder_token_gate) == 0
+
+    z = torch.randn(2, 8)
+    valid = torch.tensor([[True, True, False], [True, True, True]])
+    decoder_tokens = target_model.v.initialize_maskgit_tokens(valid)
+    torch.testing.assert_close(
+        target_model.v.decode(
+            z,
+            valid,
+            decoder_input_tokens=decoder_tokens,
+        ),
+        source_model.v.decode(z, valid),
+        atol=0.0,
+        rtol=0.0,
+    )
+
+    simultaneous_model = _tiny_model(
+        decoder_conditioning="adaln",
+        decoder_token_conditioning="maskgit",
+        vocab_size=len(tokenizer),
+        pad_id=tokenizer.pad_token_id,
+    )
+    simultaneous_config = {
+        "latent_dim": 8,
+        "v": {
+            **v_base,
+            "decoder_conditioning": "adaln",
+            "decoder_token_conditioning": "maskgit",
+        },
+    }
+    with pytest.raises(ValueError, match="decoder_(conditioning|token_conditioning)"):
+        simple_world_model_train._warm_start_v(
+            args,
+            model=simultaneous_model,
+            tokenizer=tokenizer,
+            source_hash="dataset-hash",
+            model_config=simultaneous_config,
             device=torch.device("cpu"),
         )
 

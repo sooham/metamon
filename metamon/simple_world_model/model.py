@@ -31,6 +31,11 @@ NUM_TERMINAL_CLASSES = len(TERMINAL_CLASSES)
 OUTCOME_CLASSES = ("win", "loss", "tie")
 NUM_OUTCOME_CLASSES = len(OUTCOME_CLASSES)
 
+# Token IDs in serialized replay data are one based.  Keep row zero as a
+# decoder-only sentinel for masked-token refinement; it is never emitted as a
+# reconstructed replay token and is deliberately not added to the tokenizer.
+MASK_ID = 0
+
 
 def _init_weights(module: nn.Module) -> None:
     if isinstance(module, nn.Linear):
@@ -124,6 +129,8 @@ class StateVAE(nn.Module):
     key that changes a valid prefix's logits.
     """
 
+    MASK_ID = MASK_ID
+
     def __init__(
         self,
         *,
@@ -142,6 +149,7 @@ class StateVAE(nn.Module):
         gradient_checkpointing: bool = False,
         decoder_conditioning: str = "additive",
         decoder_header_conditioning: str = "none",
+        decoder_token_conditioning: str = "none",
         fixed_posterior_std: float | None = None,
     ):
         super().__init__()
@@ -164,6 +172,16 @@ class StateVAE(nn.Module):
             raise ValueError(
                 "decoder_header_conditioning must be either 'none' or "
                 f"'cross_attention', got {decoder_header_conditioning!r}"
+            )
+        self.decoder_token_conditioning = str(decoder_token_conditioning).lower()
+        if self.decoder_token_conditioning not in {"none", "maskgit"}:
+            raise ValueError(
+                "decoder_token_conditioning must be either 'none' or 'maskgit', "
+                f"got {decoder_token_conditioning!r}"
+            )
+        if self.decoder_token_conditioning == "maskgit" and self.pad_id == MASK_ID:
+            raise ValueError(
+                f"MaskGIT reserves decoder-only MASK_ID={MASK_ID}; pad_id must be different"
             )
         self.fixed_posterior_std = (
             None if fixed_posterior_std is None else float(fixed_posterior_std)
@@ -195,6 +213,13 @@ class StateVAE(nn.Module):
 
         self.position_embedding = nn.Embedding(self.max_state_tokens, d_model)
         self.z_to_decoder = nn.Linear(latent_dim, d_model)
+        if self.decoder_token_conditioning == "maskgit":
+            # Reuse the existing token table and introduce only one gated
+            # parameter surface.  A zero gate makes a none -> maskgit warm
+            # start exactly function preserving.
+            self.decoder_token_gate = nn.Parameter(torch.zeros(d_model))
+        else:
+            self.register_parameter("decoder_token_gate", None)
         if self.decoder_header_conditioning == "cross_attention":
             # This is deliberately a separate, raw-header-only memory path.
             # Reusing joint encoder states here would leak target-state tokens:
@@ -246,6 +271,8 @@ class StateVAE(nn.Module):
                 block.reset_conditioning_parameters()
         if self.decoder_header_gate is not None:
             nn.init.zeros_(self.decoder_header_gate)
+        if self.decoder_token_gate is not None:
+            nn.init.zeros_(self.decoder_token_gate)
 
     def _check_encoder_len(self, seq_len: int) -> None:
         if seq_len > self.max_seq_len:
@@ -438,19 +465,82 @@ class StateVAE(nn.Module):
         )
         return x + conditioned * self.decoder_header_gate.to(dtype=conditioned.dtype)[None, None, :]
 
+    def _canonical_decoder_input_tokens(
+        self,
+        decoder_input_tokens: torch.Tensor | None,
+        valid_token_mask: torch.Tensor,
+        *,
+        device: torch.device,
+    ) -> torch.Tensor | None:
+        """Validate and canonicalize the optional masked-token decoder input.
+
+        Valid positions may contain either ordinary vocabulary IDs or the
+        decoder-only ``MASK_ID``.  Padding positions must contain ``pad_id`` so
+        their storage cannot silently influence a future decoder change.
+        """
+        if self.decoder_token_conditioning == "none":
+            if decoder_input_tokens is not None:
+                raise TypeError(
+                    "decoder_input_tokens is only valid when "
+                    "decoder_token_conditioning='maskgit'"
+                )
+            return None
+        if decoder_input_tokens is None:
+            raise TypeError(
+                "MaskGIT StateVAE.decode requires decoder_input_tokens"
+            )
+        if decoder_input_tokens.shape != valid_token_mask.shape:
+            raise ValueError(
+                "decoder_input_tokens shape must match valid_token_mask; "
+                f"got {tuple(decoder_input_tokens.shape)} and "
+                f"{tuple(valid_token_mask.shape)}"
+            )
+        if decoder_input_tokens.dtype == torch.bool or not (
+            decoder_input_tokens.dtype.is_floating_point is False
+            and decoder_input_tokens.dtype.is_complex is False
+        ):
+            raise TypeError("decoder_input_tokens must contain integer token IDs")
+        tokens = decoder_input_tokens.to(device=device, dtype=torch.long)
+        valid = valid_token_mask.to(device=device, dtype=torch.bool)
+        # These eager checks intentionally produce actionable API errors.  The
+        # training collator supplies canonical tensors before torch.compile.
+        if not torch.compiler.is_compiling():
+            if bool(((tokens < MASK_ID) | (tokens > self.vocab_size)).any()):
+                raise ValueError(
+                    f"decoder_input_tokens IDs must be in [{MASK_ID}, {self.vocab_size}]"
+                )
+            if bool((valid & tokens.eq(self.pad_id)).any()):
+                raise ValueError("valid decoder input positions must not contain pad_id")
+            if bool((~valid & tokens.ne(self.pad_id)).any()):
+                raise ValueError("invalid decoder input positions must contain pad_id")
+        return tokens
+
     def _decode_flat(
         self,
         z: torch.Tensor,
         valid_token_mask: torch.Tensor,
         header_tokens: torch.Tensor | None = None,
         header_valid_mask: torch.Tensor | None = None,
+        decoder_input_tokens: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if valid_token_mask.ndim != 2 or valid_token_mask.shape[0] != z.shape[0]:
             raise ValueError("decoder valid_token_mask must be [batch, state_tokens]")
+        valid_token_mask = valid_token_mask.to(device=z.device, dtype=torch.bool)
+        decoder_input_tokens = self._canonical_decoder_input_tokens(
+            decoder_input_tokens,
+            valid_token_mask,
+            device=z.device,
+        )
         seq_len = int(valid_token_mask.shape[-1])
         self._check_state_len(seq_len)
         positions = torch.arange(seq_len, device=z.device)
         x = self.position_embedding(positions).unsqueeze(0) + self.z_to_decoder(z).unsqueeze(1)
+        if decoder_input_tokens is not None:
+            assert self.decoder_token_gate is not None
+            token_condition = self.token_embedding(decoder_input_tokens)
+            x = x + token_condition * self.decoder_token_gate.to(
+                dtype=token_condition.dtype
+            )[None, None, :]
         if self.decoder_header_conditioning == "cross_attention":
             if header_tokens is None or header_valid_mask is None:
                 raise TypeError(
@@ -475,6 +565,7 @@ class StateVAE(nn.Module):
         *,
         header_tokens: torch.Tensor | None = None,
         header_valid_mask: torch.Tensor | None = None,
+        decoder_input_tokens: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Decode a state; a per-sample validity mask is mandatory.
 
@@ -488,7 +579,18 @@ class StateVAE(nn.Module):
             raise ValueError("z and valid_token_mask leading dimensions must match")
         leading = tuple(z.shape[:-1])
         flat_z = z.reshape(-1, z.shape[-1])
-        flat_mask = valid_token_mask.reshape(-1, valid_token_mask.shape[-1]).bool()
+        flat_mask = valid_token_mask.reshape(-1, valid_token_mask.shape[-1]).to(
+            device=z.device, dtype=torch.bool
+        )
+        flat_decoder_input = None
+        if decoder_input_tokens is not None:
+            if decoder_input_tokens.shape != valid_token_mask.shape:
+                raise ValueError(
+                    "decoder_input_tokens shape must match valid_token_mask"
+                )
+            flat_decoder_input = decoder_input_tokens.reshape(
+                -1, decoder_input_tokens.shape[-1]
+            )
         flat_header = flat_header_mask = None
         if self.decoder_header_conditioning == "cross_attention":
             if header_tokens is None:
@@ -504,8 +606,182 @@ class StateVAE(nn.Module):
             flat_header_mask, mask_leading = _flatten_leading(resolved_header_mask)
             if header_leading != leading or mask_leading != leading:
                 raise ValueError("z and decoder header leading dimensions must match")
-        logits = self._decode_flat(flat_z, flat_mask, flat_header, flat_header_mask)
+        logits = self._decode_flat(
+            flat_z,
+            flat_mask,
+            flat_header,
+            flat_header_mask,
+            flat_decoder_input,
+        )
         return _restore_leading(logits, leading)
+
+    def initialize_maskgit_tokens(
+        self,
+        valid_token_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Create the target-free all-mask input for iterative reconstruction."""
+        if self.decoder_token_conditioning != "maskgit":
+            raise RuntimeError(
+                "initialize_maskgit_tokens requires "
+                "decoder_token_conditioning='maskgit'"
+            )
+        valid = valid_token_mask.to(dtype=torch.bool)
+        tokens = torch.full(
+            valid.shape,
+            self.pad_id,
+            dtype=torch.long,
+            device=valid.device,
+        )
+        return tokens.masked_fill(valid, MASK_ID)
+
+    @torch.no_grad()
+    def refine_maskgit(
+        self,
+        z: torch.Tensor,
+        valid_token_mask: torch.Tensor,
+        *,
+        header_tokens: torch.Tensor | None = None,
+        header_valid_mask: torch.Tensor | None = None,
+        num_steps: int = 8,
+        return_trace: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Deterministically reconstruct tokens with monotone MaskGIT commits.
+
+        The only content inputs are ``z`` and, when configured, the raw team
+        header.  Reconstruction starts with ``MASK_ID`` at every valid state
+        position.  At each cosine-schedule step the most confident currently
+        masked predictions are committed; the stable, lowest-confidence
+        positions remain masked.  Committed positions are never revised.
+
+        ``return_trace`` retains only boolean commit masks and per-row counts,
+        never the much larger logits from each iteration.
+        """
+        if self.decoder_token_conditioning != "maskgit":
+            raise RuntimeError(
+                "refine_maskgit requires decoder_token_conditioning='maskgit'"
+            )
+        if isinstance(num_steps, bool) or not isinstance(num_steps, int) or num_steps <= 0:
+            raise ValueError("num_steps must be a positive integer")
+        if valid_token_mask is None:
+            raise TypeError("refine_maskgit requires valid_token_mask")
+        if tuple(z.shape[:-1]) != tuple(valid_token_mask.shape[:-1]):
+            raise ValueError("z and valid_token_mask leading dimensions must match")
+
+        valid = valid_token_mask.to(device=z.device, dtype=torch.bool)
+        tokens = self.initialize_maskgit_tokens(valid)
+        total_counts = valid.long().sum(dim=-1)
+        masked_count_trace = [total_counts]
+        scheduled_remaining_trace: list[torch.Tensor] = []
+        commit_trace: list[torch.Tensor] = []
+
+        # Argmax and stable ranking contain no sampling, while eval mode also
+        # disables any configured decoder dropout.  Restore the caller's mode
+        # even if input validation raises partway through refinement.
+        was_training = self.training
+        self.eval()
+        try:
+            for step in range(1, num_steps + 1):
+                logits = self.decode(
+                    z,
+                    valid,
+                    header_tokens=header_tokens,
+                    header_valid_mask=header_valid_mask,
+                    decoder_input_tokens=tokens,
+                )
+                candidate_logits = logits.float().clone()
+                candidate_logits[..., MASK_ID] = -torch.inf
+                candidate_logits[..., self.pad_id] = -torch.inf
+                confidence, predictions = candidate_logits.softmax(dim=-1).max(dim=-1)
+
+                masked = valid & tokens.eq(MASK_ID)
+                masked_counts = masked.long().sum(dim=-1)
+                if step == num_steps:
+                    scheduled_remaining = torch.zeros_like(total_counts)
+                else:
+                    remaining_fraction = math.cos(
+                        0.5 * math.pi * float(step) / float(num_steps)
+                    )
+                    scheduled_remaining = torch.ceil(
+                        total_counts.float() * remaining_fraction
+                    ).long()
+                    scheduled_remaining = torch.minimum(
+                        scheduled_remaining,
+                        masked_counts,
+                    )
+
+                # Sort only the still-masked positions from low to high
+                # confidence.  Stable sorting gives deterministic tie handling.
+                low_confidence_scores = torch.where(
+                    masked,
+                    confidence,
+                    torch.full_like(confidence, torch.inf),
+                )
+                low_confidence_order = torch.argsort(
+                    low_confidence_scores,
+                    dim=-1,
+                    descending=False,
+                    stable=True,
+                )
+                low_confidence_rank = torch.empty_like(low_confidence_order)
+                rank_values = torch.arange(
+                    low_confidence_order.shape[-1],
+                    device=z.device,
+                    dtype=low_confidence_order.dtype,
+                )
+                rank_values = rank_values.expand_as(low_confidence_order)
+                low_confidence_rank.scatter_(
+                    -1,
+                    low_confidence_order,
+                    rank_values,
+                )
+                keep_masked = masked & (
+                    low_confidence_rank < scheduled_remaining.unsqueeze(-1)
+                )
+                commit = masked & ~keep_masked
+                tokens = torch.where(commit, predictions.to(dtype=torch.long), tokens)
+
+                scheduled_remaining_trace.append(scheduled_remaining)
+                commit_trace.append(commit)
+                masked_count_trace.append((valid & tokens.eq(MASK_ID)).long().sum(dim=-1))
+        finally:
+            self.train(was_training)
+
+        if not torch.compiler.is_compiling():
+            if bool((valid & (tokens.eq(MASK_ID) | tokens.eq(self.pad_id))).any()):
+                raise RuntimeError("MaskGIT refinement left an unfilled valid position")
+            if bool((~valid & tokens.ne(self.pad_id)).any()):
+                raise RuntimeError("MaskGIT refinement changed a padding position")
+        if not return_trace:
+            return tokens
+        return tokens, {
+            "commit_masks": torch.stack(commit_trace, dim=0),
+            "masked_counts": torch.stack(masked_count_trace, dim=0),
+            "scheduled_remaining_counts": torch.stack(
+                scheduled_remaining_trace,
+                dim=0,
+            ),
+        }
+
+    @torch.no_grad()
+    def reconstruct(
+        self,
+        z: torch.Tensor,
+        valid_token_mask: torch.Tensor,
+        *,
+        header_tokens: torch.Tensor | None = None,
+        header_valid_mask: torch.Tensor | None = None,
+        num_steps: int = 8,
+        return_trace: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Target-free public reconstruction alias for MaskGIT inference."""
+        return self.refine_maskgit(
+            z,
+            valid_token_mask,
+            header_tokens=header_tokens,
+            header_valid_mask=header_valid_mask,
+            num_steps=num_steps,
+            return_trace=return_trace,
+        )
 
     def forward(
         self,
@@ -516,6 +792,7 @@ class StateVAE(nn.Module):
         state_valid_mask: torch.Tensor | None = None,
         decoder_header_tokens: torch.Tensor | None = None,
         decoder_header_valid_mask: torch.Tensor | None = None,
+        decoder_input_tokens: torch.Tensor | None = None,
         deterministic: bool = False,
     ) -> dict[str, torch.Tensor]:
         header_mask = _as_valid_mask(header_tokens, header_valid_mask, self.pad_id)
@@ -545,6 +822,7 @@ class StateVAE(nn.Module):
                 state_mask,
                 header_tokens=decoder_header_tokens,
                 header_valid_mask=decoder_header_mask,
+                decoder_input_tokens=decoder_input_tokens,
             ),
             "mu": mu,
             "logvar": logvar,
@@ -818,6 +1096,7 @@ class SimpleWorldModel(nn.Module):
         state_valid_mask: torch.Tensor | None = None,
         decoder_header_tokens: torch.Tensor | None = None,
         decoder_header_valid_mask: torch.Tensor | None = None,
+        decoder_input_tokens: torch.Tensor | None = None,
         deterministic: bool = True,
     ) -> dict[str, torch.Tensor]:
         return self.v(
@@ -827,6 +1106,7 @@ class SimpleWorldModel(nn.Module):
             state_valid_mask=state_valid_mask,
             decoder_header_tokens=decoder_header_tokens,
             decoder_header_valid_mask=decoder_header_valid_mask,
+            decoder_input_tokens=decoder_input_tokens,
             deterministic=deterministic,
         )
 
