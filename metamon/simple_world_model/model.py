@@ -1273,8 +1273,20 @@ def vae_losses(
     capacity_weight: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     valid = outputs["state_valid_mask"].bool()
+    reconstruction_valid = outputs.get("reconstruction_loss_mask", valid).bool()
+    if reconstruction_valid.shape != valid.shape:
+        raise ValueError("reconstruction_loss_mask must match state_valid_mask")
+    if bool((reconstruction_valid & ~valid).any()):
+        raise ValueError(
+            "reconstruction_loss_mask must be a subset of state_valid_mask"
+        )
     ce = F.cross_entropy(outputs["logits"].reshape(-1, outputs["logits"].shape[-1]), state_targets.reshape(-1), reduction="none")
-    recon_ce = ce[valid.reshape(-1)].mean() if bool(valid.any()) else ce.mean() * 0.0
+    flat_reconstruction_valid = reconstruction_valid.reshape(-1)
+    recon_ce = (
+        ce[flat_reconstruction_valid].mean()
+        if bool(reconstruction_valid.any())
+        else ce.mean() * 0.0
+    )
     kl_per_dim = -0.5 * (1.0 + outputs["logvar"] - outputs["mu"].square() - outputs["logvar"].exp())
     raw_kl = kl_per_dim.sum(dim=-1).mean()
     free_kl = kl_per_dim.clamp_min(float(free_bits)).sum(dim=-1).mean()
@@ -1292,7 +1304,12 @@ def vae_losses(
     return loss, {
         "loss": float(loss.detach()),
         "recon_ce": float(recon_ce.detach()),
-        "recon_token_acc": float(_masked_token_accuracy(outputs["logits"], state_targets, valid).detach()),
+        "recon_token_acc": float(
+            _masked_token_accuracy(
+                outputs["logits"], state_targets, reconstruction_valid,
+            ).detach()
+        ),
+        "recon_loss_token_count": float(reconstruction_valid.sum()),
         "kl": float(raw_kl.detach()),
         "kl_per_dim": float((raw_kl / outputs["mu"].shape[-1]).detach()),
         "free_kl": float(free_kl.detach()),

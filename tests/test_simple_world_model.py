@@ -131,6 +131,7 @@ def test_wandb_stage_run_records_config_and_metrics(monkeypatch):
     assert config["dataset_manifest_hash"] == "dataset-hash"
     assert config["latent_cache_manifest_hash"] == "cache-hash"
     assert config["model_config"] == {"latent_dim": 8}
+    assert config["maskgit_all_mask_fraction"] == pytest.approx(0.25)
     assert ("train/*", {"step_metric": "global_step"}) in fake_wandb.run.defined_metrics
 
     logger.log({"global_step": 17, "train/loss": 1.25}, step=17)
@@ -901,6 +902,7 @@ def test_v_restart_recipe_defaults():
     assert args.kl_warmup_updates == 20_000
     assert args.free_bits == pytest.approx(0.02)
     assert args.encoder_token_mask_prob == pytest.approx(0.0)
+    assert args.maskgit_all_mask_fraction == pytest.approx(0.25)
     assert args.mean_recon_weight == pytest.approx(0.0)
     assert args.lambda_mu_sigreg == pytest.approx(0.0)
     assert args.mu_sigreg_warmup_updates == 2_000
@@ -1295,6 +1297,24 @@ def test_v_team_aggregate_sigreg_cli_values_are_explicit():
     assert args.team_sigreg_batch_size == 32
 
 
+def test_v_maskgit_fraction_is_validated_before_startup_io():
+    args = build_arg_parser().parse_args([
+        "--stage", "v", "--data_root", "missing-data", "--formats", "gen1ou",
+        "--tokenizer_path", "missing-tokenizer.json",
+        "--maskgit_all_mask_fraction", "1.01",
+    ])
+    with pytest.raises(ValueError, match="maskgit_all_mask_fraction"):
+        train(args)
+
+
+def test_v_tokenizer_rejects_any_serialized_zero_id():
+    tokenizer = PokemonTokenizer().load_tokens({"foo": 1, "bar": 2})
+    simple_world_model_train._assert_tokenizer_has_no_zero_id(tokenizer)
+    tokenizer._initial_ids["illegal-mask-collision"] = 0
+    with pytest.raises(ValueError, match="MASK_ID=0"):
+        simple_world_model_train._assert_tokenizer_has_no_zero_id(tokenizer)
+
+
 def test_v_warmup_cosine_schedule():
     def lr(update):
         return simple_world_model_train._warmup_cosine_lr(
@@ -1321,6 +1341,160 @@ def test_v_encoder_mask_excludes_structural_and_padding_tokens():
     assert masked.tolist() == [[1, 9, 3, 9, 5]]
     assert selected == 2
     assert eligible == 2
+
+
+def test_maskgit_training_corruption_is_seeded_exact_and_canonical():
+    pad_id = 48
+    lengths = torch.tensor([6, 5, 4, 3, 2, 1, 6, 4])
+    valid = torch.arange(6).unsqueeze(0) < lengths.unsqueeze(1)
+    targets = torch.full((8, 6), pad_id, dtype=torch.long)
+    values = (torch.arange(48).reshape(8, 6) % 40) + 1
+    targets[valid] = values[valid]
+
+    first_generator = torch.Generator(device="cpu").manual_seed(901)
+    first_tokens, first_loss_mask = (
+        simple_world_model_train._maskgit_training_corruption(
+            targets,
+            valid,
+            pad_id=pad_id,
+            all_mask_fraction=0.25,
+            generator=first_generator,
+        )
+    )
+    second_generator = torch.Generator(device="cpu").manual_seed(901)
+    second_tokens, second_loss_mask = (
+        simple_world_model_train._maskgit_training_corruption(
+            targets,
+            valid,
+            pad_id=pad_id,
+            all_mask_fraction=0.25,
+            generator=second_generator,
+        )
+    )
+    torch.testing.assert_close(first_tokens, second_tokens, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(
+        first_loss_mask, second_loss_mask, atol=0.0, rtol=0.0,
+    )
+
+    mask_counts = first_loss_mask.long().sum(dim=-1)
+    long_rows = lengths.gt(1)
+    fully_masked_long_rows = long_rows & mask_counts.eq(lengths)
+    assert int(fully_masked_long_rows.sum()) == 2
+    assert mask_counts[lengths.eq(1)].tolist() == [1]
+    partial_rows = long_rows & ~fully_masked_long_rows
+    assert bool(mask_counts[partial_rows].ge(1).all())
+    assert bool(mask_counts[partial_rows].lt(lengths[partial_rows]).all())
+    assert bool(first_loss_mask.le(valid).all())
+    assert bool(first_tokens[first_loss_mask].eq(0).all())
+    revealed = valid & ~first_loss_mask
+    assert torch.equal(first_tokens[revealed], targets[revealed])
+    assert bool(first_tokens[~valid].eq(pad_id).all())
+
+
+def test_maskgit_training_corruption_validates_fraction_and_reserved_targets():
+    targets = torch.tensor([[1, 2, 9], [3, 9, 9]])
+    valid = targets.ne(9)
+    with pytest.raises(ValueError, match="between zero and one"):
+        simple_world_model_train._maskgit_training_corruption(
+            targets, valid, pad_id=9, all_mask_fraction=1.1,
+        )
+    bad_targets = targets.clone()
+    bad_targets[0, 0] = 0
+    with pytest.raises(ValueError, match="MASK_ID"):
+        simple_world_model_train._maskgit_training_corruption(
+            bad_targets, valid, pad_id=9, all_mask_fraction=0.25,
+        )
+
+
+def test_vae_losses_uses_reconstruction_mask_only_for_ce_and_accuracy():
+    logits = torch.zeros(1, 4, 8)
+    targets = torch.tensor([[1, 2, 3, 0]])
+    state_valid = torch.tensor([[True, True, True, False]])
+    reconstruction_valid = torch.tensor([[True, False, True, False]])
+    logits[0, 0, 1] = 9.0
+    logits[0, 1, 7] = 9.0
+    logits[0, 2, 3] = 9.0
+    outputs = {
+        "logits": logits,
+        "mu": torch.zeros(1, 3),
+        "logvar": torch.zeros(1, 3),
+        "state_valid_mask": state_valid,
+        "reconstruction_loss_mask": reconstruction_valid,
+    }
+    loss, metrics = vae_losses(
+        outputs, targets, beta_kl=0.0, free_bits=0.0,
+    )
+    expected = torch.nn.functional.cross_entropy(
+        logits[reconstruction_valid], targets[reconstruction_valid],
+    )
+    torch.testing.assert_close(loss, expected)
+    assert metrics["recon_ce"] == pytest.approx(float(expected))
+    assert metrics["recon_token_acc"] == pytest.approx(1.0)
+    assert metrics["recon_loss_token_count"] == 2.0
+
+    outside_state = dict(outputs)
+    outside_state["reconstruction_loss_mask"] = torch.tensor(
+        [[True, False, True, True]]
+    )
+    with pytest.raises(ValueError, match="subset"):
+        vae_losses(outside_state, targets, beta_kl=0.0)
+
+
+def test_maskgit_pure_mean_training_uses_one_corruption_and_one_decode(monkeypatch):
+    torch.manual_seed(902)
+    model = _tiny_model(
+        decoder_token_conditioning="maskgit",
+        vocab_size=48,
+        pad_id=48,
+    ).train()
+    batch = {
+        "header_tokens": torch.tensor([[1, 2], [2, 3]]),
+        "header_mask": torch.tensor([[True, True], [True, True]]),
+        "state_tokens": torch.tensor([[4, 5, 6], [7, 8, 48]]),
+        "state_mask": torch.tensor([[True, True, True], [True, True, False]]),
+    }
+    args = SimpleNamespace(
+        encoder_token_mask_prob=0.0,
+        maskgit_all_mask_fraction=0.5,
+        mean_recon_weight=1.0,
+        free_bits=0.0,
+        kl_capacity=0.0,
+        kl_capacity_weight=0.0,
+        lambda_sampled_sigreg=0.0,
+    )
+    original_decode = model.v.decode
+    decoder_inputs = []
+
+    def counted_decode(*decode_args, **decode_kwargs):
+        decoder_inputs.append(decode_kwargs["decoder_input_tokens"].detach().clone())
+        return original_decode(*decode_args, **decode_kwargs)
+
+    monkeypatch.setattr(model.v, "decode", counted_decode)
+    generator = torch.Generator(device="cpu").manual_seed(903)
+    loss, metrics, outputs = simple_world_model_train._run_v_batch(
+        model,
+        batch,
+        beta=0.0,
+        args=args,
+        maskgit_generator=generator,
+    )
+    assert len(decoder_inputs) == 1
+    torch.testing.assert_close(outputs["z"], outputs["mu"])
+    reconstruction_mask = outputs["reconstruction_loss_mask"]
+    assert torch.equal(decoder_inputs[0].eq(0), reconstruction_mask)
+    assert bool(decoder_inputs[0][~batch["state_mask"]].eq(48).all())
+    assert metrics["maskgit_all_mask_rows"] == 1.0
+    assert metrics["maskgit_masked_tokens"] == float(reconstruction_mask.sum())
+    assert metrics["maskgit_mask_fraction"] == pytest.approx(
+        float(reconstruction_mask.sum()) / float(batch["state_mask"].sum())
+    )
+    expected, expected_metrics = vae_losses(
+        outputs, batch["state_tokens"], beta_kl=0.0, free_bits=0.0,
+    )
+    torch.testing.assert_close(loss, expected)
+    assert metrics["objective_recon_ce"] == pytest.approx(
+        expected_metrics["recon_ce"]
+    )
 
 
 def test_v_mean_reconstruction_blend_preserves_objective_scale():

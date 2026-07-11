@@ -126,6 +126,98 @@ def _mask_non_structural_tokens(
     return tokens.masked_fill(selected, int(mask_token_id)), selected_count, eligible_count
 
 
+def _maskgit_training_corruption(
+    state_targets: torch.Tensor,
+    valid_token_mask: torch.Tensor,
+    *,
+    pad_id: int,
+    all_mask_fraction: float,
+    generator: torch.Generator | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build one reproducible MaskGIT input and reconstruction-loss mask.
+
+    A fixed-size randomly chosen cohort of multi-token rows is fully masked.
+    Every other multi-token row draws a cosine-distributed mask count, clamped
+    to leave at least one masked and one revealed token. Single-token rows are
+    necessarily fully masked. Randomness is generated on CPU so one seeded
+    generator has the same semantics on CPU, MPS, and CUDA.
+    """
+    fraction = float(all_mask_fraction)
+    if not math.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
+        raise ValueError("MaskGIT all-mask fraction must be between zero and one")
+    if state_targets.ndim != 2:
+        raise ValueError("MaskGIT state targets must be [batch, state_tokens]")
+    if valid_token_mask.shape != state_targets.shape:
+        raise ValueError("MaskGIT valid_token_mask must match state targets")
+    if generator is not None and torch.device(generator.device).type != "cpu":
+        raise ValueError("MaskGIT corruption generator must be a CPU generator")
+
+    targets = state_targets.long()
+    valid = valid_token_mask.to(device=targets.device, dtype=torch.bool)
+    if bool((valid & targets.eq(StateVAE.MASK_ID)).any()):
+        raise ValueError(
+            f"valid target tokens must not use decoder-only MASK_ID={StateVAE.MASK_ID}"
+        )
+    if bool((valid & targets.eq(int(pad_id))).any()):
+        raise ValueError("valid target tokens must not contain pad_id")
+
+    batch_size, sequence_length = targets.shape
+    lengths = valid.long().sum(dim=-1)
+    multi_token_rows = lengths.gt(1)
+    requested_all_mask_rows = math.floor(batch_size * fraction + 0.5)
+    selected_all_mask_rows = min(
+        requested_all_mask_rows,
+        int(multi_token_rows.sum()),
+    )
+
+    row_random = torch.rand(batch_size, generator=generator, device="cpu").to(
+        targets.device
+    )
+    row_random = row_random.masked_fill(~multi_token_rows, torch.inf)
+    row_order = torch.argsort(row_random, stable=True)
+    row_rank = torch.empty_like(row_order)
+    row_rank.scatter_(
+        0,
+        row_order,
+        torch.arange(batch_size, device=targets.device),
+    )
+    all_mask_rows = multi_token_rows & row_rank.lt(selected_all_mask_rows)
+    all_mask_rows = all_mask_rows | lengths.eq(1)
+
+    cosine_uniform = torch.rand(batch_size, generator=generator, device="cpu").to(
+        targets.device
+    )
+    cosine_ratio = torch.cos(cosine_uniform * (0.5 * math.pi))
+    mask_counts = torch.ceil(lengths.float() * cosine_ratio).long().clamp_min(1)
+    mask_counts = torch.minimum(mask_counts, (lengths - 1).clamp_min(0))
+    mask_counts = torch.where(all_mask_rows, lengths, mask_counts)
+    mask_counts = torch.where(lengths.eq(0), torch.zeros_like(mask_counts), mask_counts)
+
+    position_random = torch.rand(
+        batch_size,
+        sequence_length,
+        generator=generator,
+        device="cpu",
+    ).to(targets.device)
+    position_random = position_random.masked_fill(~valid, torch.inf)
+    position_order = torch.argsort(position_random, dim=-1, stable=True)
+    position_rank = torch.empty_like(position_order)
+    position_rank.scatter_(
+        -1,
+        position_order,
+        torch.arange(sequence_length, device=targets.device).expand_as(position_order),
+    )
+    reconstruction_loss_mask = valid & position_rank.lt(mask_counts.unsqueeze(-1))
+
+    decoder_input_tokens = torch.full_like(targets, int(pad_id))
+    decoder_input_tokens = torch.where(valid, targets, decoder_input_tokens)
+    decoder_input_tokens = decoder_input_tokens.masked_fill(
+        reconstruction_loss_mask,
+        StateVAE.MASK_ID,
+    )
+    return decoder_input_tokens, reconstruction_loss_mask
+
+
 def _resolve_updates_budget(args: argparse.Namespace, stage: str, *, start_update: int = 0) -> int:
     additional = int(getattr(args, "additional_updates", 0) or 0)
     absolute = int(args.max_updates or args.max_steps or 0)
@@ -216,6 +308,7 @@ def _start_wandb(
         "lr_schedule_updates": int(args.lr_schedule_updates),
         "early_stop_patience": int(args.early_stop_patience),
         "encoder_token_mask_prob": float(args.encoder_token_mask_prob),
+        "maskgit_all_mask_fraction": float(args.maskgit_all_mask_fraction),
         "mean_recon_weight": float(args.mean_recon_weight),
         "lambda_mu_sigreg": float(getattr(args, "lambda_mu_sigreg", 0.0)),
         "mu_sigreg_warmup_updates": int(getattr(args, "mu_sigreg_warmup_updates", 0)),
@@ -293,6 +386,27 @@ def _device() -> torch.device:
 
 def _load_tokenizer(path: str) -> PokemonTokenizer:
     return PokemonTokenizer().load_tokens_from_disk(path)
+
+
+def _assert_tokenizer_has_no_zero_id(tokenizer: PokemonTokenizer) -> None:
+    """Protect decoder-only MASK_ID=0 from serialized-token collisions."""
+    state = tokenizer.to_state()
+    zero_tokens = [
+        token
+        for mapping_name in ("initial_ids", "new_ids")
+        for token, token_id in state.get(mapping_name, {}).items()
+        if int(token_id) == StateVAE.MASK_ID
+    ]
+    if (
+        zero_tokens
+        or int(tokenizer.unknown_token_id) == StateVAE.MASK_ID
+        or int(tokenizer.pad_token_id) == StateVAE.MASK_ID
+    ):
+        details = ", ".join(zero_tokens[:4]) or "special token"
+        raise ValueError(
+            f"V tokenizer must not assign decoder-only MASK_ID={StateVAE.MASK_ID}; "
+            f"found {details}"
+        )
 
 
 def _load_config(path: str) -> dict[str, Any]:
@@ -489,6 +603,11 @@ def _sample_posterior(mu: torch.Tensor, logvar: torch.Tensor, *, deterministic: 
 def _v_uses_decoder_header_conditioning(vae: Any) -> bool:
     vae = getattr(vae, "_orig_mod", vae)
     return getattr(vae, "decoder_header_conditioning", "none") == "cross_attention"
+
+
+def _v_uses_maskgit_token_conditioning(vae: Any) -> bool:
+    vae = getattr(vae, "_orig_mod", vae)
+    return getattr(vae, "decoder_token_conditioning", "none") == "maskgit"
 
 
 def _decoder_header_kwargs(vae: Any, batch: Mapping[str, Any]) -> dict[str, torch.Tensor]:
@@ -788,6 +907,7 @@ def _run_v_batch(
     aggregate_sigreg_scale: float = 1.0,
     team_aggregate_sigreg_scale: float = 1.0,
     posterior_std_scale: float = 1.0,
+    maskgit_generator: torch.Generator | None = None,
 ) -> tuple[torch.Tensor, dict[str, float], dict[str, torch.Tensor]]:
     header_tokens = batch["header_tokens"]
     state_tokens = batch["state_tokens"]
@@ -815,6 +935,20 @@ def _run_v_batch(
         masked_count += selected
         eligible_count += eligible
 
+    decoder_input_tokens = None
+    reconstruction_loss_mask = None
+    vae = getattr(model.v, "_orig_mod", model.v)
+    if _v_uses_maskgit_token_conditioning(vae):
+        decoder_input_tokens, reconstruction_loss_mask = _maskgit_training_corruption(
+            batch["state_tokens"],
+            batch["state_mask"],
+            pad_id=vae.pad_id,
+            all_mask_fraction=float(
+                getattr(args, "maskgit_all_mask_fraction", 0.25)
+            ),
+            generator=maskgit_generator,
+        )
+
     mean_recon_weight = float(args.mean_recon_weight)
     # With a pure mean-path objective, decoding a posterior sample builds and
     # retains an entire second decoder graph whose loss is multiplied by zero.
@@ -830,6 +964,8 @@ def _run_v_batch(
                 "decoder_header_tokens": batch["header_tokens"],
                 "decoder_header_valid_mask": batch["header_mask"],
             }
+        if decoder_input_tokens is not None:
+            decoder_forward_kwargs["decoder_input_tokens"] = decoder_input_tokens
         outputs = model.encode_state(
             header_tokens, state_tokens,
             header_valid_mask=batch["header_mask"], state_valid_mask=batch["state_mask"],
@@ -838,6 +974,8 @@ def _run_v_batch(
             deterministic=mean_only_forward,
             **decoder_forward_kwargs,
         )
+        if reconstruction_loss_mask is not None:
+            outputs["reconstruction_loss_mask"] = reconstruction_loss_mask
         loss, metrics = vae_losses(
             outputs, batch["state_tokens"], beta_kl=beta, free_bits=args.free_bits,
             capacity=args.kl_capacity, capacity_weight=args.kl_capacity_weight,
@@ -849,17 +987,21 @@ def _run_v_batch(
             # online deterministic inference consume the posterior mean.  By
             # interpolating complete losses, the reconstruction and KL scales
             # remain unchanged as the blend changes.
-            vae = getattr(model.v, "_orig_mod", model.v)
+            mean_decoder_kwargs = _decoder_header_kwargs(vae, batch)
+            if decoder_input_tokens is not None:
+                mean_decoder_kwargs["decoder_input_tokens"] = decoder_input_tokens
             mean_outputs = {
                 "logits": vae.decode(
                     outputs["mu"],
                     outputs["state_valid_mask"],
-                    **_decoder_header_kwargs(vae, batch),
+                    **mean_decoder_kwargs,
                 ),
                 "mu": outputs["mu"],
                 "logvar": outputs["logvar"],
                 "state_valid_mask": outputs["state_valid_mask"],
             }
+            if reconstruction_loss_mask is not None:
+                mean_outputs["reconstruction_loss_mask"] = reconstruction_loss_mask
             mean_loss, mean_metrics = vae_losses(
                 mean_outputs, batch["state_tokens"], beta_kl=beta,
                 free_bits=args.free_bits, capacity=args.kl_capacity,
@@ -1018,7 +1160,24 @@ def _run_v_batch(
     metrics["encoder_mask_fraction"] = masked_count / max(eligible_count, 1)
     metrics["encoder_masked_tokens"] = float(masked_count)
     metrics["encoder_mask_eligible_tokens"] = float(eligible_count)
-    vae = getattr(model.v, "_orig_mod", model.v)
+    if reconstruction_loss_mask is not None:
+        valid_counts = batch["state_mask"].long().sum(dim=-1)
+        reconstruction_counts = reconstruction_loss_mask.long().sum(dim=-1)
+        valid_token_count = int(valid_counts.sum())
+        maskgit_mask_count = int(reconstruction_counts.sum())
+        metrics["maskgit_all_mask_rows"] = float(
+            (valid_counts.gt(0) & reconstruction_counts.eq(valid_counts)).sum()
+        )
+        metrics["maskgit_mask_fraction"] = (
+            maskgit_mask_count / max(valid_token_count, 1)
+        )
+        metrics["maskgit_masked_tokens"] = float(maskgit_mask_count)
+        metrics["maskgit_valid_tokens"] = float(valid_token_count)
+    else:
+        metrics["maskgit_all_mask_rows"] = 0.0
+        metrics["maskgit_mask_fraction"] = 0.0
+        metrics["maskgit_masked_tokens"] = 0.0
+        metrics["maskgit_valid_tokens"] = 0.0
     decoder_header_gate = getattr(vae, "decoder_header_gate", None)
     if decoder_header_gate is not None:
         gate = decoder_header_gate.detach().float()
@@ -1860,6 +2019,11 @@ def _train_v(args: argparse.Namespace) -> None:
         raise ValueError("--v_battle_sampling_alpha must be between 0 and 1")
     if not 0.0 <= float(args.encoder_token_mask_prob) <= 1.0:
         raise ValueError("--encoder_token_mask_prob must be between 0 and 1")
+    if (
+        not math.isfinite(float(args.maskgit_all_mask_fraction))
+        or not 0.0 <= float(args.maskgit_all_mask_fraction) <= 1.0
+    ):
+        raise ValueError("--maskgit_all_mask_fraction must be between 0 and 1")
     if not 0.0 <= float(args.mean_recon_weight) <= 1.0:
         raise ValueError("--mean_recon_weight must be between 0 and 1")
     if float(args.lambda_mu_sigreg) < 0.0:
@@ -1923,6 +2087,7 @@ def _train_v(args: argparse.Namespace) -> None:
 
     device = _device()
     tokenizer = _load_tokenizer(args.tokenizer_path)
+    _assert_tokenizer_has_no_zero_id(tokenizer)
     structural_token_lookup = torch.as_tensor(
         [
             word.startswith("<") and word.endswith(">")
@@ -2005,6 +2170,7 @@ def _train_v(args: argparse.Namespace) -> None:
         f"cosine minimum={args.min_lr:.2e} at update {args.lr_schedule_updates:,}; "
         f"early-stop patience={args.early_stop_patience} validations; "
         f"encoder content masking={args.encoder_token_mask_prob:.1%}; "
+        f"MaskGIT all-mask cohort={args.maskgit_all_mask_fraction:.1%}; "
         f"mean reconstruction blend={args.mean_recon_weight:.1%}; "
         f"mu SIGReg={args.lambda_mu_sigreg:g} "
         f"(warmup {args.mu_sigreg_warmup_updates:,}); "
@@ -2054,6 +2220,16 @@ def _train_v(args: argparse.Namespace) -> None:
         args, model=model, optimizer=optimizer, tokenizer=tokenizer, source_hash=source_hash,
         model_config=model_config, device=device,
     )
+    maskgit_generator = None
+    if _v_uses_maskgit_token_conditioning(model.v):
+        # Include the resume position so a resumed phase does not replay the
+        # update-zero corruption stream. Exact uninterrupted RNG equivalence
+        # is intentionally not claimed by the existing checkpoint contract.
+        maskgit_seed = (
+            int(args.seed) + 83_923 + int(start_update) * 1_000_003
+        ) % (2**63 - 1)
+        maskgit_generator = torch.Generator(device="cpu")
+        maskgit_generator.manual_seed(maskgit_seed)
     if args.compile and device.type == "cuda":
         model.v = torch.compile(model.v, dynamic=True)
         print("torch.compile enabled on V")
@@ -2108,6 +2284,7 @@ def _train_v(args: argparse.Namespace) -> None:
             aggregate_sigreg_scale=aggregate_sigreg_scale,
             team_aggregate_sigreg_scale=team_aggregate_sigreg_scale,
             posterior_std_scale=posterior_std_scale,
+            maskgit_generator=maskgit_generator,
         )
         return loss, metrics
 
@@ -2446,6 +2623,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--encoder_token_mask_prob", type=float, default=0.0,
         help="Training-only probability of replacing valid non-structural V encoder tokens with UNK.",
+    )
+    parser.add_argument(
+        "--maskgit_all_mask_fraction", type=float, default=0.25,
+        help=(
+            "Exact fraction of each MaskGIT training batch assigned to the "
+            "all-mask cohort before mandatory one-token rows (default: 0.25)."
+        ),
     )
     parser.add_argument(
         "--mean_recon_weight", type=float, default=0.0,
