@@ -15,8 +15,10 @@ import functools
 import hashlib
 import itertools
 import json
+import math
 import os
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -62,7 +64,63 @@ from metamon.simple_world_model.model import (
 from metamon.tokenizer import PokemonTokenizer
 
 
-DEFAULT_UPDATES = {"v": 100_000, "m": 100_000, "c": 50_000}
+DEFAULT_UPDATES = {"v": 200_000, "m": 100_000, "c": 50_000}
+
+
+def _warmup_cosine_lr(
+    update: int,
+    *,
+    peak_lr: float,
+    min_lr: float,
+    warmup_updates: int,
+    schedule_updates: int,
+) -> float:
+    """Learning rate for a one-indexed optimizer update.
+
+    V warms linearly to the peak LR and then follows a cosine to the minimum.
+    Updates after the configured schedule hold the minimum, which also makes
+    the schedule deterministic across checkpoint resumes without serializing
+    scheduler state.
+    """
+    if peak_lr <= 0.0:
+        raise ValueError("peak learning rate must be positive")
+    if not 0.0 <= min_lr <= peak_lr:
+        raise ValueError("minimum learning rate must be between zero and the peak")
+    if warmup_updates < 0:
+        raise ValueError("LR warmup updates must be non-negative")
+    if schedule_updates <= warmup_updates:
+        raise ValueError("LR schedule updates must be greater than LR warmup updates")
+    step = max(int(update), 1)
+    if warmup_updates and step <= warmup_updates:
+        return float(peak_lr) * step / warmup_updates
+    progress = min(
+        max((step - warmup_updates) / (schedule_updates - warmup_updates), 0.0),
+        1.0,
+    )
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return float(min_lr) + (float(peak_lr) - float(min_lr)) * cosine
+
+
+def _mask_non_structural_tokens(
+    tokens: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    structural_token_lookup: torch.Tensor,
+    mask_token_id: int,
+    probability: float,
+) -> tuple[torch.Tensor, int, int]:
+    """Replace a fraction of valid non-structural encoder tokens with UNK."""
+    if not 0.0 <= float(probability) <= 1.0:
+        raise ValueError("encoder token mask probability must be between zero and one")
+    valid = valid_mask.bool()
+    structural = structural_token_lookup.to(tokens.device)[tokens.long()]
+    eligible = valid & ~structural
+    eligible_count = int(eligible.sum().item())
+    if probability <= 0.0 or eligible_count == 0:
+        return tokens, 0, eligible_count
+    selected = eligible & torch.rand(tokens.shape, device=tokens.device).lt(float(probability))
+    selected_count = int(selected.sum().item())
+    return tokens.masked_fill(selected, int(mask_token_id)), selected_count, eligible_count
 
 
 def _resolve_updates_budget(args: argparse.Namespace, stage: str, *, start_update: int = 0) -> int:
@@ -144,8 +202,25 @@ def _start_wandb(
         "max_updates": _resolve_updates_budget(args, stage, start_update=start_update),
         "val_interval": int(args.val_interval),
         "val_samples": int(args.val_samples),
+        "val_mc_samples": int(args.val_mc_samples),
+        "train_eval_samples": int(args.train_eval_samples),
+        "train_metric_window": int(args.train_metric_window),
         "wandb_log_interval": int(args.wandb_log_interval),
         "balanced_formats": bool(args.balanced_formats),
+        "v_battle_sampling_alpha": float(args.v_battle_sampling_alpha),
+        "lr_warmup_updates": int(args.lr_warmup_updates),
+        "min_lr": float(args.min_lr),
+        "lr_schedule_updates": int(args.lr_schedule_updates),
+        "early_stop_patience": int(args.early_stop_patience),
+        "encoder_token_mask_prob": float(args.encoder_token_mask_prob),
+        "mean_recon_weight": float(args.mean_recon_weight),
+        "kl_warmup_updates": int(args.kl_warmup_updates),
+        "beta_kl": None if args.beta_kl is None else float(args.beta_kl),
+        "free_bits": float(args.free_bits),
+        "kl_capacity": float(args.kl_capacity),
+        "kl_capacity_weight": float(args.kl_capacity_weight),
+        "grad_clip_fraction_window": int(args.grad_clip_fraction_window),
+        "resume_checkpoint": str(args.resume_checkpoint) if args.resume_checkpoint else None,
         "max_context_transitions": int(args.max_context_transitions),
         "compile": bool(args.compile),
         "seed": int(args.seed),
@@ -266,6 +341,7 @@ def _save(
     cache_hash: str | None,
     max_context_transitions: int,
     metrics: Mapping[str, float] | None,
+    training_config: Mapping[str, Any] | None = None,
 ) -> None:
     save_simple_world_model_checkpoint(
         str(path),
@@ -284,6 +360,7 @@ def _save(
         max_context_transitions=max_context_transitions,
         best_val_loss=None if metrics is None else metrics.get("selection_score"),
         best_val_metrics=None if metrics is None else dict(metrics),
+        training_config=None if training_config is None else dict(training_config),
     )
 
 
@@ -318,10 +395,12 @@ def _loader(
     seed: int,
     collate: Callable[[Sequence[Any]], dict[str, Any]],
     num_workers: int,
+    battle_sampling_alpha: float = 1.0,
 ) -> tuple[DataLoader, Any]:
     if hasattr(dataset, "draw_ref") and hasattr(dataset, "total_by_format"):
         sampler: Any = CompactFormatBatchSampler(
             dataset, batch_size=batch_size, balanced=balanced_formats, shuffle=shuffle, seed=seed,
+            battle_sampling_alpha=battle_sampling_alpha,
         )
         return (
             DataLoader(
@@ -440,16 +519,82 @@ def _v_token_category_metrics(
     return result
 
 
-def _run_v_batch(model: SimpleWorldModel, batch: Mapping[str, Any], *, beta: float, args: argparse.Namespace) -> tuple[torch.Tensor, dict[str, float], dict[str, torch.Tensor]]:
+def _run_v_batch(
+    model: SimpleWorldModel,
+    batch: Mapping[str, Any],
+    *,
+    beta: float,
+    args: argparse.Namespace,
+    structural_token_lookup: torch.Tensor | None = None,
+    mask_token_id: int | None = None,
+) -> tuple[torch.Tensor, dict[str, float], dict[str, torch.Tensor]]:
+    header_tokens = batch["header_tokens"]
+    state_tokens = batch["state_tokens"]
+    masked_count = eligible_count = 0
+    probability = float(args.encoder_token_mask_prob)
+    if probability > 0.0:
+        if structural_token_lookup is None or mask_token_id is None:
+            raise ValueError("V encoder masking requires structural-token lookup and mask token")
+        header_tokens, selected, eligible = _mask_non_structural_tokens(
+            header_tokens,
+            batch["header_mask"],
+            structural_token_lookup=structural_token_lookup,
+            mask_token_id=mask_token_id,
+            probability=probability,
+        )
+        masked_count += selected
+        eligible_count += eligible
+        state_tokens, selected, eligible = _mask_non_structural_tokens(
+            state_tokens,
+            batch["state_mask"],
+            structural_token_lookup=structural_token_lookup,
+            mask_token_id=mask_token_id,
+            probability=probability,
+        )
+        masked_count += selected
+        eligible_count += eligible
+
     with _cuda_bf16(batch["header_tokens"].device):
         outputs = model.encode_state(
-            batch["header_tokens"], batch["state_tokens"],
+            header_tokens, state_tokens,
             header_valid_mask=batch["header_mask"], state_valid_mask=batch["state_mask"], deterministic=False,
         )
         loss, metrics = vae_losses(
             outputs, batch["state_tokens"], beta_kl=beta, free_bits=args.free_bits,
             capacity=args.kl_capacity, capacity_weight=args.kl_capacity_weight,
         )
+        mean_recon_weight = float(args.mean_recon_weight)
+        if mean_recon_weight > 0.0:
+            # VAE training normally teaches the decoder only on posterior
+            # samples.  A small mean-path blend keeps ``z = mu`` on the
+            # decoder's training manifold, which matters because cached and
+            # online deterministic inference consume the posterior mean.  By
+            # interpolating complete losses, the reconstruction and KL scales
+            # remain unchanged as the blend changes.
+            vae = getattr(model.v, "_orig_mod", model.v)
+            mean_outputs = {
+                "logits": vae.decode(outputs["mu"], outputs["state_valid_mask"]),
+                "mu": outputs["mu"],
+                "logvar": outputs["logvar"],
+                "state_valid_mask": outputs["state_valid_mask"],
+            }
+            mean_loss, mean_metrics = vae_losses(
+                mean_outputs, batch["state_tokens"], beta_kl=beta,
+                free_bits=args.free_bits, capacity=args.kl_capacity,
+                capacity_weight=args.kl_capacity_weight,
+            )
+            loss = (1.0 - mean_recon_weight) * loss + mean_recon_weight * mean_loss
+            metrics["loss"] = float(loss.detach())
+            metrics["objective_recon_ce"] = (
+                (1.0 - mean_recon_weight) * metrics["recon_ce"]
+                + mean_recon_weight * mean_metrics["recon_ce"]
+            )
+            metrics["mean_recon_ce"] = mean_metrics["recon_ce"]
+            metrics["mean_recon_token_acc"] = mean_metrics["recon_token_acc"]
+            metrics["mean_recon_weight"] = mean_recon_weight
+    metrics["encoder_mask_fraction"] = masked_count / max(eligible_count, 1)
+    metrics["encoder_masked_tokens"] = float(masked_count)
+    metrics["encoder_mask_eligible_tokens"] = float(eligible_count)
     return loss, metrics, outputs
 
 
@@ -577,6 +722,18 @@ def _validate_v(
 ) -> dict[str, float]:
     model.eval()
     rows: list[dict[str, float]] = []
+    mc_samples = int(args.val_mc_samples)
+    mc_recon_rows: list[list[float]] = [[] for _ in range(mc_samples)]
+    mc_accuracy_rows: list[list[float]] = [[] for _ in range(mc_samples)]
+    posterior_count = 0
+    posterior_mu_sum: torch.Tensor | None = None
+    posterior_second_moment_sum: torch.Tensor | None = None
+    # Common random numbers make MC metrics comparable between checkpoints and
+    # keep validation from advancing the RNG stream used by stochastic V
+    # training. Generating epsilon on CPU also works uniformly on CUDA/MPS/CPU.
+    mc_generator = torch.Generator(device="cpu")
+    mc_generator.manual_seed(int(args.seed) + 17_031)
+    vae = getattr(model.v, "_orig_mod", model.v)
     with torch.no_grad():
         for batch in loader:
             batch = move_batch_to_device(batch, device)
@@ -591,9 +748,120 @@ def _validate_v(
             metrics.update(_v_format_metrics(outputs, batch))
             metrics.update(_v_token_category_metrics(outputs, batch, tokenizer))
             rows.append(metrics)
+            # Audit the aggregate posterior q(z), not only each q(z|x). For a
+            # diagonal conditional Gaussian,
+            #   E[zz^T|x] = mu mu^T + diag(sigma^2).
+            # Accumulate on-device in fp32; only the bounded D x D summary is
+            # transferred to CPU after validation.
+            mu = outputs["mu"].detach().float().reshape(-1, outputs["mu"].shape[-1])
+            variance = outputs["logvar"].detach().float().exp().reshape_as(mu)
+            if posterior_mu_sum is None:
+                latent_dim = int(mu.shape[-1])
+                posterior_mu_sum = torch.zeros(latent_dim, device=mu.device, dtype=torch.float32)
+                posterior_second_moment_sum = torch.zeros(
+                    latent_dim, latent_dim, device=mu.device, dtype=torch.float32,
+                )
+            posterior_count += int(mu.shape[0])
+            posterior_mu_sum.add_(mu.sum(dim=0))
+            posterior_second_moment_sum.add_(mu.transpose(0, 1).matmul(mu))
+            posterior_second_moment_sum.diagonal().add_(variance.sum(dim=0))
+            for sample_index in range(mc_samples):
+                epsilon = torch.randn(
+                    outputs["mu"].shape, generator=mc_generator, dtype=torch.float32,
+                ).to(device=outputs["mu"].device, dtype=outputs["mu"].dtype)
+                sampled_z = outputs["mu"] + epsilon * torch.exp(0.5 * outputs["logvar"])
+                sampled_outputs = {
+                    "logits": vae.decode(sampled_z, outputs["state_valid_mask"]),
+                    "mu": outputs["mu"],
+                    "logvar": outputs["logvar"],
+                    "state_valid_mask": outputs["state_valid_mask"],
+                }
+                _, sampled_metrics = vae_losses(
+                    sampled_outputs, batch["state_tokens"], beta_kl=args.beta_kl,
+                    free_bits=args.free_bits, capacity=args.kl_capacity,
+                    capacity_weight=args.kl_capacity_weight,
+                )
+                mc_recon_rows[sample_index].append(sampled_metrics["recon_ce"])
+                mc_accuracy_rows[sample_index].append(sampled_metrics["recon_token_acc"])
     model.train()
     result = _mean_metrics(rows)
+    mc_draw_means = [
+        sum(draw_rows) / len(draw_rows)
+        for draw_rows in mc_recon_rows
+        if draw_rows
+    ]
+    if mc_draw_means:
+        mc_mean = sum(mc_draw_means) / len(mc_draw_means)
+        result["recon_ce_mc"] = mc_mean
+        result["recon_ce_mc_std"] = math.sqrt(
+            sum((value - mc_mean) ** 2 for value in mc_draw_means) / len(mc_draw_means)
+        )
+    mc_accuracy_means = [
+        sum(draw_rows) / len(draw_rows)
+        for draw_rows in mc_accuracy_rows
+        if draw_rows
+    ]
+    if mc_accuracy_means:
+        mc_accuracy_mean = sum(mc_accuracy_means) / len(mc_accuracy_means)
+        result["recon_token_acc_mc"] = mc_accuracy_mean
+        result["recon_token_acc_mc_std"] = math.sqrt(
+            sum((value - mc_accuracy_mean) ** 2 for value in mc_accuracy_means)
+            / len(mc_accuracy_means)
+        )
+    if posterior_count and posterior_mu_sum is not None and posterior_second_moment_sum is not None:
+        aggregate_mean = posterior_mu_sum.double().cpu() / posterior_count
+        aggregate_second_moment = posterior_second_moment_sum.double().cpu() / posterior_count
+        aggregate_covariance = aggregate_second_moment - aggregate_mean.outer(aggregate_mean)
+        # Numerical accumulation can make the smallest eigenvalue microscopically
+        # negative. Symmetrize and add a tiny jitter only for the log-determinant.
+        aggregate_covariance = 0.5 * (aggregate_covariance + aggregate_covariance.T)
+        aggregate_variance = aggregate_covariance.diagonal().clamp_min(1e-12)
+        aggregate_std = aggregate_variance.sqrt()
+        off_diagonal = aggregate_covariance - torch.diag_embed(aggregate_covariance.diagonal())
+        jittered_covariance = aggregate_covariance + torch.eye(
+            aggregate_covariance.shape[0], dtype=aggregate_covariance.dtype,
+        ) * 1e-8
+        sign, logdet = torch.linalg.slogdet(jittered_covariance)
+        latent_dim = int(aggregate_mean.numel())
+        gaussian_kl = 0.5 * (
+            aggregate_covariance.trace() + aggregate_mean.square().sum()
+            - latent_dim - logdet
+        )
+        result.update({
+            "aggregate_mean_rms": float(aggregate_mean.square().mean().sqrt()),
+            "aggregate_mean_abs": float(aggregate_mean.abs().mean()),
+            "aggregate_std_mean": float(aggregate_std.mean()),
+            "aggregate_std_min": float(aggregate_std.min()),
+            "aggregate_std_max": float(aggregate_std.max()),
+            "aggregate_variance_mae_from_one": float((aggregate_variance - 1.0).abs().mean()),
+            "aggregate_cov_offdiag_rms": float(off_diagonal.square().mean().sqrt()),
+            "aggregate_gaussian_kl": float(gaussian_kl) if float(sign) > 0.0 else float("inf"),
+            "aggregate_gaussian_kl_per_dim": (
+                float(gaussian_kl / latent_dim) if float(sign) > 0.0 else float("inf")
+            ),
+        })
     result["selection_score"] = result.get("recon_ce", float("inf"))
+    return result
+
+
+def _merge_v_train_eval_metrics(
+    validation_metrics: Mapping[str, float],
+    train_eval_metrics: Mapping[str, float],
+) -> dict[str, float]:
+    """Attach matched train-split evaluation without changing V selection."""
+    result = dict(validation_metrics)
+    for name, value in train_eval_metrics.items():
+        if name != "selection_score":
+            result[f"train_eval_{name}"] = float(value)
+    for name in ("loss", "recon_ce", "recon_token_acc", "recon_ce_mc", "recon_token_acc_mc"):
+        train_name = f"train_eval_{name}"
+        if name in result and train_name in result:
+            # Positive CE/loss gaps mean validation is worse.  Accuracy uses
+            # train - validation so positive consistently means overfitting.
+            if "acc" in name:
+                result[f"generalization_gap_{name}"] = result[train_name] - result[name]
+            else:
+                result[f"generalization_gap_{name}"] = result[name] - result[train_name]
     return result
 
 
@@ -730,11 +998,19 @@ def _training_loop(
     wandb_logger: _WandbLogger | None = None,
     start_update: int = 0,
     initial_best: float = float("inf"),
+    learning_rate_schedule: Callable[[int], float] | None = None,
+    early_stop_patience: int = 0,
 ) -> None:
     updates_budget = _resolve_updates_budget(args, stage, start_update=start_update)
     best = float(initial_best)
     update = int(start_update)
     micro = 0
+    pending_metric_rows: list[dict[str, float]] = []
+    metric_history: deque[dict[str, float]] = deque(
+        maxlen=max(int(getattr(args, "train_metric_window", 1)), 1)
+    )
+    stale_validations = 0
+    clip_history: deque[float] = deque(maxlen=max(int(args.grad_clip_fraction_window), 1))
     optimizer.zero_grad(set_to_none=True)
     started = time.time()
     if update >= updates_budget:
@@ -765,6 +1041,7 @@ def _training_loop(
             batch = move_batch_to_device(batch, device)
             setattr(batch_loss, "optimizer_update", update)
             loss, metrics = batch_loss(batch, False)
+            pending_metric_rows.append(dict(metrics))
             (loss / args.grad_accum_steps).backward()
             micro += 1
             if micro % args.grad_accum_steps:
@@ -772,17 +1049,32 @@ def _training_loop(
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 [parameter for parameter in model.parameters() if parameter.requires_grad], args.grad_clip
             )
+            grad_norm_value = float(grad_norm)
+            was_clipped = float(not math.isfinite(grad_norm_value) or grad_norm_value > args.grad_clip)
+            clip_history.append(was_clipped)
+            clip_fraction = sum(clip_history) / len(clip_history)
+            if learning_rate_schedule is not None:
+                scheduled_lr = float(learning_rate_schedule(update + 1))
+                for parameter_group in optimizer.param_groups:
+                    parameter_group["lr"] = scheduled_lr
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             update += 1
+            update_metrics = _mean_metrics(pending_metric_rows)
+            pending_metric_rows.clear()
+            metric_history.append(update_metrics)
+            smoothed_metrics = _mean_metrics(metric_history)
             elapsed = max(time.time() - started, 1e-6)
             updates_per_second = (update - start_update) / elapsed
             log_interval = args.wandb_log_interval or args.print_interval
             if wandb_logger is not None and log_interval > 0 and update % log_interval == 0:
                 payload = {
                     "global_step": update,
-                    **_numeric_metrics("train", metrics),
-                    "train/grad_norm": float(grad_norm),
+                    **_numeric_metrics("train", update_metrics),
+                    **_numeric_metrics("train_smooth", smoothed_metrics),
+                    "train/grad_norm": grad_norm_value,
+                    "train/grad_was_clipped": was_clipped,
+                    "train/grad_clip_fraction": clip_fraction,
                     "train/updates_per_second": updates_per_second,
                     "train/lr": float(optimizer.param_groups[0]["lr"]),
                 }
@@ -792,8 +1084,11 @@ def _training_loop(
                 wandb_logger.log(payload, step=update)
             if args.print_interval and update % args.print_interval == 0:
                 print(
-                    f"[{stage}] update {update:6d}/{updates_budget} loss={metrics.get('loss', 0.0):.4f} "
-                    f"grad={float(grad_norm):.3f} updates/s={updates_per_second:.2f}", flush=True
+                    f"[{stage}] update {update:6d}/{updates_budget} loss={update_metrics.get('loss', 0.0):.4f} "
+                    f"avg{len(metric_history)}={smoothed_metrics.get('loss', 0.0):.4f} "
+                    f"grad={grad_norm_value:.3f} clip={clip_fraction:.1%} "
+                    f"lr={optimizer.param_groups[0]['lr']:.2e} updates/s={updates_per_second:.2f}",
+                    flush=True,
                 )
             should_validate = args.val_interval > 0 and update % args.val_interval == 0
             if should_validate or update >= updates_budget:
@@ -802,6 +1097,9 @@ def _training_loop(
                 improved = score < best
                 if improved:
                     best = score
+                    stale_validations = 0
+                else:
+                    stale_validations += 1
                 print(f"[{stage}] validation @ {update}: {json.dumps(val_metrics, sort_keys=True)}", flush=True)
                 if wandb_logger is not None:
                     wandb_logger.log(
@@ -810,10 +1108,18 @@ def _training_loop(
                             **_numeric_metrics("val", val_metrics),
                             "checkpoint/is_best": float(improved),
                             "checkpoint/best_selection_score": float(best),
+                            "checkpoint/early_stop_stale_validations": float(stale_validations),
                         },
                         step=update,
                     )
                 save_callback(update, val_metrics, improved)
+                if early_stop_patience > 0 and stale_validations >= early_stop_patience:
+                    print(
+                        f"[{stage}] early stopping after {stale_validations} validation checks "
+                        f"without improvement; best selection score={best:.6f}.",
+                        flush=True,
+                    )
+                    return
             if update >= updates_budget:
                 return
 
@@ -890,8 +1196,40 @@ def _resume_v(
 
 
 def _train_v(args: argparse.Namespace) -> None:
+    if not 0.0 <= float(args.v_battle_sampling_alpha) <= 1.0:
+        raise ValueError("--v_battle_sampling_alpha must be between 0 and 1")
+    if not 0.0 <= float(args.encoder_token_mask_prob) <= 1.0:
+        raise ValueError("--encoder_token_mask_prob must be between 0 and 1")
+    if not 0.0 <= float(args.mean_recon_weight) <= 1.0:
+        raise ValueError("--mean_recon_weight must be between 0 and 1")
+    if int(args.early_stop_patience) < 0:
+        raise ValueError("--early_stop_patience must be non-negative")
+    if int(args.grad_clip_fraction_window) < 1:
+        raise ValueError("--grad_clip_fraction_window must be positive")
+    if int(args.val_mc_samples) < 1:
+        raise ValueError("--val_mc_samples must be positive")
+    if int(args.train_eval_samples) < 0:
+        raise ValueError("--train_eval_samples must be non-negative")
+    if int(args.train_metric_window) < 1:
+        raise ValueError("--train_metric_window must be positive")
+    _warmup_cosine_lr(
+        1,
+        peak_lr=args.lr,
+        min_lr=args.min_lr,
+        warmup_updates=args.lr_warmup_updates,
+        schedule_updates=args.lr_schedule_updates,
+    )
+
     device = _device()
     tokenizer = _load_tokenizer(args.tokenizer_path)
+    structural_token_lookup = torch.as_tensor(
+        [
+            word.startswith("<") and word.endswith(">")
+            for word in tokenizer.detokenize(list(range(len(tokenizer) + 1)))
+        ],
+        dtype=torch.bool,
+        device=device,
+    )
     config = _load_config(args.config)
     _apply_loss_config(args, config)
     # V only sees headers/current states.  Scanning 70M action and legal
@@ -915,6 +1253,34 @@ def _train_v(args: argparse.Namespace) -> None:
     train_loader, train_sampler = _loader(
         train_ds, batch_size=args.batch_size, balanced_formats=args.balanced_formats, shuffle=True, seed=args.seed,
         collate=functools.partial(collate_v, pad_id=tokenizer.pad_token_id), num_workers=args.num_workers,
+        battle_sampling_alpha=args.v_battle_sampling_alpha,
+    )
+    train_eval_ds = train_ds.fixed_subset(args.train_eval_samples) if args.train_eval_samples else None
+    train_eval_loader = None
+    if train_eval_ds is not None:
+        train_eval_loader, _ = _loader(
+            train_eval_ds, batch_size=args.batch_size, balanced_formats=False, shuffle=False,
+            seed=args.seed, collate=functools.partial(collate_v, pad_id=tokenizer.pad_token_id),
+            num_workers=args.num_workers,
+        )
+    print(
+        f"[v] battle sampling alpha={args.v_battle_sampling_alpha:g} "
+        "(0=uniform battles, 1=uniform states)",
+        flush=True,
+    )
+    if train_eval_loader is not None:
+        print(
+            f"[v] matched train-eval uses {len(train_eval_ds):,} fixed samples; "
+            f"validation uses {args.val_mc_samples} fixed posterior draws.",
+            flush=True,
+        )
+    print(
+        f"[v] LR warmup={args.lr_warmup_updates:,}, peak={args.lr:.2e}, "
+        f"cosine minimum={args.min_lr:.2e} at update {args.lr_schedule_updates:,}; "
+        f"early-stop patience={args.early_stop_patience} validations; "
+        f"encoder content masking={args.encoder_token_mask_prob:.1%}; "
+        f"mean reconstruction blend={args.mean_recon_weight:.1%}.",
+        flush=True,
     )
     if val_ds is None:
         raise ValueError("V stage requires a validation split for checkpoint selection")
@@ -936,20 +1302,42 @@ def _train_v(args: argparse.Namespace) -> None:
 
     def batch_loss(batch: Mapping[str, Any], _: bool) -> tuple[torch.Tensor, dict[str, float]]:
         warmup = min(1.0, (getattr(batch_loss, "optimizer_update", 0) + 1) / max(args.kl_warmup_updates, 1))
-        loss, metrics, _ = _run_v_batch(model, batch, beta=args.beta_kl * warmup, args=args)
+        loss, metrics, _ = _run_v_batch(
+            model,
+            batch,
+            beta=args.beta_kl * warmup,
+            args=args,
+            structural_token_lookup=structural_token_lookup,
+            mask_token_id=tokenizer.unknown_token_id,
+        )
         return loss, metrics
 
+    def learning_rate_schedule(update: int) -> float:
+        return _warmup_cosine_lr(
+            update,
+            peak_lr=args.lr,
+            min_lr=args.min_lr,
+            warmup_updates=args.lr_warmup_updates,
+            schedule_updates=args.lr_schedule_updates,
+        )
+
     def validate() -> dict[str, float]:
-        return _validate_v(model, val_loader, device, args, tokenizer)
+        validation_metrics = _validate_v(model, val_loader, device, args, tokenizer)
+        if train_eval_loader is None:
+            return validation_metrics
+        train_eval_metrics = _validate_v(model, train_eval_loader, device, args, tokenizer)
+        return _merge_v_train_eval_metrics(validation_metrics, train_eval_metrics)
 
     def save_callback(update: int, metrics: Mapping[str, float], improved: bool) -> None:
         _save(save_dir / "v_latest.pt", model=model, optimizer=optimizer, stage="v", update=update, config=config,
               tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=None,
-              max_context_transitions=args.max_context_transitions, metrics=metrics)
+              max_context_transitions=args.max_context_transitions, metrics=metrics,
+              training_config=vars(args))
         if improved:
             _save(args.checkpoint or save_dir / "v_best.pt", model=model, optimizer=optimizer, stage="v", update=update, config=config,
                   tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=None,
-                  max_context_transitions=args.max_context_transitions, metrics=metrics)
+                  max_context_transitions=args.max_context_transitions, metrics=metrics,
+                  training_config=vars(args))
 
     wandb_logger = _start_wandb(
         args, stage="v", model=model, model_config=_full_model_config(config, args.max_context_transitions),
@@ -960,6 +1348,7 @@ def _train_v(args: argparse.Namespace) -> None:
             stage="v", model=model, train_loader=train_loader, train_sampler=train_sampler, validation=validate,
             batch_loss=batch_loss, optimizer=optimizer, args=args, save_callback=save_callback, device=device,
             wandb_logger=wandb_logger, start_update=start_update, initial_best=initial_best,
+            learning_rate_schedule=learning_rate_schedule, early_stop_patience=args.early_stop_patience,
         )
     finally:
         if wandb_logger is not None:
@@ -1033,11 +1422,13 @@ def _train_m(args: argparse.Namespace) -> None:
     def save_callback(update: int, metrics: Mapping[str, float], improved: bool) -> None:
         _save(save_dir / "m_latest.pt", model=model, optimizer=optimizer, stage="m", update=update, config=config,
               tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=cache_hash,
-              max_context_transitions=args.max_context_transitions, metrics=metrics)
+              max_context_transitions=args.max_context_transitions, metrics=metrics,
+              training_config=vars(args))
         if improved:
             _save(args.checkpoint or save_dir / "m_best.pt", model=model, optimizer=optimizer, stage="m", update=update, config=config,
                   tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=cache_hash,
-                  max_context_transitions=args.max_context_transitions, metrics=metrics)
+                  max_context_transitions=args.max_context_transitions, metrics=metrics,
+                  training_config=vars(args))
 
     wandb_logger = _start_wandb(
         args, stage="m", model=model, model_config=_full_model_config(config, args.max_context_transitions),
@@ -1085,11 +1476,13 @@ def _train_c(args: argparse.Namespace) -> None:
     def save_callback(update: int, metrics: Mapping[str, float], improved: bool) -> None:
         _save(save_dir / "c_latest.pt", model=model, optimizer=optimizer, stage="c", update=update, config=config,
               tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=cache_hash,
-              max_context_transitions=args.max_context_transitions, metrics=metrics)
+              max_context_transitions=args.max_context_transitions, metrics=metrics,
+              training_config=vars(args))
         if improved:
             _save(args.checkpoint or save_dir / "c_best.pt", model=model, optimizer=optimizer, stage="c", update=update, config=config,
                   tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=cache_hash,
-                  max_context_transitions=args.max_context_transitions, metrics=metrics)
+                  max_context_transitions=args.max_context_transitions, metrics=metrics,
+                  training_config=vars(args))
 
     wandb_logger = _start_wandb(
         args, stage="c", model=model, model_config=_full_model_config(config, args.max_context_transitions),
@@ -1140,7 +1533,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--latent_cache_root", default=None)
     parser.add_argument("--max_context_transitions", type=int, default=32)
     parser.add_argument("--balanced_formats", default=True, action=argparse.BooleanOptionalAction)
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--grad_accum_steps", type=int, default=1)
     parser.add_argument("--max_updates", type=int, default=0, help="Optimizer updates; defaults to the stage pilot budget.")
     parser.add_argument("--max_steps", type=int, default=0, help="Deprecated alias for --max_updates.")
@@ -1148,12 +1541,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--additional_updates", type=int, default=0,
         help="Train this many optimizer updates beyond the resumed global step.",
     )
-    parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--lr", type=float, default=3e-5)
+    parser.add_argument("--min_lr", type=float, default=3e-6, help="V cosine-schedule minimum learning rate.")
+    parser.add_argument("--lr_warmup_updates", type=int, default=2_000, help="V linear LR warmup length.")
+    parser.add_argument("--lr_schedule_updates", type=int, default=200_000, help="V cosine LR schedule length.")
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--grad_clip", type=float, default=1.0)
+    parser.add_argument(
+        "--grad_clip_fraction_window", type=int, default=1_000,
+        help="Recent optimizer-update window used for the logged clipping fraction.",
+    )
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--val_interval", type=int, default=5_000)
     parser.add_argument("--val_samples", type=int, default=10_000)
+    parser.add_argument(
+        "--val_mc_samples", type=int, default=4,
+        help="Posterior draws used for V validation recon_ce_mc and recon_ce_mc_std.",
+    )
+    parser.add_argument(
+        "--train_eval_samples", type=int, default=2_000,
+        help="Fixed train-split V samples evaluated identically to validation (0 disables).",
+    )
+    parser.add_argument(
+        "--train_metric_window", type=int, default=100,
+        help="Optimizer-update window for smoothed training metrics.",
+    )
     parser.add_argument("--print_interval", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--compile", default=False, action=argparse.BooleanOptionalAction)
@@ -1169,10 +1581,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     # V objective
     parser.add_argument("--beta_kl", type=float, default=None)
-    parser.add_argument("--kl_warmup_updates", type=int, default=10_000)
+    parser.add_argument("--kl_warmup_updates", type=int, default=20_000)
     parser.add_argument("--free_bits", type=float, default=0.02)
     parser.add_argument("--kl_capacity", type=float, default=0.0)
     parser.add_argument("--kl_capacity_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--encoder_token_mask_prob", type=float, default=0.0,
+        help="Training-only probability of replacing valid non-structural V encoder tokens with UNK.",
+    )
+    parser.add_argument(
+        "--mean_recon_weight", type=float, default=0.0,
+        help=(
+            "Fraction of the V reconstruction objective decoded from posterior mu; "
+            "the remainder uses a posterior sample (default: 0)."
+        ),
+    )
+    parser.add_argument(
+        "--early_stop_patience", type=int, default=10,
+        help="Stop V after this many validation checks without improvement (0 disables).",
+    )
+    parser.add_argument(
+        "--v_battle_sampling_alpha", type=float, default=0.5,
+        help=(
+            "Temper V raw-battle sampling by num_states**alpha: "
+            "0 is uniform battles, 1 is uniform states (default: 0.5)."
+        ),
+    )
     # M objective
     parser.add_argument("--lambda_opponent", type=float, default=None)
     parser.add_argument("--lambda_mdn", type=float, default=None)

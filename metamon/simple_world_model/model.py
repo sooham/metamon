@@ -680,6 +680,12 @@ def vae_losses(
     kl_per_dim = -0.5 * (1.0 + outputs["logvar"] - outputs["mu"].square() - outputs["logvar"].exp())
     raw_kl = kl_per_dim.sum(dim=-1).mean()
     free_kl = kl_per_dim.clamp_min(float(free_bits)).sum(dim=-1).mean()
+    posterior_variance = outputs["logvar"].float().exp()
+    posterior_std = posterior_variance.sqrt()
+    posterior_noise_norm = posterior_variance.sum(dim=-1).sqrt().mean()
+    posterior_expected_z_norm = (
+        outputs["mu"].float().square() + posterior_variance
+    ).sum(dim=-1).sqrt().mean()
     # Capacity is expressed per latent dimension.  It can be ramped by the
     # trainer; free bits remains active even when no capacity target is used.
     capacity_target = float(capacity) * outputs["mu"].shape[-1]
@@ -696,6 +702,9 @@ def vae_losses(
         "weighted_kl": float((float(beta_kl) * free_kl).detach()),
         "capacity_term": float(capacity_term.detach()),
         "z_norm": float(outputs["mu"].detach().float().norm(dim=-1).mean()),
+        "posterior_std_mean": float(posterior_std.detach().mean()),
+        "posterior_noise_norm": float(posterior_noise_norm.detach()),
+        "posterior_expected_z_norm": float(posterior_expected_z_norm.detach()),
     }
 
 

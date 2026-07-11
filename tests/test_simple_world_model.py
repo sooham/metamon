@@ -1,5 +1,7 @@
 import json
+import random
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -23,6 +25,7 @@ from metamon.simple_world_model.model import (
     StateVAE,
     c_losses,
     interleave_latent_history,
+    vae_losses,
 )
 import metamon.simple_world_model.train as simple_world_model_train
 from metamon.simple_world_model.train import build_arg_parser, train
@@ -331,6 +334,279 @@ def test_compact_v_loader_samples_without_materializing_every_state_ref(tmp_path
     assert len(dataset.fixed_subset(4)) == 1
 
 
+def test_v_battle_sampling_alpha_tempers_long_battle_weight(tmp_path):
+    directory = tmp_path / "train"
+    directory.mkdir(parents=True)
+    # Battle 0 has one non-header state per POV; battle 1 has four. All
+    # blocks have one token because this test exercises only reference draws.
+    np.savez(
+        directory / "paired_shard_0000.npz",
+        p1_states=np.arange(7, dtype=np.int16),
+        p1_state_offsets=np.arange(7, dtype=np.int64),
+        p1_state_lengths=np.ones(7, dtype=np.int32),
+        p2_states=np.arange(7, dtype=np.int16),
+        p2_state_offsets=np.arange(7, dtype=np.int64),
+        p2_state_lengths=np.ones(7, dtype=np.int32),
+        p1_battle_start=np.array([0, 2, 7], dtype=np.int64),
+        p2_battle_start=np.array([0, 2, 7], dtype=np.int64),
+        format_name=np.array("gen1ou"),
+    )
+    (tmp_path / "metadata.json").write_text(json.dumps({
+        "schema_version": "test", "formats": ["gen1ou"],
+    }))
+    dataset = VStateDataset(
+        [str(directory / "paired_shard_0000.npz")], data_root=tmp_path,
+        formats=["gen1ou"],
+    )
+
+    def long_to_short_ratio(alpha: float) -> float:
+        rng = random.Random(17)
+        counts = [0, 0]
+        for _ in range(20_000):
+            population = dataset.draw_battle_population("gen1ou", rng, alpha=alpha)
+            ref = dataset.draw_ref_from_battle_population(population, rng, side="p1")
+            counts[ref.battle_id] += 1
+        return counts[1] / counts[0]
+
+    assert long_to_short_ratio(0.0) == pytest.approx(1.0, rel=0.04)
+    assert long_to_short_ratio(0.5) == pytest.approx(2.0, rel=0.04)
+    assert long_to_short_ratio(1.0) == pytest.approx(4.0, rel=0.04)
+
+
+def test_v_restart_recipe_defaults():
+    parser = build_arg_parser()
+    args = parser.parse_args([
+        "--stage", "v", "--data_root", "data", "--formats", "gen1ou",
+        "--tokenizer_path", "tokenizer.json",
+    ])
+    assert simple_world_model_train.DEFAULT_UPDATES["v"] == 200_000
+    assert args.batch_size == 128
+    assert args.lr == pytest.approx(3e-5)
+    assert args.min_lr == pytest.approx(3e-6)
+    assert args.lr_warmup_updates == 2_000
+    assert args.lr_schedule_updates == 200_000
+    assert args.weight_decay == pytest.approx(0.01)
+    assert args.grad_clip == pytest.approx(1.0)
+    assert args.grad_clip_fraction_window == 1_000
+    assert args.val_interval == 5_000
+    assert args.val_mc_samples == 4
+    assert args.train_eval_samples == 2_000
+    assert args.train_metric_window == 100
+    assert args.early_stop_patience == 10
+    assert args.kl_warmup_updates == 20_000
+    assert args.free_bits == pytest.approx(0.02)
+    assert args.encoder_token_mask_prob == pytest.approx(0.0)
+    assert args.mean_recon_weight == pytest.approx(0.0)
+    config_path = Path(simple_world_model_train.__file__).parent / "configs" / "default.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    assert config["model"]["latent_dim"] == 512
+    assert config["model"]["v"]["dropout"] == pytest.approx(0.0)
+    assert config["loss"]["beta_kl"] == pytest.approx(0.01)
+
+
+def test_v_warmup_cosine_schedule():
+    def lr(update):
+        return simple_world_model_train._warmup_cosine_lr(
+            update, peak_lr=3e-5, min_lr=3e-6,
+            warmup_updates=2_000, schedule_updates=200_000,
+        )
+
+    assert lr(1) == pytest.approx(1.5e-8)
+    assert lr(2_000) == pytest.approx(3e-5)
+    assert lr(101_000) == pytest.approx(1.65e-5)
+    assert lr(200_000) == pytest.approx(3e-6)
+    assert lr(210_000) == pytest.approx(3e-6)
+
+
+def test_v_encoder_mask_excludes_structural_and_padding_tokens():
+    tokens = torch.tensor([[1, 2, 3, 4, 5]])
+    valid = torch.tensor([[True, True, True, True, False]])
+    structural = torch.zeros(10, dtype=torch.bool)
+    structural[[1, 3]] = True
+    masked, selected, eligible = simple_world_model_train._mask_non_structural_tokens(
+        tokens, valid, structural_token_lookup=structural,
+        mask_token_id=9, probability=1.0,
+    )
+    assert masked.tolist() == [[1, 9, 3, 9, 5]]
+    assert selected == 2
+    assert eligible == 2
+
+
+def test_v_mean_reconstruction_blend_preserves_objective_scale():
+    torch.manual_seed(19)
+    model = _tiny_model().train()
+    batch = {
+        "header_tokens": torch.tensor([[1, 2], [2, 3]]),
+        "header_mask": torch.tensor([[True, True], [True, True]]),
+        "state_tokens": torch.tensor([[4, 5, 6], [7, 8, 9]]),
+        "state_mask": torch.tensor([[True, True, True], [True, True, True]]),
+    }
+    args = SimpleNamespace(
+        encoder_token_mask_prob=0.0, mean_recon_weight=0.25,
+        free_bits=0.02, kl_capacity=0.0, kl_capacity_weight=0.0,
+    )
+    loss, metrics, outputs = simple_world_model_train._run_v_batch(
+        model, batch, beta=0.01, args=args,
+    )
+    mean_outputs = {
+        "logits": model.v.decode(outputs["mu"], outputs["state_valid_mask"]),
+        "mu": outputs["mu"],
+        "logvar": outputs["logvar"],
+        "state_valid_mask": outputs["state_valid_mask"],
+    }
+    mean_loss, mean_metrics = vae_losses(
+        mean_outputs, batch["state_tokens"], beta_kl=0.01, free_bits=0.02,
+    )
+    sampled_loss, sampled_metrics = vae_losses(
+        outputs, batch["state_tokens"], beta_kl=0.01, free_bits=0.02,
+    )
+    expected = 0.75 * sampled_loss + 0.25 * mean_loss
+
+    torch.testing.assert_close(loss, expected)
+    assert metrics["loss"] == pytest.approx(float(expected.detach()))
+    assert metrics["objective_recon_ce"] == pytest.approx(
+        0.75 * sampled_metrics["recon_ce"] + 0.25 * mean_metrics["recon_ce"]
+    )
+    assert metrics["mean_recon_ce"] == pytest.approx(mean_metrics["recon_ce"])
+    assert metrics["mean_recon_weight"] == pytest.approx(0.25)
+
+
+def test_v_validation_reports_reproducible_mc_reconstruction_metrics(monkeypatch):
+    torch.manual_seed(23)
+    model = _tiny_model()
+    batch = {
+        "header_tokens": torch.tensor([[1, 2], [2, 3]]),
+        "header_mask": torch.tensor([[True, True], [True, True]]),
+        "state_tokens": torch.tensor([[4, 5, 6], [7, 8, 9]]),
+        "state_mask": torch.tensor([[True, True, True], [True, True, True]]),
+        "formats": ["gen1ou", "gen1ou"],
+    }
+    args = SimpleNamespace(
+        beta_kl=0.01, free_bits=0.02, kl_capacity=0.0,
+        kl_capacity_weight=0.0, val_mc_samples=4, seed=11,
+    )
+    monkeypatch.setattr(simple_world_model_train, "_v_format_metrics", lambda outputs, row: {})
+    monkeypatch.setattr(
+        simple_world_model_train, "_v_token_category_metrics",
+        lambda outputs, row, tokenizer: {},
+    )
+
+    first = simple_world_model_train._validate_v(
+        model, [batch], torch.device("cpu"), args, PokemonTokenizer(),
+    )
+    second = simple_world_model_train._validate_v(
+        model, [batch], torch.device("cpu"), args, PokemonTokenizer(),
+    )
+
+    assert first["selection_score"] == pytest.approx(first["recon_ce"])
+    assert first["recon_ce_mc"] > 0.0
+    assert first["recon_ce_mc_std"] >= 0.0
+    assert 0.0 <= first["recon_token_acc_mc"] <= 1.0
+    assert first["recon_token_acc_mc_std"] >= 0.0
+    assert first["recon_ce_mc"] == pytest.approx(second["recon_ce_mc"])
+    assert first["recon_ce_mc_std"] == pytest.approx(second["recon_ce_mc_std"])
+    assert first["recon_token_acc_mc"] == pytest.approx(second["recon_token_acc_mc"])
+    assert first["recon_token_acc_mc_std"] == pytest.approx(second["recon_token_acc_mc_std"])
+    assert first["aggregate_mean_rms"] >= 0.0
+    assert first["aggregate_std_min"] > 0.0
+    assert first["aggregate_std_max"] >= first["aggregate_std_min"]
+    assert first["aggregate_cov_offdiag_rms"] >= 0.0
+    assert first["aggregate_gaussian_kl_per_dim"] >= 0.0
+    assert first["aggregate_gaussian_kl_per_dim"] == pytest.approx(
+        second["aggregate_gaussian_kl_per_dim"]
+    )
+    assert model.training
+
+
+def test_v_train_eval_metrics_preserve_validation_selection_and_report_gaps():
+    result = simple_world_model_train._merge_v_train_eval_metrics(
+        {
+            "loss": 2.0, "recon_ce": 1.7, "recon_token_acc": 0.6,
+            "recon_ce_mc": 1.9, "recon_token_acc_mc": 0.55,
+            "selection_score": 1.7,
+        },
+        {
+            "loss": 1.5, "recon_ce": 1.2, "recon_token_acc": 0.8,
+            "recon_ce_mc": 1.4, "recon_token_acc_mc": 0.75,
+            "selection_score": 1.2,
+        },
+    )
+    assert result["selection_score"] == pytest.approx(1.7)
+    assert "train_eval_selection_score" not in result
+    assert result["generalization_gap_loss"] == pytest.approx(0.5)
+    assert result["generalization_gap_recon_ce"] == pytest.approx(0.5)
+    assert result["generalization_gap_recon_ce_mc"] == pytest.approx(0.5)
+    assert result["generalization_gap_recon_token_acc"] == pytest.approx(0.2)
+    assert result["generalization_gap_recon_token_acc_mc"] == pytest.approx(0.2)
+
+
+def test_training_loop_logs_clipping_and_early_stops():
+    class Loader:
+        dataset = object()
+
+        def __iter__(self):
+            yield {}
+
+    class Sampler:
+        def set_epoch(self, epoch):
+            self.epoch = epoch
+
+    class Logger:
+        def __init__(self):
+            self.logged = []
+
+        def log(self, payload, *, step):
+            self.logged.append((dict(payload), step))
+
+    model = torch.nn.Linear(1, 1, bias=False)
+    optimizer = torch.optim.SGD(model.parameters(), lr=1.0)
+    args = SimpleNamespace(
+        max_updates=10, max_steps=0, additional_updates=0,
+        grad_clip_fraction_window=4, grad_accum_steps=1, grad_clip=0.01,
+        compile=False, batch_size=1, num_workers=0,
+        wandb_log_interval=1, print_interval=0, val_interval=1,
+        train_metric_window=2,
+    )
+    scores = iter([1.0, 2.0, 3.0])
+    saves = []
+    logger = Logger()
+
+    def batch_loss(batch, validation):
+        return model.weight.sum(), {"loss": float(model.weight.detach().sum())}
+
+    simple_world_model_train._training_loop(
+        stage="v", model=model, train_loader=Loader(), train_sampler=Sampler(),
+        validation=lambda: {"selection_score": next(scores)},
+        batch_loss=batch_loss, optimizer=optimizer, args=args,
+        save_callback=lambda update, metrics, improved: saves.append((update, improved)),
+        device=torch.device("cpu"), wandb_logger=logger,
+        learning_rate_schedule=lambda update: 0.1 * update,
+        early_stop_patience=2,
+    )
+    assert saves == [(1, True), (2, False), (3, False)]
+    train_logs = [payload for payload, _ in logger.logged if "train/grad_clip_fraction" in payload]
+    assert [payload["train/grad_clip_fraction"] for payload in train_logs] == [1.0, 1.0, 1.0]
+    assert train_logs[0]["train_smooth/loss"] == pytest.approx(train_logs[0]["train/loss"])
+    assert train_logs[1]["train_smooth/loss"] == pytest.approx(
+        0.5 * (train_logs[0]["train/loss"] + train_logs[1]["train/loss"])
+    )
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.3)
+
+
+def test_v_battle_sampling_alpha_defaults_and_bounds():
+    parser = build_arg_parser()
+    args = parser.parse_args([
+        "--stage", "v", "--data_root", "data", "--formats", "gen1ou",
+        "--tokenizer_path", "tokenizer.json",
+    ])
+    assert args.v_battle_sampling_alpha == 0.5
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        CompactFormatBatchSampler(
+            type("Dataset", (), {"total_by_format": {"gen1ou": 1}})(),
+            batch_size=1, battle_sampling_alpha=1.1,
+        )
+
+
 def test_cache_atomicity(monkeypatch, tmp_path):
     path = tmp_path / "sidecar.npz"
 
@@ -358,6 +634,10 @@ def test_v_cache_m_c_smoke_and_perspective_inversion(tmp_path):
         "--val_samples", "4", "--print_interval", "0", "--no-compile", "--no-wandb",
     ]))
     assert v_checkpoint.exists()
+    saved_v = torch.load(v_checkpoint, map_location="cpu")
+    assert saved_v["training_config"]["stage"] == "v"
+    assert saved_v["training_config"]["beta_kl"] == pytest.approx(0.01)
+    assert saved_v["training_config"]["mean_recon_weight"] == pytest.approx(0.0)
     v_latest = checkpoint_dir / "v_latest.pt"
     assert torch.load(v_latest, map_location="cpu")["global_step"] == 1
 

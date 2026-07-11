@@ -456,6 +456,20 @@ class _VShardPopulation:
         return int(self.state_prefix[-1]) if len(self.state_prefix) else 0
 
 
+@dataclass(frozen=True)
+class _VWeightedBattlePopulation:
+    """One shard/format's raw battles under ``num_states ** alpha`` weights."""
+
+    shard_index: int
+    fmt: str
+    battle_indices: np.ndarray
+    weight_prefix: np.ndarray
+
+    @property
+    def total_weight(self) -> float:
+        return float(self.weight_prefix[-1]) if len(self.weight_prefix) else 0.0
+
+
 @dataclass
 class _VShardInfo:
     p1_starts: np.ndarray
@@ -604,6 +618,13 @@ class VStateDataset(Dataset[dict[str, Any]]):
         self._population_prefix_by_format: dict[str, np.ndarray] = {}
         self._battle_populations_by_format: dict[str, list[_VShardPopulation]] = {}
         self._battle_prefix_by_format: dict[str, np.ndarray] = {}
+        self._weighted_battle_cache: dict[
+            float,
+            tuple[
+                dict[str, list[_VWeightedBattlePopulation]],
+                dict[str, np.ndarray],
+            ],
+        ] = {}
         self.total_by_format: dict[str, int] = {}
         self._all_populations: list[_VShardPopulation] = []
         self._all_prefix = np.empty(0, dtype=np.int64)
@@ -711,6 +732,108 @@ class VStateDataset(Dataset[dict[str, Any]]):
     def draw_ref(self, fmt: str, rng: random.Random, *, side: str | None = None) -> VStateRef:
         return self.draw_ref_from_population(self.draw_population(fmt, rng, side=side), rng, side=side)
 
+    def _weighted_battle_populations(
+        self,
+        alpha: float,
+    ) -> tuple[
+        dict[str, list[_VWeightedBattlePopulation]],
+        dict[str, np.ndarray],
+    ]:
+        """Build a compact hierarchical index for battle-tempered sampling.
+
+        A raw battle with ``n`` average non-header states across its two POVs
+        receives total weight ``n ** alpha``. Consequently ``alpha=0`` is
+        uniform over raw battles and ``alpha=1`` reproduces uniform state
+        sampling when the paired POVs have equal lengths.
+        """
+        alpha = float(alpha)
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError("V battle sampling alpha must be between 0 and 1")
+        cached = self._weighted_battle_cache.get(alpha)
+        if cached is not None:
+            return cached
+
+        by_format: dict[str, list[_VWeightedBattlePopulation]] = {}
+        population_prefix: dict[str, np.ndarray] = {}
+        for fmt, populations in self._battle_populations_by_format.items():
+            weighted_populations: list[_VWeightedBattlePopulation] = []
+            for population in populations:
+                info = self._infos[population.shard_index]
+                battle_indices = population.battle_indices
+                p1_counts = np.maximum(
+                    np.diff(info.p1_starts)[battle_indices] - 1, 0,
+                ).astype(np.float64, copy=False)
+                p2_counts = np.maximum(
+                    np.diff(info.p2_starts)[battle_indices] - 1, 0,
+                ).astype(np.float64, copy=False)
+                valid = (p1_counts > 0) & (p2_counts > 0)
+                if not bool(valid.any()):
+                    continue
+                if not bool(valid.all()):
+                    battle_indices = battle_indices[valid]
+                    p1_counts = p1_counts[valid]
+                    p2_counts = p2_counts[valid]
+                average_states = 0.5 * (p1_counts + p2_counts)
+                weights = np.power(average_states, alpha)
+                weighted_populations.append(_VWeightedBattlePopulation(
+                    shard_index=population.shard_index,
+                    fmt=fmt,
+                    battle_indices=battle_indices,
+                    weight_prefix=np.cumsum(weights, dtype=np.float64),
+                ))
+            if weighted_populations:
+                by_format[fmt] = weighted_populations
+                population_prefix[fmt] = np.cumsum(
+                    [population.total_weight for population in weighted_populations],
+                    dtype=np.float64,
+                )
+        if not by_format:
+            raise ValueError("No paired POV battles are available for V battle sampling")
+        result = (by_format, population_prefix)
+        self._weighted_battle_cache[alpha] = result
+        return result
+
+    def draw_battle_population(
+        self,
+        fmt: str,
+        rng: random.Random,
+        *,
+        alpha: float,
+    ) -> _VWeightedBattlePopulation:
+        """Choose a shard population in proportion to its battle weights."""
+        populations, prefixes = self._weighted_battle_populations(alpha)
+        prefix = prefixes[fmt]
+        target = rng.random() * float(prefix[-1])
+        population_index = int(np.searchsorted(prefix, target, side="right"))
+        return populations[fmt][population_index]
+
+    def draw_ref_from_battle_population(
+        self,
+        population: _VWeightedBattlePopulation,
+        rng: random.Random,
+        *,
+        side: str,
+    ) -> VStateRef:
+        """Choose one weighted raw battle, then one state from the requested POV."""
+        target = rng.random() * population.total_weight
+        battle_position = int(np.searchsorted(population.weight_prefix, target, side="right"))
+        battle_id = int(population.battle_indices[battle_position])
+        info = self._infos[population.shard_index]
+        starts = info.p1_starts if side == "p1" else info.p2_starts
+        lengths = info.p1_lengths if side == "p1" else info.p2_lengths
+        header = int(starts[battle_id])
+        state_count = int(starts[battle_id + 1]) - header - 1
+        if state_count <= 0:
+            raise RuntimeError(f"Weighted V battle {battle_id} has no {side} states")
+        state_index = header + 1 + rng.randrange(state_count)
+        length = int(lengths[state_index])
+        if self.max_state_tokens is not None:
+            length = min(length, self.max_state_tokens)
+        return VStateRef(
+            population.shard_index, side, state_index, header,
+            battle_id, population.fmt, length,
+        )
+
     def _ref_from_global(self, index: int, *, side: str | None = None) -> VStateRef:
         target = int(index) % len(self)
         population_index = int(np.searchsorted(self._all_prefix, target, side="right"))
@@ -765,6 +888,7 @@ class VStateDataset(Dataset[dict[str, Any]]):
         state["_population_prefix_by_format"] = {}
         state["_battle_populations_by_format"] = {}
         state["_battle_prefix_by_format"] = {}
+        state["_weighted_battle_cache"] = {}
         state["_all_populations"] = []
         state["_all_prefix"] = np.empty(0, dtype=np.int64)
         state["_handles"] = _NpzHandleCache(self.paths)
@@ -903,15 +1027,22 @@ class CompactFormatBatchSampler(Sampler[list[Any]]):
         shuffle: bool = True,
         seed: int = 0,
         pool_batches: int = 32,
+        battle_sampling_alpha: float = 1.0,
     ):
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
+        if not 0.0 <= float(battle_sampling_alpha) <= 1.0:
+            raise ValueError("battle_sampling_alpha must be between 0 and 1")
         self.dataset = dataset
         self.batch_size = int(batch_size)
         self.balanced = bool(balanced)
         self.shuffle = bool(shuffle)
         self.seed = int(seed)
         self.pool_batches = max(1, int(pool_batches))
+        self.battle_sampling_alpha = float(battle_sampling_alpha)
+        self.battle_weighted = all(hasattr(dataset, name) for name in (
+            "draw_battle_population", "draw_ref_from_battle_population",
+        ))
         self.epoch = 0
         self.active_formats = [
             fmt for fmt in sorted(dataset.total_by_format)
@@ -946,8 +1077,18 @@ class CompactFormatBatchSampler(Sampler[list[Any]]):
                 side = "p1" if side_counter[0] % 2 == 0 else "p2"
                 side_counter[0] += 1
                 if side not in populations:
-                    populations[side] = self.dataset.draw_population(fmt, rng, side=side)
-                refs.append(self.dataset.draw_ref_from_population(populations[side], rng, side=side))
+                    if self.battle_weighted:
+                        populations[side] = self.dataset.draw_battle_population(
+                            fmt, rng, alpha=self.battle_sampling_alpha,
+                        )
+                    else:
+                        populations[side] = self.dataset.draw_population(fmt, rng, side=side)
+                if self.battle_weighted:
+                    refs.append(self.dataset.draw_ref_from_battle_population(
+                        populations[side], rng, side=side,
+                    ))
+                else:
+                    refs.append(self.dataset.draw_ref_from_population(populations[side], rng, side=side))
             refs.sort(key=lambda ref: int(ref.length))
             chunks = self._chunks(refs, width)
             if self.shuffle:
@@ -993,8 +1134,18 @@ class CompactFormatBatchSampler(Sampler[list[Any]]):
                 side_counter[0] += 1
                 key = (fmt, side)
                 if key not in populations:
-                    populations[key] = self.dataset.draw_population(fmt, rng, side=side)
-                refs.append(self.dataset.draw_ref_from_population(populations[key], rng, side=side))
+                    if self.battle_weighted:
+                        populations[key] = self.dataset.draw_battle_population(
+                            fmt, rng, alpha=self.battle_sampling_alpha,
+                        )
+                    else:
+                        populations[key] = self.dataset.draw_population(fmt, rng, side=side)
+                if self.battle_weighted:
+                    refs.append(self.dataset.draw_ref_from_battle_population(
+                        populations[key], rng, side=side,
+                    ))
+                else:
+                    refs.append(self.dataset.draw_ref_from_population(populations[key], rng, side=side))
             refs.sort(key=lambda ref: int(ref.length))
             if self.shuffle:
                 rng.shuffle(refs)

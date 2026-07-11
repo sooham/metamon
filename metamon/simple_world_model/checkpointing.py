@@ -61,6 +61,7 @@ def save_simple_world_model_checkpoint(
     best_val_global_step: int | None = None,
     best_val_metrics: dict[str, float] | None = None,
     last_val_metrics: dict[str, float] | None = None,
+    training_config: dict[str, Any] | None = None,
 ) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     torch.save(
@@ -94,6 +95,10 @@ def save_simple_world_model_checkpoint(
             "best_val_global_step": best_val_global_step,
             "best_val_metrics": best_val_metrics,
             "last_val_metrics": last_val_metrics,
+            # Informational only: unlike model_config, this is not part of the
+            # compatibility signature because a deliberate resume may change
+            # LR, objective weights, validation cadence, or update budget.
+            "training_config": training_config,
         },
         path,
     )

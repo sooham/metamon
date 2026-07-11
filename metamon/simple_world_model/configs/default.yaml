@@ -1,14 +1,14 @@
 # V/M/C world-model defaults.  V sees only `team_header + current_state`; all
 # observed temporal context is retained by M's causal latent transformer.
 model:
-  latent_dim: 128
+  latent_dim: 512
 
   v:
-    d_model: 256
+    d_model: 512
     n_heads: 8
-    n_layers: 4
-    d_ff: 1024
-    dropout: 0.0
+    n_layers: 8
+    d_ff: 2048
+    dropout: 0.00
     # This caps header + one state, independently of M history length.
     max_seq_len: 1024
     max_state_tokens: 512

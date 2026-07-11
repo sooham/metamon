@@ -19,7 +19,7 @@ other samples in the batch.
 ## Stages
 
 ```bash
-# 1. Train V (100k optimizer updates by default)
+# 1. Train V (200k optimizer updates by default)
 uv run python -m metamon.simple_world_model.train \
   --stage v --data_root "$METAMON_CACHE_DIR/world-model-samples" \
   --formats gen1ou gen9ou --tokenizer_path "$TOKENIZER" \
@@ -68,19 +68,81 @@ make train-simple-world-model-m
 make train-simple-world-model-c
 ```
 
-The first V Make run targets 100K optimizer updates. Once `v_latest.pt` exists,
-each later invocation resumes model and AdamW state and adds another 50K
-updates: 100K to 150K, 150K to 200K, and so on. `v_best.pt` continues to track
-the best validation reconstruction. Override the interval with
-`SIMPLE_WM_ADDITIONAL_UPDATES`, set an absolute target with
-`SIMPLE_WM_MAX_UPDATES`, or force a fresh run with
-`make train-simple-world-model-v SIMPLE_WM_RESUME=false`.
+The default V recipe is a fresh 200K-update run with a fixed batch size of 128,
+AdamW weight decay 0.01, and gradient clipping at 1.0. The learning rate warms
+linearly for 2K updates to 3e-5, then follows a cosine decay to 3e-6 at update
+200K. Validation runs every 5K updates and training stops after ten
+consecutive validations without an improvement in reconstruction CE.
+V validation also reports CE and token accuracy (plus across-draw standard
+deviations) from four fixed posterior draws by default under `val/*_mc`.
+Posterior standard deviation, expected sampling-noise norm, and expected sampled
+latent norm are logged alongside the deterministic mean norm. The deterministic
+`z=mu` reconstruction remains the checkpoint-selection metric. Override the
+draw count with `SIMPLE_WM_VAL_MC_SAMPLES`.
+Validation also audits the aggregate posterior against the standard-normal
+prior. `aggregate_mean_*`, `aggregate_std_*`, covariance error, and the KL of a
+moment-matched full-covariance Gaussian reveal population-level drift or latent
+correlation that a scalar per-example KL can obscure.
 
-For a direct CLI resume, add:
+The standard-normal constraint is on posterior samples
+`z = mu + exp(0.5 * logvar) * epsilon`, not on `mu` by itself. In a well-formed
+VAE, variation of posterior means plus average posterior variance together make
+the aggregate sampled latent approximately unit variance. Requiring both the
+means and samples independently to have unit variance would over-dispense the
+sampled latent. The exact average conditional KL also upper-bounds aggregate
+posterior KL, while including the mutual information retained about the input.
+Each validation also evaluates 2K fixed samples from the training split through
+the identical deterministic and sampled-posterior path. Metrics named
+`val/train_eval_*` and `val/generalization_gap_*` therefore measure a matched
+generalization gap instead of comparing validation to one stochastic training
+batch. Set `SIMPLE_WM_TRAIN_EVAL_SAMPLES=0` to disable this extra pass.
+
+V uses a 512-dimensional latent with `beta_kl=0.01`, 0.02 free bits, and a
+20K-update KL warmup. Encoder token masking is initially disabled. If enabled,
+the configured fraction of valid content tokens is replaced by `<unk>` only in
+the encoder input; structural tags and the clean reconstruction target remain
+untouched. V's Transformer dropout is 0.0. Training logs both the pre-clipping
+gradient norm and the fraction of recent optimizer updates whose norm exceeded
+the 1.0 threshold. `train_smooth/*` metrics and the console `avgN` loss average
+the latest 100 optimizer updates by default; change the window with
+`SIMPLE_WM_TRAIN_METRIC_WINDOW`.
+
+`SIMPLE_WM_MEAN_RECON_WEIGHT` defaults to `0.25` in the Make recipe, using 75%
+sampled reconstruction plus 25% `z=mu` reconstruction. The interpolation keeps
+the total reconstruction and KL scales constant. This keeps the deterministic
+downstream representation on the decoder's training manifold. The direct CLI
+default remains `0` so standard sampled-only VAE experiments must opt into the
+extra decoder pass explicitly.
+
+V no longer auto-resumes merely because `v_latest.pt` exists. Use a new save
+directory for the restart so the previous artifacts remain available:
+
+```bash
+make train-simple-world-model-v \
+  SIMPLE_WM_RESUME=false \
+  SIMPLE_WM_SAVE_DIR="$METAMON_CACHE_DIR/simple-world-model-checkpoints-v2"
+```
+
+To continue an interrupted run made with the same model and dataset, set
+`SIMPLE_WM_RESUME=true`. The default absolute target remains update 200K;
+use `SIMPLE_WM_ADDITIONAL_UPDATES` only when intentionally extending a
+finished schedule. `v_best.pt` tracks the best validation reconstruction.
+
+V samples raw battles with weight `num_states ** alpha`, where `num_states`
+is the average non-header state count across the paired POVs, then selects one
+POV and one state within the chosen battle. The Make default is
+`SIMPLE_WM_V_SAMPLING_ALPHA=0.5`, a compromise between uniform battles
+(`0`) and uniform states (`1`). Override it, for example, with:
+
+```bash
+make train-simple-world-model-v SIMPLE_WM_V_SAMPLING_ALPHA=0
+```
+
+For a direct CLI resume of an interrupted matching run, add:
 
 ```bash
 --resume_checkpoint "$METAMON_CACHE_DIR/simple-world-model-checkpoints/v_latest.pt" \
---additional_updates 50000
+--max_updates 200000
 ```
 
 Each training target launches a `simple-world-model-train` tmux session and
