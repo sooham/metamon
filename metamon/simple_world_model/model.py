@@ -60,6 +60,62 @@ def _as_valid_mask(tokens: torch.Tensor, mask: torch.Tensor | None, pad_id: int)
     return mask.to(device=tokens.device, dtype=torch.bool)
 
 
+class LatentAdaLNTransformerBlock(TransformerBlock):
+    """Pre-LN decoder block modulated by the same flat latent at every depth.
+
+    Subclassing the shared block deliberately preserves all legacy state-dict
+    names (``ln1``, ``attn``, ``ln2``, and the FFN tensors).  Consequently an
+    additive-decoder checkpoint can warm start this block with only the new
+    ``adaln`` parameters missing.  Those parameters are zero initialized, so
+    the warm-started decoder is exactly function preserving before training.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        d_ff: int,
+        dropout: float,
+        max_seq_len: int,
+        *,
+        latent_dim: int,
+        causal: bool = False,
+        ffn_activation: str = "gelu",
+        use_rope: bool = True,
+    ):
+        super().__init__(
+            d_model,
+            n_heads,
+            d_ff,
+            dropout,
+            max_seq_len,
+            causal=causal,
+            ffn_activation=ffn_activation,
+            use_rope=use_rope,
+        )
+        self.adaln = nn.Linear(latent_dim, 4 * d_model)
+
+    def reset_conditioning_parameters(self) -> None:
+        nn.init.zeros_(self.adaln.weight)
+        nn.init.zeros_(self.adaln.bias)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        z: torch.Tensor,
+        key_padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if z.ndim != 2 or z.shape[0] != x.shape[0]:
+            raise ValueError("AdaLN decoder conditioning must be [batch, latent_dim]")
+        attn_scale, attn_shift, ffn_scale, ffn_shift = self.adaln(z).chunk(4, dim=-1)
+        attn_hidden = self.ln1(x)
+        attn_hidden = attn_hidden * (1.0 + attn_scale[:, None, :]) + attn_shift[:, None, :]
+        x = x + self.attn(attn_hidden, key_padding_mask=key_padding_mask)
+        ffn_hidden = self.ln2(x)
+        ffn_hidden = ffn_hidden * (1.0 + ffn_scale[:, None, :]) + ffn_shift[:, None, :]
+        return x + self.dropout(self._ffn(ffn_hidden))
+
+
 class StateVAE(nn.Module):
     """Bidirectional VAE for one visible state conditioned on a team header.
 
@@ -84,6 +140,9 @@ class StateVAE(nn.Module):
         theta: float = 10000.0,  # Kept in the public config for compatibility.
         ffn_activation: str = "gelu",
         gradient_checkpointing: bool = False,
+        decoder_conditioning: str = "additive",
+        decoder_header_conditioning: str = "none",
+        fixed_posterior_std: float | None = None,
     ):
         super().__init__()
         del theta
@@ -94,6 +153,29 @@ class StateVAE(nn.Module):
         self.max_seq_len = int(max_seq_len)
         self.max_state_tokens = int(max_state_tokens or max_seq_len)
         self.gradient_checkpointing = bool(gradient_checkpointing)
+        self.decoder_conditioning = str(decoder_conditioning).lower()
+        if self.decoder_conditioning not in {"additive", "adaln"}:
+            raise ValueError(
+                "decoder_conditioning must be either 'additive' or 'adaln', "
+                f"got {decoder_conditioning!r}"
+            )
+        self.decoder_header_conditioning = str(decoder_header_conditioning).lower()
+        if self.decoder_header_conditioning not in {"none", "cross_attention"}:
+            raise ValueError(
+                "decoder_header_conditioning must be either 'none' or "
+                f"'cross_attention', got {decoder_header_conditioning!r}"
+            )
+        self.fixed_posterior_std = (
+            None if fixed_posterior_std is None else float(fixed_posterior_std)
+        )
+        if self.fixed_posterior_std is not None and (
+            not math.isfinite(self.fixed_posterior_std)
+            or self.fixed_posterior_std <= 0.0
+        ):
+            raise ValueError(
+                "fixed_posterior_std must be a finite positive number, "
+                f"got {fixed_posterior_std!r}"
+            )
 
         self.token_embedding = nn.Embedding(vocab_size + 1, d_model, padding_idx=pad_id)
         self.segment_embedding = nn.Embedding(2, d_model)  # header / visible state
@@ -113,18 +195,57 @@ class StateVAE(nn.Module):
 
         self.position_embedding = nn.Embedding(self.max_state_tokens, d_model)
         self.z_to_decoder = nn.Linear(latent_dim, d_model)
-        self.decoder_blocks = nn.ModuleList(
-            [
-                TransformerBlock(
+        if self.decoder_header_conditioning == "cross_attention":
+            # This is deliberately a separate, raw-header-only memory path.
+            # Reusing joint encoder states here would leak target-state tokens:
+            # those header positions have already attended to the visible state.
+            self.decoder_header_position_embedding = nn.Embedding(max_seq_len, d_model)
+            self.decoder_header_query_ln = nn.LayerNorm(d_model)
+            self.decoder_header_memory_ln = nn.LayerNorm(d_model)
+            self.decoder_header_cross_attention = nn.MultiheadAttention(
+                d_model,
+                n_heads,
+                dropout=dropout,
+                batch_first=True,
+            )
+            # A per-channel zero gate makes a legacy warm start bit-exact while
+            # allowing one cross-attention operation to become active in place.
+            self.decoder_header_gate = nn.Parameter(torch.zeros(d_model))
+        else:
+            self.decoder_header_position_embedding = None
+            self.decoder_header_query_ln = None
+            self.decoder_header_memory_ln = None
+            self.decoder_header_cross_attention = None
+            self.register_parameter("decoder_header_gate", None)
+        decoder_block_cls = (
+            LatentAdaLNTransformerBlock
+            if self.decoder_conditioning == "adaln"
+            else TransformerBlock
+        )
+        self.decoder_blocks = nn.ModuleList([
+            (
+                decoder_block_cls(
                     d_model, n_heads, d_ff, dropout, self.max_state_tokens,
                     causal=False, ffn_activation=ffn_activation, use_rope=True,
+                    **({"latent_dim": latent_dim} if self.decoder_conditioning == "adaln" else {}),
                 )
-                for _ in range(n_layers)
-            ]
-        )
+            )
+            for _ in range(n_layers)
+        ])
         self.decoder_ln = nn.LayerNorm(d_model)
         self.output_head = nn.Linear(d_model, vocab_size + 1)
         self.apply(_init_weights)
+        # ``self.apply`` initializes every Linear, including the conditioners.
+        # Restore AdaLN's exact identity after that general initialization.
+        self.reset_decoder_conditioning_parameters()
+
+    def reset_decoder_conditioning_parameters(self) -> None:
+        """Restore function-preserving decoder conditioning initialization."""
+        for block in self.decoder_blocks:
+            if isinstance(block, LatentAdaLNTransformerBlock):
+                block.reset_conditioning_parameters()
+        if self.decoder_header_gate is not None:
+            nn.init.zeros_(self.decoder_header_gate)
 
     def _check_encoder_len(self, seq_len: int) -> None:
         if seq_len > self.max_seq_len:
@@ -218,9 +339,10 @@ class StateVAE(nn.Module):
             if state_leading != leading:
                 raise ValueError("header and state leading dimensions must match")
         if self.gradient_checkpointing and self.training:
-            # checkpoint accepts None poorly on older PyTorch versions; normal
-            # state encoding always has a state, header-only cache encoding does
-            # not need gradients.
+            # checkpoint accepts None poorly on older PyTorch versions.  Keep
+            # separate None-free call surfaces for state and header-only
+            # training; the latter is used by the opt-in team-posterior
+            # aggregate regularizer.
             if flat_state is not None:
                 pooled = torch.utils.checkpoint.checkpoint(
                     self._encode_flat,
@@ -231,12 +353,28 @@ class StateVAE(nn.Module):
                     use_reentrant=False,
                 )
             else:
-                pooled = self._encode_flat(flat_header, None, flat_header_mask, None)
+                pooled = torch.utils.checkpoint.checkpoint(
+                    self._encode_header_flat,
+                    flat_header,
+                    flat_header_mask,
+                    use_reentrant=False,
+                )
         else:
             pooled = self._encode_flat(flat_header, flat_state, flat_header_mask, flat_state_mask)
         mu = self.mu_head(pooled)
-        logvar = self.logvar_head(pooled).clamp(-12.0, 8.0)
+        if self.fixed_posterior_std is None:
+            logvar = self.logvar_head(pooled).clamp(-12.0, 8.0)
+        else:
+            logvar = torch.full_like(mu, 2.0 * math.log(self.fixed_posterior_std))
         return _restore_leading(mu, leading), _restore_leading(logvar, leading)
+
+    def _encode_header_flat(
+        self,
+        header_tokens: torch.Tensor,
+        header_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """None-free checkpoint wrapper for the deployed header-only path."""
+        return self._encode_flat(header_tokens, None, header_mask, None)
 
     @staticmethod
     def sample(mu: torch.Tensor, logvar: torch.Tensor, *, deterministic: bool = False) -> torch.Tensor:
@@ -247,21 +385,97 @@ class StateVAE(nn.Module):
     # Compatibility spelling for code that previously called reparameterize.
     reparameterize = sample
 
-    def _decode_flat(self, z: torch.Tensor, valid_token_mask: torch.Tensor) -> torch.Tensor:
+    def _condition_decoder_on_header(
+        self,
+        x: torch.Tensor,
+        header_tokens: torch.Tensor,
+        header_valid_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Add one gated cross-attention over raw header token embeddings.
+
+        The memory is constructed locally from token IDs, header positions and
+        the caller-provided validity mask.  No joint encoder hidden state is
+        accepted by this API, which keeps the decoder path free of target-state
+        skip connections.
+        """
+        if self.decoder_header_cross_attention is None:
+            return x
+        if header_tokens.ndim != 2 or header_valid_mask.shape != header_tokens.shape:
+            raise ValueError("decoder header tokens and mask must be [batch, header_tokens]")
+        if header_tokens.shape[0] != x.shape[0]:
+            raise ValueError("decoder header and state batch dimensions must match")
+        if header_tokens.shape[-1] > self.max_seq_len:
+            raise ValueError(
+                f"decoder header length {header_tokens.shape[-1]} exceeds "
+                f"V max_seq_len={self.max_seq_len}"
+            )
+        # Keep the eager validation without forcing a Tensor.item() graph
+        # break inside torch.compile; the production collator guarantees a
+        # non-empty team header for every row.
+        if (
+            not torch.compiler.is_compiling()
+            and not bool(header_valid_mask.any(dim=-1).all())
+        ):
+            raise ValueError("each header-conditioned decoder row must contain a valid token")
+        assert self.decoder_header_position_embedding is not None
+        assert self.decoder_header_query_ln is not None
+        assert self.decoder_header_memory_ln is not None
+        assert self.decoder_header_gate is not None
+        positions = torch.arange(header_tokens.shape[-1], device=header_tokens.device)
+        header_segments = torch.zeros_like(header_tokens)
+        memory = (
+            self.token_embedding(header_tokens)
+            + self.segment_embedding(header_segments)
+            + self.decoder_header_position_embedding(positions).unsqueeze(0)
+        )
+        memory = self.decoder_header_memory_ln(memory)
+        conditioned, _ = self.decoder_header_cross_attention(
+            self.decoder_header_query_ln(x),
+            memory,
+            memory,
+            key_padding_mask=~header_valid_mask,
+            need_weights=False,
+        )
+        return x + conditioned * self.decoder_header_gate.to(dtype=conditioned.dtype)[None, None, :]
+
+    def _decode_flat(
+        self,
+        z: torch.Tensor,
+        valid_token_mask: torch.Tensor,
+        header_tokens: torch.Tensor | None = None,
+        header_valid_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if valid_token_mask.ndim != 2 or valid_token_mask.shape[0] != z.shape[0]:
             raise ValueError("decoder valid_token_mask must be [batch, state_tokens]")
         seq_len = int(valid_token_mask.shape[-1])
         self._check_state_len(seq_len)
         positions = torch.arange(seq_len, device=z.device)
         x = self.position_embedding(positions).unsqueeze(0) + self.z_to_decoder(z).unsqueeze(1)
+        if self.decoder_header_conditioning == "cross_attention":
+            if header_tokens is None or header_valid_mask is None:
+                raise TypeError(
+                    "header-conditioned StateVAE.decode requires header_tokens and "
+                    "header_valid_mask"
+                )
+            x = self._condition_decoder_on_header(x, header_tokens, header_valid_mask)
         # Critical: keep padded positions out of keys in *every* attention
         # block, not only a final pooling operation.
         for block in self.decoder_blocks:
-            x = block(x, key_padding_mask=valid_token_mask)
+            if isinstance(block, LatentAdaLNTransformerBlock):
+                x = block(x, z, key_padding_mask=valid_token_mask)
+            else:
+                x = block(x, key_padding_mask=valid_token_mask)
         x = self.decoder_ln(x)
         return self.output_head(x)
 
-    def decode(self, z: torch.Tensor, valid_token_mask: torch.Tensor) -> torch.Tensor:
+    def decode(
+        self,
+        z: torch.Tensor,
+        valid_token_mask: torch.Tensor,
+        *,
+        header_tokens: torch.Tensor | None = None,
+        header_valid_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Decode a state; a per-sample validity mask is mandatory.
 
         The explicit mask avoids a subtle padding leak: a valid query in a
@@ -275,7 +489,22 @@ class StateVAE(nn.Module):
         leading = tuple(z.shape[:-1])
         flat_z = z.reshape(-1, z.shape[-1])
         flat_mask = valid_token_mask.reshape(-1, valid_token_mask.shape[-1]).bool()
-        logits = self._decode_flat(flat_z, flat_mask)
+        flat_header = flat_header_mask = None
+        if self.decoder_header_conditioning == "cross_attention":
+            if header_tokens is None:
+                raise TypeError("header-conditioned StateVAE.decode requires header_tokens")
+            if tuple(header_tokens.shape[:-1]) != leading:
+                raise ValueError("z and decoder header leading dimensions must match")
+            resolved_header_mask = _as_valid_mask(
+                header_tokens,
+                header_valid_mask,
+                self.pad_id,
+            )
+            flat_header, header_leading = _flatten_leading(header_tokens)
+            flat_header_mask, mask_leading = _flatten_leading(resolved_header_mask)
+            if header_leading != leading or mask_leading != leading:
+                raise ValueError("z and decoder header leading dimensions must match")
+        logits = self._decode_flat(flat_z, flat_mask, flat_header, flat_header_mask)
         return _restore_leading(logits, leading)
 
     def forward(
@@ -285,18 +514,38 @@ class StateVAE(nn.Module):
         *,
         header_valid_mask: torch.Tensor | None = None,
         state_valid_mask: torch.Tensor | None = None,
+        decoder_header_tokens: torch.Tensor | None = None,
+        decoder_header_valid_mask: torch.Tensor | None = None,
         deterministic: bool = False,
     ) -> dict[str, torch.Tensor]:
+        header_mask = _as_valid_mask(header_tokens, header_valid_mask, self.pad_id)
         state_mask = _as_valid_mask(state_tokens, state_valid_mask, self.pad_id)
         mu, logvar = self.encode(
             header_tokens,
             state_tokens,
-            header_valid_mask=header_valid_mask,
+            header_valid_mask=header_mask,
             state_valid_mask=state_mask,
         )
         z = self.sample(mu, logvar, deterministic=deterministic)
+        decoder_header_tokens = (
+            header_tokens if decoder_header_tokens is None else decoder_header_tokens
+        )
+        decoder_header_mask = (
+            header_mask
+            if decoder_header_valid_mask is None and decoder_header_tokens is header_tokens
+            else _as_valid_mask(
+                decoder_header_tokens,
+                decoder_header_valid_mask,
+                self.pad_id,
+            )
+        )
         return {
-            "logits": self.decode(z, state_mask),
+            "logits": self.decode(
+                z,
+                state_mask,
+                header_tokens=decoder_header_tokens,
+                header_valid_mask=decoder_header_mask,
+            ),
             "mu": mu,
             "logvar": logvar,
             "z": z,
@@ -557,6 +806,8 @@ class SimpleWorldModel(nn.Module):
             **controller_cfg,
         )
         self.apply(_init_weights)
+        # The container-wide initializer visits V a second time.
+        self.v.reset_decoder_conditioning_parameters()
 
     def encode_state(
         self,
@@ -565,6 +816,8 @@ class SimpleWorldModel(nn.Module):
         *,
         header_valid_mask: torch.Tensor | None = None,
         state_valid_mask: torch.Tensor | None = None,
+        decoder_header_tokens: torch.Tensor | None = None,
+        decoder_header_valid_mask: torch.Tensor | None = None,
         deterministic: bool = True,
     ) -> dict[str, torch.Tensor]:
         return self.v(
@@ -572,6 +825,8 @@ class SimpleWorldModel(nn.Module):
             state_tokens,
             header_valid_mask=header_valid_mask,
             state_valid_mask=state_valid_mask,
+            decoder_header_tokens=decoder_header_tokens,
+            decoder_header_valid_mask=decoder_header_valid_mask,
             deterministic=deterministic,
         )
 
@@ -663,6 +918,69 @@ def _masked_token_accuracy(logits: torch.Tensor, targets: torch.Tensor, valid_ma
     if not bool(valid_mask.any()):
         return logits.new_zeros(())
     return logits.argmax(dim=-1)[valid_mask].eq(targets[valid_mask]).float().mean()
+
+
+def aggregate_posterior_sigreg(
+    mu: torch.Tensor,
+    logvar: torch.Tensor,
+    *,
+    num_slices: int = 128,
+    num_points: int = 17,
+    domain: float = 3.0,
+    directions: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Characteristic-function Gaussian test for a diagonal-Gaussian mixture.
+
+    Unlike applying SIGReg to one reparameterized draw per input, this
+    integrates each ``q(z|x)`` analytically.  The resulting lower-noise loss
+    directly compares the aggregate posterior
+
+        q(z) = mean_x N(mu_x, diag(exp(logvar_x)))
+
+    with ``N(0,I)`` along random (or caller-supplied fixed) projections.  It
+    therefore constrains more than aggregate mean/covariance without taxing
+    mutual information the way pointwise KL does.
+    """
+    if num_slices < 1:
+        raise ValueError("num_slices must be positive")
+    if num_points < 2:
+        raise ValueError("num_points must be at least two")
+    if domain <= 0.0:
+        raise ValueError("domain must be positive")
+    if mu.shape != logvar.shape or mu.ndim < 2:
+        raise ValueError("mu and logvar must have matching [..., latent_dim] shapes")
+
+    mu = mu.float().reshape(-1, mu.shape[-1])
+    variance = logvar.float().reshape_as(mu).exp()
+    batch_size, latent_dim = mu.shape
+    if directions is None:
+        directions = torch.randn(
+            latent_dim, num_slices, device=mu.device, dtype=torch.float32,
+        )
+    else:
+        if directions.shape != (latent_dim, num_slices):
+            raise ValueError(
+                f"directions must be {(latent_dim, num_slices)}, got {tuple(directions.shape)}"
+            )
+        directions = directions.to(device=mu.device, dtype=torch.float32)
+    directions = directions / directions.norm(p=2, dim=0, keepdim=True).clamp_min(1e-12)
+
+    projected_mu = mu @ directions
+    projected_variance = variance @ directions.square()
+    t = torch.linspace(0.0, domain, num_points, device=mu.device, dtype=torch.float32)
+    target_cf = torch.exp(-0.5 * t.square())
+    dt = domain / (num_points - 1)
+    weights = torch.full((num_points,), 2.0 * dt, device=mu.device, dtype=torch.float32)
+    weights[0] = dt
+    weights[-1] = dt
+    weights = weights * target_cf
+
+    phase = projected_mu.unsqueeze(-1) * t
+    damping = torch.exp(-0.5 * projected_variance.unsqueeze(-1) * t.square())
+    empirical_real = (damping * phase.cos()).mean(dim=0)
+    empirical_imag = (damping * phase.sin()).mean(dim=0)
+    error = (empirical_real - target_cf).square() + empirical_imag.square()
+    return ((error @ weights) * batch_size).mean()
 
 
 def vae_losses(

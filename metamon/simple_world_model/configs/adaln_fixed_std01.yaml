@@ -1,0 +1,43 @@
+# High-reconstruction V variant with layerwise AdaLN conditioning and a fixed
+# narrow posterior.  The analytic aggregate-posterior regularizer used by the
+# training command then has to place information in mu while shaping q(z)
+# toward N(0, I), instead of satisfying the prior mostly with encoder noise.
+model:
+  latent_dim: 512
+
+  v:
+    d_model: 512
+    n_heads: 8
+    n_layers: 8
+    d_ff: 2048
+    dropout: 0.00
+    max_seq_len: 1024
+    max_state_tokens: 512
+    ffn_activation: gelu
+    gradient_checkpointing: true
+    decoder_conditioning: adaln
+    fixed_posterior_std: 0.1
+
+  action_encoder:
+    action_dim: 128
+
+  m:
+    d_model: 256
+    n_heads: 8
+    n_layers: 6
+    d_ff: 1024
+    dropout: 0.0
+    num_mixtures: 5
+    ffn_activation: gelu
+    gradient_checkpointing: true
+
+  controller:
+    hidden_dim: 512
+    dropout: 0.0
+
+loss:
+  beta_kl: 0.01
+  lambda_opponent: 1.0
+  lambda_mdn: 1.0
+  lambda_done: 0.25
+  lambda_value: 0.25

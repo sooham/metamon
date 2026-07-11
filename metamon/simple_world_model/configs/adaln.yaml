@@ -1,0 +1,42 @@
+# High-reconstruction V variant. It preserves the flat 512-D latent contract
+# while reinjecting z through zero-initialized AdaLN adapters at every decoder
+# layer. Use --warm_start_checkpoint once from an additive V checkpoint; later
+# continuations use ordinary strict --resume_checkpoint.
+model:
+  latent_dim: 512
+
+  v:
+    d_model: 512
+    n_heads: 8
+    n_layers: 8
+    d_ff: 2048
+    dropout: 0.00
+    max_seq_len: 1024
+    max_state_tokens: 512
+    ffn_activation: gelu
+    gradient_checkpointing: true
+    decoder_conditioning: adaln
+
+  action_encoder:
+    action_dim: 128
+
+  m:
+    d_model: 256
+    n_heads: 8
+    n_layers: 6
+    d_ff: 1024
+    dropout: 0.0
+    num_mixtures: 5
+    ffn_activation: gelu
+    gradient_checkpointing: true
+
+  controller:
+    hidden_dim: 512
+    dropout: 0.0
+
+loss:
+  beta_kl: 0.01
+  lambda_opponent: 1.0
+  lambda_mdn: 1.0
+  lambda_done: 0.25
+  lambda_value: 0.25

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Collection
 from typing import Any
 
 import torch
@@ -131,8 +132,15 @@ def load_stage_weights(
     *,
     prefixes: tuple[str, ...] | None = None,
     strict_prefixes: bool = True,
+    allowed_missing_keys: Collection[str] = (),
 ) -> None:
-    """Load selected stage modules while allowing future-stage random heads."""
+    """Load selected stage modules while allowing future-stage random heads.
+
+    ``allowed_missing_keys`` is deliberately exact rather than prefix based.
+    It is used for architecture warm starts whose newly introduced tensors
+    have a known zero-initialized, function-preserving state.  Ordinary stage
+    loading remains strict for every selected-prefix tensor.
+    """
     state = _strip_compile_prefixes(checkpoint["model_state_dict"])
     if prefixes is not None:
         state = {key: value for key, value in state.items() if key.startswith(prefixes)}
@@ -140,9 +148,10 @@ def load_stage_weights(
     if unexpected:
         raise ValueError(f"Unexpected checkpoint tensors: {unexpected[:8]}")
     if strict_prefixes and prefixes is not None:
+        allowed_missing = set(allowed_missing_keys)
         missing_required = [
             key for key in missing
-            if key.startswith(prefixes)
+            if key.startswith(prefixes) and key not in allowed_missing
         ]
         if missing_required:
             raise ValueError(f"Missing required stage tensors: {missing_required[:8]}")
@@ -189,7 +198,8 @@ def resume_training_state(
     if found != expected:
         raise ValueError(
             "Cannot --resume because the checkpoint model/config signature does not match. "
-            "Use --checkpoint for compatible warm-start loading, or resume with the original config."
+            "Use the stage's explicit warm-start option for a compatible architecture transition, "
+            "or resume with the original config."
         )
     model.load_state_dict(_strip_compile_prefixes(ckpt["model_state_dict"]), strict=True)
     optimizer_state = ckpt.get("optimizer_state_dict")

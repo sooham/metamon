@@ -17,6 +17,7 @@ import itertools
 import json
 import math
 import os
+import random
 import time
 from collections import deque
 from pathlib import Path
@@ -31,6 +32,7 @@ try:  # Keep local training usable if an optional environment lacks wandb.
 except ImportError:  # pragma: no cover - wandb is a declared dependency.
     _wandb = None
 
+from metamon.jepa.model import sigreg
 from metamon.simple_world_model.action_vocab import ActionVocabulary
 from metamon.simple_world_model.cache_latents import build_cache
 from metamon.simple_world_model.checkpointing import (
@@ -56,6 +58,7 @@ from metamon.simple_world_model.model import (
     NUM_OUTCOME_CLASSES,
     SimpleWorldModel,
     StateVAE,
+    aggregate_posterior_sigreg,
     c_losses,
     mdn_nll,
     m_losses,
@@ -214,6 +217,32 @@ def _start_wandb(
         "early_stop_patience": int(args.early_stop_patience),
         "encoder_token_mask_prob": float(args.encoder_token_mask_prob),
         "mean_recon_weight": float(args.mean_recon_weight),
+        "lambda_mu_sigreg": float(getattr(args, "lambda_mu_sigreg", 0.0)),
+        "mu_sigreg_warmup_updates": int(getattr(args, "mu_sigreg_warmup_updates", 0)),
+        "lambda_sampled_sigreg": float(getattr(args, "lambda_sampled_sigreg", 0.0)),
+        "sampled_sigreg_warmup_updates": int(
+            getattr(args, "sampled_sigreg_warmup_updates", 0)
+        ),
+        "lambda_aggregate_sigreg": float(getattr(args, "lambda_aggregate_sigreg", 0.0)),
+        "aggregate_sigreg_warmup_updates": int(
+            getattr(args, "aggregate_sigreg_warmup_updates", 0)
+        ),
+        "lambda_team_aggregate_sigreg": float(
+            getattr(args, "lambda_team_aggregate_sigreg", 0.0)
+        ),
+        "team_aggregate_sigreg_warmup_updates": int(
+            getattr(args, "team_aggregate_sigreg_warmup_updates", 0)
+        ),
+        "team_sigreg_batch_size": int(getattr(args, "team_sigreg_batch_size", 32)),
+        "team_sigreg_battle_sampling_alpha": 0.0,
+        "sigreg_num_slices": int(getattr(args, "sigreg_num_slices", 128)),
+        "sigreg_num_points": int(getattr(args, "sigreg_num_points", 17)),
+        "sigreg_domain": float(getattr(args, "sigreg_domain", 3.0)),
+        "posterior_std_target": getattr(args, "posterior_std_target", None),
+        "posterior_std_weight": float(getattr(args, "posterior_std_weight", 0.0)),
+        "posterior_std_warmup_updates": int(
+            getattr(args, "posterior_std_warmup_updates", 0)
+        ),
         "kl_warmup_updates": int(args.kl_warmup_updates),
         "beta_kl": None if args.beta_kl is None else float(args.beta_kl),
         "free_bits": float(args.free_bits),
@@ -221,6 +250,9 @@ def _start_wandb(
         "kl_capacity_weight": float(args.kl_capacity_weight),
         "grad_clip_fraction_window": int(args.grad_clip_fraction_window),
         "resume_checkpoint": str(args.resume_checkpoint) if args.resume_checkpoint else None,
+        "warm_start_checkpoint": (
+            str(args.warm_start_checkpoint) if args.warm_start_checkpoint else None
+        ),
         "max_context_transitions": int(args.max_context_transitions),
         "compile": bool(args.compile),
         "seed": int(args.seed),
@@ -454,6 +486,61 @@ def _sample_posterior(mu: torch.Tensor, logvar: torch.Tensor, *, deterministic: 
     return StateVAE.sample(mu, logvar, deterministic=deterministic)
 
 
+def _v_uses_decoder_header_conditioning(vae: Any) -> bool:
+    vae = getattr(vae, "_orig_mod", vae)
+    return getattr(vae, "decoder_header_conditioning", "none") == "cross_attention"
+
+
+def _decoder_header_kwargs(vae: Any, batch: Mapping[str, Any]) -> dict[str, torch.Tensor]:
+    """Supply raw header memory only to decoders whose config enables it."""
+    if not _v_uses_decoder_header_conditioning(vae):
+        return {}
+    return {
+        "header_tokens": batch["header_tokens"],
+        "header_valid_mask": batch["header_mask"],
+    }
+
+
+def _balanced_format_row_indices(
+    formats: Sequence[str],
+    max_examples: int,
+    *,
+    device: torch.device,
+) -> torch.Tensor:
+    """Select a deterministic, approximately format-balanced row subset.
+
+    Training batches are shuffled, so taking rows round-robin within each
+    format rotates the selected raw battles across optimizer steps without an
+    additional RNG stream.  Per-format counts differ by at most one whenever
+    each group has enough rows.
+    """
+    if max_examples < 1:
+        raise ValueError("team_sigreg_batch_size must be positive")
+    if not formats:
+        return torch.empty(0, dtype=torch.long, device=device)
+    if max_examples >= len(formats):
+        return torch.arange(len(formats), dtype=torch.long, device=device)
+    grouped: dict[str, list[int]] = {}
+    for row, fmt in enumerate(formats):
+        grouped.setdefault(str(fmt), []).append(row)
+    selected: list[int] = []
+    offsets = {fmt: 0 for fmt in grouped}
+    while len(selected) < max_examples:
+        progressed = False
+        for fmt in sorted(grouped):
+            offset = offsets[fmt]
+            rows = grouped[fmt]
+            if offset < len(rows):
+                selected.append(rows[offset])
+                offsets[fmt] = offset + 1
+                progressed = True
+                if len(selected) == max_examples:
+                    break
+        if not progressed:
+            break
+    return torch.as_tensor(selected, dtype=torch.long, device=device)
+
+
 def _cuda_bf16(device: torch.device):
     if device.type == "cuda":
         return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
@@ -474,8 +561,16 @@ def _v_format_metrics(outputs: Mapping[str, torch.Tensor], batch: Mapping[str, A
         ce = torch.nn.functional.cross_entropy(
             logits[rows].reshape(-1, logits.shape[-1]), targets[rows].reshape(-1), reduction="none"
         )
-        result[f"v_{fmt}_token_ce"] = float(ce[valid.reshape(-1)].mean())
-        result[f"v_{fmt}_token_acc"] = float(logits[rows].argmax(dim=-1)[valid].eq(targets[rows][valid]).float().mean())
+        ce = ce[valid.reshape(-1)]
+        correct = logits[rows].argmax(dim=-1)[valid].eq(targets[rows][valid])
+        base = f"v_{fmt}_token"
+        result[f"{base}_ce"] = float(ce.mean())
+        result[f"{base}_acc"] = float(correct.float().mean())
+        # Private sufficient statistics let validation combine uneven batches
+        # by tokens rather than taking a mean of per-batch means.
+        result[f"_count/{base}"] = float(correct.numel())
+        result[f"_ce_sum/{base}"] = float(ce.double().sum())
+        result[f"_correct/{base}"] = float(correct.sum())
     return result
 
 
@@ -511,11 +606,171 @@ def _v_token_category_metrics(
     for category, name in enumerate(names):
         mask = valid & categories.eq(category)
         if bool(mask.any()):
-            result[f"v_{name}_token_ce"] = float(ce[mask].mean())
-            result[f"v_{name}_token_acc"] = float(pred[mask].eq(targets[mask]).float().mean())
+            values = ce[mask]
+            correct = pred[mask].eq(targets[mask])
+            base = f"v_{name}_token"
+            result[f"{base}_ce"] = float(values.mean())
+            result[f"{base}_acc"] = float(correct.float().mean())
+            result[f"_count/{base}"] = float(correct.numel())
+            result[f"_ce_sum/{base}"] = float(values.double().sum())
+            result[f"_correct/{base}"] = float(correct.sum())
         else:
             result[f"v_{name}_token_ce"] = float("nan")
             result[f"v_{name}_token_acc"] = float("nan")
+    return result
+
+
+def _reconstruction_totals(
+    outputs: Mapping[str, torch.Tensor], targets: torch.Tensor,
+) -> tuple[float, int, int]:
+    """Return CE sum, correct-token count, and valid-token count."""
+    valid = outputs["state_valid_mask"].bool()
+    if not bool(valid.any()):
+        return 0.0, 0, 0
+    logits = outputs["logits"].detach()
+    ce = torch.nn.functional.cross_entropy(logits[valid].float(), targets[valid], reduction="sum")
+    correct = logits.argmax(dim=-1)[valid].eq(targets[valid]).sum()
+    return float(ce.double()), int(correct), int(valid.sum())
+
+
+def _accumulate_group_totals(
+    totals: dict[str, list[float]], metrics: Mapping[str, float],
+) -> dict[str, float]:
+    """Consume private group sufficient statistics and return public metrics."""
+    public = {key: value for key, value in metrics.items() if not key.startswith("_")}
+    for key, count in metrics.items():
+        if not key.startswith("_count/"):
+            continue
+        base = key.removeprefix("_count/")
+        row = totals.setdefault(base, [0.0, 0.0, 0.0])
+        row[0] += float(metrics[f"_ce_sum/{base}"])
+        row[1] += float(metrics[f"_correct/{base}"])
+        row[2] += float(count)
+    return public
+
+
+def _aggregate_gaussian_metrics(
+    first_moment_sum: torch.Tensor,
+    second_moment_sum: torch.Tensor,
+    count: int,
+    *,
+    prefix: str,
+) -> dict[str, float]:
+    """Summarize a population from accumulated first and second moments."""
+    mean = first_moment_sum.double().cpu() / count
+    second_moment = second_moment_sum.double().cpu() / count
+    covariance = second_moment - mean.outer(mean)
+    covariance = 0.5 * (covariance + covariance.T)
+    variance = covariance.diagonal().clamp_min(1e-12)
+    std = variance.sqrt()
+    off_diagonal = covariance - torch.diag_embed(covariance.diagonal())
+    latent_dim = int(mean.numel())
+    # A singular Gaussian has infinite KL to a full-rank standard normal.
+    # Work with covariance eigenvalues so the trace and log-determinant use
+    # exactly the same matrix; adding jitter only to logdet can manufacture a
+    # small negative "KL" even for an identity covariance.
+    eigenvalues = torch.linalg.eigvalsh(covariance)
+    positive_definite = bool(torch.isfinite(eigenvalues).all() and eigenvalues.min() > 1e-10)
+    if positive_definite:
+        gaussian_kl = 0.5 * (
+            mean.square().sum()
+            + (eigenvalues - eigenvalues.log() - 1.0).sum()
+        )
+        # Guard only roundoff at the exact identity; the eigenvalue expression
+        # is non-negative analytically.
+        gaussian_kl = gaussian_kl.clamp_min(0.0)
+    else:
+        gaussian_kl = mean.new_tensor(float("inf"))
+    return {
+        f"{prefix}_mean_rms": float(mean.square().mean().sqrt()),
+        f"{prefix}_mean_abs": float(mean.abs().mean()),
+        f"{prefix}_std_mean": float(std.mean()),
+        f"{prefix}_std_min": float(std.min()),
+        f"{prefix}_std_max": float(std.max()),
+        f"{prefix}_variance_mae_from_one": float((variance - 1.0).abs().mean()),
+        f"{prefix}_cov_offdiag_rms": float(off_diagonal.square().mean().sqrt()),
+        f"{prefix}_gaussian_kl": float(gaussian_kl),
+        f"{prefix}_gaussian_kl_per_dim": (
+            float(gaussian_kl / latent_dim)
+        ),
+    }
+
+
+def _new_posterior_audit() -> dict[str, Any]:
+    """Create bounded-moment plus full-row storage for one posterior family."""
+    return {
+        "count": 0,
+        "mu_sum": None,
+        "second_moment_sum": None,
+        "mu_second_moment_sum": None,
+        "mu_rows": [],
+        "logvar_rows": [],
+    }
+
+
+def _accumulate_posterior_audit(
+    audit: dict[str, Any], mu: torch.Tensor, logvar: torch.Tensor,
+) -> None:
+    """Accumulate exact aggregate moments for diagonal Gaussian posteriors."""
+    mu = mu.detach().float().reshape(-1, mu.shape[-1])
+    logvar = logvar.detach().float().reshape_as(mu)
+    variance = logvar.exp()
+    audit["mu_rows"].append(mu)
+    audit["logvar_rows"].append(logvar)
+    if audit["mu_sum"] is None:
+        latent_dim = int(mu.shape[-1])
+        audit["mu_sum"] = torch.zeros(
+            latent_dim, device=mu.device, dtype=torch.float32,
+        )
+        audit["second_moment_sum"] = torch.zeros(
+            latent_dim, latent_dim, device=mu.device, dtype=torch.float32,
+        )
+        audit["mu_second_moment_sum"] = torch.zeros_like(
+            audit["second_moment_sum"],
+        )
+    audit["count"] += int(mu.shape[0])
+    audit["mu_sum"].add_(mu.sum(dim=0))
+    mu_second_moment = mu.transpose(0, 1).matmul(mu)
+    audit["second_moment_sum"].add_(mu_second_moment)
+    audit["second_moment_sum"].diagonal().add_(variance.sum(dim=0))
+    audit["mu_second_moment_sum"].add_(mu_second_moment)
+
+
+def _posterior_audit_metrics(
+    audit: Mapping[str, Any],
+    *,
+    prefix: str,
+    fixed_directions: torch.Tensor,
+    num_points: int,
+    domain: float,
+) -> dict[str, float]:
+    """Finalize explicitly named moment and characteristic-function audits."""
+    count = int(audit["count"])
+    if not count:
+        return {}
+    result = _aggregate_gaussian_metrics(
+        audit["mu_sum"], audit["second_moment_sum"], count,
+        prefix=f"{prefix}_aggregate",
+    )
+    result.update(_aggregate_gaussian_metrics(
+        audit["mu_sum"], audit["mu_second_moment_sum"], count,
+        prefix=f"{prefix}_aggregate_mu",
+    ))
+    all_mu = torch.cat(audit["mu_rows"], dim=0)
+    all_logvar = torch.cat(audit["logvar_rows"], dim=0)
+    sigreg_kwargs = {
+        "num_slices": int(fixed_directions.shape[1]),
+        "num_points": int(num_points),
+        "domain": float(domain),
+        "directions": fixed_directions,
+    }
+    result[f"{prefix}_aggregate_sigreg"] = float(
+        aggregate_posterior_sigreg(all_mu, all_logvar, **sigreg_kwargs)
+    )
+    deterministic_logvar = torch.full_like(all_mu, -30.0)
+    result[f"{prefix}_aggregate_mu_sigreg"] = float(
+        aggregate_posterior_sigreg(all_mu, deterministic_logvar, **sigreg_kwargs)
+    )
     return result
 
 
@@ -525,8 +780,14 @@ def _run_v_batch(
     *,
     beta: float,
     args: argparse.Namespace,
+    team_batch: Mapping[str, Any] | None = None,
     structural_token_lookup: torch.Tensor | None = None,
     mask_token_id: int | None = None,
+    mu_sigreg_scale: float = 1.0,
+    sampled_sigreg_scale: float = 1.0,
+    aggregate_sigreg_scale: float = 1.0,
+    team_aggregate_sigreg_scale: float = 1.0,
+    posterior_std_scale: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, float], dict[str, torch.Tensor]]:
     header_tokens = batch["header_tokens"]
     state_tokens = batch["state_tokens"]
@@ -554,17 +815,34 @@ def _run_v_batch(
         masked_count += selected
         eligible_count += eligible
 
+    mean_recon_weight = float(args.mean_recon_weight)
+    # With a pure mean-path objective, decoding a posterior sample builds and
+    # retains an entire second decoder graph whose loss is multiplied by zero.
+    # Skip it unless sampled-z SIGReg explicitly needs the reparameterized z.
+    mean_only_forward = (
+        mean_recon_weight == 1.0
+        and not float(getattr(args, "lambda_sampled_sigreg", 0.0))
+    )
     with _cuda_bf16(batch["header_tokens"].device):
+        decoder_forward_kwargs: dict[str, torch.Tensor] = {}
+        if _v_uses_decoder_header_conditioning(model.v):
+            decoder_forward_kwargs = {
+                "decoder_header_tokens": batch["header_tokens"],
+                "decoder_header_valid_mask": batch["header_mask"],
+            }
         outputs = model.encode_state(
             header_tokens, state_tokens,
-            header_valid_mask=batch["header_mask"], state_valid_mask=batch["state_mask"], deterministic=False,
+            header_valid_mask=batch["header_mask"], state_valid_mask=batch["state_mask"],
+            # Encoder masking is an augmentation; the conditional decoder
+            # receives the unmodified, deployment-available team header.
+            deterministic=mean_only_forward,
+            **decoder_forward_kwargs,
         )
         loss, metrics = vae_losses(
             outputs, batch["state_tokens"], beta_kl=beta, free_bits=args.free_bits,
             capacity=args.kl_capacity, capacity_weight=args.kl_capacity_weight,
         )
-        mean_recon_weight = float(args.mean_recon_weight)
-        if mean_recon_weight > 0.0:
+        if mean_recon_weight > 0.0 and not mean_only_forward:
             # VAE training normally teaches the decoder only on posterior
             # samples.  A small mean-path blend keeps ``z = mu`` on the
             # decoder's training manifold, which matters because cached and
@@ -573,7 +851,11 @@ def _run_v_batch(
             # remain unchanged as the blend changes.
             vae = getattr(model.v, "_orig_mod", model.v)
             mean_outputs = {
-                "logits": vae.decode(outputs["mu"], outputs["state_valid_mask"]),
+                "logits": vae.decode(
+                    outputs["mu"],
+                    outputs["state_valid_mask"],
+                    **_decoder_header_kwargs(vae, batch),
+                ),
                 "mu": outputs["mu"],
                 "logvar": outputs["logvar"],
                 "state_valid_mask": outputs["state_valid_mask"],
@@ -592,9 +874,159 @@ def _run_v_batch(
             metrics["mean_recon_ce"] = mean_metrics["recon_ce"]
             metrics["mean_recon_token_acc"] = mean_metrics["recon_token_acc"]
             metrics["mean_recon_weight"] = mean_recon_weight
+        elif mean_only_forward:
+            metrics["objective_recon_ce"] = metrics["recon_ce"]
+            metrics["mean_recon_ce"] = metrics["recon_ce"]
+            metrics["mean_recon_token_acc"] = metrics["recon_token_acc"]
+            metrics["mean_recon_weight"] = 1.0
+    # Pointwise VAE KL controls each q(z|x), but it also taxes mutual
+    # information.  An optional aggregate-code term instead forces the
+    # deterministic representation used by cache/player inference (mu) toward
+    # N(0,I) without requiring it to forget the input.  Keep this outside the
+    # bf16 autocast block: SIGReg's characteristic-function calculation is
+    # intentionally fp32.
+    configured_sigreg_weight = float(getattr(args, "lambda_mu_sigreg", 0.0))
+    effective_sigreg_weight = configured_sigreg_weight * float(mu_sigreg_scale)
+    if effective_sigreg_weight:
+        mu_sigreg_loss = sigreg(
+            outputs["mu"],
+            num_slices=int(getattr(args, "sigreg_num_slices", 128)),
+            num_points=int(getattr(args, "sigreg_num_points", 17)),
+            domain=float(getattr(args, "sigreg_domain", 3.0)),
+        )
+        loss = loss + effective_sigreg_weight * mu_sigreg_loss
+        metrics["loss"] = float(loss.detach())
+        metrics["mu_sigreg_loss"] = float(mu_sigreg_loss.detach())
+        metrics["mu_sigreg_weight"] = effective_sigreg_weight
+        metrics["mu_sigreg_weighted"] = float(
+            (effective_sigreg_weight * mu_sigreg_loss).detach()
+        )
+    else:
+        metrics["mu_sigreg_loss"] = 0.0
+        metrics["mu_sigreg_weight"] = 0.0
+        metrics["mu_sigreg_weighted"] = 0.0
+    # Aggregate posterior matching on the actual reparameterized draw is the
+    # InfoVAE/WAE-style complement to the pointwise KL.  Unlike applying this
+    # term only to mu, it can preserve q(z) ~= N(0,I) while reconstruction
+    # moves information from conditional noise into between-example means.
+    configured_sampled_weight = float(getattr(args, "lambda_sampled_sigreg", 0.0))
+    effective_sampled_weight = configured_sampled_weight * float(sampled_sigreg_scale)
+    if effective_sampled_weight:
+        sampled_sigreg_loss = sigreg(
+            outputs["z"],
+            num_slices=int(getattr(args, "sigreg_num_slices", 128)),
+            num_points=int(getattr(args, "sigreg_num_points", 17)),
+            domain=float(getattr(args, "sigreg_domain", 3.0)),
+        )
+        loss = loss + effective_sampled_weight * sampled_sigreg_loss
+        metrics["loss"] = float(loss.detach())
+        metrics["sampled_sigreg_loss"] = float(sampled_sigreg_loss.detach())
+        metrics["sampled_sigreg_weight"] = effective_sampled_weight
+        metrics["sampled_sigreg_weighted"] = float(
+            (effective_sampled_weight * sampled_sigreg_loss).detach()
+        )
+    else:
+        metrics["sampled_sigreg_loss"] = 0.0
+        metrics["sampled_sigreg_weight"] = 0.0
+        metrics["sampled_sigreg_weighted"] = 0.0
+    configured_aggregate_weight = float(getattr(args, "lambda_aggregate_sigreg", 0.0))
+    effective_aggregate_weight = configured_aggregate_weight * float(aggregate_sigreg_scale)
+    if effective_aggregate_weight:
+        aggregate_sigreg_loss = aggregate_posterior_sigreg(
+            outputs["mu"], outputs["logvar"],
+            num_slices=int(getattr(args, "sigreg_num_slices", 128)),
+            num_points=int(getattr(args, "sigreg_num_points", 17)),
+            domain=float(getattr(args, "sigreg_domain", 3.0)),
+        )
+        loss = loss + effective_aggregate_weight * aggregate_sigreg_loss
+        metrics["loss"] = float(loss.detach())
+        metrics["aggregate_sigreg_loss"] = float(aggregate_sigreg_loss.detach())
+        metrics["aggregate_sigreg_weight"] = effective_aggregate_weight
+        metrics["aggregate_sigreg_weighted"] = float(
+            (effective_aggregate_weight * aggregate_sigreg_loss).detach()
+        )
+    else:
+        metrics["aggregate_sigreg_loss"] = 0.0
+        metrics["aggregate_sigreg_weight"] = 0.0
+        metrics["aggregate_sigreg_weighted"] = 0.0
+    # The permanent team/header latent is a different deployed posterior
+    # family from header+state q(z).  Regularize it independently on a small,
+    # format-balanced raw-header subset so one family cannot hide the other's
+    # mismatch and B384 training stays within GPU memory.
+    configured_team_weight = float(
+        getattr(args, "lambda_team_aggregate_sigreg", 0.0)
+    )
+    effective_team_weight = configured_team_weight * float(team_aggregate_sigreg_scale)
+    if effective_team_weight:
+        team_source = team_batch if team_batch is not None else batch
+        team_rows = _balanced_format_row_indices(
+            team_source.get(
+                "formats", [""] * int(team_source["header_tokens"].shape[0])
+            ),
+            int(getattr(args, "team_sigreg_batch_size", 32)),
+            device=team_source["header_tokens"].device,
+        )
+        vae = getattr(model.v, "_orig_mod", model.v)
+        with _cuda_bf16(team_source["header_tokens"].device):
+            team_mu, team_logvar = vae.encode(
+                team_source["header_tokens"].index_select(0, team_rows),
+                header_valid_mask=team_source["header_mask"].index_select(0, team_rows),
+            )
+        team_aggregate_sigreg_loss = aggregate_posterior_sigreg(
+            team_mu,
+            team_logvar,
+            num_slices=int(getattr(args, "sigreg_num_slices", 128)),
+            num_points=int(getattr(args, "sigreg_num_points", 17)),
+            domain=float(getattr(args, "sigreg_domain", 3.0)),
+        )
+        loss = loss + effective_team_weight * team_aggregate_sigreg_loss
+        metrics["loss"] = float(loss.detach())
+        metrics["team_aggregate_sigreg_loss"] = float(
+            team_aggregate_sigreg_loss.detach()
+        )
+        metrics["team_aggregate_sigreg_weight"] = effective_team_weight
+        metrics["team_aggregate_sigreg_weighted"] = float(
+            (effective_team_weight * team_aggregate_sigreg_loss).detach()
+        )
+        metrics["team_sigreg_examples"] = float(team_rows.numel())
+    else:
+        metrics["team_aggregate_sigreg_loss"] = 0.0
+        metrics["team_aggregate_sigreg_weight"] = 0.0
+        metrics["team_aggregate_sigreg_weighted"] = 0.0
+        metrics["team_sigreg_examples"] = 0.0
+    configured_std_weight = float(getattr(args, "posterior_std_weight", 0.0))
+    effective_std_weight = configured_std_weight * float(posterior_std_scale)
+    std_target = getattr(args, "posterior_std_target", None)
+    if effective_std_weight and std_target is not None:
+        posterior_std = outputs["logvar"].float().mul(0.5).exp()
+        posterior_std_loss = (posterior_std - float(std_target)).square().mean()
+        loss = loss + effective_std_weight * posterior_std_loss
+        metrics["loss"] = float(loss.detach())
+        metrics["posterior_std_target"] = float(std_target)
+        metrics["posterior_std_target_loss"] = float(posterior_std_loss.detach())
+        metrics["posterior_std_target_weight"] = effective_std_weight
+        metrics["posterior_std_target_weighted"] = float(
+            (effective_std_weight * posterior_std_loss).detach()
+        )
+    else:
+        metrics["posterior_std_target"] = (
+            float(std_target) if std_target is not None else float("nan")
+        )
+        metrics["posterior_std_target_loss"] = 0.0
+        metrics["posterior_std_target_weight"] = 0.0
+        metrics["posterior_std_target_weighted"] = 0.0
     metrics["encoder_mask_fraction"] = masked_count / max(eligible_count, 1)
     metrics["encoder_masked_tokens"] = float(masked_count)
     metrics["encoder_mask_eligible_tokens"] = float(eligible_count)
+    vae = getattr(model.v, "_orig_mod", model.v)
+    decoder_header_gate = getattr(vae, "decoder_header_gate", None)
+    if decoder_header_gate is not None:
+        gate = decoder_header_gate.detach().float()
+        metrics["decoder_header_gate_norm"] = float(gate.norm())
+        metrics["decoder_header_gate_abs_mean"] = float(gate.abs().mean())
+    else:
+        metrics["decoder_header_gate_norm"] = 0.0
+        metrics["decoder_header_gate_abs_mean"] = 0.0
     return loss, metrics, outputs
 
 
@@ -723,11 +1155,14 @@ def _validate_v(
     model.eval()
     rows: list[dict[str, float]] = []
     mc_samples = int(args.val_mc_samples)
-    mc_recon_rows: list[list[float]] = [[] for _ in range(mc_samples)]
-    mc_accuracy_rows: list[list[float]] = [[] for _ in range(mc_samples)]
-    posterior_count = 0
-    posterior_mu_sum: torch.Tensor | None = None
-    posterior_second_moment_sum: torch.Tensor | None = None
+    reconstruction_ce_sum = 0.0
+    reconstruction_correct = reconstruction_count = 0
+    mc_recon_sums = [0.0] * mc_samples
+    mc_correct = [0] * mc_samples
+    mc_counts = [0] * mc_samples
+    group_totals: dict[str, list[float]] = {}
+    state_posterior_audit = _new_posterior_audit()
+    team_posterior_audit = _new_posterior_audit()
     # Common random numbers make MC metrics comparable between checkpoints and
     # keep validation from advancing the RNG stream used by stochastic V
     # training. Generating epsilon on CPU also works uniformly on CUDA/MPS/CPU.
@@ -739,68 +1174,72 @@ def _validate_v(
             batch = move_batch_to_device(batch, device)
             outputs = model.encode_state(
                 batch["header_tokens"], batch["state_tokens"], header_valid_mask=batch["header_mask"],
-                state_valid_mask=batch["state_mask"], deterministic=True,
+                state_valid_mask=batch["state_mask"],
+                deterministic=True,
             )
             _, metrics = vae_losses(
                 outputs, batch["state_tokens"], beta_kl=args.beta_kl, free_bits=args.free_bits,
                 capacity=args.kl_capacity, capacity_weight=args.kl_capacity_weight,
             )
-            metrics.update(_v_format_metrics(outputs, batch))
-            metrics.update(_v_token_category_metrics(outputs, batch, tokenizer))
+            ce_sum, correct, count = _reconstruction_totals(outputs, batch["state_tokens"])
+            reconstruction_ce_sum += ce_sum
+            reconstruction_correct += correct
+            reconstruction_count += count
+            metrics.update(_accumulate_group_totals(group_totals, _v_format_metrics(outputs, batch)))
+            metrics.update(_accumulate_group_totals(
+                group_totals, _v_token_category_metrics(outputs, batch, tokenizer),
+            ))
             rows.append(metrics)
-            # Audit the aggregate posterior q(z), not only each q(z|x). For a
-            # diagonal conditional Gaussian,
-            #   E[zz^T|x] = mu mu^T + diag(sigma^2).
-            # Accumulate on-device in fp32; only the bounded D x D summary is
-            # transferred to CPU after validation.
-            mu = outputs["mu"].detach().float().reshape(-1, outputs["mu"].shape[-1])
-            variance = outputs["logvar"].detach().float().exp().reshape_as(mu)
-            if posterior_mu_sum is None:
-                latent_dim = int(mu.shape[-1])
-                posterior_mu_sum = torch.zeros(latent_dim, device=mu.device, dtype=torch.float32)
-                posterior_second_moment_sum = torch.zeros(
-                    latent_dim, latent_dim, device=mu.device, dtype=torch.float32,
-                )
-            posterior_count += int(mu.shape[0])
-            posterior_mu_sum.add_(mu.sum(dim=0))
-            posterior_second_moment_sum.add_(mu.transpose(0, 1).matmul(mu))
-            posterior_second_moment_sum.diagonal().add_(variance.sum(dim=0))
+            # Audit the two deployed V posterior families independently.  State
+            # latents condition on header + visible state, while the permanent
+            # team latent is produced by the distinct header-only path used by
+            # cache construction and online play.  This is validation-only: it
+            # deliberately does not alter V's reconstruction objective.
+            _accumulate_posterior_audit(
+                state_posterior_audit, outputs["mu"], outputs["logvar"],
+            )
+            team_mu, team_logvar = vae.encode(
+                batch["header_tokens"], header_valid_mask=batch["header_mask"],
+            )
+            _accumulate_posterior_audit(
+                team_posterior_audit, team_mu, team_logvar,
+            )
             for sample_index in range(mc_samples):
                 epsilon = torch.randn(
                     outputs["mu"].shape, generator=mc_generator, dtype=torch.float32,
                 ).to(device=outputs["mu"].device, dtype=outputs["mu"].dtype)
                 sampled_z = outputs["mu"] + epsilon * torch.exp(0.5 * outputs["logvar"])
                 sampled_outputs = {
-                    "logits": vae.decode(sampled_z, outputs["state_valid_mask"]),
+                    "logits": vae.decode(
+                        sampled_z,
+                        outputs["state_valid_mask"],
+                        **_decoder_header_kwargs(vae, batch),
+                    ),
                     "mu": outputs["mu"],
                     "logvar": outputs["logvar"],
                     "state_valid_mask": outputs["state_valid_mask"],
                 }
-                _, sampled_metrics = vae_losses(
-                    sampled_outputs, batch["state_tokens"], beta_kl=args.beta_kl,
-                    free_bits=args.free_bits, capacity=args.kl_capacity,
-                    capacity_weight=args.kl_capacity_weight,
-                )
-                mc_recon_rows[sample_index].append(sampled_metrics["recon_ce"])
-                mc_accuracy_rows[sample_index].append(sampled_metrics["recon_token_acc"])
+                ce_sum, correct, count = _reconstruction_totals(sampled_outputs, batch["state_tokens"])
+                mc_recon_sums[sample_index] += ce_sum
+                mc_correct[sample_index] += correct
+                mc_counts[sample_index] += count
     model.train()
     result = _mean_metrics(rows)
-    mc_draw_means = [
-        sum(draw_rows) / len(draw_rows)
-        for draw_rows in mc_recon_rows
-        if draw_rows
-    ]
+    if reconstruction_count:
+        result["recon_ce"] = reconstruction_ce_sum / reconstruction_count
+        result["recon_token_acc"] = reconstruction_correct / reconstruction_count
+    for base, (ce_sum, correct, count) in group_totals.items():
+        if count:
+            result[f"{base}_ce"] = ce_sum / count
+            result[f"{base}_acc"] = correct / count
+    mc_draw_means = [total / count for total, count in zip(mc_recon_sums, mc_counts) if count]
     if mc_draw_means:
         mc_mean = sum(mc_draw_means) / len(mc_draw_means)
         result["recon_ce_mc"] = mc_mean
         result["recon_ce_mc_std"] = math.sqrt(
             sum((value - mc_mean) ** 2 for value in mc_draw_means) / len(mc_draw_means)
         )
-    mc_accuracy_means = [
-        sum(draw_rows) / len(draw_rows)
-        for draw_rows in mc_accuracy_rows
-        if draw_rows
-    ]
+    mc_accuracy_means = [total / count for total, count in zip(mc_correct, mc_counts) if count]
     if mc_accuracy_means:
         mc_accuracy_mean = sum(mc_accuracy_means) / len(mc_accuracy_means)
         result["recon_token_acc_mc"] = mc_accuracy_mean
@@ -808,38 +1247,36 @@ def _validate_v(
             sum((value - mc_accuracy_mean) ** 2 for value in mc_accuracy_means)
             / len(mc_accuracy_means)
         )
-    if posterior_count and posterior_mu_sum is not None and posterior_second_moment_sum is not None:
-        aggregate_mean = posterior_mu_sum.double().cpu() / posterior_count
-        aggregate_second_moment = posterior_second_moment_sum.double().cpu() / posterior_count
-        aggregate_covariance = aggregate_second_moment - aggregate_mean.outer(aggregate_mean)
-        # Numerical accumulation can make the smallest eigenvalue microscopically
-        # negative. Symmetrize and add a tiny jitter only for the log-determinant.
-        aggregate_covariance = 0.5 * (aggregate_covariance + aggregate_covariance.T)
-        aggregate_variance = aggregate_covariance.diagonal().clamp_min(1e-12)
-        aggregate_std = aggregate_variance.sqrt()
-        off_diagonal = aggregate_covariance - torch.diag_embed(aggregate_covariance.diagonal())
-        jittered_covariance = aggregate_covariance + torch.eye(
-            aggregate_covariance.shape[0], dtype=aggregate_covariance.dtype,
-        ) * 1e-8
-        sign, logdet = torch.linalg.slogdet(jittered_covariance)
-        latent_dim = int(aggregate_mean.numel())
-        gaussian_kl = 0.5 * (
-            aggregate_covariance.trace() + aggregate_mean.square().sum()
-            - latent_dim - logdet
+    if state_posterior_audit["count"]:
+        # Use the same fixed directions for state and team so their held-out CF
+        # discrepancies are directly comparable.  The seed is independent of
+        # both training and the fixed common-random-number MC reconstruction.
+        latent_dim = int(state_posterior_audit["mu_sum"].shape[-1])
+        direction_generator = torch.Generator(device="cpu")
+        direction_generator.manual_seed(int(args.seed) + 29_771)
+        num_slices = int(getattr(args, "sigreg_num_slices", 128))
+        fixed_directions = torch.randn(
+            latent_dim, num_slices, generator=direction_generator, dtype=torch.float32,
+        ).to(state_posterior_audit["mu_sum"].device)
+        audit_kwargs = {
+            "fixed_directions": fixed_directions,
+            "num_points": int(getattr(args, "sigreg_num_points", 17)),
+            "domain": float(getattr(args, "sigreg_domain", 3.0)),
+        }
+        state_metrics = _posterior_audit_metrics(
+            state_posterior_audit, prefix="state", **audit_kwargs,
         )
+        result.update(state_metrics)
+        # Preserve all historical unprefixed names as exact aliases to the
+        # state posterior; existing dashboards and checkpoint comparisons keep
+        # their original semantics and values.
         result.update({
-            "aggregate_mean_rms": float(aggregate_mean.square().mean().sqrt()),
-            "aggregate_mean_abs": float(aggregate_mean.abs().mean()),
-            "aggregate_std_mean": float(aggregate_std.mean()),
-            "aggregate_std_min": float(aggregate_std.min()),
-            "aggregate_std_max": float(aggregate_std.max()),
-            "aggregate_variance_mae_from_one": float((aggregate_variance - 1.0).abs().mean()),
-            "aggregate_cov_offdiag_rms": float(off_diagonal.square().mean().sqrt()),
-            "aggregate_gaussian_kl": float(gaussian_kl) if float(sign) > 0.0 else float("inf"),
-            "aggregate_gaussian_kl_per_dim": (
-                float(gaussian_kl / latent_dim) if float(sign) > 0.0 else float("inf")
-            ),
+            name.removeprefix("state_"): value
+            for name, value in state_metrics.items()
         })
+        result.update(_posterior_audit_metrics(
+            team_posterior_audit, prefix="team", **audit_kwargs,
+        ))
     result["selection_score"] = result.get("recon_ce", float("inf"))
     return result
 
@@ -1195,6 +1632,180 @@ def _resume_v(
     return start_update, best_score
 
 
+def _v_decoder_config(
+    model_config: Mapping[str, Any],
+) -> tuple[int, dict[str, Any], str, str, float | None]:
+    """Return V bottleneck/base config and normalized posterior options."""
+    latent_dim = int(model_config.get("latent_dim", -1))
+    v_config = dict(model_config.get("v", {}))
+    conditioning = str(v_config.pop("decoder_conditioning", "additive")).lower()
+    header_conditioning = str(
+        v_config.pop("decoder_header_conditioning", "none")
+    ).lower()
+    fixed_std_value = v_config.pop("fixed_posterior_std", None)
+    fixed_std = None if fixed_std_value is None else float(fixed_std_value)
+    return latent_dim, v_config, conditioning, header_conditioning, fixed_std
+
+
+def _warm_start_v(
+    args: argparse.Namespace,
+    *,
+    model: SimpleWorldModel,
+    tokenizer: PokemonTokenizer,
+    source_hash: str,
+    model_config: Mapping[str, Any],
+    device: torch.device,
+) -> dict[str, Any] | None:
+    """Safely warm start V across exact function-preserving transitions.
+
+    This is intentionally separate from ``--resume_checkpoint``: a warm start
+    loads model weights but starts a fresh optimizer and update schedule.  All
+    data/tokenizer/base-V compatibility checks remain strict, and the only
+    architecture differences accepted are the function-preserving AdaLN branch,
+    raw-header decoder cross-attention behind a zero gate, and, with otherwise
+    identical decoder/base settings, replacing a learned posterior scale with a
+    fixed positive scale.  Each transition is isolated: simultaneous changes
+    are rejected so the expected new state-dict surface stays auditable.
+    """
+    if not args.warm_start_checkpoint:
+        return None
+    warm_path = Path(args.warm_start_checkpoint)
+    if not warm_path.is_file():
+        raise FileNotFoundError(f"V warm-start checkpoint not found: {warm_path}")
+    checkpoint = load_stage_checkpoint(str(warm_path), device=device, expected_stage="v")
+
+    mismatches: list[str] = []
+    if checkpoint.get("tokenizer_state") != tokenizer.to_state():
+        mismatches.append("tokenizer_state")
+    if checkpoint.get("dataset_manifest_hash") != source_hash:
+        mismatches.append("dataset_manifest_hash")
+    if int(checkpoint.get("vocab_size", -1)) != len(tokenizer):
+        mismatches.append("vocab_size")
+    if int(checkpoint.get("pad_id", -1)) != tokenizer.pad_token_id:
+        mismatches.append("pad_id")
+
+    (
+        source_latent_dim,
+        source_v_config,
+        source_conditioning,
+        source_header_conditioning,
+        source_fixed_std,
+    ) = _v_decoder_config(checkpoint.get("model_config", {}))
+    (
+        target_latent_dim,
+        target_v_config,
+        target_conditioning,
+        target_header_conditioning,
+        target_fixed_std,
+    ) = _v_decoder_config(model_config)
+    if source_latent_dim != target_latent_dim:
+        mismatches.append("latent_dim")
+    if source_v_config != target_v_config:
+        mismatches.append("v_config")
+    if source_conditioning not in {"additive", "adaln"}:
+        mismatches.append(f"source_decoder_conditioning({source_conditioning})")
+    if source_header_conditioning not in {"none", "cross_attention"}:
+        mismatches.append(
+            f"source_decoder_header_conditioning({source_header_conditioning})"
+        )
+    if target_header_conditioning not in {"none", "cross_attention"}:
+        mismatches.append(
+            f"target_decoder_header_conditioning({target_header_conditioning})"
+        )
+    if source_fixed_std is not None and (
+        not math.isfinite(source_fixed_std) or source_fixed_std <= 0.0
+    ):
+        mismatches.append(f"source_fixed_posterior_std({source_fixed_std})")
+    if target_fixed_std is not None and (
+        not math.isfinite(target_fixed_std) or target_fixed_std <= 0.0
+    ):
+        mismatches.append(f"target_fixed_posterior_std({target_fixed_std})")
+    fixed_std_changed = source_fixed_std != target_fixed_std
+    header_conditioning_changed = (
+        source_header_conditioning != target_header_conditioning
+    )
+    allowed_transition = (
+        source_conditioning == target_conditioning
+        or (
+            source_conditioning == "additive"
+            and target_conditioning == "adaln"
+            and not fixed_std_changed
+            and not header_conditioning_changed
+        )
+    )
+    if not allowed_transition:
+        mismatches.append(
+            f"decoder_conditioning({source_conditioning}->{target_conditioning})"
+        )
+    allowed_fixed_std_transition = (
+        not fixed_std_changed
+        or (
+            source_fixed_std is None
+            and target_fixed_std is not None
+            and math.isfinite(target_fixed_std)
+            and target_fixed_std > 0.0
+            and source_conditioning == target_conditioning
+            and not header_conditioning_changed
+        )
+    )
+    if not allowed_fixed_std_transition:
+        mismatches.append(
+            f"fixed_posterior_std({source_fixed_std}->{target_fixed_std})"
+        )
+    allowed_header_conditioning_transition = (
+        not header_conditioning_changed
+        or (
+            source_header_conditioning == "none"
+            and target_header_conditioning == "cross_attention"
+            and source_conditioning == target_conditioning
+            and not fixed_std_changed
+        )
+    )
+    if not allowed_header_conditioning_transition:
+        mismatches.append(
+            "decoder_header_conditioning("
+            f"{source_header_conditioning}->{target_header_conditioning})"
+        )
+    if mismatches:
+        raise ValueError(
+            f"V warm-start checkpoint {warm_path} is incompatible with this run: "
+            f"{', '.join(mismatches)}"
+        )
+
+    allowed_missing: set[str] = set()
+    if source_conditioning == "additive" and target_conditioning == "adaln":
+        allowed_missing.update({
+            key
+            for key in model.state_dict()
+            if key.startswith("v.decoder_blocks.") and ".adaln." in key
+        })
+        if not allowed_missing:
+            raise ValueError("AdaLN warm start found no target conditioner tensors")
+    if source_header_conditioning == "none" and target_header_conditioning == "cross_attention":
+        header_missing = {
+            key for key in model.state_dict() if key.startswith("v.decoder_header_")
+        }
+        if not header_missing:
+            raise ValueError("Header-conditioned warm start found no target conditioner tensors")
+        allowed_missing.update(header_missing)
+    load_stage_weights(
+        model,
+        checkpoint,
+        prefixes=("v.",),
+        allowed_missing_keys=allowed_missing,
+    )
+    print(
+        f"[v] warm started V weights from {warm_path}; "
+        f"decoder conditioning {source_conditioning}->{target_conditioning}; "
+        "decoder header conditioning "
+        f"{source_header_conditioning}->{target_header_conditioning}; "
+        f"fixed posterior std {source_fixed_std}->{target_fixed_std}; "
+        "optimizer and update schedule start fresh.",
+        flush=True,
+    )
+    return checkpoint
+
+
 def _train_v(args: argparse.Namespace) -> None:
     if not 0.0 <= float(args.v_battle_sampling_alpha) <= 1.0:
         raise ValueError("--v_battle_sampling_alpha must be between 0 and 1")
@@ -1202,6 +1813,47 @@ def _train_v(args: argparse.Namespace) -> None:
         raise ValueError("--encoder_token_mask_prob must be between 0 and 1")
     if not 0.0 <= float(args.mean_recon_weight) <= 1.0:
         raise ValueError("--mean_recon_weight must be between 0 and 1")
+    if float(args.lambda_mu_sigreg) < 0.0:
+        raise ValueError("--lambda_mu_sigreg must be non-negative")
+    if int(args.mu_sigreg_warmup_updates) < 0:
+        raise ValueError("--mu_sigreg_warmup_updates must be non-negative")
+    if float(args.lambda_sampled_sigreg) < 0.0:
+        raise ValueError("--lambda_sampled_sigreg must be non-negative")
+    if int(args.sampled_sigreg_warmup_updates) < 0:
+        raise ValueError("--sampled_sigreg_warmup_updates must be non-negative")
+    if float(args.lambda_aggregate_sigreg) < 0.0:
+        raise ValueError("--lambda_aggregate_sigreg must be non-negative")
+    if int(args.aggregate_sigreg_warmup_updates) < 0:
+        raise ValueError("--aggregate_sigreg_warmup_updates must be non-negative")
+    if float(args.lambda_team_aggregate_sigreg) < 0.0:
+        raise ValueError("--lambda_team_aggregate_sigreg must be non-negative")
+    if int(args.team_aggregate_sigreg_warmup_updates) < 0:
+        raise ValueError("--team_aggregate_sigreg_warmup_updates must be non-negative")
+    if int(args.team_sigreg_batch_size) < 1:
+        raise ValueError("--team_sigreg_batch_size must be positive")
+    if float(args.posterior_std_weight) < 0.0:
+        raise ValueError("--posterior_std_weight must be non-negative")
+    if int(args.posterior_std_warmup_updates) < 0:
+        raise ValueError("--posterior_std_warmup_updates must be non-negative")
+    if args.posterior_std_target is not None and float(args.posterior_std_target) <= 0.0:
+        raise ValueError("--posterior_std_target must be positive")
+    if float(args.posterior_std_weight) and args.posterior_std_target is None:
+        raise ValueError("--posterior_std_weight requires --posterior_std_target")
+    enabled_sigreg_targets = sum(bool(float(value)) for value in (
+        args.lambda_mu_sigreg, args.lambda_sampled_sigreg, args.lambda_aggregate_sigreg,
+    ))
+    if enabled_sigreg_targets > 1:
+        raise ValueError(
+            "Use only one aggregate SIGReg target. --lambda_aggregate_sigreg analytically "
+            "constrains q(z), --lambda_sampled_sigreg uses noisy posterior draws, and "
+            "--lambda_mu_sigreg constrains only deterministic codes."
+        )
+    if int(args.sigreg_num_slices) < 1:
+        raise ValueError("--sigreg_num_slices must be positive")
+    if int(args.sigreg_num_points) < 2:
+        raise ValueError("--sigreg_num_points must be at least two")
+    if float(args.sigreg_domain) <= 0.0:
+        raise ValueError("--sigreg_domain must be positive")
     if int(args.early_stop_patience) < 0:
         raise ValueError("--early_stop_patience must be non-negative")
     if int(args.grad_clip_fraction_window) < 1:
@@ -1232,6 +1884,14 @@ def _train_v(args: argparse.Namespace) -> None:
     )
     config = _load_config(args.config)
     _apply_loss_config(args, config)
+    fixed_posterior_std = dict(config["model"].get("v", {})).get(
+        "fixed_posterior_std"
+    )
+    if fixed_posterior_std is not None and float(args.posterior_std_weight):
+        raise ValueError(
+            "--posterior_std_weight cannot be used when model.v.fixed_posterior_std "
+            "is configured; the scale is constant and has no gradient"
+        )
     # V only sees headers/current states.  Scanning 70M action and legal
     # candidates here delayed the first optimizer step by many minutes while
     # serving no V objective.  The full canonical vocabulary is built once in
@@ -1255,6 +1915,23 @@ def _train_v(args: argparse.Namespace) -> None:
         collate=functools.partial(collate_v, pad_id=tokenizer.pad_token_id), num_workers=args.num_workers,
         battle_sampling_alpha=args.v_battle_sampling_alpha,
     )
+    team_train_loader = None
+    team_train_sampler = None
+    if float(args.lambda_team_aggregate_sigreg):
+        # Team/cache deployment contains one permanent header latent per POV
+        # and raw battle.  A state-weighted main V batch would over-represent
+        # long battles, so draw this posterior family from its own uniform-
+        # battle stream (alpha=0) instead of trying to correct it in the loss.
+        team_train_loader, team_train_sampler = _loader(
+            train_ds,
+            batch_size=args.team_sigreg_batch_size,
+            balanced_formats=True,
+            shuffle=True,
+            seed=args.seed + 41_009,
+            collate=functools.partial(collate_v, pad_id=tokenizer.pad_token_id),
+            num_workers=min(args.num_workers, 4),
+            battle_sampling_alpha=0.0,
+        )
     train_eval_ds = train_ds.fixed_subset(args.train_eval_samples) if args.train_eval_samples else None
     train_eval_loader = None
     if train_eval_ds is not None:
@@ -1279,7 +1956,18 @@ def _train_v(args: argparse.Namespace) -> None:
         f"cosine minimum={args.min_lr:.2e} at update {args.lr_schedule_updates:,}; "
         f"early-stop patience={args.early_stop_patience} validations; "
         f"encoder content masking={args.encoder_token_mask_prob:.1%}; "
-        f"mean reconstruction blend={args.mean_recon_weight:.1%}.",
+        f"mean reconstruction blend={args.mean_recon_weight:.1%}; "
+        f"mu SIGReg={args.lambda_mu_sigreg:g} "
+        f"(warmup {args.mu_sigreg_warmup_updates:,}); "
+        f"sampled SIGReg={args.lambda_sampled_sigreg:g} "
+        f"(warmup {args.sampled_sigreg_warmup_updates:,}); "
+        f"analytic aggregate SIGReg={args.lambda_aggregate_sigreg:g} "
+        f"(warmup {args.aggregate_sigreg_warmup_updates:,}); "
+        f"team aggregate SIGReg={args.lambda_team_aggregate_sigreg:g} "
+        f"on {args.team_sigreg_batch_size:,} uniform-battle headers "
+        f"(warmup {args.team_aggregate_sigreg_warmup_updates:,}); "
+        f"posterior std target={args.posterior_std_target} weight={args.posterior_std_weight:g} "
+        f"(warmup {args.posterior_std_warmup_updates:,}).",
         flush=True,
     )
     if val_ds is None:
@@ -1288,10 +1976,31 @@ def _train_v(args: argparse.Namespace) -> None:
         val_ds, batch_size=args.batch_size, balanced_formats=False, shuffle=False, seed=args.seed,
         collate=functools.partial(collate_v, pad_id=tokenizer.pad_token_id), num_workers=args.num_workers,
     )
-    optimizer = torch.optim.AdamW([parameter for parameter in model.parameters() if parameter.requires_grad], lr=args.lr, weight_decay=args.weight_decay)
     source_hash = dataset_manifest_hash(args.data_root)
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
     model_config = _full_model_config(config, args.max_context_transitions)
+    if args.warm_start_checkpoint:
+        warm_path = Path(args.warm_start_checkpoint).resolve()
+        best_output = Path(args.checkpoint or save_dir / "v_best.pt").resolve()
+        latest_output = (save_dir / "v_latest.pt").resolve()
+        if warm_path in {best_output, latest_output}:
+            raise ValueError(
+                "--warm_start_checkpoint must not be the V best/latest output path; "
+                "use a new --save_dir/--checkpoint so the source cannot be overwritten"
+            )
+    warm_start_checkpoint = _warm_start_v(
+        args,
+        model=model,
+        tokenizer=tokenizer,
+        source_hash=source_hash,
+        model_config=model_config,
+        device=device,
+    )
+    optimizer = torch.optim.AdamW(
+        [parameter for parameter in model.parameters() if parameter.requires_grad],
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
     start_update, initial_best = _resume_v(
         args, model=model, optimizer=optimizer, tokenizer=tokenizer, source_hash=source_hash,
         model_config=model_config, device=device,
@@ -1300,15 +2009,56 @@ def _train_v(args: argparse.Namespace) -> None:
         model.v = torch.compile(model.v, dynamic=True)
         print("torch.compile enabled on V")
 
+    team_stream_epoch = int(start_update)
+    if team_train_sampler is not None:
+        team_train_sampler.set_epoch(team_stream_epoch)
+    team_train_iterator = iter(team_train_loader) if team_train_loader is not None else None
+
     def batch_loss(batch: Mapping[str, Any], _: bool) -> tuple[torch.Tensor, dict[str, float]]:
+        nonlocal team_train_iterator, team_stream_epoch
         warmup = min(1.0, (getattr(batch_loss, "optimizer_update", 0) + 1) / max(args.kl_warmup_updates, 1))
+        phase_update = max(1, getattr(batch_loss, "optimizer_update", start_update) - start_update + 1)
+        mu_sigreg_scale = min(
+            1.0, phase_update / max(int(args.mu_sigreg_warmup_updates), 1),
+        ) if args.mu_sigreg_warmup_updates else 1.0
+        sampled_sigreg_scale = min(
+            1.0, phase_update / max(int(args.sampled_sigreg_warmup_updates), 1),
+        ) if args.sampled_sigreg_warmup_updates else 1.0
+        aggregate_sigreg_scale = min(
+            1.0, phase_update / max(int(args.aggregate_sigreg_warmup_updates), 1),
+        ) if args.aggregate_sigreg_warmup_updates else 1.0
+        team_aggregate_sigreg_scale = min(
+            1.0,
+            phase_update / max(int(args.team_aggregate_sigreg_warmup_updates), 1),
+        ) if args.team_aggregate_sigreg_warmup_updates else 1.0
+        posterior_std_scale = min(
+            1.0, phase_update / max(int(args.posterior_std_warmup_updates), 1),
+        ) if args.posterior_std_warmup_updates else 1.0
+        team_batch = None
+        if team_train_loader is not None:
+            assert team_train_iterator is not None
+            try:
+                team_batch = next(team_train_iterator)
+            except StopIteration:
+                team_stream_epoch += 1
+                assert team_train_sampler is not None
+                team_train_sampler.set_epoch(team_stream_epoch)
+                team_train_iterator = iter(team_train_loader)
+                team_batch = next(team_train_iterator)
+            team_batch = move_batch_to_device(team_batch, device)
         loss, metrics, _ = _run_v_batch(
             model,
             batch,
             beta=args.beta_kl * warmup,
             args=args,
+            team_batch=team_batch,
             structural_token_lookup=structural_token_lookup,
             mask_token_id=tokenizer.unknown_token_id,
+            mu_sigreg_scale=mu_sigreg_scale,
+            sampled_sigreg_scale=sampled_sigreg_scale,
+            aggregate_sigreg_scale=aggregate_sigreg_scale,
+            team_aggregate_sigreg_scale=team_aggregate_sigreg_scale,
+            posterior_std_scale=posterior_std_scale,
         )
         return loss, metrics
 
@@ -1338,6 +2088,20 @@ def _train_v(args: argparse.Namespace) -> None:
                   tokenizer=tokenizer, action_vocabulary=vocab, source_hash=source_hash, cache_hash=None,
                   max_context_transitions=args.max_context_transitions, metrics=metrics,
                   training_config=vars(args))
+
+    if warm_start_checkpoint is not None:
+        # AdaLN is an exact identity at initialization.  Persist and select an
+        # update-zero checkpoint after evaluating that invariant on the real
+        # held-out split, before any newly initialized parameter is updated.
+        warm_start_metrics = validate()
+        initial_best = float(warm_start_metrics["selection_score"])
+        save_callback(0, warm_start_metrics, True)
+        print(
+            f"[v] warm-start baseline at update 0: "
+            f"reconstruction CE={warm_start_metrics['recon_ce']:.6f}, "
+            f"token accuracy={warm_start_metrics['recon_token_acc']:.4%}.",
+            flush=True,
+        )
 
     wandb_logger = _start_wandb(
         args, stage="v", model=model, model_config=_full_model_config(config, args.max_context_transitions),
@@ -1500,6 +2264,15 @@ def _train_c(args: argparse.Namespace) -> None:
 
 
 def train(args: argparse.Namespace) -> None:
+    # The sampler already owns independent deterministic Python RNGs, but VAE
+    # reparameterization and SIGReg projection directions use Torch's global
+    # generators. Seed them explicitly so controlled branches with the same
+    # CLI seed are comparable. Exact mid-run continuation still depends on the
+    # checkpointed optimizer/data position and is not claimed here.
+    random.seed(int(args.seed))
+    torch.manual_seed(int(args.seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(args.seed))
     if args.stage == "cache":
         if not args.v_checkpoint:
             raise ValueError("--stage cache requires --v_checkpoint")
@@ -1524,9 +2297,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=os.path.join(os.path.dirname(__file__), "configs", "default.yaml"))
     parser.add_argument("--save_dir", default="simple-world-model-checkpoints")
     parser.add_argument("--checkpoint", default=None, help="Best checkpoint output for the active training stage.")
-    parser.add_argument(
+    v_start_group = parser.add_mutually_exclusive_group()
+    v_start_group.add_argument(
         "--resume_checkpoint", default=None,
         help="Resume V model, optimizer, and global update from this stage checkpoint.",
+    )
+    v_start_group.add_argument(
+        "--warm_start_checkpoint", default=None,
+        help=(
+            "Warm start compatible V weights with a fresh optimizer/update schedule. "
+            "Supports the function-preserving additive-to-AdaLN decoder upgrade."
+        ),
     )
     parser.add_argument("--v_checkpoint", default=None)
     parser.add_argument("--m_checkpoint", default=None)
@@ -1596,6 +2377,75 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "the remainder uses a posterior sample (default: 0)."
         ),
     )
+    parser.add_argument(
+        "--lambda_mu_sigreg", type=float, default=0.0,
+        help=(
+            "Weight for aggregate Gaussian SIGReg on posterior means. This directly "
+            "regularizes the deterministic latent used by caches and online inference."
+        ),
+    )
+    parser.add_argument(
+        "--mu_sigreg_warmup_updates", type=int, default=2_000,
+        help="Phase-local linear warmup for --lambda_mu_sigreg after a fresh start or resume.",
+    )
+    parser.add_argument(
+        "--lambda_sampled_sigreg", type=float, default=0.0,
+        help=(
+            "Weight for aggregate Gaussian SIGReg on reparameterized posterior samples. "
+            "This constrains q(z) without directly penalizing mutual information."
+        ),
+    )
+    parser.add_argument(
+        "--sampled_sigreg_warmup_updates", type=int, default=2_000,
+        help="Phase-local linear warmup for --lambda_sampled_sigreg.",
+    )
+    parser.add_argument(
+        "--lambda_aggregate_sigreg", type=float, default=0.0,
+        help=(
+            "Weight for the analytic characteristic-function Gaussian loss on the full "
+            "diagonal-Gaussian aggregate posterior."
+        ),
+    )
+    parser.add_argument(
+        "--aggregate_sigreg_warmup_updates", type=int, default=2_000,
+        help="Phase-local linear warmup for --lambda_aggregate_sigreg.",
+    )
+    parser.add_argument(
+        "--lambda_team_aggregate_sigreg", type=float, default=0.0,
+        help=(
+            "Independent analytic characteristic-function Gaussian loss for the "
+            "deployed header-only team posterior."
+        ),
+    )
+    parser.add_argument(
+        "--team_aggregate_sigreg_warmup_updates", type=int, default=2_000,
+        help="Phase-local linear warmup for --lambda_team_aggregate_sigreg.",
+    )
+    parser.add_argument(
+        "--team_sigreg_batch_size", type=int, default=32,
+        help=(
+            "Maximum approximately format-balanced raw headers used by the team "
+            "aggregate posterior loss per V batch."
+        ),
+    )
+    parser.add_argument(
+        "--posterior_std_target", type=float, default=None,
+        help=(
+            "Optional target for per-example posterior standard deviation. With aggregate "
+            "q(z) matching, a small target moves prior variance into informative means."
+        ),
+    )
+    parser.add_argument(
+        "--posterior_std_weight", type=float, default=0.0,
+        help="Weight for squared error to --posterior_std_target.",
+    )
+    parser.add_argument(
+        "--posterior_std_warmup_updates", type=int, default=2_000,
+        help="Phase-local linear warmup for the posterior-std target loss.",
+    )
+    parser.add_argument("--sigreg_num_slices", type=int, default=128)
+    parser.add_argument("--sigreg_num_points", type=int, default=17)
+    parser.add_argument("--sigreg_domain", type=float, default=3.0)
     parser.add_argument(
         "--early_stop_patience", type=int, default=10,
         help="Stop V after this many validation checks without improvement (0 disables).",

@@ -1,4 +1,5 @@
 import json
+import math
 import random
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from metamon.simple_world_model.data import (
     BalancedFormatBatchSampler,
     CompactFormatBatchSampler,
     LatentTransitionDataset,
+    MODEL_VERSION,
     VStateDataset,
     assert_matching_cache,
     collate_latent,
@@ -23,6 +25,7 @@ from metamon.simple_world_model.model import (
     CausalLatentTransformer,
     SimpleWorldModel,
     StateVAE,
+    aggregate_posterior_sigreg,
     c_losses,
     interleave_latent_history,
     vae_losses,
@@ -32,10 +35,18 @@ from metamon.simple_world_model.train import build_arg_parser, train
 from metamon.tokenizer import PokemonTokenizer
 
 
-def _tiny_model(action_vocab_size: int = 8) -> SimpleWorldModel:
+def _tiny_model(
+    action_vocab_size: int = 8,
+    *,
+    decoder_conditioning: str = "additive",
+    decoder_header_conditioning: str = "none",
+    fixed_posterior_std: float | None = None,
+    vocab_size: int = 48,
+    pad_id: int = 0,
+) -> SimpleWorldModel:
     return SimpleWorldModel(
-        vocab_size=48,
-        pad_id=0,
+        vocab_size=vocab_size,
+        pad_id=pad_id,
         action_vocab_size=action_vocab_size,
         latent_dim=8,
         v_cfg={
@@ -47,6 +58,9 @@ def _tiny_model(action_vocab_size: int = 8) -> SimpleWorldModel:
             "max_seq_len": 16,
             "max_state_tokens": 8,
             "gradient_checkpointing": False,
+            "decoder_conditioning": decoder_conditioning,
+            "decoder_header_conditioning": decoder_header_conditioning,
+            "fixed_posterior_std": fixed_posterior_std,
         },
         action_encoder_cfg={"action_dim": 8},
         m_cfg={
@@ -133,6 +147,292 @@ def test_decoder_padding_does_not_change_valid_prefix_logits():
     prefix = vae.decode(z, torch.tensor([[True, True, True]]))
     right_padded = vae.decode(z, torch.tensor([[True, True, True, False, False, False]]))
     torch.testing.assert_close(prefix, right_padded[:, :3], atol=1e-6, rtol=1e-6)
+
+
+def test_adaln_decoder_warm_start_is_exact_and_conditioners_receive_gradients():
+    torch.manual_seed(31)
+    legacy = StateVAE(
+        vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, max_seq_len=16, max_state_tokens=8,
+        decoder_conditioning="additive",
+    )
+    conditioned = StateVAE(
+        vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, max_seq_len=16, max_state_tokens=8,
+        decoder_conditioning="adaln",
+    )
+    missing, unexpected = conditioned.load_state_dict(legacy.state_dict(), strict=False)
+    assert unexpected == []
+    assert set(missing) == {
+        f"decoder_blocks.{layer}.adaln.{parameter}"
+        for layer in range(2)
+        for parameter in ("weight", "bias")
+    }
+
+    z = torch.randn(3, 8)
+    valid = torch.tensor([
+        [True, True, True, False, False],
+        [True, True, True, True, True],
+        [True, True, False, False, False],
+    ])
+    legacy_logits = legacy.decode(z, valid)
+    conditioned_logits = conditioned.decode(z, valid)
+    torch.testing.assert_close(conditioned_logits, legacy_logits, atol=0.0, rtol=0.0)
+
+    targets = torch.randint(1, 32, valid.shape)
+    torch.nn.functional.cross_entropy(conditioned_logits[valid], targets[valid]).backward()
+    for block in conditioned.decoder_blocks:
+        weight_grad = block.adaln.weight.grad
+        bias_grad = block.adaln.bias.grad
+        assert weight_grad is not None and torch.isfinite(weight_grad).all()
+        assert bias_grad is not None and torch.isfinite(bias_grad).all()
+        assert float(weight_grad.abs().sum()) > 0.0
+        assert float(bias_grad.abs().sum()) > 0.0
+
+
+def test_adaln_decoder_padding_does_not_change_valid_prefix_logits():
+    torch.manual_seed(32)
+    vae = StateVAE(
+        vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, max_seq_len=16, max_state_tokens=8,
+        decoder_conditioning="adaln",
+    ).eval()
+    # Move off the identity initialization so this covers active modulation.
+    with torch.no_grad():
+        for block in vae.decoder_blocks:
+            block.adaln.weight.normal_(std=0.02)
+    z = torch.randn(1, 8)
+    prefix = vae.decode(z, torch.tensor([[True, True, True]]))
+    right_padded = vae.decode(z, torch.tensor([[True, True, True, False, False, False]]))
+    torch.testing.assert_close(prefix, right_padded[:, :3], atol=1e-6, rtol=1e-6)
+
+
+def test_state_vae_rejects_unknown_decoder_conditioning():
+    with pytest.raises(ValueError, match="decoder_conditioning"):
+        StateVAE(
+            vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+            n_layers=1, d_ff=32, max_seq_len=16, max_state_tokens=8,
+            decoder_conditioning="memory",
+        )
+
+
+def test_header_cross_attention_zero_gate_is_exact_and_valid_header_changes_logits():
+    torch.manual_seed(33)
+    legacy = StateVAE(
+        vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, max_seq_len=16, max_state_tokens=8,
+    ).eval()
+    conditioned = StateVAE(
+        vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, max_seq_len=16, max_state_tokens=8,
+        decoder_header_conditioning="cross_attention",
+    ).eval()
+    missing, unexpected = conditioned.load_state_dict(legacy.state_dict(), strict=False)
+    assert unexpected == []
+    assert set(missing) == {
+        key for key in conditioned.state_dict() if key.startswith("decoder_header_")
+    }
+
+    z = torch.randn(2, 8)
+    state_mask = torch.tensor([
+        [True, True, True, False],
+        [True, True, True, True],
+    ])
+    header = torch.tensor([[1, 2, 0], [3, 4, 5]])
+    header_mask = header.ne(0)
+    legacy_logits = legacy.decode(z, state_mask)
+    conditioned_logits = conditioned.decode(
+        z,
+        state_mask,
+        header_tokens=header,
+        header_valid_mask=header_mask,
+    )
+    torch.testing.assert_close(conditioned_logits, legacy_logits, atol=0.0, rtol=0.0)
+
+    assert conditioned.decoder_header_gate is not None
+    with torch.no_grad():
+        conditioned.decoder_header_gate.fill_(1.0)
+    active_logits = conditioned.decode(
+        z,
+        state_mask,
+        header_tokens=header,
+        header_valid_mask=header_mask,
+    )
+    changed_header = header.clone()
+    changed_header[0, 1] = 6
+    changed_logits = conditioned.decode(
+        z,
+        state_mask,
+        header_tokens=changed_header,
+        header_valid_mask=header_mask,
+    )
+    assert not torch.equal(changed_logits[0], active_logits[0])
+    torch.testing.assert_close(changed_logits[1], active_logits[1], atol=0.0, rtol=0.0)
+
+
+def test_header_cross_attention_padding_storage_and_batch_are_invariant():
+    torch.manual_seed(34)
+    vae = StateVAE(
+        vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, max_seq_len=16, max_state_tokens=8,
+        decoder_header_conditioning="cross_attention",
+    ).eval()
+    assert vae.decoder_header_gate is not None
+    with torch.no_grad():
+        vae.decoder_header_gate.fill_(1.0)
+
+    z = torch.randn(1, 8)
+    single = vae.decode(
+        z,
+        torch.tensor([[True, True, True]]),
+        header_tokens=torch.tensor([[1, 2]]),
+        header_valid_mask=torch.tensor([[True, True]]),
+    )
+    batch_z = torch.cat([z, torch.randn_like(z)], dim=0)
+    state_mask = torch.tensor([
+        [True, True, True, False, False],
+        [True, True, True, True, True],
+    ])
+    header_mask = torch.tensor([
+        [True, True, False, False, False],
+        [True, True, True, True, True],
+    ])
+    padded_header = torch.tensor([
+        [1, 2, 7, 8, 9],
+        [3, 4, 5, 6, 10],
+    ])
+    batched = vae.decode(
+        batch_z,
+        state_mask,
+        header_tokens=padded_header,
+        header_valid_mask=header_mask,
+    )
+    torch.testing.assert_close(single, batched[:1, :3], atol=1e-6, rtol=1e-6)
+
+    different_padding = padded_header.clone()
+    different_padding[0, 2:] = torch.tensor([11, 12, 13])
+    changed_storage = vae.decode(
+        batch_z,
+        state_mask,
+        header_tokens=different_padding,
+        header_valid_mask=header_mask,
+    )
+    torch.testing.assert_close(batched[0], changed_storage[0], atol=0.0, rtol=0.0)
+
+
+def test_header_conditioned_forward_has_no_target_state_decoder_skip(monkeypatch):
+    torch.manual_seed(35)
+    vae = StateVAE(
+        vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=1, d_ff=32, max_seq_len=16, max_state_tokens=8,
+        decoder_header_conditioning="cross_attention",
+    ).eval()
+    assert vae.decoder_header_gate is not None
+    with torch.no_grad():
+        vae.decoder_header_gate.fill_(1.0)
+    fixed_mu = torch.randn(1, 8)
+
+    def fixed_encode(header_tokens, state_tokens=None, **kwargs):
+        del state_tokens, kwargs
+        mu = fixed_mu.expand(header_tokens.shape[0], -1)
+        return mu, torch.zeros_like(mu)
+
+    monkeypatch.setattr(vae, "encode", fixed_encode)
+    header = torch.tensor([[1, 2]])
+    header_mask = torch.tensor([[True, True]])
+    state_mask = torch.tensor([[True, True, True]])
+    first = vae(
+        header,
+        torch.tensor([[3, 4, 5]]),
+        header_valid_mask=header_mask,
+        state_valid_mask=state_mask,
+        deterministic=True,
+    )
+    second = vae(
+        header,
+        torch.tensor([[6, 7, 8]]),
+        header_valid_mask=header_mask,
+        state_valid_mask=state_mask,
+        deterministic=True,
+    )
+    torch.testing.assert_close(first["logits"], second["logits"], atol=0.0, rtol=0.0)
+
+
+def test_state_vae_rejects_unknown_decoder_header_conditioning():
+    with pytest.raises(ValueError, match="decoder_header_conditioning"):
+        StateVAE(
+            vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+            n_layers=1, d_ff=32, max_seq_len=16, max_state_tokens=8,
+            decoder_header_conditioning="joint_encoder",
+        )
+
+
+def test_fixed_posterior_std_preserves_mu_and_sets_exact_sampling_scale(monkeypatch):
+    torch.manual_seed(33)
+    learned = StateVAE(
+        vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=1, d_ff=32, max_seq_len=16, max_state_tokens=8,
+    ).eval()
+    fixed = StateVAE(
+        vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=1, d_ff=32, max_seq_len=16, max_state_tokens=8,
+        fixed_posterior_std=0.25,
+    ).eval()
+    # fixed_posterior_std adds no tensors, so legacy state loading stays strict.
+    fixed.load_state_dict(learned.state_dict(), strict=True)
+    header = torch.tensor([[1, 2, 0], [3, 4, 5]])
+    state = torch.tensor([[6, 7, 0], [8, 9, 10]])
+    header_mask = header.ne(0)
+    state_mask = state.ne(0)
+    learned_mu, _ = learned.encode(
+        header, state,
+        header_valid_mask=header_mask,
+        state_valid_mask=state_mask,
+    )
+    fixed_mu, fixed_logvar = fixed.encode(
+        header, state,
+        header_valid_mask=header_mask,
+        state_valid_mask=state_mask,
+    )
+    torch.testing.assert_close(fixed_mu, learned_mu, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(
+        fixed_logvar,
+        torch.full_like(fixed_logvar, 2.0 * math.log(0.25)),
+        atol=0.0,
+        rtol=0.0,
+    )
+    learned_team_mu, _ = learned.encode(
+        header, header_valid_mask=header_mask,
+    )
+    fixed_team_mu, fixed_team_logvar = fixed.encode(
+        header, header_valid_mask=header_mask,
+    )
+    torch.testing.assert_close(fixed_team_mu, learned_team_mu, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(
+        fixed_team_logvar,
+        torch.full_like(fixed_team_logvar, 2.0 * math.log(0.25)),
+        atol=0.0,
+        rtol=0.0,
+    )
+
+    monkeypatch.setattr(torch, "randn_like", lambda value: torch.ones_like(value))
+    sampled = fixed.sample(fixed_mu, fixed_logvar)
+    torch.testing.assert_close(
+        sampled - fixed_mu,
+        torch.full_like(fixed_mu, 0.25),
+        atol=1e-7,
+        rtol=0.0,
+    )
+
+
+@pytest.mark.parametrize("fixed_std", [0.0, -0.1, float("inf"), float("nan")])
+def test_state_vae_rejects_invalid_fixed_posterior_std(fixed_std):
+    with pytest.raises(ValueError, match="fixed_posterior_std"):
+        StateVAE(
+            vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+            n_layers=1, d_ff=32, max_seq_len=16, max_state_tokens=8,
+            fixed_posterior_std=fixed_std,
+        )
 
 
 def test_encoder_header_state_padding_is_batch_invariant():
@@ -397,11 +697,308 @@ def test_v_restart_recipe_defaults():
     assert args.free_bits == pytest.approx(0.02)
     assert args.encoder_token_mask_prob == pytest.approx(0.0)
     assert args.mean_recon_weight == pytest.approx(0.0)
+    assert args.lambda_mu_sigreg == pytest.approx(0.0)
+    assert args.mu_sigreg_warmup_updates == 2_000
+    assert args.lambda_sampled_sigreg == pytest.approx(0.0)
+    assert args.sampled_sigreg_warmup_updates == 2_000
+    assert args.lambda_aggregate_sigreg == pytest.approx(0.0)
+    assert args.aggregate_sigreg_warmup_updates == 2_000
+    assert args.posterior_std_target is None
+    assert args.posterior_std_weight == pytest.approx(0.0)
+    assert args.posterior_std_warmup_updates == 2_000
+    assert args.sigreg_num_slices == 128
+    assert args.sigreg_num_points == 17
+    assert args.sigreg_domain == pytest.approx(3.0)
     config_path = Path(simple_world_model_train.__file__).parent / "configs" / "default.yaml"
     config = yaml.safe_load(config_path.read_text())
     assert config["model"]["latent_dim"] == 512
     assert config["model"]["v"]["dropout"] == pytest.approx(0.0)
     assert config["loss"]["beta_kl"] == pytest.approx(0.01)
+
+
+def test_v_additive_checkpoint_safely_warm_starts_adaln(tmp_path):
+    tokenizer = PokemonTokenizer().load_tokens({"foo": 1, "bar": 2})
+    source_model = _tiny_model(
+        decoder_conditioning="additive",
+        vocab_size=len(tokenizer),
+        pad_id=tokenizer.pad_token_id,
+    )
+    target_model = _tiny_model(
+        decoder_conditioning="adaln",
+        vocab_size=len(tokenizer),
+        pad_id=tokenizer.pad_token_id,
+    )
+    v_base = {
+        "d_model": 16,
+        "n_heads": 4,
+        "n_layers": 1,
+        "d_ff": 32,
+        "dropout": 0.0,
+        "max_seq_len": 16,
+        "max_state_tokens": 8,
+        "gradient_checkpointing": False,
+    }
+    # Absence of decoder_conditioning is the legacy additive checkpoint form.
+    source_config = {"latent_dim": 8, "v": dict(v_base)}
+    target_config = {
+        "latent_dim": 8,
+        "v": {**v_base, "decoder_conditioning": "adaln"},
+    }
+    checkpoint_path = tmp_path / "legacy_v.pt"
+    torch.save({
+        "model_version": MODEL_VERSION,
+        "stage": "v",
+        "model_state_dict": source_model.state_dict(),
+        "model_config": source_config,
+        "tokenizer_state": tokenizer.to_state(),
+        "dataset_manifest_hash": "dataset-hash",
+        "vocab_size": len(tokenizer),
+        "pad_id": tokenizer.pad_token_id,
+    }, checkpoint_path)
+    args = SimpleNamespace(warm_start_checkpoint=str(checkpoint_path))
+
+    loaded = simple_world_model_train._warm_start_v(
+        args,
+        model=target_model,
+        tokenizer=tokenizer,
+        source_hash="dataset-hash",
+        model_config=target_config,
+        device=torch.device("cpu"),
+    )
+    assert loaded is not None
+    z = torch.randn(2, 8)
+    valid = torch.tensor([[True, True, False], [True, True, True]])
+    torch.testing.assert_close(
+        target_model.v.decode(z, valid),
+        source_model.v.decode(z, valid),
+        atol=0.0,
+        rtol=0.0,
+    )
+
+    incompatible_target = _tiny_model(
+        decoder_conditioning="adaln",
+        vocab_size=len(tokenizer),
+        pad_id=tokenizer.pad_token_id,
+    )
+    with pytest.raises(ValueError, match="dataset_manifest_hash"):
+        simple_world_model_train._warm_start_v(
+            args,
+            model=incompatible_target,
+            tokenizer=tokenizer,
+            source_hash="different-dataset",
+            model_config=target_config,
+            device=torch.device("cpu"),
+        )
+
+
+def test_v_checkpoint_safely_warm_starts_raw_header_cross_attention(tmp_path):
+    tokenizer = PokemonTokenizer().load_tokens({"foo": 1, "bar": 2})
+    source_model = _tiny_model(
+        decoder_conditioning="adaln",
+        fixed_posterior_std=0.25,
+        vocab_size=len(tokenizer),
+        pad_id=tokenizer.pad_token_id,
+    )
+    target_model = _tiny_model(
+        decoder_conditioning="adaln",
+        decoder_header_conditioning="cross_attention",
+        fixed_posterior_std=0.25,
+        vocab_size=len(tokenizer),
+        pad_id=tokenizer.pad_token_id,
+    )
+    v_base = {
+        "d_model": 16,
+        "n_heads": 4,
+        "n_layers": 1,
+        "d_ff": 32,
+        "dropout": 0.0,
+        "max_seq_len": 16,
+        "max_state_tokens": 8,
+        "gradient_checkpointing": False,
+        "decoder_conditioning": "adaln",
+        "fixed_posterior_std": 0.25,
+    }
+    source_config = {"latent_dim": 8, "v": dict(v_base)}
+    target_config = {
+        "latent_dim": 8,
+        "v": {**v_base, "decoder_header_conditioning": "cross_attention"},
+    }
+    checkpoint_path = tmp_path / "no_header_decoder_v.pt"
+    torch.save({
+        "model_version": MODEL_VERSION,
+        "stage": "v",
+        "model_state_dict": source_model.state_dict(),
+        "model_config": source_config,
+        "tokenizer_state": tokenizer.to_state(),
+        "dataset_manifest_hash": "dataset-hash",
+        "vocab_size": len(tokenizer),
+        "pad_id": tokenizer.pad_token_id,
+    }, checkpoint_path)
+    args = SimpleNamespace(warm_start_checkpoint=str(checkpoint_path))
+    loaded = simple_world_model_train._warm_start_v(
+        args,
+        model=target_model,
+        tokenizer=tokenizer,
+        source_hash="dataset-hash",
+        model_config=target_config,
+        device=torch.device("cpu"),
+    )
+    assert loaded is not None
+    assert target_model.v.decoder_header_gate is not None
+    assert torch.count_nonzero(target_model.v.decoder_header_gate) == 0
+
+    header = torch.tensor([[1, 2], [2, 1]])
+    state = torch.tensor([[1, 2, 0], [2, 1, 2]])
+    header_mask = torch.tensor([[True, True], [True, True]])
+    state_mask = torch.tensor([[True, True, False], [True, True, True]])
+    source_outputs = source_model.encode_state(
+        header,
+        state,
+        header_valid_mask=header_mask,
+        state_valid_mask=state_mask,
+        deterministic=True,
+    )
+    target_outputs = target_model.encode_state(
+        header,
+        state,
+        header_valid_mask=header_mask,
+        state_valid_mask=state_mask,
+        deterministic=True,
+    )
+    torch.testing.assert_close(target_outputs["mu"], source_outputs["mu"], atol=0.0, rtol=0.0)
+    torch.testing.assert_close(
+        target_outputs["logits"], source_outputs["logits"], atol=0.0, rtol=0.0,
+    )
+
+
+def test_v_warm_start_allows_fixed_posterior_std_and_preserves_deterministic_logits(
+    tmp_path,
+):
+    tokenizer = PokemonTokenizer().load_tokens({"foo": 1, "bar": 2})
+    source_model = _tiny_model(
+        decoder_conditioning="additive",
+        vocab_size=len(tokenizer),
+        pad_id=tokenizer.pad_token_id,
+    )
+    target_model = _tiny_model(
+        decoder_conditioning="additive",
+        fixed_posterior_std=0.25,
+        vocab_size=len(tokenizer),
+        pad_id=tokenizer.pad_token_id,
+    )
+    v_base = {
+        "d_model": 16,
+        "n_heads": 4,
+        "n_layers": 1,
+        "d_ff": 32,
+        "dropout": 0.0,
+        "max_seq_len": 16,
+        "max_state_tokens": 8,
+        "gradient_checkpointing": False,
+    }
+    source_config = {"latent_dim": 8, "v": dict(v_base)}
+    target_config = {
+        "latent_dim": 8,
+        "v": {**v_base, "fixed_posterior_std": 0.25},
+    }
+    checkpoint = {
+        "model_version": MODEL_VERSION,
+        "stage": "v",
+        "model_state_dict": source_model.state_dict(),
+        "model_config": source_config,
+        "tokenizer_state": tokenizer.to_state(),
+        "dataset_manifest_hash": "dataset-hash",
+        "vocab_size": len(tokenizer),
+        "pad_id": tokenizer.pad_token_id,
+    }
+    checkpoint_path = tmp_path / "learned_std_v.pt"
+    torch.save(checkpoint, checkpoint_path)
+    args = SimpleNamespace(warm_start_checkpoint=str(checkpoint_path))
+    simple_world_model_train._warm_start_v(
+        args,
+        model=target_model,
+        tokenizer=tokenizer,
+        source_hash="dataset-hash",
+        model_config=target_config,
+        device=torch.device("cpu"),
+    )
+
+    header = torch.tensor([[1, 2], [2, 1]])
+    state = torch.tensor([[1, 2, 0], [2, 1, 2]])
+    header_mask = header.ne(0)
+    state_mask = state.ne(0)
+    source_outputs = source_model.encode_state(
+        header,
+        state,
+        header_valid_mask=header_mask,
+        state_valid_mask=state_mask,
+        deterministic=True,
+    )
+    target_outputs = target_model.encode_state(
+        header,
+        state,
+        header_valid_mask=header_mask,
+        state_valid_mask=state_mask,
+        deterministic=True,
+    )
+    torch.testing.assert_close(
+        target_outputs["mu"], source_outputs["mu"], atol=0.0, rtol=0.0,
+    )
+    torch.testing.assert_close(
+        target_outputs["logits"], source_outputs["logits"], atol=0.0, rtol=0.0,
+    )
+    torch.testing.assert_close(
+        target_outputs["logvar"],
+        torch.full_like(target_outputs["logvar"], 2.0 * math.log(0.25)),
+        atol=0.0,
+        rtol=0.0,
+    )
+
+    incompatible_checkpoint = dict(checkpoint)
+    incompatible_checkpoint["model_config"] = {
+        "latent_dim": 8,
+        "v": {**v_base, "fixed_posterior_std": 0.5},
+    }
+    incompatible_path = tmp_path / "different_fixed_std_v.pt"
+    torch.save(incompatible_checkpoint, incompatible_path)
+    incompatible_args = SimpleNamespace(warm_start_checkpoint=str(incompatible_path))
+    with pytest.raises(ValueError, match="fixed_posterior_std"):
+        simple_world_model_train._warm_start_v(
+            incompatible_args,
+            model=_tiny_model(
+                fixed_posterior_std=0.25,
+                vocab_size=len(tokenizer),
+                pad_id=tokenizer.pad_token_id,
+            ),
+            tokenizer=tokenizer,
+            source_hash="dataset-hash",
+            model_config=target_config,
+            device=torch.device("cpu"),
+        )
+
+
+def test_v_resume_and_warm_start_are_mutually_exclusive():
+    parser = build_arg_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "--stage", "v", "--data_root", "data", "--formats", "gen1ou",
+            "--tokenizer_path", "tokenizer.json",
+            "--resume_checkpoint", "latest.pt",
+            "--warm_start_checkpoint", "legacy.pt",
+        ])
+
+
+def test_v_team_aggregate_sigreg_cli_values_are_explicit():
+    args = build_arg_parser().parse_args([
+        "--stage", "v", "--data_root", "data", "--formats", "gen1ou",
+        "--tokenizer_path", "tokenizer.json",
+        "--lambda_team_aggregate_sigreg", "0.002",
+        "--team_aggregate_sigreg_warmup_updates", "500",
+        "--team_sigreg_batch_size", "32",
+    ])
+    assert args.lambda_team_aggregate_sigreg == pytest.approx(0.002)
+    assert args.team_aggregate_sigreg_warmup_updates == 500
+    assert args.team_sigreg_batch_size == 32
 
 
 def test_v_warmup_cosine_schedule():
@@ -471,6 +1068,303 @@ def test_v_mean_reconstruction_blend_preserves_objective_scale():
     assert metrics["mean_recon_weight"] == pytest.approx(0.25)
 
 
+def test_v_pure_mean_reconstruction_decodes_once(monkeypatch):
+    torch.manual_seed(27)
+    model = _tiny_model().train()
+    batch = {
+        "header_tokens": torch.tensor([[1, 2], [2, 3]]),
+        "header_mask": torch.tensor([[True, True], [True, True]]),
+        "state_tokens": torch.tensor([[4, 5, 6], [7, 8, 9]]),
+        "state_mask": torch.tensor([[True, True, True], [True, True, True]]),
+    }
+    args = SimpleNamespace(
+        encoder_token_mask_prob=0.0, mean_recon_weight=1.0,
+        free_bits=0.0, kl_capacity=0.0, kl_capacity_weight=0.0,
+        lambda_sampled_sigreg=0.0,
+    )
+    original_decode = model.v.decode
+    calls = 0
+
+    def counted_decode(*decode_args, **decode_kwargs):
+        nonlocal calls
+        calls += 1
+        return original_decode(*decode_args, **decode_kwargs)
+
+    monkeypatch.setattr(model.v, "decode", counted_decode)
+    loss, metrics, outputs = simple_world_model_train._run_v_batch(
+        model, batch, beta=0.0, args=args,
+    )
+    expected, expected_metrics = vae_losses(
+        outputs, batch["state_tokens"], beta_kl=0.0, free_bits=0.0,
+    )
+    assert calls == 1
+    torch.testing.assert_close(outputs["z"], outputs["mu"])
+    torch.testing.assert_close(loss, expected)
+    assert metrics["objective_recon_ce"] == pytest.approx(
+        expected_metrics["recon_ce"]
+    )
+    assert metrics["mean_recon_weight"] == 1.0
+
+
+def test_v_mu_sigreg_regularizes_deployed_code_and_respects_warmup(monkeypatch):
+    torch.manual_seed(29)
+    model = _tiny_model().train()
+    batch = {
+        "header_tokens": torch.tensor([[1, 2], [2, 3]]),
+        "header_mask": torch.tensor([[True, True], [True, True]]),
+        "state_tokens": torch.tensor([[4, 5, 6], [7, 8, 9]]),
+        "state_mask": torch.tensor([[True, True, True], [True, True, True]]),
+    }
+    args = SimpleNamespace(
+        encoder_token_mask_prob=0.0, mean_recon_weight=0.0,
+        free_bits=0.02, kl_capacity=0.0, kl_capacity_weight=0.0,
+        lambda_mu_sigreg=0.4, sigreg_num_slices=8,
+        sigreg_num_points=5, sigreg_domain=2.0,
+    )
+    monkeypatch.setattr(
+        simple_world_model_train, "sigreg",
+        lambda mu, **_: mu.float().square().mean(),
+    )
+
+    torch.manual_seed(31)
+    base_values = vars(args).copy()
+    base_values["lambda_mu_sigreg"] = 0.0
+    base_args = SimpleNamespace(**base_values)
+    base_loss, _, _ = simple_world_model_train._run_v_batch(
+        model, batch, beta=0.01, args=base_args,
+    )
+    torch.manual_seed(31)
+    loss, metrics, outputs = simple_world_model_train._run_v_batch(
+        model, batch, beta=0.01, args=args, mu_sigreg_scale=0.25,
+    )
+
+    expected_prior = outputs["mu"].float().square().mean()
+    expected_weight = 0.4 * 0.25
+    torch.testing.assert_close(loss, base_loss + expected_weight * expected_prior)
+    assert metrics["mu_sigreg_loss"] == pytest.approx(float(expected_prior.detach()))
+    assert metrics["mu_sigreg_weight"] == pytest.approx(expected_weight)
+    assert metrics["mu_sigreg_weighted"] == pytest.approx(
+        float((expected_weight * expected_prior).detach())
+    )
+
+
+def test_v_sampled_sigreg_regularizes_reparameterized_posterior(monkeypatch):
+    torch.manual_seed(37)
+    model = _tiny_model().train()
+    batch = {
+        "header_tokens": torch.tensor([[1, 2], [2, 3]]),
+        "header_mask": torch.tensor([[True, True], [True, True]]),
+        "state_tokens": torch.tensor([[4, 5, 6], [7, 8, 9]]),
+        "state_mask": torch.tensor([[True, True, True], [True, True, True]]),
+    }
+    args = SimpleNamespace(
+        encoder_token_mask_prob=0.0, mean_recon_weight=0.0,
+        free_bits=0.02, kl_capacity=0.0, kl_capacity_weight=0.0,
+        lambda_mu_sigreg=0.0, lambda_sampled_sigreg=0.2,
+        sigreg_num_slices=8, sigreg_num_points=5, sigreg_domain=2.0,
+    )
+    monkeypatch.setattr(
+        simple_world_model_train, "sigreg",
+        lambda latent, **_: latent.float().square().mean(),
+    )
+    base_values = vars(args).copy()
+    base_values["lambda_sampled_sigreg"] = 0.0
+
+    torch.manual_seed(41)
+    base_loss, _, _ = simple_world_model_train._run_v_batch(
+        model, batch, beta=0.01, args=SimpleNamespace(**base_values),
+    )
+    torch.manual_seed(41)
+    loss, metrics, outputs = simple_world_model_train._run_v_batch(
+        model, batch, beta=0.01, args=args, sampled_sigreg_scale=0.5,
+    )
+
+    expected_prior = outputs["z"].float().square().mean()
+    expected_weight = 0.1
+    torch.testing.assert_close(loss, base_loss + expected_weight * expected_prior)
+    assert metrics["sampled_sigreg_loss"] == pytest.approx(float(expected_prior.detach()))
+    assert metrics["sampled_sigreg_weight"] == pytest.approx(expected_weight)
+    assert metrics["sampled_sigreg_weighted"] == pytest.approx(
+        float((expected_weight * expected_prior).detach())
+    )
+
+
+def test_team_aggregate_sigreg_is_separate_balanced_and_backpropagates(monkeypatch):
+    torch.manual_seed(39)
+    model = _tiny_model().train()
+    batch = {
+        "header_tokens": torch.tensor([
+            [1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12],
+        ]),
+        "header_mask": torch.ones(6, 2, dtype=torch.bool),
+        "state_tokens": torch.tensor([
+            [13, 14], [15, 16], [17, 18], [19, 20], [21, 22], [23, 24],
+        ]),
+        "state_mask": torch.ones(6, 2, dtype=torch.bool),
+        "formats": ["gen1ou", "gen9ou", "gen1ou", "gen9ou", "gen1ou", "gen9ou"],
+    }
+    team_batch = {
+        "header_tokens": torch.tensor([[25, 26], [27, 28], [29, 30], [31, 32]]),
+        "header_mask": torch.ones(4, 2, dtype=torch.bool),
+        "state_tokens": torch.ones(4, 1, dtype=torch.long),
+        "state_mask": torch.ones(4, 1, dtype=torch.bool),
+        "formats": ["gen1ou", "gen9ou", "gen1ou", "gen9ou"],
+    }
+    values = dict(
+        encoder_token_mask_prob=0.0, mean_recon_weight=0.0,
+        free_bits=0.0, kl_capacity=0.0, kl_capacity_weight=0.0,
+        lambda_mu_sigreg=0.0, lambda_sampled_sigreg=0.0,
+        lambda_aggregate_sigreg=0.2, lambda_team_aggregate_sigreg=0.4,
+        team_sigreg_batch_size=4,
+        sigreg_num_slices=8, sigreg_num_points=5, sigreg_domain=2.0,
+        posterior_std_target=None, posterior_std_weight=0.0,
+    )
+    captured: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+    def fake_aggregate(mu, logvar, **_):
+        mu.retain_grad()
+        captured.append((mu, logvar))
+        return mu.float().square().mean()
+
+    monkeypatch.setattr(
+        simple_world_model_train, "aggregate_posterior_sigreg", fake_aggregate,
+    )
+    base_values = {
+        **values,
+        "lambda_aggregate_sigreg": 0.0,
+        "lambda_team_aggregate_sigreg": 0.0,
+    }
+    torch.manual_seed(43)
+    base_loss, _, _ = simple_world_model_train._run_v_batch(
+        model, batch, beta=0.0, args=SimpleNamespace(**base_values),
+    )
+    torch.manual_seed(43)
+    loss, metrics, _ = simple_world_model_train._run_v_batch(
+        model,
+        batch,
+        beta=0.0,
+        args=SimpleNamespace(**values),
+        team_batch=team_batch,
+        aggregate_sigreg_scale=0.5,
+        team_aggregate_sigreg_scale=0.5,
+    )
+
+    assert len(captured) == 2
+    state_mu, _ = captured[0]
+    team_mu, _ = captured[1]
+    assert state_mu.shape == (6, 8)
+    assert team_mu.shape == (4, 8)
+    model.eval()
+    with torch.no_grad():
+        expected_team_mu, _ = model.v.encode(
+            team_batch["header_tokens"],
+            header_valid_mask=team_batch["header_mask"],
+        )
+    model.train()
+    torch.testing.assert_close(team_mu.detach(), expected_team_mu)
+    expected_state = state_mu.float().square().mean()
+    expected_team = team_mu.float().square().mean()
+    torch.testing.assert_close(
+        loss,
+        base_loss + 0.1 * expected_state + 0.2 * expected_team,
+    )
+    assert metrics["team_aggregate_sigreg_loss"] == pytest.approx(
+        float(expected_team.detach())
+    )
+    assert metrics["team_aggregate_sigreg_weight"] == pytest.approx(0.2)
+    assert metrics["team_aggregate_sigreg_weighted"] == pytest.approx(
+        float((0.2 * expected_team).detach())
+    )
+    assert metrics["team_sigreg_examples"] == 4.0
+    loss.backward()
+    assert state_mu.grad is not None and torch.isfinite(state_mu.grad).all()
+    assert team_mu.grad is not None and torch.isfinite(team_mu.grad).all()
+    assert bool(team_mu.grad.abs().gt(0).any())
+
+
+def test_team_sigreg_row_subset_is_capped_and_format_balanced():
+    formats = ["gen9ou"] * 5 + ["gen1ou"] * 4 + ["gen2ou"]
+    rows = simple_world_model_train._balanced_format_row_indices(
+        formats, 7, device=torch.device("cpu"),
+    )
+    selected = [formats[int(row)] for row in rows]
+    counts = {fmt: selected.count(fmt) for fmt in set(selected)}
+    assert len(selected) == 7
+    assert set(selected) == {"gen1ou", "gen2ou", "gen9ou"}
+    assert max(counts.values()) - min(counts.values()) <= 2
+
+
+def test_header_only_training_encode_uses_checkpointable_backward():
+    torch.manual_seed(45)
+    vae = StateVAE(
+        vocab_size=32, pad_id=0, latent_dim=8, d_model=16, n_heads=4,
+        n_layers=2, d_ff=32, max_seq_len=16, max_state_tokens=8,
+        gradient_checkpointing=True,
+    ).train()
+    header = torch.tensor([[1, 2, 0], [3, 4, 5]])
+    mu, logvar = vae.encode(header, header_valid_mask=header.ne(0))
+    loss = mu.square().mean() + 0.01 * logvar.square().mean()
+    loss.backward()
+    grad = vae.token_embedding.weight.grad
+    assert grad is not None and torch.isfinite(grad).all()
+    assert bool(grad.abs().gt(0).any())
+
+
+def test_aggregate_posterior_sigreg_integrates_diagonal_gaussians_and_backpropagates():
+    directions = torch.eye(4)
+    mu = torch.zeros(8, 4, requires_grad=True)
+    logvar = torch.zeros(8, 4, requires_grad=True)
+    exact_prior = aggregate_posterior_sigreg(
+        mu, logvar, num_slices=4, num_points=17, domain=3.0,
+        directions=directions,
+    )
+    assert float(exact_prior.detach()) == pytest.approx(0.0, abs=1e-12)
+
+    shifted_mu = torch.full((8, 4), 0.75, requires_grad=True)
+    narrow_logvar = torch.full((8, 4), -2.0, requires_grad=True)
+    mismatch = aggregate_posterior_sigreg(
+        shifted_mu, narrow_logvar, num_slices=4, num_points=17, domain=3.0,
+        directions=directions,
+    )
+    assert float(mismatch.detach()) > 0.0
+    mismatch.backward()
+    assert shifted_mu.grad is not None and torch.isfinite(shifted_mu.grad).all()
+    assert narrow_logvar.grad is not None and torch.isfinite(narrow_logvar.grad).all()
+
+
+def test_v_posterior_std_target_adds_bounded_variance_transfer_loss():
+    torch.manual_seed(43)
+    model = _tiny_model().train()
+    batch = {
+        "header_tokens": torch.tensor([[1, 2], [2, 3]]),
+        "header_mask": torch.tensor([[True, True], [True, True]]),
+        "state_tokens": torch.tensor([[4, 5, 6], [7, 8, 9]]),
+        "state_mask": torch.tensor([[True, True, True], [True, True, True]]),
+    }
+    values = dict(
+        encoder_token_mask_prob=0.0, mean_recon_weight=1.0,
+        free_bits=0.0, kl_capacity=0.0, kl_capacity_weight=0.0,
+        lambda_mu_sigreg=0.0, lambda_sampled_sigreg=0.0,
+        lambda_aggregate_sigreg=0.0, posterior_std_target=0.1,
+        posterior_std_weight=0.4,
+    )
+    base_values = {**values, "posterior_std_weight": 0.0}
+    torch.manual_seed(47)
+    base_loss, _, _ = simple_world_model_train._run_v_batch(
+        model, batch, beta=0.0, args=SimpleNamespace(**base_values),
+    )
+    torch.manual_seed(47)
+    loss, metrics, outputs = simple_world_model_train._run_v_batch(
+        model, batch, beta=0.0, args=SimpleNamespace(**values), posterior_std_scale=0.25,
+    )
+    expected = (outputs["logvar"].float().mul(0.5).exp() - 0.1).square().mean()
+    effective_weight = 0.1
+    torch.testing.assert_close(loss, base_loss + effective_weight * expected)
+    assert metrics["posterior_std_target"] == pytest.approx(0.1)
+    assert metrics["posterior_std_target_loss"] == pytest.approx(float(expected.detach()))
+    assert metrics["posterior_std_target_weight"] == pytest.approx(effective_weight)
+
+
 def test_v_validation_reports_reproducible_mc_reconstruction_metrics(monkeypatch):
     torch.manual_seed(23)
     model = _tiny_model()
@@ -512,10 +1406,219 @@ def test_v_validation_reports_reproducible_mc_reconstruction_metrics(monkeypatch
     assert first["aggregate_std_max"] >= first["aggregate_std_min"]
     assert first["aggregate_cov_offdiag_rms"] >= 0.0
     assert first["aggregate_gaussian_kl_per_dim"] >= 0.0
+    assert first["aggregate_mu_mean_rms"] >= 0.0
+    assert first["aggregate_mu_std_min"] > 0.0
+    assert first["aggregate_mu_std_max"] >= first["aggregate_mu_std_min"]
+    assert first["aggregate_mu_cov_offdiag_rms"] >= 0.0
+    assert first["aggregate_mu_gaussian_kl_per_dim"] >= 0.0
     assert first["aggregate_gaussian_kl_per_dim"] == pytest.approx(
         second["aggregate_gaussian_kl_per_dim"]
     )
+    assert first["aggregate_mu_gaussian_kl_per_dim"] == pytest.approx(
+        second["aggregate_mu_gaussian_kl_per_dim"]
+    )
+    assert first["aggregate_sigreg"] >= 0.0
+    assert first["aggregate_mu_sigreg"] >= 0.0
+    assert first["aggregate_sigreg"] == pytest.approx(second["aggregate_sigreg"])
+    assert first["aggregate_mu_sigreg"] == pytest.approx(second["aggregate_mu_sigreg"])
+    assert first["state_aggregate_mean_rms"] == pytest.approx(first["aggregate_mean_rms"])
+    assert first["state_aggregate_mu_std_mean"] == pytest.approx(first["aggregate_mu_std_mean"])
+    assert first["state_aggregate_sigreg"] == pytest.approx(first["aggregate_sigreg"])
+    assert first["state_aggregate_mu_sigreg"] == pytest.approx(first["aggregate_mu_sigreg"])
+    assert first["team_aggregate_std_min"] > 0.0
+    assert first["team_aggregate_sigreg"] >= 0.0
+    assert first["team_aggregate_mu_sigreg"] >= 0.0
+    assert first["team_aggregate_sigreg"] == pytest.approx(second["team_aggregate_sigreg"])
+    assert first["team_aggregate_mu_sigreg"] == pytest.approx(
+        second["team_aggregate_mu_sigreg"]
+    )
     assert model.training
+
+
+def test_v_validation_keeps_state_and_team_distribution_audits_separate(monkeypatch):
+    tokenizer = PokemonTokenizer().load_tokens({"foo": 1})
+    vocab_size = len(tokenizer) + 1
+
+    class FakeV(torch.nn.Module):
+        def encode(self, header_tokens, *, header_valid_mask):
+            del header_valid_mask
+            batch = header_tokens.shape[0]
+            return (
+                torch.full((batch, 4), 0.75, device=header_tokens.device),
+                torch.full((batch, 4), -2.0, device=header_tokens.device),
+            )
+
+        def decode(self, z, valid_token_mask):
+            logits = torch.zeros(*valid_token_mask.shape, vocab_size, device=z.device)
+            logits[..., 1] = 1.0
+            return logits
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.v = FakeV()
+
+        def encode_state(
+            self, header_tokens, state_tokens, *, header_valid_mask,
+            state_valid_mask, deterministic,
+        ):
+            del header_tokens, header_valid_mask, deterministic
+            mu = torch.zeros(state_tokens.shape[0], 4, device=state_tokens.device)
+            logvar = torch.zeros_like(mu)
+            return {
+                "logits": self.v.decode(mu, state_valid_mask),
+                "mu": mu,
+                "logvar": logvar,
+                "z": mu,
+                "state_valid_mask": state_valid_mask,
+            }
+
+    batch = {
+        "header_tokens": torch.tensor([[1, 1], [1, 1]]),
+        "header_mask": torch.ones(2, 2, dtype=torch.bool),
+        "state_tokens": torch.tensor([[1], [1]]),
+        "state_mask": torch.ones(2, 1, dtype=torch.bool),
+        "formats": ["gen1ou", "gen1ou"],
+    }
+    args = SimpleNamespace(
+        beta_kl=0.01, free_bits=0.0, kl_capacity=0.0,
+        kl_capacity_weight=0.0, val_mc_samples=2, seed=13,
+        sigreg_num_slices=4, sigreg_num_points=9, sigreg_domain=3.0,
+    )
+    monkeypatch.setattr(simple_world_model_train, "_v_format_metrics", lambda outputs, row: {})
+    monkeypatch.setattr(
+        simple_world_model_train, "_v_token_category_metrics",
+        lambda outputs, row, selected_tokenizer: {},
+    )
+    model = FakeModel()
+
+    first = simple_world_model_train._validate_v(
+        model, [batch], torch.device("cpu"), args, tokenizer,
+    )
+    second = simple_world_model_train._validate_v(
+        model, [batch], torch.device("cpu"), args, tokenizer,
+    )
+
+    assert first["state_aggregate_gaussian_kl"] == pytest.approx(0.0, abs=1e-12)
+    assert first["state_aggregate_sigreg"] == pytest.approx(0.0, abs=1e-12)
+    assert first["aggregate_sigreg"] == pytest.approx(first["state_aggregate_sigreg"])
+    assert first["team_aggregate_gaussian_kl"] > 0.0
+    assert first["team_aggregate_sigreg"] > 0.0
+    assert first["team_aggregate_sigreg"] != pytest.approx(first["state_aggregate_sigreg"])
+    for name in (
+        "state_aggregate_sigreg", "state_aggregate_mu_sigreg",
+        "team_aggregate_sigreg", "team_aggregate_mu_sigreg",
+        "state_aggregate_gaussian_kl", "team_aggregate_gaussian_kl",
+    ):
+        assert first[name] == pytest.approx(second[name])
+    assert first["selection_score"] == pytest.approx(first["recon_ce"])
+    assert model.training
+
+
+def test_v_validation_token_weights_unequal_batches_and_reports_mu_moments():
+    tokenizer = PokemonTokenizer().load_tokens({"foo": 1, "bar": 2})
+    vocab_size = len(tokenizer) + 1
+
+    class FakeV(torch.nn.Module):
+        def encode(self, header_tokens, *, header_valid_mask):
+            del header_valid_mask
+            mu = header_tokens[:, :2].float()
+            return mu, torch.zeros_like(mu)
+
+        def decode(self, z, valid_token_mask):
+            logits = torch.zeros(*valid_token_mask.shape, vocab_size, device=z.device)
+            logits[..., 1] = 4.0
+            return logits
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.v = FakeV()
+
+        def encode_state(
+            self, header_tokens, state_tokens, *, header_valid_mask,
+            state_valid_mask, deterministic,
+        ):
+            del header_valid_mask, deterministic
+            mu = header_tokens[:, :2].float()
+            logvar = torch.zeros_like(mu)
+            return {
+                "logits": self.v.decode(mu, state_valid_mask),
+                "mu": mu,
+                "logvar": logvar,
+                "z": mu,
+                "state_valid_mask": state_valid_mask,
+            }
+
+    batches = [
+        {
+            "header_tokens": torch.tensor([[1, 0]]),
+            "header_mask": torch.tensor([[True, True]]),
+            "state_tokens": torch.tensor([[1]]),
+            "state_mask": torch.tensor([[True]]),
+            "formats": ["gen1ou"],
+        },
+        {
+            "header_tokens": torch.tensor([[3, 0], [5, 0]]),
+            "header_mask": torch.tensor([[True, True], [True, True]]),
+            "state_tokens": torch.tensor([[2, 2, 2], [2, 1, 1]]),
+            "state_mask": torch.tensor([[True, True, True], [True, False, False]]),
+            "formats": ["gen1ou", "gen1ou"],
+        },
+    ]
+    args = SimpleNamespace(
+        beta_kl=0.01, free_bits=0.02, kl_capacity=0.0,
+        kl_capacity_weight=0.0, val_mc_samples=2, seed=7,
+    )
+
+    result = simple_world_model_train._validate_v(
+        FakeModel(), batches, torch.device("cpu"), args, tokenizer,
+    )
+
+    logits = torch.zeros(2, vocab_size)
+    logits[:, 1] = 4.0
+    correct_ce = float(torch.nn.functional.cross_entropy(logits[:1], torch.tensor([1])))
+    wrong_ce = float(torch.nn.functional.cross_entropy(logits[1:], torch.tensor([2])))
+    expected_ce = (correct_ce + 4.0 * wrong_ce) / 5.0
+    assert result["recon_ce"] == pytest.approx(expected_ce)
+    assert result["recon_token_acc"] == pytest.approx(1.0 / 5.0)
+    assert result["recon_ce_mc"] == pytest.approx(expected_ce)
+    assert result["recon_token_acc_mc"] == pytest.approx(1.0 / 5.0)
+    assert result["recon_ce_mc_std"] == pytest.approx(0.0)
+    assert result["recon_token_acc_mc_std"] == pytest.approx(0.0)
+    # Per-format and content-category metrics use the same exact token totals.
+    assert result["v_gen1ou_token_ce"] == pytest.approx(expected_ce)
+    assert result["v_gen1ou_token_acc"] == pytest.approx(1.0 / 5.0)
+    assert result["v_species_move_token_ce"] == pytest.approx(expected_ce)
+    assert result["v_species_move_token_acc"] == pytest.approx(1.0 / 5.0)
+
+    # mu rows are [1, 0], [3, 0], [5, 0]: population mean [3, 0]
+    # and population variance [8/3, 0].
+    assert result["aggregate_mu_mean_rms"] == pytest.approx((4.5) ** 0.5)
+    assert result["aggregate_mu_std_max"] == pytest.approx((8.0 / 3.0) ** 0.5)
+    assert result["aggregate_mu_std_min"] == pytest.approx(1e-6)
+    assert result["aggregate_mu_cov_offdiag_rms"] == pytest.approx(0.0)
+    assert math.isinf(result["aggregate_mu_gaussian_kl_per_dim"])
+    # Existing aggregate metrics still describe sampled q(z): unit posterior
+    # variance is added to each dimension, unlike the new mu-only summary.
+    assert result["aggregate_std_max"] == pytest.approx((11.0 / 3.0) ** 0.5)
+    assert result["aggregate_std_min"] == pytest.approx(1.0)
+
+
+def test_aggregate_gaussian_metrics_identity_is_zero_and_singular_is_infinite():
+    identity = torch.eye(3, dtype=torch.float64)
+    zero = torch.zeros(3, dtype=torch.float64)
+    metrics = simple_world_model_train._aggregate_gaussian_metrics(
+        zero, identity * 10.0, 10, prefix="probe",
+    )
+    assert metrics["probe_gaussian_kl"] == pytest.approx(0.0, abs=1e-12)
+
+    singular = identity.clone()
+    singular[-1, -1] = 0.0
+    metrics = simple_world_model_train._aggregate_gaussian_metrics(
+        zero, singular * 10.0, 10, prefix="probe",
+    )
+    assert math.isinf(metrics["probe_gaussian_kl"])
 
 
 def test_v_train_eval_metrics_preserve_validation_selection_and_report_gaps():
